@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionProposal",
+  "type": "object",
+  "required": ["action", "required_caps", "estimated_cost", "risk_level", "rationale"],
+  "properties": {
+    "action": {"type": "string"},
+    "required_caps": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "estimated_cost": {"type": "integer"},
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "rationale": {"type": "string"}
+  },
+  "additionalProperties": false
+}

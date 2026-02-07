@@ -1,0 +1,50 @@
+[workspace]
+members = ["kernel", "client-cli", "observatory", "conformance"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["wattetheria"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json", "ws"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+ed25519-dalek = { version = "2.2", features = ["rand_core", "pkcs8"] }
+hex = "0.4"
+libp2p = { version = "0.56", features = ["tokio", "tcp", "dns", "noise", "yamux", "gossipsub", "kad", "identify", "relay", "dcutr", "autonat", "upnp", "macros"] }
+once_cell = "1.20"
+rand = "0.9"
+rand_core = "0.6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_jcs = "0.1"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.15", features = ["v4", "serde"] }
+jsonschema = "0.33"
+tempfile = "3.18"
+tar = "0.4"
+flate2 = "1.1"
+fs2 = "0.4"
+walkdir = "2.5"
+semver = "1.0"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

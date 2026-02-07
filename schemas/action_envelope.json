@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "action_envelope.json",
+  "type": "object",
+  "required": ["type", "version", "action", "action_id", "timestamp", "sender", "payload", "signature"],
+  "properties": {
+    "type": {"type": "string", "const": "ACTION"},
+    "version": {"type": "string"},
+    "action": {"type": "string", "enum": ["SPEAK", "WHISPER", "OFFER", "ACCEPT", "TASK_REQUEST", "TASK_RESULT"]},
+    "action_id": {"type": "string"},
+    "timestamp": {"type": "integer"},
+    "sender": {"type": "string"},
+    "recipient": {"type": "string"},
+    "payload": {"type": "object"},
+    "signature": {"type": "string"}
+  }
+}

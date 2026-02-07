@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WattMap Observatory</title>
+  <style>
+    :root {
+      --bg: #05141e;
+      --panel: #0c2231;
+      --text: #e5f6ff;
+      --muted: #8eb2c6;
+      --line: rgba(255,255,255,0.14);
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: "JetBrains Mono", Menlo, monospace;
+      background: radial-gradient(circle at top left, #0f3550, var(--bg));
+      color: var(--text);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .panel {
+      background: linear-gradient(160deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02));
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    h1, h3 { margin: 0 0 12px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid var(--line); text-align: left; padding: 5px; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>WattMap <span class="muted">Non-authoritative observatory</span></h1>
+  <div class="grid">
+    <div class="panel"><h3>Heat Map</h3><table id="heat"></table></div>
+    <div class="panel"><h3>Ranking</h3><table id="rank"></table></div>
+    <div class="panel"><h3>Events</h3><table id="events"></table></div>
+  </div>
+  <script>
+    async function json(u){ return fetch(u).then(r=>r.json()) }
+    function draw(id, headers, rows){
+      const t = document.getElementById(id);
+      t.innerHTML = '<tr>' + headers.map(h => '<th>' + h + '</th>').join('') + '</tr>' +
+                    rows.map(r => '<tr>' + r.map(v => '<td>' + v + '</td>').join('') + '</tr>').join('');
+    }
+    async function refresh(){
+      const [heat, rank, events] = await Promise.all([
+        json('/api/heatmap'),
+        json('/api/rankings?metric=watt&limit=10'),
+        json('/api/events?limit=10')
+      ]);
+      draw('heat', ['Subnet','Agents','Watt','Power'], heat.map(i => [i.subnet_id,i.active_agents,i.total_watt,i.total_power]));
+      draw('rank', ['Agent','Subnet','Watt','Power'], rank.map(i => [i.agent_id.slice(0,10)+'...',i.subnet_id,i.watt,i.power]));
+      draw('events', ['Time','Agent','Subnet','Digest'], events.map(i => [new Date(i.timestamp*1000).toLocaleTimeString(), i.agent_id.slice(0,10)+'...', i.subnet_id, i.events_digest.slice(0,8)+'...']));
+    }
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

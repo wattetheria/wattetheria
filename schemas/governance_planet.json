@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "governance_planet.json",
+  "type": "object",
+  "required": ["subnet_id", "name", "creator", "tax_rate", "created_at", "validators", "relays", "archivists"],
+  "properties": {
+    "subnet_id": {"type": "string"},
+    "name": {"type": "string"},
+    "creator": {"type": "string"},
+    "tax_rate": {"type": "number"},
+    "created_at": {"type": "integer"},
+    "validators": {"type": "array", "items": {"type": "string"}},
+    "relays": {"type": "array", "items": {"type": "string"}},
+    "archivists": {"type": "array", "items": {"type": "string"}}
+  }
+}

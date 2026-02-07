@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BrainProviderConfig",
+  "type": "object",
+  "required": ["kind"],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["rules", "ollama", "openai-compatible"]
+    },
+    "base_url": {"type": "string"},
+    "model": {"type": "string"},
+    "api_key_env": {"type": ["string", "null"]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"kind": {"const": "rules"}}},
+      "then": {"required": ["kind"]}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "ollama"}}},
+      "then": {"required": ["kind", "base_url", "model"]}
+    },
+    {
+      "if": {"properties": {"kind": {"const": "openai-compatible"}}},
+      "then": {"required": ["kind", "base_url", "model"]}
+    }
+  ],
+  "additionalProperties": false
+}

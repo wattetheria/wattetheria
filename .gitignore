@@ -1,0 +1,4 @@
+/target
+/.wattetheria
+*.log
+.DS_Store

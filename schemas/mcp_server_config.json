@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "McpServerConfig",
+  "type": "object",
+  "required": ["name", "url", "enabled", "tools_allowlist", "timeout_sec", "budget_per_minute"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1},
+    "url": {"type": "string", "pattern": "^https?://"},
+    "enabled": {"type": "boolean"},
+    "tools_allowlist": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "timeout_sec": {"type": "integer", "minimum": 1},
+    "budget_per_minute": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

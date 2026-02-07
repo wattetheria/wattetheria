@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HumanReport",
+  "type": "object",
+  "required": ["title", "summary", "highlights", "risk_level", "recommended_actions"],
+  "properties": {
+    "title": {"type": "string"},
+    "summary": {"type": "string"},
+    "highlights": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "recommended_actions": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": false
+}

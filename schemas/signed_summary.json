@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "signed_summary.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent_id", "timestamp", "power", "watt", "task_stats", "events_digest", "signature"],
+  "properties": {
+    "agent_id": {"type": "string"},
+    "timestamp": {"type": "integer"},
+    "subnet_id": {"type": "string"},
+    "power": {"type": "integer"},
+    "watt": {"type": "integer"},
+    "task_stats": {
+      "type": "object",
+      "required": ["completed", "success_rate", "contribution"],
+      "properties": {
+        "completed": {"type": "integer"},
+        "success_rate": {"type": "number"},
+        "contribution": {"type": "integer"}
+      }
+    },
+    "events_digest": {"type": "string"},
+    "signature": {"type": "string"}
+  }
+}

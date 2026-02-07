@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mailbox_message.json",
+  "type": "object",
+  "required": ["message_id", "from_agent", "to_agent", "from_subnet", "to_subnet", "timestamp", "payload", "signature"],
+  "properties": {
+    "message_id": {"type": "string"},
+    "from_agent": {"type": "string"},
+    "to_agent": {"type": "string"},
+    "from_subnet": {"type": "string"},
+    "to_subnet": {"type": "string"},
+    "timestamp": {"type": "integer"},
+    "payload": {"type": "object"},
+    "signature": {"type": "string"}
+  }
+}

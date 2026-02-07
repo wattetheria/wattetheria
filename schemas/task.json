@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "task.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "task_family", "tier", "input_spec", "verification", "reward", "sla", "signature"],
+  "properties": {
+    "task_id": {"type": "string"},
+    "task_family": {"type": "string"},
+    "tier": {"type": "string"},
+    "input_spec": {"type": "object"},
+    "verification": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["deterministic", "witness"]},
+        "witnesses": {"type": "integer"}
+      }
+    },
+    "reward": {
+      "type": "object",
+      "required": ["watt", "reputation", "capacity"],
+      "properties": {
+        "watt": {"type": "integer"},
+        "reputation": {"type": "integer"},
+        "capacity": {"type": "integer"}
+      }
+    },
+    "sla": {
+      "type": "object",
+      "required": ["timeout_sec"],
+      "properties": {
+        "timeout_sec": {"type": "integer"}
+      }
+    },
+    "signature": {"type": "string"}
+  }
+}

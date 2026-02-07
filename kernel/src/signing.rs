@@ -1,0 +1,27 @@
+//! Canonical JSON signing helpers shared by protocol payloads.
+
+use anyhow::{Context, Result};
+use serde::Serialize;
+
+use crate::identity::{Identity, verify_with_public_key};
+
+pub fn canonical_bytes(payload: &impl Serialize) -> Result<Vec<u8>> {
+    let json = serde_jcs::to_string(payload).context("canonicalize payload")?;
+    Ok(json.into_bytes())
+}
+
+pub fn sign_payload(payload: &impl Serialize, identity: &Identity) -> Result<String> {
+    identity.sign(&canonical_bytes(payload)?)
+}
+
+pub fn verify_payload(
+    payload: &impl Serialize,
+    signature_b64: &str,
+    public_key_b64: &str,
+) -> Result<bool> {
+    verify_with_public_key(&canonical_bytes(payload)?, signature_b64, public_key_b64)
+}
+
+pub fn canonical_equal(a: &impl Serialize, b: &impl Serialize) -> Result<bool> {
+    Ok(canonical_bytes(a)? == canonical_bytes(b)?)
+}

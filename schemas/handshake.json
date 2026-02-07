@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "handshake.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "agent_id", "nonce", "timestamp", "capabilities_summary", "online_proof"],
+  "properties": {
+    "version": {"type": "string"},
+    "agent_id": {"type": "string"},
+    "nonce": {"type": "string"},
+    "timestamp": {"type": "integer"},
+    "capabilities_summary": {"type": "object"},
+    "online_proof": {
+      "type": "object",
+      "required": ["lease_id", "lease_expiry", "heartbeat_interval_sec", "last_heartbeat"],
+      "properties": {
+        "lease_id": {"type": "string"},
+        "lease_expiry": {"type": "integer"},
+        "heartbeat_interval_sec": {"type": "integer"},
+        "last_heartbeat": {"type": "integer"}
+      }
+    },
+    "hashcash": {"type": ["object", "null"]}
+  }
+}

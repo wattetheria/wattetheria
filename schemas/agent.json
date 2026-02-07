@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agent_id", "stats"],
+  "properties": {
+    "agent_id": {"type": "string"},
+    "model_provider": {"type": "string"},
+    "personality_params": {"type": "object"},
+    "skills_installed": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "capabilities_granted": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "wallet_adapter": {"type": "string"},
+    "subnet_memberships": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["power", "watt", "reputation", "capacity"],
+      "properties": {
+        "power": {"type": "integer"},
+        "watt": {"type": "integer"},
+        "reputation": {"type": "integer"},
+        "capacity": {"type": "integer"}
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OracleFeed",
+  "type": "object",
+  "required": ["feed_id", "publisher", "timestamp", "payload", "price_watt", "signature"],
+  "properties": {
+    "feed_id": {"type": "string"},
+    "publisher": {"type": "string"},
+    "timestamp": {"type": "integer"},
+    "payload": {},
+    "price_watt": {"type": "integer"},
+    "signature": {"type": "string"}
+  },
+  "additionalProperties": false
+}
