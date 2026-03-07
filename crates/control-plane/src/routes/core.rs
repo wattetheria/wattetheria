@@ -11,8 +11,8 @@ use crate::autonomy::{
     build_brain_state, load_night_shift_report, run_autonomy_tick_once, run_demo_market_task,
 };
 use crate::state::{
-    ActionRequest, AuditQuery, AuthQuery, AutonomyTickBody, BrainPlansQuery, ControlPlaneState,
-    EventsExportQuery, EventsQuery, NightShiftQuery, StreamEvent, send_stream_text,
+    ActionRequest, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery,
+    EventsQuery, NightShiftQuery, StreamEvent, send_stream_text,
 };
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
@@ -240,7 +240,7 @@ pub(crate) async fn brain_propose_actions(
         Err(response) => return response,
     };
 
-    let brain_state = match build_brain_state(&state, state.autonomy_skill_planner_enabled).await {
+    let brain_state = match build_brain_state(&state).await {
         Ok(value) => value,
         Err(error) => return internal_error(&error),
     };
@@ -274,51 +274,6 @@ pub(crate) async fn brain_propose_actions(
     Json(proposals).into_response()
 }
 
-pub(crate) async fn brain_plan_skill_calls(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Query(query): Query<BrainPlansQuery>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-
-    let enable_skill_planner = query.enable.unwrap_or(state.autonomy_skill_planner_enabled);
-    let brain_state = match build_brain_state(&state, enable_skill_planner).await {
-        Ok(value) => value,
-        Err(error) => return internal_error(&error),
-    };
-
-    let plans = match state.brain_engine.plan_skill_calls(&brain_state).await {
-        Ok(plans) => plans,
-        Err(error) => return internal_error(&error),
-    };
-
-    let payload = serde_json::to_value(&plans).unwrap_or(Value::Null);
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "brain.skill_plans".to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: payload.clone(),
-    });
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "brain".to_string(),
-        action: "brain.plan_skill_calls".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
-        capability: Some("model.invoke".to_string()),
-        reason: Some(format!("skill_planner_enabled={enable_skill_planner}")),
-        duration_ms: None,
-        details: Some(json!({"count": plans.len()})),
-    });
-
-    Json(plans).into_response()
-}
-
 pub(crate) async fn autonomy_tick(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -330,11 +285,7 @@ pub(crate) async fn autonomy_tick(
     };
 
     let hours = body.hours.unwrap_or(12).max(1);
-    let enable_skill_planner = body
-        .enable_skill_planner
-        .unwrap_or(state.autonomy_skill_planner_enabled);
-
-    let result = match run_autonomy_tick_once(&state, hours, enable_skill_planner).await {
+    let result = match run_autonomy_tick_once(&state, hours).await {
         Ok(result) => result,
         Err(error) => return internal_error(&error),
     };

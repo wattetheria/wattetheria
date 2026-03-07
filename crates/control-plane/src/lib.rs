@@ -44,10 +44,6 @@ fn core_router() -> Router<ControlPlaneState> {
             "/v1/brain/propose-actions",
             get(routes::core::brain_propose_actions),
         )
-        .route(
-            "/v1/brain/plan-skill-calls",
-            get(routes::core::brain_plan_skill_calls),
-        )
         .route("/v1/autonomy/tick", post(routes::core::autonomy_tick))
         .route("/v1/audit", get(routes::core::audit_recent))
         .route("/v1/stream", get(routes::core::stream))
@@ -302,7 +298,6 @@ mod tests {
             world_state,
             world_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
-            autonomy_skill_planner_enabled: true,
             audit_log,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
@@ -364,7 +359,7 @@ mod tests {
         let (_dir, app, token, _policy) = build_test_app(20);
 
         let check_body = json!({
-            "subject": "skill:test@0.1.0",
+            "subject": "controller:test",
             "trust": "verified",
             "capability": "p2p.publish",
             "reason": "integration-test"

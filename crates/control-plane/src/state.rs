@@ -80,7 +80,6 @@ pub struct ControlPlaneState {
     pub world_state: Arc<Mutex<WorldState>>,
     pub world_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
-    pub autonomy_skill_planner_enabled: bool,
     pub audit_log: AuditLog,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
@@ -100,11 +99,6 @@ pub(crate) struct EventsExportQuery {
 #[derive(Debug, Deserialize)]
 pub(crate) struct NightShiftQuery {
     pub(crate) hours: Option<i64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct BrainPlansQuery {
-    pub(crate) enable: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,7 +235,6 @@ pub struct MailboxAckBody {
 #[derive(Debug, Deserialize)]
 pub struct AutonomyTickBody {
     pub hours: Option<i64>,
-    pub enable_skill_planner: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

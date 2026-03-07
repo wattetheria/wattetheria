@@ -69,7 +69,7 @@ mod tests {
     fn plugin_registry_works() {
         let mut registry = PluginRegistry::default();
         let descriptor = registry.register(
-            "market-skill",
+            "market-plugin",
             "0.1.0",
             "plugins/market.wasm",
             TrustLevel::Verified,
@@ -77,7 +77,7 @@ mod tests {
         assert!(!descriptor.digest.is_empty());
         assert_eq!(registry.list().len(), 1);
         assert_eq!(
-            registry.get("market-skill", "0.1.0").unwrap().trust_level,
+            registry.get("market-plugin", "0.1.0").unwrap().trust_level,
             "verified"
         );
     }

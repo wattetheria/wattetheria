@@ -9,7 +9,6 @@ fn agent_schema_accepts_valid_payload() {
         "agent_id": "agent-1",
         "model_provider": "ollama:qwen2.5:7b",
         "personality_params": {"risk": 0.3},
-        "skills_installed": ["echo-skill"],
         "capabilities_granted": ["model.invoke", "mcp.call:news.read"],
         "wallet_adapter": "reserved",
         "subnet_memberships": ["planet-main"],

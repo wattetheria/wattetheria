@@ -8,14 +8,13 @@ mod doctor;
 
 use crate::cli_args::{
     BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, McpCommand, OracleCommand,
-    PolicyCommand, SkillCommand,
+    PolicyCommand,
 };
 use crate::config::{read_config, read_control_token, run_init, run_up};
 use crate::doctor::run_doctor;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -33,8 +32,6 @@ use wattetheria_kernel::mcp::{
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind, PolicyEngine};
-use wattetheria_kernel::skill_package::{InstalledSkill, SkillPackage, SkillRegistry};
-use wattetheria_kernel::skill_runtime::{EchoSkill, ProcessSkill, SkillManifest, SkillRuntime};
 use wattetheria_kernel::summary::build_signed_summary;
 use wattetheria_kernel::types::AgentStats;
 
@@ -63,7 +60,6 @@ async fn main() -> Result<()> {
             control_plane,
             command,
         } => run_governance(&data_dir, control_plane.as_deref(), command).await?,
-        Commands::Skill { data_dir, command } => run_skill(&data_dir, command).await?,
         Commands::Mcp { data_dir, command } => run_mcp(&data_dir, command).await?,
         Commands::Brain { data_dir, command } => run_brain(&data_dir, command).await?,
         Commands::Data { data_dir, command } => run_data(&data_dir, command)?,
@@ -279,52 +275,6 @@ async fn run_governance(
     Ok(())
 }
 
-async fn run_skill(data_dir: &Path, command: SkillCommand) -> Result<()> {
-    run_init(data_dir)?;
-    let mut registry = SkillRegistry::load_or_new(data_dir.join("skills/registry.json"))?;
-
-    match command {
-        SkillCommand::Install { source } => {
-            let (holder, source_path, resolved_source) =
-                resolve_skill_source(data_dir, &source).await?;
-            let package = SkillPackage::load(&source_path)?;
-            let installed =
-                registry.install(&package, data_dir.join("skills/store"), &resolved_source)?;
-            let _keep_alive = holder;
-            println!("{}", serde_json::to_string_pretty(&installed)?);
-        }
-        SkillCommand::Enable { id } => {
-            let updated = registry.set_enabled(&id, true)?;
-            println!("{}", serde_json::to_string_pretty(&updated)?);
-        }
-        SkillCommand::Disable { id } => {
-            let updated = registry.set_enabled(&id, false)?;
-            println!("{}", serde_json::to_string_pretty(&updated)?);
-        }
-        SkillCommand::Perms { id } => {
-            let skill = registry.get(&id)?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "id": skill.id,
-                    "version": skill.version,
-                    "enabled": skill.enabled,
-                    "trust": skill.trust,
-                    "required_caps": skill.required_caps,
-                    "source": skill.source,
-                }))?
-            );
-        }
-        SkillCommand::Test { id, input } => {
-            let skill = registry.get(&id)?;
-            let payload: Value = serde_json::from_str(&input).context("parse --input JSON")?;
-            run_skill_test(data_dir, &skill, &payload)?;
-        }
-    }
-
-    Ok(())
-}
-
 async fn run_mcp(data_dir: &Path, command: McpCommand) -> Result<()> {
     run_init(data_dir)?;
     let mut registry = McpRegistry::load_or_new(data_dir.join("mcp/servers.json"))?;
@@ -380,9 +330,6 @@ async fn run_brain(data_dir: &Path, command: BrainCommand) -> Result<()> {
         }
         BrainCommand::ProposeActions => {
             run_brain_propose_actions(data_dir, &engine, &audit).await?;
-        }
-        BrainCommand::PlanSkillCalls { enable } => {
-            run_brain_plan_skill_calls(data_dir, &engine, &audit, enable).await?;
         }
     }
 
@@ -513,44 +460,6 @@ async fn run_brain_propose_actions(
     }
 
     let output = serde_json::to_value(&proposals)?;
-    audit.result(&invocation, Some(&output), None)?;
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
-}
-
-async fn run_brain_plan_skill_calls(
-    data_dir: &Path,
-    engine: &BrainEngine,
-    audit: &BrainAuditContext,
-    enable: bool,
-) -> Result<()> {
-    let mut state = build_local_state_value(data_dir)?;
-    state["skill_planner_enabled"] = Value::Bool(enable);
-
-    let report = build_night_shift_value(data_dir, 12)?;
-    state["latest_report_digest"] = Value::String(digest_value(&report)?);
-
-    let invocation = audit.request("plan_skill_calls", &state)?;
-
-    let plans = match engine.plan_skill_calls(&state).await {
-        Ok(plans) => plans,
-        Err(error) => {
-            audit.result(&invocation, None, Some(&error.to_string()))?;
-            return Err(error);
-        }
-    };
-
-    for plan in &plans {
-        if let Err(error) = validate_schema_file(
-            &schema_file_path("skill_call_plan.json"),
-            &serde_json::to_value(plan)?,
-        ) {
-            audit.result(&invocation, None, Some(&error.to_string()))?;
-            return Err(error);
-        }
-    }
-
-    let output = serde_json::to_value(&plans)?;
     audit.result(&invocation, Some(&output), None)?;
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -750,63 +659,6 @@ fn run_upgrade_check(current: &str, latest: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn run_skill_test(data_dir: &Path, skill: &InstalledSkill, input: &Value) -> Result<()> {
-    if !skill.enabled {
-        bail!("skill {} is disabled", skill.id);
-    }
-
-    ensure_capabilities_allowed(
-        data_dir,
-        &format!("skill:{}@{}", skill.id, skill.version),
-        skill.trust,
-        &skill.required_caps,
-        Some("skill.test"),
-        Some(input),
-    )?;
-
-    let identity = Identity::load_or_create(data_dir.join("identity.json"))?;
-    let event_log = EventLog::new(data_dir.join("events.jsonl"))?;
-    let input_digest = digest_value(input)?;
-
-    event_log.append_signed(
-        "SKILL_CALL_REQUEST",
-        serde_json::json!({
-            "skill_id": skill.id,
-            "version": skill.version,
-            "required_caps": skill.required_caps,
-            "input_digest": input_digest,
-        }),
-        &identity,
-    )?;
-
-    let mut runtime = SkillRuntime::new(CapabilityPolicy::default());
-    register_skill_handler(&mut runtime, skill)?;
-
-    let output = runtime.invoke(&skill.id, &skill.version, skill.trust, input.clone())?;
-
-    event_log.append_signed(
-        "SKILL_CALL_RESULT",
-        serde_json::json!({
-            "skill_id": skill.id,
-            "version": skill.version,
-            "ok": true,
-            "input_digest": input_digest,
-            "output_digest": digest_value(&output)?,
-        }),
-        &identity,
-    )?;
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "status": "ok",
-            "skill_id": skill.id,
-            "output": output,
-        }))?
-    );
-    Ok(())
-}
-
 async fn run_mcp_test(
     data_dir: &Path,
     server: &KernelMcpServerConfig,
@@ -899,49 +751,6 @@ fn open_policy_engine(data_dir: &Path) -> Result<PolicyEngine> {
     )
 }
 
-fn register_skill_handler(runtime: &mut SkillRuntime, skill: &InstalledSkill) -> Result<()> {
-    let manifest = SkillManifest {
-        name: skill.id.clone(),
-        version: skill.version.clone(),
-        required_capabilities: skill.required_caps.clone(),
-    };
-
-    if skill.entry == "builtin:echo" {
-        runtime.register(manifest, EchoSkill);
-        return Ok(());
-    }
-
-    if let Some(rel) = skill.entry.strip_prefix("process:") {
-        if rel.trim().is_empty() {
-            bail!("process skill entry must include a relative path");
-        }
-
-        let install_root = Path::new(&skill.install_path);
-        let install_root_normalized = install_root
-            .canonicalize()
-            .with_context(|| format!("resolve skill install root {}", install_root.display()))?;
-        let resolved = install_root
-            .join(rel)
-            .canonicalize()
-            .with_context(|| format!("resolve process skill entry {rel}"))?;
-
-        if !resolved.starts_with(&install_root_normalized) {
-            bail!("process skill entry escapes install root");
-        }
-        if !resolved.is_file() {
-            bail!("process skill entry is not a file");
-        }
-
-        runtime.register(manifest, ProcessSkill::new(resolved));
-        return Ok(());
-    }
-
-    bail!(
-        "unsupported skill entry {} (supported: builtin:echo, process:<relative>)",
-        skill.entry
-    )
-}
-
 fn digest_value(value: &Value) -> Result<String> {
     let bytes = serde_json::to_vec(value).context("serialize value for digest")?;
     let mut hasher = Sha256::new();
@@ -983,73 +792,6 @@ fn validate_schema_file(schema_path: &Path, payload: &Value) -> Result<()> {
         bail!("schema validation failed: {error}");
     }
     Ok(())
-}
-
-async fn resolve_skill_source(
-    data_dir: &Path,
-    source: &str,
-) -> Result<(Option<tempfile::TempDir>, PathBuf, String)> {
-    let resolved_source = if let Some(registry_id) = source.strip_prefix("registry:") {
-        let catalog = read_skill_catalog(data_dir.join("skills/catalog.json"))?;
-        catalog
-            .get(registry_id)
-            .cloned()
-            .with_context(|| format!("registry skill id not found: {registry_id}"))?
-    } else {
-        source.to_string()
-    };
-
-    if resolved_source.starts_with("http://") || resolved_source.starts_with("https://") {
-        let bytes = reqwest::Client::new()
-            .get(&resolved_source)
-            .send()
-            .await
-            .context("download skill package")?
-            .bytes()
-            .await
-            .context("read downloaded skill package bytes")?;
-
-        let tempdir = tempfile::tempdir().context("create temp directory for skill url")?;
-        let archive_path = tempdir.path().join("skill.tar.gz");
-        fs::write(&archive_path, &bytes).context("write downloaded skill archive")?;
-
-        let unpack_dir = tempdir.path().join("unpack");
-        fs::create_dir_all(&unpack_dir)?;
-        let reader = fs::File::open(&archive_path).context("open downloaded skill archive")?;
-        let decoder = flate2::read::GzDecoder::new(reader);
-        let mut archive = tar::Archive::new(decoder);
-        archive
-            .unpack(&unpack_dir)
-            .context("unpack skill archive")?;
-
-        let package_root = detect_skill_root(&unpack_dir)?;
-        return Ok((Some(tempdir), package_root, resolved_source));
-    }
-    Ok((None, PathBuf::from(&resolved_source), resolved_source))
-}
-
-fn read_skill_catalog(path: PathBuf) -> Result<BTreeMap<String, String>> {
-    if !path.exists() {
-        bail!(
-            "skill catalog not found at {} (expected registry:id mapping)",
-            path.display()
-        );
-    }
-    let raw = fs::read_to_string(path).context("read skill catalog")?;
-    serde_json::from_str(&raw).context("parse skill catalog")
-}
-
-fn detect_skill_root(unpack_dir: &Path) -> Result<PathBuf> {
-    let entries: Vec<PathBuf> = fs::read_dir(unpack_dir)
-        .context("read unpack directory")?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect();
-
-    if entries.len() == 1 && entries[0].is_dir() {
-        Ok(entries[0].clone())
-    } else {
-        Ok(unpack_dir.to_path_buf())
-    }
 }
 
 fn run_night_shift(event_log: &PathBuf, hours: i64, out: Option<PathBuf>) -> Result<()> {

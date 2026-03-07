@@ -28,17 +28,3 @@ fn action_proposal_schema_accepts_valid_payload() {
 
     validate("action_proposal.json", &payload).unwrap();
 }
-
-#[test]
-fn skill_call_plan_schema_accepts_valid_payload() {
-    let payload = json!({
-        "skill_id": "echo-skill",
-        "input": {"intent": "summarize_recent_report"},
-        "required_caps": ["model.invoke"],
-        "estimated_cost": 1,
-        "risk_level": "low",
-        "rationale": "Low-risk helper call"
-    });
-
-    validate("skill_call_plan.json", &payload).unwrap();
-}

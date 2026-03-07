@@ -28,11 +28,6 @@ cargo run -p wattetheria-client-cli -- doctor --data-dir .wattetheria --brain
 # Run observatory
 cargo run -p wattetheria-observatory
 
-# Skills
-cargo run -p wattetheria-client-cli -- skill install ./sample-skill
-cargo run -p wattetheria-client-cli -- skill enable echo-skill
-cargo run -p wattetheria-client-cli -- skill test echo-skill --input '{"hello":"world"}'
-
 # MCP
 cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria add ./mcp-server.json
 cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria list
@@ -41,7 +36,6 @@ cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria test news-ser
 # Brain
 cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria humanize-night-shift --hours 24
 cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria propose-actions
-cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria plan-skill-calls --enable
 
 # Governance
 cargo run -p wattetheria-client-cli -- governance --data-dir .wattetheria planets
@@ -61,7 +55,7 @@ cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:
 Workspace layout:
 
 - **`apps/wattetheria-kernel`** (`wattetheria-kernel`) — Thin daemon binary entrypoint and runtime assembly.
-- **`apps/wattetheria-cli`** (`wattetheria-client-cli`) — CLI entry point with subcommands (`init`, `up`, `doctor`, `upgrade-check`, `policy`, `governance`, `skill`, `mcp`, `brain`, `data`, `oracle`, `night-shift`, `post-summary`).
+- **`apps/wattetheria-cli`** (`wattetheria-client-cli`) — CLI entry point with subcommands (`init`, `up`, `doctor`, `upgrade-check`, `policy`, `governance`, `mcp`, `brain`, `data`, `oracle`, `night-shift`, `post-summary`).
 - **`apps/wattetheria-observatory`** (`wattetheria-observatory`) — Non-authoritative HTTP explorer service.
 - **`crates/kernel-core`** (`wattetheria-kernel-core`) — Core daemon and domain engine library, internally grouped into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`.
 - **`crates/control-plane`** (`wattetheria-control-plane`) — Authenticated Axum control plane and autonomy routes.
@@ -81,7 +75,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 4. **Control Plane** — Axum HTTP + WebSocket API with token auth, rate limiting, audit log (`crates/control-plane/src/`).
 5. **Task Engine** — Deterministic task lifecycle: PUBLISHED → CLAIMED → EXECUTED → SUBMITTED → VERIFIED → SETTLED (`crates/kernel-core/src/tasks/task_engine.rs`). Market matching for buy/sell orders. Settles `watt`, `reputation`, `capacity`.
 6. **Capabilities** — Trust levels (Trusted/Verified/Untrusted) with default-deny policy engine (`crates/kernel-core/src/security/capabilities.rs`, `crates/kernel-core/src/brain/policy_engine.rs`). Grants scoped as Once/Session/Permanent.
-7. **Extensions** — Skill packages (`crates/kernel-core/src/brain/skill_package.rs`), MCP adapter (`crates/kernel-core/src/brain/mcp.rs`), brain providers (`crates/kernel-core/src/brain/brain.rs`: rules/ollama/openai-compatible).
+7. **Extensions** — MCP adapter (`crates/kernel-core/src/brain/mcp.rs`), plugin registry (`crates/kernel-core/src/brain/plugin_registry.rs`), brain providers (`crates/kernel-core/src/brain/engine.rs`: rules/ollama/openai-compatible).
 8. **Civilization Layer** — Citizen profiles, mission board, world zones/events, emergency evaluation, and offline strategy state (`crates/kernel-core/src/civilization/`).
 9. **Governance** — Planet (subnet) creation, constitution templates, treasury/stability, recall/custody/takeover, proposals, voting, validator rotation (`crates/kernel-core/src/governance/engine.rs`). Cross-subnet mailbox (`crates/kernel-core/src/governance/mailbox.rs`).
 10. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`crates/kernel-core/src/governance/oracle.rs`).
@@ -97,7 +91,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
-- `GET /v1/brain/propose-actions`, `GET /v1/brain/plan-skill-calls`, `POST /v1/autonomy/tick`
+- `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
 - Civilization: profile/metrics/emergencies/briefing, world zones/events/generate, missions publish/claim/complete/settle
 - Governance: planets/proposals/vote/finalize, treasury fund/spend, stability adjust, recall start/resolve, custody enter/release, hostile takeover
 - Policy: check/pending/approve/revoke/grants
@@ -131,7 +125,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 
 - Unit tests are inline in modules (`#[cfg(test)]` blocks)
 - Integration tests in `crates/kernel-core/tests/` and `apps/wattetheria-cli/tests/`
-- Key integration tests: `pipeline_integration.rs` (end-to-end task→summary→governance→mailbox), `skill_runtime_integration.rs`, `eventlog_integration.rs`, `product_iteration_integration.rs`
+- Key integration tests: `pipeline_integration.rs` (end-to-end task→summary→governance→mailbox), `eventlog_integration.rs`, `product_iteration_integration.rs`
 - Tests use `tempfile::tempdir()` for isolated filesystem state
 
 ## Data Directory Layout
@@ -147,8 +141,7 @@ Node state lives in a configurable data dir (default `.wattetheria`):
 - `missions/state.json` — Civil mission board
 - `civilization/profiles.json` — Citizen identity and offline strategy profiles
 - `world/state.json` — World zones and dynamic event state
-- `skills/` — Installed skill packages
-- `mcp/config.json` — MCP server configs
+- `mcp/servers.json` — MCP server configs
 - `oracle/state.json` — Oracle feed registry
 
 ## Example Config

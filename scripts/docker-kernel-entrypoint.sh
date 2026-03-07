@@ -31,10 +31,6 @@ if [ "${WATTETHERIA_AUTONOMY_ENABLED:-false}" = "true" ]; then
   set -- "$@" --autonomy-enabled
 fi
 
-if [ "${WATTETHERIA_AUTONOMY_SKILL_PLANNER_ENABLED:-false}" = "true" ]; then
-  set -- "$@" --autonomy-skill-planner-enabled
-fi
-
 if [ -n "${WATTETHERIA_BRAIN_PROVIDER_KIND:-}" ]; then
   set -- "$@" --brain-provider-kind "${WATTETHERIA_BRAIN_PROVIDER_KIND}"
 fi

@@ -11,7 +11,6 @@ use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mcp::McpRegistry;
 use wattetheria_kernel::policy_engine::PolicyEngine;
-use wattetheria_kernel::skill_package::SkillRegistry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LocalConfig {
@@ -29,8 +28,6 @@ pub(crate) struct LocalConfig {
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
-    #[serde(default)]
-    pub(crate) autonomy_skill_planner_enabled: bool,
 }
 
 fn default_control_bind() -> String {
@@ -60,7 +57,6 @@ impl Default for LocalConfig {
             brain_provider: BrainProviderConfig::Rules,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
-            autonomy_skill_planner_enabled: false,
         }
     }
 }
@@ -69,8 +65,6 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     fs::create_dir_all(data_dir).context("create data directory")?;
     fs::create_dir_all(data_dir.join("audit"))?;
     fs::create_dir_all(data_dir.join("snapshots"))?;
-    fs::create_dir_all(data_dir.join("skills"))?;
-    fs::create_dir_all(data_dir.join("skills/store"))?;
     fs::create_dir_all(data_dir.join("mcp"))?;
     fs::create_dir_all(data_dir.join("policy"))?;
 
@@ -89,7 +83,6 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
         fs::write(&schema_version, "0.2.0").context("write schema version")?;
     }
 
-    let _ = SkillRegistry::load_or_new(data_dir.join("skills/registry.json"))?;
     let _ = McpRegistry::load_or_new(data_dir.join("mcp/servers.json"))?;
     let _ = PolicyEngine::load_or_new(
         data_dir.join("policy/state.json"),
@@ -178,9 +171,6 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     command
         .arg("--autonomy-interval-sec")
         .arg(config.autonomy_interval_sec.max(5).to_string());
-    if config.autonomy_skill_planner_enabled {
-        command.arg("--autonomy-skill-planner-enabled");
-    }
 
     match &config.brain_provider {
         BrainProviderConfig::Rules => {

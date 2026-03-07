@@ -55,6 +55,4 @@ pub struct Cli {
     pub autonomy_enabled: bool,
     #[arg(long, default_value_t = 30)]
     pub autonomy_interval_sec: u64,
-    #[arg(long, default_value_t = false)]
-    pub autonomy_skill_planner_enabled: bool,
 }

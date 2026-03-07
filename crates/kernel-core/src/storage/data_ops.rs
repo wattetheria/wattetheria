@@ -216,9 +216,8 @@ pub fn migrate_data_dir(data_dir: impl AsRef<Path>, target: &str) -> Result<Migr
 
     if current_version.major == 0 && current_version.minor <= 1 && target_version.minor >= 2 {
         fs::create_dir_all(data_dir.as_ref().join("policy"))?;
-        fs::create_dir_all(data_dir.as_ref().join("skills/store"))?;
         fs::create_dir_all(data_dir.as_ref().join("mcp"))?;
-        steps.push("created policy/, skills/store/, and mcp/ directories".to_string());
+        steps.push("created policy/ and mcp/ directories".to_string());
     }
 
     fs::write(&version_path, target_version.to_string()).context("write schema.version")?;

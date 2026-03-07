@@ -8,10 +8,6 @@
     "agent_id": {"type": "string"},
     "model_provider": {"type": "string"},
     "personality_params": {"type": "object"},
-    "skills_installed": {
-      "type": "array",
-      "items": {"type": "string"}
-    },
     "capabilities_granted": {
       "type": "array",
       "items": {"type": "string"}

@@ -31,16 +31,6 @@ pub struct ActionProposal {
     pub rationale: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillCallPlan {
-    pub skill_id: String,
-    pub input: Value,
-    pub required_caps: Vec<String>,
-    pub estimated_cost: i64,
-    pub risk_level: RiskLevel,
-    pub rationale: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum BrainProviderConfig {
@@ -65,7 +55,6 @@ pub struct BrainEngine {
 pub trait BrainProvider: Send + Sync {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport>;
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>>;
-    async fn plan_skill_calls(&self, state: &Value) -> Result<Vec<SkillCallPlan>>;
     async fn health_check(&self) -> Result<String>;
 }
 
@@ -98,10 +87,6 @@ impl BrainEngine {
 
     pub async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>> {
         self.provider.propose_actions(state).await
-    }
-
-    pub async fn plan_skill_calls(&self, state: &Value) -> Result<Vec<SkillCallPlan>> {
-        self.provider.plan_skill_calls(state).await
     }
 
     pub async fn doctor(&self) -> Result<String> {
@@ -179,30 +164,6 @@ impl BrainProvider for RulesBrain {
         Ok(out)
     }
 
-    async fn plan_skill_calls(&self, state: &Value) -> Result<Vec<SkillCallPlan>> {
-        // Keep planner disabled by default. Callers must opt in explicitly.
-        if !state["skill_planner_enabled"].as_bool().unwrap_or(false) {
-            return Ok(vec![]);
-        }
-
-        let report_hint = state["latest_report_digest"]
-            .as_str()
-            .unwrap_or("no-report-digest");
-
-        Ok(vec![SkillCallPlan {
-            skill_id: "echo-skill".to_string(),
-            input: json!({
-                "intent": "summarize_recent_report",
-                "report_digest": report_hint
-            }),
-            required_caps: vec!["model.invoke".to_string()],
-            estimated_cost: 1,
-            risk_level: RiskLevel::Low,
-            rationale: "Use a low-risk skill path to produce deterministic helper output"
-                .to_string(),
-        }])
-    }
-
     async fn health_check(&self) -> Result<String> {
         Ok("rules_brain_ready".to_string())
     }
@@ -241,15 +202,6 @@ impl BrainProvider for OllamaBrain {
         parse_proposals_or_fallback(&output, state).await
     }
 
-    async fn plan_skill_calls(&self, state: &Value) -> Result<Vec<SkillCallPlan>> {
-        let prompt = format!(
-            "Return strict JSON array of skill call plans with keys skill_id,input,required_caps,estimated_cost,risk_level,rationale. Input: {}",
-            serde_json::to_string(state)?
-        );
-        let output = ollama_generate(&self.base_url, &self.model, &prompt).await?;
-        parse_skill_call_plans_or_fallback(&output, state).await
-    }
-
     async fn health_check(&self) -> Result<String> {
         let response = reqwest::Client::new()
             .get(format!("{}/api/tags", self.base_url.trim_end_matches('/')))
@@ -282,15 +234,6 @@ impl BrainProvider for OpenAiCompatibleBrain {
         );
         let output = openai_compatible_generate(self, &prompt).await?;
         parse_proposals_or_fallback(&output, state).await
-    }
-
-    async fn plan_skill_calls(&self, state: &Value) -> Result<Vec<SkillCallPlan>> {
-        let prompt = format!(
-            "Return strict JSON array with keys skill_id,input,required_caps,estimated_cost,risk_level,rationale. Input: {}",
-            serde_json::to_string(state)?
-        );
-        let output = openai_compatible_generate(self, &prompt).await?;
-        parse_skill_call_plans_or_fallback(&output, state).await
     }
 
     async fn health_check(&self) -> Result<String> {
@@ -377,16 +320,6 @@ async fn parse_proposals_or_fallback(raw: &str, state: &Value) -> Result<Vec<Act
     }
 }
 
-async fn parse_skill_call_plans_or_fallback(
-    raw: &str,
-    state: &Value,
-) -> Result<Vec<SkillCallPlan>> {
-    match serde_json::from_str::<Vec<SkillCallPlan>>(raw) {
-        Ok(plans) => Ok(plans),
-        _ => RulesBrain.plan_skill_calls(state).await,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,18 +340,6 @@ mod tests {
             .await
             .unwrap();
         assert!(!actions.is_empty());
-
-        let plans_disabled = engine
-            .plan_skill_calls(&json!({"skill_planner_enabled": false}))
-            .await
-            .unwrap();
-        assert!(plans_disabled.is_empty());
-
-        let plans_enabled = engine
-            .plan_skill_calls(&json!({"skill_planner_enabled": true}))
-            .await
-            .unwrap();
-        assert_eq!(plans_enabled.len(), 1);
 
         let health = engine.doctor().await.unwrap();
         assert_eq!(health, "rules_brain_ready");

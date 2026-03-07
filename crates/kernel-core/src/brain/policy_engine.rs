@@ -292,7 +292,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:echo@0.1.0".to_string(),
+                subject: "controller:echo".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "p2p.publish".to_string(),
                 reason: Some("test".to_string()),
@@ -311,7 +311,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:echo@0.1.0".to_string(),
+                subject: "controller:echo".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "p2p.publish".to_string(),
                 reason: Some("test".to_string()),
@@ -324,7 +324,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:echo@0.1.0".to_string(),
+                subject: "controller:echo".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "p2p.publish".to_string(),
                 reason: Some("test".to_string()),
@@ -347,7 +347,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:test@0.1.0".to_string(),
+                subject: "controller:test".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "wallet.sign".to_string(),
                 reason: Some("revoke-test".to_string()),
@@ -367,7 +367,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:test@0.1.0".to_string(),
+                subject: "controller:test".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "wallet.sign".to_string(),
                 reason: Some("test".to_string()),
@@ -384,7 +384,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:test@0.1.0".to_string(),
+                subject: "controller:test".to_string(),
                 trust: TrustLevel::Verified,
                 capability: "wallet.sign".to_string(),
                 reason: Some("test".to_string()),
@@ -409,7 +409,7 @@ mod tests {
             .evaluate(CapabilityRequest {
                 request_id: String::new(),
                 timestamp: 0,
-                subject: "skill:reader@0.1.0".to_string(),
+                subject: "controller:reader".to_string(),
                 trust: TrustLevel::Untrusted,
                 capability: "fs.read:/world".to_string(),
                 reason: None,

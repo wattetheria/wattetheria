@@ -46,12 +46,6 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: GovernanceCommand,
     },
-    Skill {
-        #[arg(long, default_value = ".wattetheria")]
-        data_dir: PathBuf,
-        #[command(subcommand)]
-        command: SkillCommand,
-    },
     Mcp {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
@@ -161,27 +155,6 @@ pub(crate) enum GovernanceCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum SkillCommand {
-    Install {
-        source: String,
-    },
-    Enable {
-        id: String,
-    },
-    Disable {
-        id: String,
-    },
-    Perms {
-        id: String,
-    },
-    Test {
-        id: String,
-        #[arg(long, default_value = "{\"hello\":\"world\"}")]
-        input: String,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 pub(crate) enum McpCommand {
     Add {
         config: PathBuf,
@@ -208,10 +181,6 @@ pub(crate) enum BrainCommand {
         hours: i64,
     },
     ProposeActions,
-    PlanSkillCalls {
-        #[arg(long, default_value_t = false)]
-        enable: bool,
-    },
 }
 
 #[derive(Debug, Subcommand)]

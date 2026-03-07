@@ -20,11 +20,6 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - High-risk actions require approval (pending -> approve/revoke)
 - Grant scopes: `once`, `session`, `permanent`
 
-- [x] Skills lifecycle
-- Skill package schema + trust checks (builtin + process entries)
-- `skill install|enable|disable|perms|test`
-- Runtime execution through sandbox and policy gates
-
 - [x] MCP lifecycle
 - MCP registry config and enable/disable/list/test
 - Input/output schema validation + budget controls
@@ -103,7 +98,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
-- `GET /v1/brain/propose-actions`, `GET /v1/brain/plan-skill-calls`, `POST /v1/autonomy/tick`
+- `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
 - Civilization APIs:
   - `GET|POST /v1/civilization/profile`
   - `GET /v1/civilization/metrics`
@@ -169,11 +164,6 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-# skills
-cargo run -p wattetheria-client-cli -- skill install ./sample-skill
-cargo run -p wattetheria-client-cli -- skill enable echo-skill
-cargo run -p wattetheria-client-cli -- skill test echo-skill --input '{"hello":"world"}'
-
 # mcp
 cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria add ./mcp-server.json
 cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria list
@@ -182,7 +172,6 @@ cargo run -p wattetheria-client-cli -- mcp --data-dir .wattetheria test news-ser
 # brain
 cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria humanize-night-shift --hours 24
 cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria propose-actions
-cargo run -p wattetheria-client-cli -- brain --data-dir .wattetheria plan-skill-calls --enable
 
 # governance
 cargo run -p wattetheria-client-cli -- governance --data-dir .wattetheria planets
@@ -262,7 +251,6 @@ Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
     "model": "qwen2.5:7b-instruct"
   },
   "autonomy_enabled": true,
-  "autonomy_interval_sec": 30,
-  "autonomy_skill_planner_enabled": true
+  "autonomy_interval_sec": 30
 }
 ```

@@ -29,10 +29,7 @@ pub(crate) fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> 
     serde_json::to_value(report).context("serialize night shift report")
 }
 
-pub(crate) async fn build_brain_state(
-    state: &ControlPlaneState,
-    enable_skill_planner: bool,
-) -> Result<Value> {
+pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value> {
     let events = state.event_log.get_all()?;
     let pending_policy_requests = state.policy_engine.lock().await.list_pending().len();
     let agent_view = state.swarm_bridge.agent_view(&state.agent_id).await?;
@@ -54,7 +51,6 @@ pub(crate) async fn build_brain_state(
     Ok(json!({
         "events": events.len(),
         "pending_policy_requests": pending_policy_requests,
-        "skill_planner_enabled": enable_skill_planner,
         "latest_report_digest": latest_report_digest,
         "agent_stats": agent_view.stats,
         "profile": profile,
@@ -96,17 +92,12 @@ pub(crate) async fn check_action_capabilities(
     Ok((true, decisions))
 }
 
-pub async fn run_autonomy_tick_once(
-    state: &ControlPlaneState,
-    hours: i64,
-    enable_skill_planner: bool,
-) -> Result<Value> {
-    let brain_state = build_brain_state(state, enable_skill_planner).await?;
+pub async fn run_autonomy_tick_once(state: &ControlPlaneState, hours: i64) -> Result<Value> {
+    let brain_state = build_brain_state(state).await?;
     let emergencies = brain_state["emergencies"]
         .as_array()
         .map_or(0_usize, std::vec::Vec::len);
     let proposals = state.brain_engine.propose_actions(&brain_state).await?;
-    let plans = state.brain_engine.plan_skill_calls(&brain_state).await?;
     let report = load_night_shift_report(state, hours)?;
     let human_report = state.brain_engine.humanize_night_shift(&report).await?;
     let strategy = brain_state["strategy"].clone();
@@ -162,12 +153,10 @@ pub async fn run_autonomy_tick_once(
     let payload = json!({
         "status": "ok",
         "hours": hours,
-        "skill_planner_enabled": enable_skill_planner,
         "strategy": strategy,
         "emergencies": brain_state["emergencies"].clone(),
         "human_report": human_report,
         "proposals": proposals,
-        "skill_plans": plans,
         "executed_actions": executed,
     });
 
@@ -190,7 +179,7 @@ pub(crate) async fn build_operator_briefing(
 ) -> Result<Value> {
     let report = load_night_shift_report(state, hours)?;
     let human_report = state.brain_engine.humanize_night_shift(&report).await?;
-    let brain_state = build_brain_state(state, state.autonomy_skill_planner_enabled).await?;
+    let brain_state = build_brain_state(state).await?;
     Ok(json!({
         "hours": hours,
         "report": report,

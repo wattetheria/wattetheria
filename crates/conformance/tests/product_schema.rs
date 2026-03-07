@@ -1,22 +1,7 @@
-// Validates skill, MCP, and brain provider schemas.
+// Validates MCP, brain provider, and oracle schemas.
 
 use serde_json::json;
 use wattetheria_conformance::validate;
-
-#[test]
-fn skill_manifest_schema_accepts_valid_payload() {
-    let payload = json!({
-        "id": "echo-skill",
-        "version": "0.1.0",
-        "entry": "builtin:echo",
-        "required_caps": ["model.invoke"],
-        "resources": ["docs"],
-        "trust": "verified",
-        "conformance_report": "conformance/report.json"
-    });
-
-    validate("skill_manifest.json", &payload).unwrap();
-}
 
 #[test]
 fn mcp_server_config_schema_accepts_valid_payload() {

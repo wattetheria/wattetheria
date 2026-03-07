@@ -259,7 +259,6 @@ fn build_control_state(
         world_state: Arc::new(Mutex::new(civilization_state.world_state)),
         world_state_path: civilization_state.world_state_path,
         brain_engine,
-        autonomy_skill_planner_enabled: cli.autonomy_skill_planner_enabled,
         audit_log,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
@@ -318,13 +317,7 @@ fn spawn_autonomy_task(
         let mut ticker = interval(Duration::from_secs(interval_sec));
         loop {
             ticker.tick().await;
-            if let Err(error) = run_autonomy_tick_once(
-                &control_state,
-                12,
-                control_state.autonomy_skill_planner_enabled,
-            )
-            .await
-            {
+            if let Err(error) = run_autonomy_tick_once(&control_state, 12).await {
                 warn!(%error, "autonomy tick failed");
             }
         }

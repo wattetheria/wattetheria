@@ -1,4 +1,4 @@
-// Integration tests for skill, mcp, data, and upgrade-check workflows.
+// Integration tests for mcp, data, oracle, and upgrade-check workflows.
 
 use std::fs;
 use std::process::Command;
@@ -13,67 +13,6 @@ fn run_cli(args: &[&str]) -> std::process::Output {
         .args(args)
         .output()
         .unwrap()
-}
-
-#[test]
-fn skill_install_and_test_creates_policy_pending() {
-    let tmp = tempdir().unwrap();
-    let data_dir = tmp.path().join("node");
-    let skill_dir = tmp.path().join("echo-skill");
-
-    fs::create_dir_all(skill_dir.join("schemas")).unwrap();
-    fs::create_dir_all(skill_dir.join("conformance")).unwrap();
-    fs::write(skill_dir.join("schemas/input.json"), "{}").unwrap();
-    fs::write(
-        skill_dir.join("conformance/report.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "suite": "wattetheria-conformance",
-            "passed": true,
-            "timestamp": 1_700_000_000
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    fs::write(
-        skill_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "id": "echo-skill",
-            "version": "0.1.0",
-            "entry": "builtin:echo",
-            "required_caps": ["p2p.publish"],
-            "trust": "verified",
-            "conformance_report": "conformance/report.json"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let init = run_cli(&["init", "--data-dir", data_dir.to_str().unwrap()]);
-    assert!(init.status.success());
-
-    let install = run_cli(&[
-        "skill",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "install",
-        skill_dir.to_str().unwrap(),
-    ]);
-    assert!(install.status.success());
-
-    let test = run_cli(&[
-        "skill",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "test",
-        "echo-skill",
-    ]);
-    assert!(!test.status.success());
-    let stderr = String::from_utf8_lossy(&test.stderr);
-    assert!(stderr.contains("capability approval required"));
-
-    let policy_path = data_dir.join("policy/state.json");
-    let raw = fs::read_to_string(policy_path).unwrap();
-    assert!(raw.contains("p2p.publish"));
 }
 
 #[test]
@@ -176,36 +115,6 @@ fn brain_humanize_night_shift_runs_with_rules_provider() {
 }
 
 #[test]
-fn brain_plan_skill_calls_supports_enable_flag() {
-    let tmp = tempdir().unwrap();
-    let data_dir = tmp.path().join("node");
-
-    let init = run_cli(&["init", "--data-dir", data_dir.to_str().unwrap()]);
-    assert!(init.status.success());
-
-    let disabled = run_cli(&[
-        "brain",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "plan-skill-calls",
-    ]);
-    assert!(disabled.status.success());
-    let disabled_stdout = String::from_utf8_lossy(&disabled.stdout);
-    assert!(disabled_stdout.trim_end().ends_with("[]"));
-
-    let enabled = run_cli(&[
-        "brain",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "plan-skill-calls",
-        "--enable",
-    ]);
-    assert!(enabled.status.success());
-    let enabled_stdout = String::from_utf8_lossy(&enabled.stdout);
-    assert!(enabled_stdout.contains("echo-skill"));
-}
-
-#[test]
 fn oracle_credit_publish_subscribe_pull_roundtrip() {
     let tmp = tempdir().unwrap();
     let data_dir = tmp.path().join("node");
@@ -277,66 +186,4 @@ fn oracle_credit_publish_subscribe_pull_roundtrip() {
     let stdout = String::from_utf8_lossy(&pull.stdout);
     assert!(stdout.contains("\"charged_watt\": 2"));
     assert!(stdout.contains("\"delivered\": 1"));
-}
-
-#[cfg(unix)]
-#[test]
-fn process_skill_install_and_test_executes() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let tmp = tempdir().unwrap();
-    let data_dir = tmp.path().join("node");
-    let skill_dir = tmp.path().join("process-skill");
-
-    fs::create_dir_all(skill_dir.join("schemas")).unwrap();
-    fs::create_dir_all(skill_dir.join("bin")).unwrap();
-    fs::write(skill_dir.join("schemas/input.json"), "{}").unwrap();
-    fs::write(
-        skill_dir.join("manifest.json"),
-        serde_json::to_string_pretty(&serde_json::json!({
-            "id": "process-skill",
-            "version": "0.1.0",
-            "entry": "process:bin/skill.sh",
-            "required_caps": [],
-            "trust": "untrusted"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-
-    let script_path = skill_dir.join("bin/skill.sh");
-    fs::write(
-        &script_path,
-        "#!/usr/bin/env sh\nINPUT=$(cat)\nprintf '{\"handled\":true,\"input\":%s}\\n' \"$INPUT\"\n",
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&script_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&script_path, perms).unwrap();
-
-    let init = run_cli(&["init", "--data-dir", data_dir.to_str().unwrap()]);
-    assert!(init.status.success());
-
-    let install = run_cli(&[
-        "skill",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "install",
-        skill_dir.to_str().unwrap(),
-    ]);
-    assert!(install.status.success());
-
-    let test = run_cli(&[
-        "skill",
-        "--data-dir",
-        data_dir.to_str().unwrap(),
-        "test",
-        "process-skill",
-        "--input",
-        "{\"hello\":\"world\"}",
-    ]);
-    assert!(test.status.success());
-    let stdout = String::from_utf8_lossy(&test.stdout);
-    assert!(stdout.contains("\"handled\": true"));
-    assert!(stdout.contains("\"hello\": \"world\""));
 }

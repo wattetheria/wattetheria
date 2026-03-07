@@ -12,8 +12,6 @@ pub use brain::mcp;
 pub use brain::night_shift;
 pub use brain::plugin_registry;
 pub use brain::policy_engine;
-pub use brain::skill_package;
-pub use brain::skill_runtime;
 pub use civilization::emergency;
 pub use civilization::metrics;
 pub use civilization::missions;
