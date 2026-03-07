@@ -318,6 +318,12 @@ struct LocalConfig {
     recovery_sources: Vec<String>,
     #[serde(default)]
     brain_provider: BrainProviderConfig,
+    #[serde(default)]
+    autonomy_enabled: bool,
+    #[serde(default = "default_autonomy_interval_sec")]
+    autonomy_interval_sec: u64,
+    #[serde(default)]
+    autonomy_skill_planner_enabled: bool,
 }
 
 fn default_control_bind() -> String {
@@ -332,6 +338,10 @@ fn default_p2p_topic_shards() -> usize {
     1
 }
 
+fn default_autonomy_interval_sec() -> u64 {
+    30
+}
+
 impl Default for LocalConfig {
     fn default() -> Self {
         let bind = default_control_bind();
@@ -341,6 +351,9 @@ impl Default for LocalConfig {
             p2p_topic_shards: default_p2p_topic_shards(),
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
+            autonomy_enabled: false,
+            autonomy_interval_sec: default_autonomy_interval_sec(),
+            autonomy_skill_planner_enabled: false,
         }
     }
 }
@@ -502,19 +515,65 @@ async fn run_up(data_dir: &Path, bind_override: Option<String>, attach: bool) ->
     Ok(())
 }
 
+fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &LocalConfig) {
+    command
+        .arg("--data-dir")
+        .arg(data_dir)
+        .arg("--control-plane-bind")
+        .arg(&config.control_plane_bind)
+        .arg("--p2p-topic-shards")
+        .arg(config.p2p_topic_shards.max(1).to_string());
+
+    if config.autonomy_enabled {
+        command.arg("--autonomy-enabled");
+    }
+    command
+        .arg("--autonomy-interval-sec")
+        .arg(config.autonomy_interval_sec.max(5).to_string());
+    if config.autonomy_skill_planner_enabled {
+        command.arg("--autonomy-skill-planner-enabled");
+    }
+
+    match &config.brain_provider {
+        BrainProviderConfig::Rules => {
+            command.arg("--brain-provider-kind").arg("rules");
+        }
+        BrainProviderConfig::Ollama { base_url, model } => {
+            command
+                .arg("--brain-provider-kind")
+                .arg("ollama")
+                .arg("--brain-base-url")
+                .arg(base_url)
+                .arg("--brain-model")
+                .arg(model);
+        }
+        BrainProviderConfig::OpenaiCompatible {
+            base_url,
+            model,
+            api_key_env,
+        } => {
+            command
+                .arg("--brain-provider-kind")
+                .arg("openai-compatible")
+                .arg("--brain-base-url")
+                .arg(base_url)
+                .arg("--brain-model")
+                .arg(model);
+            if let Some(name) = api_key_env {
+                command.arg("--brain-api-key-env").arg(name);
+            }
+        }
+    }
+
+    for source in &config.recovery_sources {
+        command.arg("--recovery-source").arg(source);
+    }
+}
+
 fn kernel_command(data_dir: &Path, config: &LocalConfig) -> Command {
     if let Ok(kernel_bin) = std::env::var("WATTETHERIA_KERNEL_BIN") {
         let mut command = Command::new(kernel_bin);
-        command
-            .arg("--data-dir")
-            .arg(data_dir)
-            .arg("--control-plane-bind")
-            .arg(&config.control_plane_bind)
-            .arg("--p2p-topic-shards")
-            .arg(config.p2p_topic_shards.max(1).to_string());
-        for source in &config.recovery_sources {
-            command.arg("--recovery-source").arg(source);
-        }
+        append_kernel_runtime_args(&mut command, data_dir, config);
         return command;
     }
 
@@ -523,19 +582,10 @@ fn kernel_command(data_dir: &Path, config: &LocalConfig) -> Command {
         .arg("run")
         .arg("-p")
         .arg("wattetheria-kernel")
-        .arg("--")
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("--control-plane-bind")
-        .arg(&config.control_plane_bind)
-        .arg("--p2p-topic-shards")
-        .arg(config.p2p_topic_shards.max(1).to_string());
-    for source in &config.recovery_sources {
-        command.arg("--recovery-source").arg(source);
-    }
+        .arg("--");
+    append_kernel_runtime_args(&mut command, data_dir, config);
     command
 }
-
 async fn run_doctor(
     data_dir: &Path,
     endpoint_override: Option<&str>,

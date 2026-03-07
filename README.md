@@ -91,7 +91,8 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 ### Control Plane API
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
-- `GET /v1/night-shift`, `POST /v1/actions`
+- `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
+- `GET /v1/brain/propose-actions`, `GET /v1/brain/plan-skill-calls`, `POST /v1/autonomy/tick`
 - Governance APIs: planets/proposals/vote/finalize
 - Policy APIs: check/pending/approve/revoke/grants
 - Mailbox APIs: `POST /v1/mailbox/messages`, `GET /v1/mailbox/messages`, `POST /v1/mailbox/ack`
@@ -189,5 +190,30 @@ cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:
   "brain_provider": {
     "kind": "rules"
   }
+}
+```
+
+## Godot Desktop Client (4.6)
+
+The Godot client now lives in the dedicated repository:
+
+- [wattetheria-client-godot](https://github.com/wattetheria/wattetheria-client-godot)
+
+Run the node from this repository, then open the Godot project from that client repository.
+
+Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
+
+```json
+{
+  "control_plane_bind": "127.0.0.1:7777",
+  "control_plane_endpoint": "http://127.0.0.1:7777",
+  "brain_provider": {
+    "kind": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "model": "qwen2.5:7b-instruct"
+  },
+  "autonomy_enabled": true,
+  "autonomy_interval_sec": 30,
+  "autonomy_skill_planner_enabled": true
 }
 ```
