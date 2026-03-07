@@ -7,6 +7,7 @@ pub mod capabilities;
 pub mod control_plane;
 pub mod data_ops;
 pub mod event_log;
+pub mod galaxy_task;
 pub mod governance;
 pub mod hashcash;
 pub mod identity;

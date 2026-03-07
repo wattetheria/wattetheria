@@ -15,6 +15,7 @@ use wattswarm_protocol::types::{
     VerifyAssignment, VotePolicy,
 };
 
+use crate::galaxy_task::GalaxyTaskIntent;
 use crate::task_engine::TaskEngine;
 use crate::types::{AgentStats, Reward, Sla, Task, VerificationMode, VerificationSpec};
 
@@ -60,6 +61,24 @@ pub trait SwarmBridge: Send + Sync {
     ) -> Result<SwarmTaskProjectionView>;
 
     async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView>;
+
+    async fn submit_galaxy_task(
+        &self,
+        submitter_id: &str,
+        intent: GalaxyTaskIntent,
+    ) -> Result<SwarmTaskReceipt> {
+        self.submit_task_contract(submitter_id, intent.to_task_contract())
+            .await
+    }
+
+    async fn run_galaxy_task(
+        &self,
+        worker_id: &str,
+        intent: GalaxyTaskIntent,
+    ) -> Result<SwarmTaskProjectionView> {
+        self.run_task_contract(worker_id, intent.to_task_contract())
+            .await
+    }
 }
 
 pub struct LegacyTaskEngineBridge {
@@ -78,103 +97,6 @@ impl LegacyTaskEngineBridge {
 
     pub fn load_ledger(path: impl AsRef<Path>) -> Result<HashMap<String, AgentStats>> {
         TaskEngine::load_ledger(path)
-    }
-
-    #[must_use]
-    pub fn demo_market_contract() -> TaskContract {
-        TaskContract {
-            protocol_version: "v0.1".to_owned(),
-            task_id: uuid::Uuid::new_v4().to_string(),
-            task_type: "market.match".to_owned(),
-            inputs: json!({
-                "buy_orders": [
-                    {"id":"bridge-buy-1", "price":120, "qty":5},
-                    {"id":"bridge-buy-2", "price":118, "qty":3}
-                ],
-                "sell_orders": [
-                    {"id":"bridge-sell-1", "price":110, "qty":2},
-                    {"id":"bridge-sell-2", "price":112, "qty":6}
-                ]
-            }),
-            output_schema: json!({
-                "type":"object",
-                "required":["family","trades","cleared_volume","trade_count"],
-                "properties":{
-                    "family":{"type":"string"},
-                    "trades":{"type":"array"},
-                    "cleared_volume":{"type":"integer"},
-                    "trade_count":{"type":"integer"}
-                }
-            }),
-            budget: Budget {
-                time_ms: 30_000,
-                max_steps: 10,
-                cost_units: 12,
-                mode: BudgetMode::Lifetime,
-                explore_cost_units: 4,
-                verify_cost_units: 4,
-                finalize_cost_units: 4,
-                reuse_verify_time_ms: 20_000,
-                reuse_verify_cost_units: 2,
-                reuse_max_attempts: 1,
-            },
-            assignment: Assignment {
-                mode: "CLAIM".to_owned(),
-                claim: ClaimPolicy {
-                    lease_ms: 5_000,
-                    max_concurrency: MaxConcurrency {
-                        propose: 1,
-                        verify: 1,
-                    },
-                },
-                explore: ExploreAssignment {
-                    max_proposers: 1,
-                    topk: 1,
-                    stop: ExploreStopPolicy {
-                        no_new_evidence_rounds: 1,
-                    },
-                },
-                verify: VerifyAssignment { max_verifiers: 1 },
-                finalize: FinalizeAssignment { max_finalizers: 1 },
-            },
-            acceptance: Acceptance {
-                quorum_threshold: 1,
-                verifier_policy: PolicyBinding {
-                    policy_id: "vp.schema_only.v1".to_owned(),
-                    policy_version: "1".to_owned(),
-                    policy_hash: "legacy-bridge".to_owned(),
-                    policy_params: json!({}),
-                },
-                vote: VotePolicy {
-                    commit_reveal: true,
-                    reveal_deadline_ms: 10_000,
-                },
-                settlement: SettlementPolicy {
-                    window_ms: 86_400_000,
-                    implicit_weight: 0.1,
-                    implicit_diminishing_returns: SettlementDiminishingReturns { w: 10, k: 50 },
-                    bad_penalty: SettlementBadPenalty { p: 3 },
-                    feedback: FeedbackCapabilityPolicy {
-                        mode: "CAPABILITY".to_owned(),
-                        authority_pubkey: "ed25519:placeholder".to_owned(),
-                    },
-                },
-                da_quorum_threshold: 1,
-            },
-            task_mode: wattswarm_protocol::types::TaskMode::OneShot,
-            expiry_ms: chrono::Utc::now().timestamp_millis().max(0).cast_unsigned() + 120_000,
-            evidence_policy: EvidencePolicy {
-                max_inline_evidence_bytes: 65_536,
-                max_inline_media_bytes: 0,
-                inline_mime_allowlist: vec![
-                    "application/json".to_owned(),
-                    "text/plain".to_owned(),
-                    "text/markdown".to_owned(),
-                ],
-                max_snippet_bytes: 8_192,
-                max_snippet_tokens: 2_048,
-            },
-        }
     }
 }
 
@@ -398,10 +320,7 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let task = bridge
-            .run_task_contract(
-                &identity.agent_id,
-                LegacyTaskEngineBridge::demo_market_contract(),
-            )
+            .run_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
             .await
             .unwrap();
 
@@ -431,10 +350,7 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let ack = bridge
-            .submit_task_contract(
-                &identity.agent_id,
-                LegacyTaskEngineBridge::demo_market_contract(),
-            )
+            .submit_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
             .await
             .unwrap();
 

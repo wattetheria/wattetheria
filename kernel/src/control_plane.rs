@@ -20,12 +20,13 @@ use crate::audit::{AuditEntry, AuditLog};
 use crate::brain::{ActionProposal, BrainEngine};
 use crate::capabilities::TrustLevel;
 use crate::event_log::EventLog;
+use crate::galaxy_task::GalaxyTaskIntent;
 use crate::governance::GovernanceEngine;
 use crate::identity::Identity;
 use crate::mailbox::CrossSubnetMailbox;
 use crate::night_shift::generate_night_shift_report;
 use crate::policy_engine::{CapabilityRequest, DecisionKind, GrantScope, PolicyEngine};
-use crate::swarm_bridge::{LegacyTaskEngineBridge, SwarmBridge};
+use crate::swarm_bridge::SwarmBridge;
 
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -1265,10 +1266,7 @@ async fn handle_ws(mut socket: WebSocket, state: ControlPlaneState) {
 async fn run_demo_market_task(state: &ControlPlaneState) -> Result<Value> {
     let task = state
         .swarm_bridge
-        .run_task_contract(
-            &state.agent_id,
-            LegacyTaskEngineBridge::demo_market_contract(),
-        )
+        .run_galaxy_task(&state.agent_id, GalaxyTaskIntent::demo_market_match())
         .await?;
     if task.terminal_state != "finalized" {
         bail!("demo task verification failed");
@@ -1448,6 +1446,7 @@ mod tests {
     use crate::governance::{GovernanceEngine, PlanetCreationRequest};
     use crate::identity::Identity;
     use crate::mailbox::CrossSubnetMailbox;
+    use crate::swarm_bridge::LegacyTaskEngineBridge;
     fn build_test_app(
         rate_limit: usize,
     ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {

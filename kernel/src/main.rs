@@ -24,6 +24,7 @@ use wattetheria_kernel::control_plane::{
 };
 use wattetheria_kernel::data_ops::recover_if_corrupt_with_sources;
 use wattetheria_kernel::event_log::{EventLog, EventRecord};
+use wattetheria_kernel::galaxy_task::GalaxyTaskIntent;
 use wattetheria_kernel::governance::{GovernanceEngine, PlanetCreationRequest};
 use wattetheria_kernel::hashcash;
 use wattetheria_kernel::identity::Identity;
@@ -516,10 +517,7 @@ async fn run_demo_task(
     identity: &Identity,
 ) -> Result<()> {
     let task = swarm_bridge
-        .run_task_contract(
-            &identity.agent_id,
-            LegacyTaskEngineBridge::demo_market_contract(),
-        )
+        .run_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
         .await?;
     let task_id = task.task_id.clone();
     info!(task_id = %task_id, terminal_state = %task.terminal_state, "demo task settled");
