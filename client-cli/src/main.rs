@@ -503,7 +503,9 @@ async fn run_up(data_dir: &Path, bind_override: Option<String>, attach: bool) ->
 
     fs::write(data_dir.join("daemon.pid"), child.id().to_string()).context("write daemon pid")?;
 
-    wait_for_control_plane(&config.control_plane_endpoint, &token, 20).await?;
+    // CI can be noticeably slower here because `cargo test` shells out to `cargo run`
+    // for the kernel, which may wait on target/package locks before the daemon is healthy.
+    wait_for_control_plane(&config.control_plane_endpoint, &token, 60).await?;
 
     let response = serde_json::json!({
         "status": "ok",

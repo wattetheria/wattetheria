@@ -111,7 +111,14 @@ fn up_recovers_corrupt_events_from_peer_export() {
     assert!(brain_a.status.success());
 
     let up_a = run_cli(&["up", "--data-dir", data_a.to_str().unwrap()]);
-    assert!(up_a.status.success());
+    let daemon_log_a = fs::read_to_string(data_a.join("daemon.log")).unwrap_or_default();
+    assert!(
+        up_a.status.success(),
+        "up_a failed\nstdout:\n{}\nstderr:\n{}\ndaemon_log:\n{}",
+        String::from_utf8_lossy(&up_a.stdout),
+        String::from_utf8_lossy(&up_a.stderr),
+        daemon_log_a,
+    );
 
     let port_b = pick_free_port();
     let bind_b = format!("127.0.0.1:{port_b}");
