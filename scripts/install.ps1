@@ -7,9 +7,9 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 $RepoDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoDir
 
-cargo install --path kernel --bin wattetheria-kernel --force
-cargo install --path client-cli --bin wattetheria-client-cli --force
-cargo install --path observatory --bin wattetheria-observatory --force
+cargo install --path apps/wattetheria-kernel --bin wattetheria-kernel --force
+cargo install --path apps/wattetheria-cli --bin wattetheria-client-cli --force
+cargo install --path apps/wattetheria-observatory --bin wattetheria-observatory --force
 
 Write-Output "Installed binaries: wattetheria-kernel, wattetheria-client-cli, wattetheria-observatory"
 Write-Output "Bootstrap a node:"

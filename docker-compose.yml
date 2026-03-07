@@ -1,0 +1,34 @@
+services:
+  kernel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wattetheria-kernel
+    restart: unless-stopped
+    environment:
+      WATTETHERIA_DATA_DIR: /var/lib/wattetheria
+      WATTETHERIA_CONTROL_PLANE_BIND: 0.0.0.0:7777
+      WATTETHERIA_TOPIC: ${WATTETHERIA_TOPIC:-wattetheria.v0.1}
+      WATTETHERIA_LISTEN: ${WATTETHERIA_LISTEN:-/ip4/0.0.0.0/tcp/0}
+    volumes:
+      - wattetheria_state:/var/lib/wattetheria
+    ports:
+      - "${WATTETHERIA_CONTROL_PLANE_PORT:-7777}:7777"
+    entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
+
+  observatory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wattetheria-observatory
+    restart: unless-stopped
+    depends_on:
+      - kernel
+    environment:
+      PORT: 8787
+    ports:
+      - "${WATTETHERIA_OBSERVATORY_PORT:-8787}:8787"
+    entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
+
+volumes:
+  wattetheria_state:

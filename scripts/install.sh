@@ -9,9 +9,9 @@ fi
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_DIR"
 
-cargo install --path kernel --bin wattetheria-kernel --force
-cargo install --path client-cli --bin wattetheria-client-cli --force
-cargo install --path observatory --bin wattetheria-observatory --force
+cargo install --path apps/wattetheria-kernel --bin wattetheria-kernel --force
+cargo install --path apps/wattetheria-cli --bin wattetheria-client-cli --force
+cargo install --path apps/wattetheria-observatory --bin wattetheria-observatory --force
 
 echo "Installed binaries: wattetheria-kernel, wattetheria-client-cli, wattetheria-observatory"
 echo "Bootstrap a node:"

@@ -1,0 +1,27 @@
+[package]
+name = "wattetheria-observatory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "wattetheria-observatory"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+wattetheria-observatory-core = { path = "../../crates/observatory-core" }
+
+[dev-dependencies]
+axum.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower = "0.5"
+http-body-util = "0.1"
+wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../../crates/kernel-core" }

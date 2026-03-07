@@ -115,10 +115,14 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 
 ## Repository Layout
 
-- `kernel` - daemon and core runtime modules
-- `client-cli` - bootstrap and operator CLI
-- `observatory` - non-authoritative web observatory
-- `conformance` - JSON schema conformance tests
+- `apps/wattetheria-kernel` - kernel daemon binary entrypoint
+- `apps/wattetheria-cli` - bootstrap and operator CLI
+- `apps/wattetheria-observatory` - non-authoritative web observatory service
+- `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
+- `crates/control-plane` - local authenticated HTTP/WebSocket control plane
+- `crates/observatory-core` - observatory HTTP/store library behind the observatory app
+- `crates/p2p-runtime` - isolated libp2p transport runtime and gossip guards
+- `crates/conformance` - JSON schema conformance helpers and tests
 - `protocols` - protocol docs (including agent DNA)
 - `schemas` - protocol and product schemas (including `agent.json`)
 - `docs` - architecture notes
@@ -176,6 +180,18 @@ cargo run -p wattetheria-observatory
 # terminal B
 cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:8787/api/summaries
 ```
+
+## Docker
+
+The repository now includes a workspace-aware Docker skeleton for future deployment similar to `wattswarm`.
+
+```bash
+docker compose up --build
+```
+
+- `kernel` runs `wattetheria-kernel` with persistent state mounted at `/var/lib/wattetheria`
+- `observatory` runs `wattetheria-observatory` on port `8787`
+- Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
 
 ## Example Config
 

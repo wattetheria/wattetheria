@@ -1,0 +1,27 @@
+[package]
+name = "wattetheria-observatory-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "wattetheria_observatory_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tower-http.workspace = true
+wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio.workspace = true
+tower = "0.5"

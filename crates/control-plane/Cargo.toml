@@ -1,0 +1,28 @@
+[package]
+name = "wattetheria-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "wattetheria_control_plane"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = "0.5"
+http-body-util = "0.1"

@@ -58,12 +58,16 @@ cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:
 
 ## Workspace Structure
 
-Four crates in a Cargo workspace:
+Workspace layout:
 
-- **`kernel`** (`wattetheria-kernel`) — Core daemon and domain engine. Both a library (`lib.rs`) and binary (`main.rs`). All domain logic lives here.
-- **`client-cli`** (`wattetheria-client-cli`) — CLI entry point with subcommands (`init`, `up`, `doctor`, `upgrade-check`, `policy`, `governance`, `skill`, `mcp`, `brain`, `data`, `oracle`, `night-shift`, `post-summary`). Depends on kernel.
-- **`observatory`** (`wattetheria-observatory`) — Non-authoritative HTTP explorer service. Ingests signed summaries, serves heatmap/rankings/events/planet-health APIs.
-- **`conformance`** (`wattetheria-conformance`) — JSON Schema validation library. Loads schemas from `schemas/` directory at runtime.
+- **`apps/wattetheria-kernel`** (`wattetheria-kernel`) — Thin daemon binary entrypoint and runtime assembly.
+- **`apps/wattetheria-cli`** (`wattetheria-client-cli`) — CLI entry point with subcommands (`init`, `up`, `doctor`, `upgrade-check`, `policy`, `governance`, `skill`, `mcp`, `brain`, `data`, `oracle`, `night-shift`, `post-summary`).
+- **`apps/wattetheria-observatory`** (`wattetheria-observatory`) — Non-authoritative HTTP explorer service.
+- **`crates/kernel-core`** (`wattetheria-kernel-core`) — Core daemon and domain engine library, internally grouped into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`.
+- **`crates/control-plane`** (`wattetheria-control-plane`) — Authenticated Axum control plane and autonomy routes.
+- **`crates/observatory-core`** (`wattetheria-observatory-core`) — Observatory store/router library used by the observatory app.
+- **`crates/p2p-runtime`** (`wattetheria-p2p-runtime`) — Isolated libp2p runtime and anti-spam transport guards.
+- **`crates/conformance`** (`wattetheria-conformance`) — JSON Schema validation library. Loads schemas from `schemas/` directory at runtime.
 
 Supporting directories: `protocols/` (protocol specs including agent DNA), `schemas/` (JSON Schema draft 2020-12, including `agent.json`), `docs/`, `scripts/` (cross-platform install/package scripts).
 
@@ -71,15 +75,15 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 
 ### Layered Design
 
-1. **Identity & Crypto** — Ed25519 keys (`identity.rs`), canonical JSON signing via `serde_jcs` (`signing.rs`).
-2. **Event Sourcing** — Append-only JSONL log with SHA256 hash chains (`event_log.rs`). All state changes are events.
-3. **P2P Network** — libp2p with gossipsub + kademlia + identify + noise (`p2p.rs`). Anti-spam via per-peer/per-topic rate limits, message dedup TTL, peer scoring, blacklist.
-4. **Control Plane** — Axum HTTP + WebSocket API with token auth, rate limiting, audit log (`control_plane.rs`).
-5. **Task Engine** — Deterministic task lifecycle: PUBLISHED → CLAIMED → EXECUTED → SUBMITTED → VERIFIED → SETTLED (`task_engine.rs`). Market matching for buy/sell orders. Settles `watt`, `reputation`, `capacity`.
-6. **Capabilities** — Trust levels (Trusted/Verified/Untrusted) with default-deny policy engine (`capabilities.rs`, `policy_engine.rs`). Grants scoped as Once/Session/Permanent.
-7. **Extensions** — Skill packages (`skill_package.rs`), MCP adapter (`mcp.rs`), brain providers (`brain.rs`: rules/ollama/openai-compatible).
-8. **Governance** — Planet (subnet) creation, proposals, voting, validator rotation (`governance.rs`). Cross-subnet mailbox (`mailbox.rs`).
-9. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`oracle.rs`).
+1. **Identity & Crypto** — Ed25519 keys (`crates/kernel-core/src/security/identity.rs`), canonical JSON signing via `serde_jcs` (`crates/kernel-core/src/security/signing.rs`).
+2. **Event Sourcing** — Append-only JSONL log with SHA256 hash chains (`crates/kernel-core/src/storage/event_log.rs`). All state changes are events.
+3. **P2P Network** — libp2p with gossipsub + kademlia + identify + noise (`crates/p2p-runtime/src/lib.rs`). Anti-spam via per-peer/per-topic rate limits, message dedup TTL, peer scoring, blacklist.
+4. **Control Plane** — Axum HTTP + WebSocket API with token auth, rate limiting, audit log (`crates/control-plane/src/`).
+5. **Task Engine** — Deterministic task lifecycle: PUBLISHED → CLAIMED → EXECUTED → SUBMITTED → VERIFIED → SETTLED (`crates/kernel-core/src/tasks/task_engine.rs`). Market matching for buy/sell orders. Settles `watt`, `reputation`, `capacity`.
+6. **Capabilities** — Trust levels (Trusted/Verified/Untrusted) with default-deny policy engine (`crates/kernel-core/src/security/capabilities.rs`, `crates/kernel-core/src/brain/policy_engine.rs`). Grants scoped as Once/Session/Permanent.
+7. **Extensions** — Skill packages (`crates/kernel-core/src/brain/skill_package.rs`), MCP adapter (`crates/kernel-core/src/brain/mcp.rs`), brain providers (`crates/kernel-core/src/brain/brain.rs`: rules/ollama/openai-compatible).
+8. **Governance** — Planet (subnet) creation, proposals, voting, validator rotation (`crates/kernel-core/src/governance/governance.rs`). Cross-subnet mailbox (`crates/kernel-core/src/governance/mailbox.rs`).
+9. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`crates/kernel-core/src/governance/oracle.rs`).
 
 ### Key Patterns
 
@@ -122,7 +126,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 ## Test Patterns
 
 - Unit tests are inline in modules (`#[cfg(test)]` blocks)
-- Integration tests in `kernel/tests/` and `client-cli/tests/`
+- Integration tests in `crates/kernel-core/tests/` and `apps/wattetheria-cli/tests/`
 - Key integration tests: `pipeline_integration.rs` (end-to-end task→summary→governance→mailbox), `skill_runtime_integration.rs`, `eventlog_integration.rs`, `product_iteration_integration.rs`
 - Tests use `tempfile::tempdir()` for isolated filesystem state
 
