@@ -3,7 +3,9 @@ use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
 use wattetheria_kernel::galaxy_task::GalaxyTaskIntent;
-use wattetheria_kernel::governance::{GovernanceEngine, PlanetCreationRequest};
+use wattetheria_kernel::governance::{
+    GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
+};
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::signing::sign_payload;
 use wattetheria_kernel::swarm_bridge::SwarmBridge;
@@ -64,6 +66,7 @@ pub fn ignite_demo_planet(governance: &mut GovernanceEngine, identity: &Identity
         creator: identity.agent_id.clone(),
         created_at,
         tax_rate: 0.05,
+        constitution_template: PlanetConstitutionTemplate::CorporateCharter,
         min_bond: 50,
         min_approvals: 2,
     };

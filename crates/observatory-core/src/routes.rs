@@ -43,7 +43,7 @@ pub async fn api_docs() -> impl IntoResponse {
         "routes": [
             {"method": "POST", "path": "/api/summaries", "description": "ingest signed summary"},
             {"method": "GET", "path": "/api/heatmap", "description": "subnet activity aggregates"},
-            {"method": "GET", "path": "/api/rankings", "description": "watt/power/contribution rankings"},
+            {"method": "GET", "path": "/api/rankings", "description": "wealth/power/security/trade/culture rankings"},
             {"method": "GET", "path": "/api/events", "description": "recent summary event stream"},
             {"method": "GET", "path": "/api/planets", "description": "planet health indicators"},
             {"method": "GET", "path": "/api/mirror/export", "description": "export snapshot for mirror sync"},
@@ -82,7 +82,7 @@ pub async fn rankings(
     Query(query): Query<RankingQuery>,
 ) -> impl IntoResponse {
     let guard = store.read().expect("store read lock");
-    let metric = query.metric.as_deref().unwrap_or("watt");
+    let metric = query.metric.as_deref().unwrap_or("wealth");
     let limit = query.limit.unwrap_or(20).max(1);
     Json(guard.rankings(metric, limit))
 }

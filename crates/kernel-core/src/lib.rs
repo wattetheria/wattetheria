@@ -1,6 +1,7 @@
 //! Core kernel modules for the wattetheria Rust MVP.
 
 pub mod brain;
+pub mod civilization;
 pub mod governance;
 pub mod security;
 pub mod storage;
@@ -13,6 +14,11 @@ pub use brain::plugin_registry;
 pub use brain::policy_engine;
 pub use brain::skill_package;
 pub use brain::skill_runtime;
+pub use civilization::emergency;
+pub use civilization::metrics;
+pub use civilization::missions;
+pub use civilization::profiles;
+pub use civilization::world;
 pub use governance::mailbox;
 pub use governance::oracle;
 pub use security::admission;

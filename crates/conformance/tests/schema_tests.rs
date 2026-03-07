@@ -43,6 +43,8 @@ fn signed_summary_schema_accepts_valid_payload() {
         "timestamp": 1_700_000_000,
         "power": 10,
         "watt": 20,
+        "reputation": 4,
+        "capacity": 12,
         "task_stats": {"completed":3,"success_rate":1.0,"contribution":11},
         "events_digest": "abcd",
         "signature": "sig"

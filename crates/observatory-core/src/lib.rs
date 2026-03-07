@@ -60,7 +60,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
 
         let req = Request::builder()
-            .uri("/api/rankings?metric=watt")
+            .uri("/api/rankings?metric=wealth")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -170,5 +170,49 @@ mod tests {
         let exported: Vec<wattetheria_kernel::types::SignedSummary> =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(exported.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rankings_support_civilization_metrics() {
+        let store = Arc::new(RwLock::new(SummaryStore::default()));
+        let app = app(store);
+
+        for (power, watt, reputation, capacity) in [(4, 60, 2, 4), (8, 40, 9, 2)] {
+            let identity = Identity::new_random();
+            let summary = build_signed_summary(
+                &identity,
+                Some("planet-a".to_string()),
+                &AgentStats {
+                    power,
+                    watt,
+                    reputation,
+                    capacity,
+                },
+                &[],
+            )
+            .unwrap();
+
+            let req = Request::builder()
+                .method("POST")
+                .uri("/api/summaries")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&summary).unwrap()))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::ACCEPTED);
+        }
+
+        for metric in ["wealth", "power", "security", "trade", "culture"] {
+            let req = Request::builder()
+                .uri(format!("/api/rankings?metric={metric}&limit=5"))
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            let rows: Vec<RankingEntry> = serde_json::from_slice(&body).unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].metric, metric);
+        }
     }
 }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wattetheria_kernel::types::TaskStats;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeatPoint {
     pub subnet_id: String,
     pub active_agents: usize,
@@ -9,7 +9,7 @@ pub struct HeatPoint {
     pub total_power: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingEntry {
     pub agent_id: String,
     pub subnet_id: String,
@@ -17,11 +17,13 @@ pub struct RankingEntry {
     pub value: i64,
     pub power: i64,
     pub watt: i64,
+    pub reputation: i64,
+    pub capacity: i64,
     pub task_stats: TaskStats,
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventStreamEntry {
     pub timestamp: i64,
     pub agent_id: String,
@@ -29,9 +31,11 @@ pub struct EventStreamEntry {
     pub events_digest: String,
     pub watt: i64,
     pub power: i64,
+    pub reputation: i64,
+    pub capacity: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanetHealthEntry {
     pub subnet_id: String,
     pub active_agents: usize,
@@ -89,7 +93,7 @@ impl StoreConfig {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IngestResponse {
     pub accepted: bool,
     pub total: usize,

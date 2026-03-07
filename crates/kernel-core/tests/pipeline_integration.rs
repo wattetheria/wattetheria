@@ -3,7 +3,9 @@
 use serde_json::json;
 use tempfile::tempdir;
 use wattetheria_kernel::event_log::EventLog;
-use wattetheria_kernel::governance::{GovernanceEngine, PlanetCreationRequest};
+use wattetheria_kernel::governance::{
+    GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
+};
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::night_shift::generate_night_shift_report;
@@ -90,6 +92,7 @@ fn full_pipeline_runs() {
         creator: identity.agent_id.clone(),
         created_at,
         tax_rate: 0.05,
+        constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
         min_bond: 50,
         min_approvals: 2,
     };

@@ -33,6 +33,9 @@ use wattetheria_kernel::admission::{AdmissionConfig, NonceTracker};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::capabilities::CapabilityPolicy;
+use wattetheria_kernel::civilization::missions::MissionBoard;
+use wattetheria_kernel::civilization::profiles::CitizenRegistry;
+use wattetheria_kernel::civilization::world::WorldState;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
@@ -55,6 +58,15 @@ struct RuntimeState {
     oracle_state_path: PathBuf,
     p2p: P2PNode,
     control_state: ControlPlaneState,
+}
+
+struct CivilizationRuntimeState {
+    mission_board: MissionBoard,
+    mission_board_state_path: PathBuf,
+    citizen_registry: CitizenRegistry,
+    citizen_registry_state_path: PathBuf,
+    world_state: WorldState,
+    world_state_path: PathBuf,
 }
 
 #[tokio::main]
@@ -158,6 +170,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     )?));
     let mailbox_state_path = cli.data_dir.join("mailbox/state.json");
     let mailbox = CrossSubnetMailbox::load_or_new(&mailbox_state_path)?;
+    let civilization_state = load_civilization_runtime_state(cli)?;
 
     let (listen_addr, bootstrap_addrs) = parse_multiaddrs(cli)?;
     let p2p_config = P2PConfig {
@@ -190,6 +203,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         policy_engine,
         mailbox,
         mailbox_state_path,
+        civilization_state,
         brain_engine,
         audit_log,
         stream_tx,
@@ -221,6 +235,7 @@ fn build_control_state(
     policy_engine: PolicyEngine,
     mailbox: CrossSubnetMailbox,
     mailbox_state_path: PathBuf,
+    civilization_state: CivilizationRuntimeState,
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
     stream_tx: broadcast::Sender<StreamEvent>,
@@ -237,12 +252,36 @@ fn build_control_state(
         policy_engine: Arc::new(Mutex::new(policy_engine)),
         mailbox: Arc::new(Mutex::new(mailbox)),
         mailbox_state_path,
+        mission_board: Arc::new(Mutex::new(civilization_state.mission_board)),
+        mission_board_state_path: civilization_state.mission_board_state_path,
+        citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
+        citizen_registry_state_path: civilization_state.citizen_registry_state_path,
+        world_state: Arc::new(Mutex::new(civilization_state.world_state)),
+        world_state_path: civilization_state.world_state_path,
         brain_engine,
         autonomy_skill_planner_enabled: cli.autonomy_skill_planner_enabled,
         audit_log,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
     }
+}
+
+fn load_civilization_runtime_state(cli: &Cli) -> Result<CivilizationRuntimeState> {
+    let mission_board_state_path = cli.data_dir.join("missions/state.json");
+    let mission_board = MissionBoard::load_or_new(&mission_board_state_path)?;
+    let citizen_registry_state_path = cli.data_dir.join("civilization/profiles.json");
+    let citizen_registry = CitizenRegistry::load_or_new(&citizen_registry_state_path)?;
+    let world_state_path = cli.data_dir.join("world/state.json");
+    let world_state = WorldState::load_or_new(&world_state_path)?;
+
+    Ok(CivilizationRuntimeState {
+        mission_board,
+        mission_board_state_path,
+        citizen_registry,
+        citizen_registry_state_path,
+        world_state,
+        world_state_path,
+    })
 }
 
 fn build_admission_config(cli: &Cli) -> AdmissionConfig {

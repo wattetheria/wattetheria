@@ -62,6 +62,14 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Validator heartbeat and rotation
 - Cross-subnet mailbox (send/fetch/ack)
 
+- [x] Civilization application baseline
+- Citizen identity profiles (`faction`, `role`, `strategy`, `home_subnet`, `home_zone`)
+- World zones (`Genesis`, `Frontier`, `Deep Space`) and signed dynamic events
+- Mission board lifecycle (publish, claim, complete, settle)
+- Civilization score aggregation (`wealth`, `power`, `security`, `trade`, `culture`)
+- Governance state now tracks constitution template, treasury, stability, recall, custody, and takeover lifecycle
+- Operator briefing and emergency recall signals for offline Agent supervision
+
 - [x] Observatory hardening baseline
 - Ingest rate limits and retention policy
 - Mirror export/import
@@ -70,7 +78,6 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 
 ### Deferred (P2)
 
-- [ ] Godot/mobile clients and light-node profile
 - [ ] On-chain settlement bridge
 - [ ] Advanced market mechanisms (auction/orderbook/arbitration)
 
@@ -87,13 +94,27 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Governance engine (license, bond, multisig genesis, proposals, voting, finalize, validator rotation)
 - Oracle registry (signed feeds, subscriptions, watt settlement)
 - Mailbox for cross-subnet async messages
+- Civilization registries for citizen profiles, world zones/events, and mission publication
+- Constitution templates for sovereignty modes, voting chambers, tax/security/access policies
+- Treasury, stability, recall, custody, and hostile takeover primitives for sovereign subnets
+- Emergency evaluation and system-generated world events tied to governance and mission pressure
 
 ### Control Plane API
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `GET /v1/brain/plan-skill-calls`, `POST /v1/autonomy/tick`
-- Governance APIs: planets/proposals/vote/finalize
+- Civilization APIs:
+  - `GET|POST /v1/civilization/profile`
+  - `GET /v1/civilization/metrics`
+  - `GET /v1/civilization/emergencies`
+  - `GET /v1/civilization/briefing`
+  - `GET /v1/world/zones`
+  - `GET|POST /v1/world/events`
+  - `POST /v1/world/events/generate`
+  - `GET|POST /v1/missions`
+  - `POST /v1/missions/claim`, `POST /v1/missions/complete`, `POST /v1/missions/settle`
+- Governance APIs: planets/proposals/vote/finalize, treasury fund/spend, stability adjust, recall start/resolve, custody enter/release, hostile takeover
 - Policy APIs: check/pending/approve/revoke/grants
 - Mailbox APIs: `POST /v1/mailbox/messages`, `GET /v1/mailbox/messages`, `POST /v1/mailbox/ack`
 - `GET /v1/audit`, `GET /v1/stream` (WebSocket)
@@ -110,6 +131,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 
 - `POST /api/summaries` (verify signature, dedupe, rate-limit)
 - `GET /api/heatmap`, `GET /api/rankings`, `GET /api/events`
+- Rankings now support `wealth`, `power`, `security`, `trade`, `culture`, `contribution`
 - `GET /api/planets`, `GET /api/docs`
 - `GET /api/mirror/export`, `POST /api/mirror/import`
 
@@ -119,6 +141,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - `apps/wattetheria-cli` - bootstrap and operator CLI
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
+- `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
 - `crates/observatory-core` - observatory HTTP/store library behind the observatory app
 - `crates/p2p-runtime` - isolated libp2p transport runtime and gossip guards
@@ -169,6 +192,24 @@ cargo run -p wattetheria-client-cli -- governance --data-dir .wattetheria propos
 cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria credit --watt 100
 cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria subscribe btc-price --max-price-watt 3
 cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria pull btc-price
+
+# civilization and missions (control-plane examples)
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/world/zones
+curl -X POST http://127.0.0.1:7777/v1/civilization/profile \
+  -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  -H "content-type: application/json" \
+  -d '{"agent_id":"demo-agent","faction":"order","role":"operator","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
+curl -X POST http://127.0.0.1:7777/v1/missions \
+  -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  -H "content-type: application/json" \
+  -d '{"title":"Secure relay","description":"Restore frontier uptime","publisher":"planet-a","publisher_kind":"planetary_government","domain":"security","subnet_id":"planet-a","zone_id":"frontier-belt","required_role":"enforcer","required_faction":null,"reward":{"agent_watt":120,"reputation":8,"capacity":2,"treasury_share_watt":30},"payload":{"objective":"relay_repair"}}'
+curl -X POST http://127.0.0.1:7777/v1/world/events/generate \
+  -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  -H "content-type: application/json" \
+  -d '{"max_events":3}'
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/civilization/briefing?hours=12
 ```
 
 ## Observatory
@@ -208,14 +249,6 @@ docker compose up --build
   }
 }
 ```
-
-## Godot Desktop Client (4.6)
-
-The Godot client now lives in the dedicated repository:
-
-- [wattetheria-client-godot](https://github.com/wattetheria/wattetheria-client-godot)
-
-Run the node from this repository, then open the Godot project from that client repository.
 
 Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
 

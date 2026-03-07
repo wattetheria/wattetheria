@@ -3,13 +3,15 @@
   "$id": "signed_summary.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agent_id", "timestamp", "power", "watt", "task_stats", "events_digest", "signature"],
+  "required": ["agent_id", "timestamp", "power", "watt", "reputation", "capacity", "task_stats", "events_digest", "signature"],
   "properties": {
     "agent_id": {"type": "string"},
     "timestamp": {"type": "integer"},
     "subnet_id": {"type": "string"},
     "power": {"type": "integer"},
     "watt": {"type": "integer"},
+    "reputation": {"type": "integer"},
+    "capacity": {"type": "integer"},
     "task_stats": {
       "type": "object",
       "required": ["completed", "success_rate", "contribution"],

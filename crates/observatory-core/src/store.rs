@@ -24,6 +24,8 @@ struct SummarySignable<'a> {
     subnet_id: &'a Option<String>,
     power: i64,
     watt: i64,
+    reputation: i64,
+    capacity: i64,
     task_stats: &'a TaskStats,
     events_digest: &'a str,
 }
@@ -101,6 +103,8 @@ impl SummaryStore {
             subnet_id: &summary.subnet_id,
             power: summary.power,
             watt: summary.watt,
+            reputation: summary.reputation,
+            capacity: summary.capacity,
             task_stats: &summary.task_stats,
             events_digest: &summary.events_digest,
         };
@@ -236,11 +240,7 @@ impl SummaryStore {
         let mut entries: Vec<_> = latest
             .into_values()
             .map(|summary| {
-                let value = match metric {
-                    "power" => summary.power,
-                    "contribution" => summary.task_stats.contribution,
-                    _ => summary.watt,
-                };
+                let value = ranking_value(&summary, metric);
                 RankingEntry {
                     agent_id: summary.agent_id,
                     subnet_id: summary.subnet_id.unwrap_or_else(|| "global".to_string()),
@@ -248,6 +248,8 @@ impl SummaryStore {
                     value,
                     power: summary.power,
                     watt: summary.watt,
+                    reputation: summary.reputation,
+                    capacity: summary.capacity,
                     task_stats: summary.task_stats,
                     timestamp: summary.timestamp,
                 }
@@ -274,6 +276,8 @@ impl SummaryStore {
                 events_digest: summary.events_digest.clone(),
                 watt: summary.watt,
                 power: summary.power,
+                reputation: summary.reputation,
+                capacity: summary.capacity,
             })
             .collect();
         rows.sort_by_key(|item| Reverse(item.timestamp));
@@ -298,6 +302,39 @@ impl SummaryStore {
 }
 
 pub type SharedStore = Arc<RwLock<SummaryStore>>;
+
+fn ranking_value(summary: &SignedSummary, metric: &str) -> i64 {
+    let completed = i64::try_from(summary.task_stats.completed).unwrap_or(i64::MAX);
+    match metric {
+        "wealth" => summary
+            .watt
+            .saturating_add(summary.capacity.saturating_mul(4))
+            .saturating_add(summary.power.saturating_mul(10)),
+        "power" => summary
+            .power
+            .saturating_mul(20)
+            .saturating_add(summary.reputation.saturating_mul(5))
+            .saturating_add(summary.task_stats.contribution.saturating_mul(2)),
+        "security" => summary
+            .power
+            .saturating_mul(6)
+            .saturating_add(summary.reputation.saturating_mul(2))
+            .saturating_add(completed.saturating_mul(3)),
+        "trade" => summary
+            .watt
+            .saturating_div(4)
+            .saturating_add(summary.capacity.saturating_mul(3))
+            .saturating_add(summary.task_stats.contribution.saturating_mul(2)),
+        "culture" => summary
+            .reputation
+            .saturating_mul(8)
+            .saturating_add(summary.task_stats.contribution)
+            .saturating_add(summary.power),
+        "contribution" => summary.task_stats.contribution,
+        "power_raw" => summary.power,
+        _ => summary.watt,
+    }
+}
 
 fn prune_window(entries: &mut Vec<i64>, now: i64, window_sec: i64) {
     let min_ts = now - window_sec;

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+use crate::governance::constitution::{PlanetConstitution, PlanetConstitutionTemplate};
 use crate::identity::Identity;
 use crate::signing::{canonical_bytes, sign_payload, verify_payload};
 
@@ -40,9 +41,39 @@ pub struct SubnetPlanet {
     pub creator: String,
     pub tax_rate: f64,
     pub created_at: i64,
+    pub constitution: PlanetConstitution,
+    pub treasury_watt: i64,
+    pub stability: i64,
+    pub government_status: GovernmentStatus,
+    pub active_recall: Option<RecallProcess>,
+    pub custody: Option<CustodyPeriod>,
+    pub last_takeover_by: Option<String>,
     pub validators: BTreeSet<String>,
     pub relays: BTreeSet<String>,
     pub archivists: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GovernmentStatus {
+    Active,
+    Recall,
+    Custody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallProcess {
+    pub initiated_by: String,
+    pub reason: String,
+    pub started_at: i64,
+    pub threshold: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustodyPeriod {
+    pub managed_by: Option<String>,
+    pub reason: String,
+    pub entered_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +100,7 @@ pub struct PlanetCreationRequest {
     pub creator: String,
     pub created_at: i64,
     pub tax_rate: f64,
+    pub constitution_template: PlanetConstitutionTemplate,
     pub min_bond: i64,
     pub min_approvals: usize,
 }
@@ -236,6 +268,13 @@ impl GovernanceEngine {
             creator: request.creator.clone(),
             tax_rate: request.tax_rate,
             created_at: request.created_at,
+            constitution: PlanetConstitution::from_template(request.constitution_template.clone()),
+            treasury_watt: 0,
+            stability: 75,
+            government_status: GovernmentStatus::Active,
+            active_recall: None,
+            custody: None,
+            last_takeover_by: None,
             validators: unique_signers.clone(),
             relays: BTreeSet::from([request.creator.clone()]),
             archivists: unique_signers,
@@ -440,6 +479,196 @@ impl GovernanceEngine {
 
         Ok(planet.validators.iter().cloned().collect())
     }
+
+    pub fn fund_treasury(&mut self, subnet_id: &str, amount_watt: i64) -> Result<SubnetPlanet> {
+        if amount_watt <= 0 {
+            bail!("treasury funding amount must be positive");
+        }
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for treasury funding")?;
+        planet.treasury_watt += amount_watt;
+        planet.stability = (planet.stability + 2).min(100);
+        Ok(planet.clone())
+    }
+
+    pub fn spend_treasury(
+        &mut self,
+        subnet_id: &str,
+        amount_watt: i64,
+        _reason: &str,
+    ) -> Result<SubnetPlanet> {
+        if amount_watt <= 0 {
+            bail!("treasury spend amount must be positive");
+        }
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for treasury spend")?;
+        if planet.treasury_watt < amount_watt {
+            bail!("treasury balance too low");
+        }
+        planet.treasury_watt -= amount_watt;
+        Ok(planet.clone())
+    }
+
+    pub fn adjust_stability(&mut self, subnet_id: &str, delta: i64) -> Result<SubnetPlanet> {
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for stability adjustment")?;
+        planet.stability = (planet.stability + delta).clamp(0, 100);
+        Ok(planet.clone())
+    }
+
+    #[must_use]
+    pub fn recall_eligible(&self, subnet_id: &str, threshold: i64) -> bool {
+        self.planets
+            .get(subnet_id)
+            .is_some_and(|planet| planet.stability <= threshold)
+    }
+
+    pub fn start_recall(
+        &mut self,
+        subnet_id: &str,
+        initiated_by: &str,
+        reason: &str,
+        threshold: i64,
+    ) -> Result<SubnetPlanet> {
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for recall")?;
+        if planet.stability > threshold {
+            bail!("planet stability is above recall threshold");
+        }
+        if initiated_by != planet.creator && !planet.validators.contains(initiated_by) {
+            bail!("initiator cannot open recall");
+        }
+        planet.government_status = GovernmentStatus::Recall;
+        planet.active_recall = Some(RecallProcess {
+            initiated_by: initiated_by.to_string(),
+            reason: reason.to_string(),
+            started_at: Utc::now().timestamp(),
+            threshold,
+        });
+        Ok(planet.clone())
+    }
+
+    pub fn resolve_recall(
+        &mut self,
+        subnet_id: &str,
+        successor: &str,
+        min_bond: i64,
+    ) -> Result<SubnetPlanet> {
+        if !self.has_valid_license(successor) {
+            bail!("successor missing valid civic license");
+        }
+        if !self.has_active_bond(successor, min_bond) {
+            bail!("successor missing active sovereignty bond");
+        }
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for recall resolution")?;
+        if planet.government_status != GovernmentStatus::Recall {
+            bail!("planet is not in recall");
+        }
+        planet.creator = successor.to_string();
+        planet.validators.insert(successor.to_string());
+        planet.relays.insert(successor.to_string());
+        planet.government_status = GovernmentStatus::Active;
+        planet.active_recall = None;
+        planet.stability = (planet.stability + 25).clamp(0, 100);
+        Ok(planet.clone())
+    }
+
+    pub fn enter_custody(
+        &mut self,
+        subnet_id: &str,
+        reason: &str,
+        managed_by: Option<String>,
+    ) -> Result<SubnetPlanet> {
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for custody")?;
+        planet.government_status = GovernmentStatus::Custody;
+        planet.custody = Some(CustodyPeriod {
+            managed_by,
+            reason: reason.to_string(),
+            entered_at: Utc::now().timestamp(),
+        });
+        planet.active_recall = None;
+        planet.stability = planet.stability.min(25);
+        Ok(planet.clone())
+    }
+
+    pub fn release_custody(
+        &mut self,
+        subnet_id: &str,
+        successor: Option<&str>,
+        min_bond: i64,
+    ) -> Result<SubnetPlanet> {
+        if let Some(agent_id) = successor {
+            if !self.has_valid_license(agent_id) {
+                bail!("successor missing valid civic license");
+            }
+            if !self.has_active_bond(agent_id, min_bond) {
+                bail!("successor missing active sovereignty bond");
+            }
+        }
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for custody release")?;
+        if planet.government_status != GovernmentStatus::Custody {
+            bail!("planet is not in custody");
+        }
+        if let Some(agent_id) = successor {
+            planet.creator = agent_id.to_string();
+            planet.validators.insert(agent_id.to_string());
+            planet.relays.insert(agent_id.to_string());
+        }
+        planet.government_status = GovernmentStatus::Active;
+        planet.custody = None;
+        planet.stability = planet.stability.max(50);
+        Ok(planet.clone())
+    }
+
+    pub fn hostile_takeover(
+        &mut self,
+        subnet_id: &str,
+        challenger: &str,
+        min_bond: i64,
+        reason: &str,
+    ) -> Result<SubnetPlanet> {
+        if !self.has_valid_license(challenger) {
+            bail!("challenger missing valid civic license");
+        }
+        if !self.has_active_bond(challenger, min_bond) {
+            bail!("challenger missing active sovereignty bond");
+        }
+        let planet = self
+            .planets
+            .get_mut(subnet_id)
+            .context("subnet not found for hostile takeover")?;
+        let eligible =
+            planet.government_status == GovernmentStatus::Custody || planet.stability <= 20;
+        if !eligible {
+            bail!("planet is not vulnerable to hostile takeover");
+        }
+        planet.creator = challenger.to_string();
+        planet.validators.insert(challenger.to_string());
+        planet.relays.insert(challenger.to_string());
+        planet.government_status = GovernmentStatus::Active;
+        planet.active_recall = None;
+        planet.custody = None;
+        planet.last_takeover_by = Some(format!("{challenger}:{reason}"));
+        planet.stability = 40;
+        Ok(planet.clone())
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +702,7 @@ mod tests {
             creator: creator.agent_id.clone(),
             created_at: ts,
             tax_rate: 0.05,
+            constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
             min_bond: 50,
             min_approvals: 2,
         };
@@ -509,6 +739,7 @@ mod tests {
             creator: creator.agent_id.clone(),
             created_at: ts,
             tax_rate: 0.05,
+            constitution_template: PlanetConstitutionTemplate::CorporateCharter,
             min_bond: 50,
             min_approvals: 2,
         };
@@ -537,6 +768,7 @@ mod tests {
             creator: creator.agent_id.clone(),
             created_at: ts,
             tax_rate: 0.05,
+            constitution_template: PlanetConstitutionTemplate::FrontierCompact,
             min_bond: 50,
             min_approvals: 2,
         };
@@ -571,6 +803,7 @@ mod tests {
             creator: creator.agent_id.clone(),
             created_at: ts,
             tax_rate: 0.05,
+            constitution_template: PlanetConstitutionTemplate::CorporateCharter,
             min_bond: 50,
             min_approvals: 2,
         };
@@ -608,5 +841,105 @@ mod tests {
             )
             .unwrap();
         assert!(rotated.contains(&s1.agent_id));
+    }
+
+    #[test]
+    fn treasury_and_stability_lifecycle_work() {
+        let mut gov = GovernanceEngine::default();
+        let creator = Identity::new_random();
+        let s1 = Identity::new_random();
+        let s2 = Identity::new_random();
+        let ts = Utc::now().timestamp();
+
+        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
+        gov.lock_bond(&creator.agent_id, 100, 30);
+        let approvals = vec![
+            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_id, ts, &s1)
+                .unwrap(),
+            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_id, ts, &s2)
+                .unwrap(),
+        ];
+        let request = PlanetCreationRequest {
+            subnet_id: "planet-z".to_string(),
+            name: "Planet Z".to_string(),
+            creator: creator.agent_id.clone(),
+            created_at: ts,
+            tax_rate: 0.03,
+            constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
+            min_bond: 50,
+            min_approvals: 2,
+        };
+        gov.create_planet(&request, &approvals).unwrap();
+
+        let funded = gov.fund_treasury("planet-z", 120).unwrap();
+        assert_eq!(funded.treasury_watt, 120);
+        let spent = gov.spend_treasury("planet-z", 20, "repair-grid").unwrap();
+        assert_eq!(spent.treasury_watt, 100);
+        let unstable = gov.adjust_stability("planet-z", -80).unwrap();
+        assert_eq!(unstable.stability, 0);
+        assert!(gov.recall_eligible("planet-z", 25));
+    }
+
+    #[test]
+    fn recall_custody_and_takeover_flow_work() {
+        let mut gov = GovernanceEngine::default();
+        let creator = Identity::new_random();
+        let s1 = Identity::new_random();
+        let s2 = Identity::new_random();
+        let challenger = Identity::new_random();
+        let ts = Utc::now().timestamp();
+
+        for identity in [&creator, &challenger] {
+            gov.issue_license(&identity.agent_id, &identity.agent_id, "proof", 7);
+            gov.lock_bond(&identity.agent_id, 200, 30);
+        }
+
+        let approvals = vec![
+            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_id, ts, &s1)
+                .unwrap(),
+            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_id, ts, &s2)
+                .unwrap(),
+        ];
+        let request = PlanetCreationRequest {
+            subnet_id: "planet-r".to_string(),
+            name: "Planet R".to_string(),
+            creator: creator.agent_id.clone(),
+            created_at: ts,
+            tax_rate: 0.04,
+            constitution_template: PlanetConstitutionTemplate::FrontierCompact,
+            min_bond: 50,
+            min_approvals: 2,
+        };
+        gov.create_planet(&request, &approvals).unwrap();
+        gov.adjust_stability("planet-r", -70).unwrap();
+
+        let recall = gov
+            .start_recall("planet-r", &creator.agent_id, "grid collapse", 25)
+            .unwrap();
+        assert_eq!(recall.government_status, GovernmentStatus::Recall);
+        assert!(recall.active_recall.is_some());
+
+        let resolved = gov
+            .resolve_recall("planet-r", &challenger.agent_id, 100)
+            .unwrap();
+        assert_eq!(resolved.creator, challenger.agent_id);
+        assert_eq!(resolved.government_status, GovernmentStatus::Active);
+
+        let custody = gov
+            .enter_custody(
+                "planet-r",
+                "neutral administration",
+                Some("observatory".to_string()),
+            )
+            .unwrap();
+        assert_eq!(custody.government_status, GovernmentStatus::Custody);
+        assert!(custody.custody.is_some());
+
+        let taken = gov
+            .hostile_takeover("planet-r", &creator.agent_id, 100, "retook orbit")
+            .unwrap();
+        assert_eq!(taken.creator, creator.agent_id);
+        assert_eq!(taken.government_status, GovernmentStatus::Active);
+        assert!(taken.last_takeover_by.is_some());
     }
 }

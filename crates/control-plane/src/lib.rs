@@ -1,9 +1,11 @@
 mod auth;
 mod autonomy;
 pub mod routes {
+    pub(crate) mod civilization;
     pub(crate) mod core;
     pub(crate) mod governance;
     pub(crate) mod mailbox;
+    pub(crate) mod missions;
     pub(crate) mod policy;
 }
 mod state;
@@ -17,6 +19,16 @@ pub use autonomy::run_autonomy_tick_once;
 pub use state::{ControlPlaneState, RateLimiter, StreamEvent};
 
 pub fn app(state: ControlPlaneState) -> Router {
+    Router::new()
+        .merge(core_router())
+        .merge(civilization_router())
+        .merge(governance_router())
+        .merge(mailbox_router())
+        .merge(policy_router())
+        .with_state(state)
+}
+
+fn core_router() -> Router<ControlPlaneState> {
     Router::new()
         .route("/v1/health", get(routes::core::health))
         .route("/v1/state", get(routes::core::state_view))
@@ -37,6 +49,55 @@ pub fn app(state: ControlPlaneState) -> Router {
             get(routes::core::brain_plan_skill_calls),
         )
         .route("/v1/autonomy/tick", post(routes::core::autonomy_tick))
+        .route("/v1/audit", get(routes::core::audit_recent))
+        .route("/v1/stream", get(routes::core::stream))
+}
+
+fn civilization_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/civilization/profile",
+            get(routes::civilization::citizen_profile)
+                .post(routes::civilization::citizen_profile_upsert),
+        )
+        .route(
+            "/v1/civilization/metrics",
+            get(routes::civilization::civilization_metrics),
+        )
+        .route(
+            "/v1/civilization/emergencies",
+            get(routes::civilization::civilization_emergencies),
+        )
+        .route(
+            "/v1/civilization/briefing",
+            get(routes::civilization::civilization_briefing),
+        )
+        .route("/v1/world/zones", get(routes::civilization::world_zones))
+        .route(
+            "/v1/world/events",
+            get(routes::civilization::world_events).post(routes::civilization::world_event_publish),
+        )
+        .route(
+            "/v1/world/events/generate",
+            post(routes::civilization::world_event_generate),
+        )
+        .route(
+            "/v1/missions",
+            get(routes::missions::mission_list).post(routes::missions::mission_publish),
+        )
+        .route("/v1/missions/claim", post(routes::missions::mission_claim))
+        .route(
+            "/v1/missions/complete",
+            post(routes::missions::mission_complete),
+        )
+        .route(
+            "/v1/missions/settle",
+            post(routes::missions::mission_settle),
+        )
+}
+
+fn governance_router() -> Router<ControlPlaneState> {
+    Router::new()
         .route(
             "/v1/governance/planets",
             get(routes::governance::governance_planets),
@@ -55,18 +116,55 @@ pub fn app(state: ControlPlaneState) -> Router {
             post(routes::governance::governance_finalize_proposal),
         )
         .route(
+            "/v1/governance/treasury/fund",
+            post(routes::governance::governance_fund_treasury),
+        )
+        .route(
+            "/v1/governance/treasury/spend",
+            post(routes::governance::governance_spend_treasury),
+        )
+        .route(
+            "/v1/governance/stability",
+            post(routes::governance::governance_adjust_stability),
+        )
+        .route(
+            "/v1/governance/recall",
+            post(routes::governance::governance_start_recall),
+        )
+        .route(
+            "/v1/governance/recall/resolve",
+            post(routes::governance::governance_resolve_recall),
+        )
+        .route(
+            "/v1/governance/custody",
+            post(routes::governance::governance_enter_custody),
+        )
+        .route(
+            "/v1/governance/custody/release",
+            post(routes::governance::governance_release_custody),
+        )
+        .route(
+            "/v1/governance/takeover",
+            post(routes::governance::governance_hostile_takeover),
+        )
+}
+
+fn mailbox_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
             "/v1/mailbox/messages",
             get(routes::mailbox::mailbox_fetch).post(routes::mailbox::mailbox_send),
         )
         .route("/v1/mailbox/ack", post(routes::mailbox::mailbox_ack))
+}
+
+fn policy_router() -> Router<ControlPlaneState> {
+    Router::new()
         .route("/v1/policy/check", post(routes::policy::policy_check))
         .route("/v1/policy/pending", get(routes::policy::policy_pending))
         .route("/v1/policy/approve", post(routes::policy::policy_approve))
         .route("/v1/policy/revoke", post(routes::policy::policy_revoke))
         .route("/v1/policy/grants", get(routes::policy::policy_grants))
-        .route("/v1/audit", get(routes::core::audit_recent))
-        .route("/v1/stream", get(routes::core::stream))
-        .with_state(state)
 }
 
 pub async fn serve_control_plane(state: ControlPlaneState, bind: SocketAddr) -> Result<()> {
@@ -91,8 +189,13 @@ mod tests {
     use wattetheria_kernel::audit::AuditLog;
     use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
     use wattetheria_kernel::capabilities::CapabilityPolicy;
+    use wattetheria_kernel::civilization::missions::MissionBoard;
+    use wattetheria_kernel::civilization::profiles::CitizenRegistry;
+    use wattetheria_kernel::civilization::world::WorldState;
     use wattetheria_kernel::event_log::EventLog;
-    use wattetheria_kernel::governance::{GovernanceEngine, PlanetCreationRequest};
+    use wattetheria_kernel::governance::{
+        GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
+    };
     use wattetheria_kernel::identity::Identity;
     use wattetheria_kernel::mailbox::CrossSubnetMailbox;
     use wattetheria_kernel::policy_engine::PolicyEngine;
@@ -107,6 +210,9 @@ mod tests {
         let ledger_path = dir.path().join("ledger.json");
         let governance_state_path = dir.path().join("governance/state.json");
         let mailbox_state_path = dir.path().join("mailbox/state.json");
+        let mission_board_state_path = dir.path().join("missions/state.json");
+        let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
+        let world_state_path = dir.path().join("world/state.json");
 
         let policy_engine = Arc::new(Mutex::new(
             PolicyEngine::load_or_new(
@@ -120,6 +226,8 @@ mod tests {
         let mut governance = GovernanceEngine::default();
         governance.issue_license(&identity.agent_id, &identity.agent_id, "proof", 7);
         governance.lock_bond(&identity.agent_id, 100, 30);
+        governance.issue_license("agent-challenger", &identity.agent_id, "proof", 7);
+        governance.lock_bond("agent-challenger", 150, 30);
         let signer = Identity::new_random();
         let created_at = Utc::now().timestamp();
         let approvals = vec![
@@ -148,6 +256,7 @@ mod tests {
             tax_rate: 0.05,
             min_bond: 50,
             min_approvals: 2,
+            constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
         };
         governance
             .create_planet(&planet_request, &approvals)
@@ -157,6 +266,15 @@ mod tests {
 
         let audit_log = AuditLog::new(dir.path().join("audit/control_plane.jsonl")).unwrap();
         let mailbox = Arc::new(Mutex::new(CrossSubnetMailbox::default()));
+        let mission_board = Arc::new(Mutex::new(
+            MissionBoard::load_or_new(&mission_board_state_path).unwrap(),
+        ));
+        let citizen_registry = Arc::new(Mutex::new(
+            CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
+        ));
+        let world_state = Arc::new(Mutex::new(
+            WorldState::load_or_new(&world_state_path).unwrap(),
+        ));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
         let bridge_event_log = event_log.clone();
@@ -177,6 +295,12 @@ mod tests {
             policy_engine: policy_engine.clone(),
             mailbox,
             mailbox_state_path,
+            mission_board,
+            mission_board_state_path,
+            citizen_registry,
+            citizen_registry_state_path,
+            world_state,
+            world_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             autonomy_skill_planner_enabled: true,
             audit_log,
@@ -185,6 +309,38 @@ mod tests {
         };
 
         (dir, app(state), token, policy_engine)
+    }
+
+    async fn request_json(app: Router, request: axum::http::Request<axum::body::Body>) -> Value {
+        let response = app.oneshot(request).await.unwrap();
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    async fn authed_get_json(app: Router, token: &str, uri: &str) -> Value {
+        request_json(
+            app,
+            axum::http::Request::builder()
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn authed_post(app: Router, token: &str, uri: &str, body: Value) -> StatusCode {
+        app.oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
     }
 
     #[tokio::test]
@@ -513,5 +669,372 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn civilization_profile_and_metrics_flow_works() {
+        let (_dir, app, token, _) = build_test_app(20);
+
+        let state_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/state")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state_resp.status(), StatusCode::OK);
+        let state_json: Value =
+            serde_json::from_slice(&state_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        let profile_body = json!({
+            "agent_id": agent_id,
+            "faction": "order",
+            "role": "operator",
+            "strategy": "balanced"
+        });
+        let upsert_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/civilization/profile")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(profile_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upsert_resp.status(), StatusCode::OK);
+
+        let profile_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/civilization/profile")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(profile_resp.status(), StatusCode::OK);
+        let profile_json: Value =
+            serde_json::from_slice(&profile_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(profile_json["profile"]["role"], "operator");
+
+        let metrics_resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/civilization/metrics")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metrics_resp.status(), StatusCode::OK);
+        let metrics_json: Value =
+            serde_json::from_slice(&metrics_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(
+            metrics_json["total_influence"].as_i64().unwrap() >= 3,
+            "expected profile bonus to affect influence"
+        );
+    }
+
+    #[tokio::test]
+    async fn world_event_publish_and_query_works() {
+        let (_dir, app, token, _) = build_test_app(20);
+
+        let publish_body = json!({
+            "category": "economic",
+            "zone_id": "genesis-core",
+            "title": "Power Shortage",
+            "description": "Grid instability is driving up maintenance demand.",
+            "severity": 4,
+            "expires_at": null,
+            "tags": ["market", "supply"]
+        });
+        let publish_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/world/events")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(publish_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(publish_resp.status(), StatusCode::OK);
+
+        let zones_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/world/zones")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(zones_resp.status(), StatusCode::OK);
+        let zones_json: Value =
+            serde_json::from_slice(&zones_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(zones_json.as_array().unwrap().len() >= 3);
+
+        let events_resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/world/events?zone_id=genesis-core")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(events_resp.status(), StatusCode::OK);
+        let events_json: Value =
+            serde_json::from_slice(&events_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(events_json.as_array().unwrap().len(), 1);
+        assert_eq!(events_json[0]["title"], "Power Shortage");
+    }
+
+    #[tokio::test]
+    async fn mission_lifecycle_settles_and_funds_treasury() {
+        let (dir, app, token, _) = build_test_app(30);
+
+        let publish_body = json!({
+            "title": "Stabilize the relay",
+            "description": "Restore uptime on the frontier relay.",
+            "publisher": "planet-test",
+            "publisher_kind": "planetary_government",
+            "domain": "security",
+            "subnet_id": "planet-test",
+            "zone_id": "frontier-ring",
+            "required_role": "enforcer",
+            "required_faction": null,
+            "reward": {
+                "agent_watt": 120,
+                "reputation": 8,
+                "capacity": 2,
+                "treasury_share_watt": 30
+            },
+            "payload": {"objective": "relay_repair"}
+        });
+        let publish_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/missions")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(publish_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(publish_resp.status(), StatusCode::CREATED);
+        let publish_json: Value =
+            serde_json::from_slice(&publish_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let mission_id = publish_json["mission_id"].as_str().unwrap().to_string();
+
+        for (uri, agent_id) in [
+            ("/v1/missions/claim", "agent-enforcer"),
+            ("/v1/missions/complete", "agent-enforcer"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            json!({
+                                "mission_id": mission_id,
+                                "agent_id": agent_id
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let settle_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v1/missions/settle")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        json!({"mission_id": mission_id}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settle_resp.status(), StatusCode::OK);
+
+        let list_resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/v1/missions?status=settled")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_json: Value =
+            serde_json::from_slice(&list_resp.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(list_json.as_array().unwrap().len(), 1);
+        assert_eq!(list_json[0]["status"], "settled");
+
+        let persisted =
+            GovernanceEngine::load_or_new(dir.path().join("governance/state.json")).unwrap();
+        let planet = persisted.list_planets().remove(0);
+        assert_eq!(planet.treasury_watt, 30);
+    }
+
+    #[tokio::test]
+    async fn governance_lifecycle_endpoints_work() {
+        let (dir, app, token, _) = build_test_app(40);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        for (uri, body) in [
+            (
+                "/v1/governance/stability",
+                json!({"subnet_id":"planet-test","delta":-80}),
+            ),
+            (
+                "/v1/governance/recall",
+                json!({
+                    "subnet_id":"planet-test",
+                    "initiated_by": agent_id,
+                    "reason":"stability collapse",
+                    "threshold":25
+                }),
+            ),
+            (
+                "/v1/governance/recall/resolve",
+                json!({
+                    "subnet_id":"planet-test",
+                    "successor":"agent-challenger",
+                    "min_bond":100
+                }),
+            ),
+            (
+                "/v1/governance/custody",
+                json!({
+                    "subnet_id":"planet-test",
+                    "reason":"civil emergency",
+                    "managed_by":"neutral-admin"
+                }),
+            ),
+            (
+                "/v1/governance/takeover",
+                json!({
+                    "subnet_id":"planet-test",
+                    "challenger":"agent-challenger",
+                    "reason":"secured orbit",
+                    "min_bond":100
+                }),
+            ),
+        ] {
+            assert_eq!(
+                authed_post(app.clone(), &token, uri, body).await,
+                StatusCode::OK
+            );
+        }
+
+        let persisted =
+            GovernanceEngine::load_or_new(dir.path().join("governance/state.json")).unwrap();
+        let planet = persisted.planet("planet-test").unwrap();
+        assert_eq!(planet.creator, "agent-challenger");
+    }
+
+    #[tokio::test]
+    async fn civilization_briefing_and_generated_world_events_work() {
+        let (_dir, app, token, _) = build_test_app(40);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        for (uri, body, expected) in [
+            (
+                "/v1/civilization/profile",
+                json!({
+                    "agent_id": agent_id,
+                    "faction": "order",
+                    "role": "operator",
+                    "strategy": "conservative",
+                    "home_subnet_id": "planet-test",
+                    "home_zone_id": "genesis-core"
+                }),
+                StatusCode::OK,
+            ),
+            (
+                "/v1/governance/stability",
+                json!({"subnet_id":"planet-test","delta":-60}),
+                StatusCode::OK,
+            ),
+            (
+                "/v1/missions",
+                json!({
+                    "title": "Defend gate",
+                    "description": "Interdict raiders",
+                    "publisher": "planet-test",
+                    "publisher_kind": "planetary_government",
+                    "domain": "security",
+                    "subnet_id": "planet-test",
+                    "zone_id": "genesis-core",
+                    "required_role": "enforcer",
+                    "required_faction": null,
+                    "reward": {"agent_watt": 20, "reputation": 3, "capacity": 1, "treasury_share_watt": 2},
+                    "payload": {}
+                }),
+                StatusCode::CREATED,
+            ),
+            (
+                "/v1/world/events/generate",
+                json!({"max_events": 3}),
+                StatusCode::OK,
+            ),
+        ] {
+            assert_eq!(authed_post(app.clone(), &token, uri, body).await, expected);
+        }
+
+        let emergencies_json =
+            authed_get_json(app.clone(), &token, "/v1/civilization/emergencies").await;
+        assert!(!emergencies_json.as_array().unwrap().is_empty());
+
+        let briefing_json =
+            authed_get_json(app.clone(), &token, "/v1/civilization/briefing?hours=12").await;
+        assert!(briefing_json["emergencies"].as_array().is_some());
     }
 }

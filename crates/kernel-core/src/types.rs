@@ -83,6 +83,8 @@ pub struct SignedSummary {
     pub subnet_id: Option<String>,
     pub power: i64,
     pub watt: i64,
+    pub reputation: i64,
+    pub capacity: i64,
     pub task_stats: TaskStats,
     pub events_digest: String,
     pub signature: String,

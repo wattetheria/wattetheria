@@ -17,6 +17,8 @@ struct SummarySignable<'a> {
     subnet_id: &'a Option<String>,
     power: i64,
     watt: i64,
+    reputation: i64,
+    capacity: i64,
     task_stats: &'a TaskStats,
     events_digest: &'a str,
 }
@@ -65,6 +67,8 @@ pub fn build_signed_summary(
         subnet_id: &subnet_id,
         power: ledger.power,
         watt: ledger.watt,
+        reputation: ledger.reputation,
+        capacity: ledger.capacity,
         task_stats: &task_stats,
         events_digest: &events_digest,
     };
@@ -76,6 +80,8 @@ pub fn build_signed_summary(
         subnet_id,
         power: ledger.power,
         watt: ledger.watt,
+        reputation: ledger.reputation,
+        capacity: ledger.capacity,
         task_stats,
         events_digest,
         signature,
@@ -108,6 +114,8 @@ mod tests {
             subnet_id: &summary.subnet_id,
             power: summary.power,
             watt: summary.watt,
+            reputation: summary.reputation,
+            capacity: summary.capacity,
             task_stats: &summary.task_stats,
             events_digest: &summary.events_digest,
         };

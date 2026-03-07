@@ -8,6 +8,13 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
+use wattetheria_kernel::civilization::missions::{
+    MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionStatus,
+};
+use wattetheria_kernel::civilization::profiles::{
+    CitizenRegistry, Faction, RolePath, StrategyProfile,
+};
+use wattetheria_kernel::civilization::world::{DynamicEventCategory, WorldState};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
@@ -66,6 +73,12 @@ pub struct ControlPlaneState {
     pub policy_engine: Arc<Mutex<PolicyEngine>>,
     pub mailbox: Arc<Mutex<CrossSubnetMailbox>>,
     pub mailbox_state_path: PathBuf,
+    pub mission_board: Arc<Mutex<MissionBoard>>,
+    pub mission_board_state_path: PathBuf,
+    pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
+    pub citizen_registry_state_path: PathBuf,
+    pub world_state: Arc<Mutex<WorldState>>,
+    pub world_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub autonomy_skill_planner_enabled: bool,
     pub audit_log: AuditLog,
@@ -157,6 +170,56 @@ pub struct ProposalFinalizeBody {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GovernanceTreasuryBody {
+    pub subnet_id: String,
+    pub amount_watt: i64,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceStabilityBody {
+    pub subnet_id: String,
+    pub delta: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceRecallBody {
+    pub subnet_id: String,
+    pub initiated_by: String,
+    pub reason: String,
+    pub threshold: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceSuccessorBody {
+    pub subnet_id: String,
+    pub successor: String,
+    pub min_bond: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceCustodyBody {
+    pub subnet_id: String,
+    pub reason: String,
+    pub managed_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceCustodyReleaseBody {
+    pub subnet_id: String,
+    pub successor: Option<String>,
+    pub min_bond: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GovernanceTakeoverBody {
+    pub subnet_id: String,
+    pub challenger: String,
+    pub reason: String,
+    pub min_bond: i64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MailboxSendBody {
     pub to_agent: String,
     pub from_subnet: String,
@@ -179,6 +242,83 @@ pub struct MailboxAckBody {
 pub struct AutonomyTickBody {
     pub hours: Option<i64>,
     pub enable_skill_planner: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MissionsQuery {
+    pub status: Option<MissionStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MissionPublishBody {
+    pub title: String,
+    pub description: String,
+    pub publisher: String,
+    pub publisher_kind: MissionPublisherKind,
+    pub domain: MissionDomain,
+    pub subnet_id: Option<String>,
+    pub zone_id: Option<String>,
+    pub required_role: Option<RolePath>,
+    pub required_faction: Option<Faction>,
+    pub reward: MissionReward,
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MissionClaimBody {
+    pub mission_id: String,
+    pub agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MissionSettleBody {
+    pub mission_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CitizenProfileQuery {
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CitizenProfileBody {
+    pub agent_id: String,
+    pub faction: Faction,
+    pub role: RolePath,
+    pub strategy: StrategyProfile,
+    pub home_subnet_id: Option<String>,
+    pub home_zone_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MetricsQuery {
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorldEventsQuery {
+    pub zone_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EmergencyQuery {
+    pub agent_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorldEventBody {
+    pub category: DynamicEventCategory,
+    pub zone_id: String,
+    pub title: String,
+    pub description: String,
+    pub severity: u8,
+    pub expires_at: Option<i64>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WorldGenerateBody {
+    pub max_events: Option<usize>,
 }
 
 pub(crate) async fn send_stream_text(
