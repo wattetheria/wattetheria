@@ -4083,6 +4083,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "wattswarm-protocol",
 ]
 
 [[package]]
@@ -4099,6 +4100,15 @@ dependencies = [
  "tower",
  "tower-http",
  "wattetheria-kernel",
+]
+
+[[package]]
+name = "wattswarm-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -17,8 +17,11 @@ use wattetheria_kernel::admission::{
     AdmissionConfig, AdmissionVerdict, NonceTracker, validate_gossip_packet_with_nonce,
 };
 use wattetheria_kernel::audit::AuditLog;
+use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
-use wattetheria_kernel::control_plane::{ControlPlaneState, RateLimiter, serve_control_plane};
+use wattetheria_kernel::control_plane::{
+    ControlPlaneState, RateLimiter, run_autonomy_tick_once, serve_control_plane,
+};
 use wattetheria_kernel::data_ops::recover_if_corrupt_with_sources;
 use wattetheria_kernel::event_log::{EventLog, EventRecord};
 use wattetheria_kernel::governance::{GovernanceEngine, PlanetCreationRequest};
@@ -30,9 +33,9 @@ use wattetheria_kernel::oracle::{OracleFeed, OracleRegistry};
 use wattetheria_kernel::p2p::{P2PConfig, P2PNode};
 use wattetheria_kernel::policy_engine::PolicyEngine;
 use wattetheria_kernel::signing::sign_payload;
-use wattetheria_kernel::task_engine::TaskEngine;
+use wattetheria_kernel::swarm_bridge::{LegacyTaskEngineBridge, SwarmBridge};
 use wattetheria_kernel::trust::{TrustConfig, WebOfTrust};
-use wattetheria_kernel::types::{ActionEnvelope, Reward, Sla, VerificationMode, VerificationSpec};
+use wattetheria_kernel::types::ActionEnvelope;
 
 #[derive(Debug, Clone, Serialize)]
 struct SignedEnvelope<T: Serialize> {
@@ -85,6 +88,20 @@ struct Cli {
     control_plane_bind: String,
     #[arg(long, default_value_t = 60)]
     control_plane_rate_limit: usize,
+    #[arg(long, default_value = "rules")]
+    brain_provider_kind: String,
+    #[arg(long, default_value = "http://127.0.0.1:11434")]
+    brain_base_url: String,
+    #[arg(long, default_value = "qwen2.5:7b-instruct")]
+    brain_model: String,
+    #[arg(long)]
+    brain_api_key_env: Option<String>,
+    #[arg(long, default_value_t = false)]
+    autonomy_enabled: bool,
+    #[arg(long, default_value_t = 30)]
+    autonomy_interval_sec: u64,
+    #[arg(long, default_value_t = false)]
+    autonomy_skill_planner_enabled: bool,
 }
 
 #[tokio::main]
@@ -113,6 +130,9 @@ async fn main() -> Result<()> {
         CapabilityPolicy::default(),
     )?;
 
+    let brain_config = resolve_brain_config(&cli)?;
+    let brain_engine = Arc::new(BrainEngine::from_config(&brain_config));
+
     let online_proof_path = cli.data_dir.join("online_proof.json");
     let mut online_proof = OnlineProofManager::load_or_new(&online_proof_path).unwrap_or_default();
     online_proof.create_lease(&identity.agent_id, 300, 20);
@@ -124,8 +144,15 @@ async fn main() -> Result<()> {
     let oracle_state_path = cli.data_dir.join("oracle/state.json");
 
     let ledger_path = cli.data_dir.join("ledger.json");
-    let mut task_engine =
-        TaskEngine::new_with_ledger(event_log.clone(), identity.clone(), &ledger_path)?;
+    let legacy_task_engine = wattetheria_kernel::task_engine::TaskEngine::new_with_ledger(
+        event_log.clone(),
+        identity.clone(),
+        &ledger_path,
+    )?;
+    let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(LegacyTaskEngineBridge::new(
+        legacy_task_engine,
+        ledger_path.clone(),
+    ));
     let governance_state_path = cli.data_dir.join("governance/state.json");
     let governance_engine = Arc::new(Mutex::new(GovernanceEngine::load_or_new(
         &governance_state_path,
@@ -153,7 +180,7 @@ async fn main() -> Result<()> {
     log_listeners(&p2p);
 
     if cli.run_demo_task {
-        run_demo_task(&mut task_engine, &mut p2p, &identity, &ledger_path)?;
+        run_demo_task(&swarm_bridge, &mut p2p, &identity).await?;
     }
 
     if cli.ignite_demo_planet {
@@ -169,24 +196,44 @@ async fn main() -> Result<()> {
         started_at: chrono::Utc::now().timestamp(),
         auth_token: control_token,
         event_log: event_log.clone(),
-        task_engine: Arc::new(Mutex::new(task_engine)),
-        task_ledger_path: ledger_path,
+        swarm_bridge,
         governance_engine,
         governance_state_path,
         policy_engine: Arc::new(Mutex::new(policy_engine)),
         mailbox: Arc::new(Mutex::new(mailbox)),
         mailbox_state_path,
+        brain_engine: brain_engine.clone(),
+        autonomy_skill_planner_enabled: cli.autonomy_skill_planner_enabled,
         audit_log: audit_log.clone(),
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
     };
 
     info!(bind = %control_bind, "starting control plane");
+    let control_state_for_http = control_state.clone();
     let control_task = tokio::spawn(async move {
-        if let Err(error) = serve_control_plane(control_state, control_bind).await {
+        if let Err(error) = serve_control_plane(control_state_for_http, control_bind).await {
             error!(%error, "control plane terminated");
         }
     });
+
+    let autonomy_task = if cli.autonomy_enabled {
+        let state = control_state.clone();
+        let interval_sec = cli.autonomy_interval_sec.max(5);
+        Some(tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(interval_sec));
+            loop {
+                ticker.tick().await;
+                if let Err(error) =
+                    run_autonomy_tick_once(&state, 12, state.autonomy_skill_planner_enabled).await
+                {
+                    warn!(%error, "autonomy tick failed");
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     let admission_config = AdmissionConfig {
         max_time_drift_sec: 180,
@@ -214,6 +261,9 @@ async fn main() -> Result<()> {
     )
     .await;
     control_task.abort();
+    if let Some(task) = autonomy_task {
+        task.abort();
+    }
     run_result
 }
 
@@ -239,6 +289,24 @@ fn parse_control_bind(value: &str) -> Result<SocketAddr> {
     value
         .parse()
         .with_context(|| format!("parse control plane bind address: {value}"))
+}
+
+fn resolve_brain_config(cli: &Cli) -> Result<BrainProviderConfig> {
+    match cli.brain_provider_kind.as_str() {
+        "rules" => Ok(BrainProviderConfig::Rules),
+        "ollama" => Ok(BrainProviderConfig::Ollama {
+            base_url: cli.brain_base_url.clone(),
+            model: cli.brain_model.clone(),
+        }),
+        "openai-compatible" => Ok(BrainProviderConfig::OpenaiCompatible {
+            base_url: cli.brain_base_url.clone(),
+            model: cli.brain_model.clone(),
+            api_key_env: cli.brain_api_key_env.clone(),
+        }),
+        other => {
+            bail!("unsupported --brain-provider-kind: {other} (use rules|ollama|openai-compatible)")
+        }
+    }
 }
 
 fn load_or_create_control_token(path: PathBuf) -> Result<String> {
@@ -442,43 +510,19 @@ fn log_listeners(p2p: &P2PNode) {
     }
 }
 
-fn run_demo_task(
-    task_engine: &mut TaskEngine,
+async fn run_demo_task(
+    swarm_bridge: &Arc<dyn SwarmBridge>,
     p2p: &mut P2PNode,
     identity: &Identity,
-    ledger_path: &Path,
 ) -> Result<()> {
-    let task = task_engine.publish_task(
-        "market.match",
-        "T0",
-        json!({
-            "buy_orders": [
-                {"id":"b-1", "price":120, "qty":5},
-                {"id":"b-2", "price":115, "qty":4}
-            ],
-            "sell_orders": [
-                {"id":"s-1", "price":100, "qty":2},
-                {"id":"s-2", "price":110, "qty":6}
-            ]
-        }),
-        VerificationSpec {
-            mode: VerificationMode::Deterministic,
-            witnesses: None,
-        },
-        Reward {
-            watt: 10,
-            reputation: 2,
-            capacity: 3,
-        },
-        Sla { timeout_sec: 120 },
-    )?;
-    task_engine.claim_task(&task.task_id, &identity.agent_id)?;
-    let result = task_engine.execute_task(&task.task_id)?;
-    task_engine.submit_task_result(&task.task_id, &result, &identity.agent_id)?;
-    task_engine.verify_task(&task.task_id)?;
-    let settled = task_engine.settle_task(&task.task_id)?;
-    info!(task_id = %task.task_id, watt = settled.watt, "demo task settled");
-    task_engine.persist_ledger(ledger_path)?;
+    let task = swarm_bridge
+        .run_task_contract(
+            &identity.agent_id,
+            LegacyTaskEngineBridge::demo_market_contract(),
+        )
+        .await?;
+    let task_id = task.task_id.clone();
+    info!(task_id = %task_id, terminal_state = %task.terminal_state, "demo task settled");
 
     let action = ActionEnvelope {
         r#type: "ACTION".to_string(),
@@ -488,11 +532,8 @@ fn run_demo_task(
         timestamp: chrono::Utc::now().timestamp(),
         sender: identity.agent_id.clone(),
         recipient: None,
-        payload: json!({"task_id": task.task_id, "status":"SETTLED"}),
-        signature: sign_payload(
-            &json!({"kind":"TASK_RESULT","task_id":task.task_id}),
-            identity,
-        )?,
+        payload: serde_json::to_value(&task).context("serialize demo swarm task for gossip")?,
+        signature: sign_payload(&json!({"kind":"TASK_RESULT","task_id":task_id}), identity)?,
     };
     p2p.publish_json(&action)?;
     Ok(())

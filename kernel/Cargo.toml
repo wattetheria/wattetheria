@@ -45,6 +45,7 @@ walkdir.workspace = true
 jsonschema.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+wattswarm-protocol = { path = "../../wattswarm/crates/protocol" }
 
 [dev-dependencies]
 tempfile.workspace = true

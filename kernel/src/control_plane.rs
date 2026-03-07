@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::audit::{AuditEntry, AuditLog};
+use crate::brain::{ActionProposal, BrainEngine};
 use crate::capabilities::TrustLevel;
 use crate::event_log::EventLog;
 use crate::governance::GovernanceEngine;
@@ -24,8 +25,7 @@ use crate::identity::Identity;
 use crate::mailbox::CrossSubnetMailbox;
 use crate::night_shift::generate_night_shift_report;
 use crate::policy_engine::{CapabilityRequest, DecisionKind, GrantScope, PolicyEngine};
-use crate::task_engine::TaskEngine;
-use crate::types::{Reward, Sla, VerificationMode, VerificationSpec};
+use crate::swarm_bridge::{LegacyTaskEngineBridge, SwarmBridge};
 
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -72,13 +72,14 @@ pub struct ControlPlaneState {
     pub started_at: i64,
     pub auth_token: String,
     pub event_log: EventLog,
-    pub task_engine: Arc<Mutex<TaskEngine>>,
-    pub task_ledger_path: PathBuf,
+    pub swarm_bridge: Arc<dyn SwarmBridge>,
     pub governance_engine: Arc<Mutex<GovernanceEngine>>,
     pub governance_state_path: PathBuf,
     pub policy_engine: Arc<Mutex<PolicyEngine>>,
     pub mailbox: Arc<Mutex<CrossSubnetMailbox>>,
     pub mailbox_state_path: PathBuf,
+    pub brain_engine: Arc<BrainEngine>,
+    pub autonomy_skill_planner_enabled: bool,
     pub audit_log: AuditLog,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
@@ -98,6 +99,11 @@ struct EventsExportQuery {
 #[derive(Debug, Deserialize)]
 struct NightShiftQuery {
     hours: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BrainPlansQuery {
+    enable: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +187,12 @@ pub struct MailboxAckBody {
     pub message_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AutonomyTickBody {
+    pub hours: Option<i64>,
+    pub enable_skill_planner: Option<bool>,
+}
+
 pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
         .route("/v1/health", get(health))
@@ -188,7 +200,11 @@ pub fn app(state: ControlPlaneState) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/events/export", get(events_export))
         .route("/v1/night-shift", get(night_shift))
+        .route("/v1/night-shift/humanized", get(night_shift_humanized))
         .route("/v1/actions", post(actions))
+        .route("/v1/brain/propose-actions", get(brain_propose_actions))
+        .route("/v1/brain/plan-skill-calls", get(brain_plan_skill_calls))
+        .route("/v1/autonomy/tick", post(autonomy_tick))
         .route("/v1/governance/planets", get(governance_planets))
         .route(
             "/v1/governance/proposals",
@@ -387,6 +403,184 @@ async fn night_shift(
     });
 
     Json(report).into_response()
+}
+
+async fn night_shift_humanized(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<NightShiftQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers, "night_shift.humanized").await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let hours = query.hours.unwrap_or(12).max(1);
+    let report = match load_night_shift_report(&state, hours) {
+        Ok(report) => report,
+        Err(error) => return internal_error(&error),
+    };
+
+    let human = match state.brain_engine.humanize_night_shift(&report).await {
+        Ok(human) => human,
+        Err(error) => return internal_error(&error),
+    };
+
+    let payload = json!({
+        "hours": hours,
+        "report": report,
+        "human": human,
+    });
+
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "brain.humanized_night_shift".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "brain".to_string(),
+        action: "night_shift.humanized".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(state.agent_id.clone()),
+        capability: Some("model.invoke".to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"hours": hours})),
+    });
+
+    Json(payload).into_response()
+}
+
+async fn brain_propose_actions(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+) -> Response {
+    let auth = match authorize(&state, &headers, "brain.propose_actions").await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let brain_state = match build_brain_state(&state, state.autonomy_skill_planner_enabled).await {
+        Ok(value) => value,
+        Err(error) => return internal_error(&error),
+    };
+
+    let proposals = match state.brain_engine.propose_actions(&brain_state).await {
+        Ok(proposals) => proposals,
+        Err(error) => return internal_error(&error),
+    };
+
+    let payload = serde_json::to_value(&proposals).unwrap_or(Value::Null);
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "brain.proposals".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "brain".to_string(),
+        action: "brain.propose_actions".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(state.agent_id.clone()),
+        capability: Some("model.invoke".to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": proposals.len()})),
+    });
+
+    Json(proposals).into_response()
+}
+
+async fn brain_plan_skill_calls(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<BrainPlansQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers, "brain.plan_skill_calls").await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let enable_skill_planner = query.enable.unwrap_or(state.autonomy_skill_planner_enabled);
+    let brain_state = match build_brain_state(&state, enable_skill_planner).await {
+        Ok(value) => value,
+        Err(error) => return internal_error(&error),
+    };
+
+    let plans = match state.brain_engine.plan_skill_calls(&brain_state).await {
+        Ok(plans) => plans,
+        Err(error) => return internal_error(&error),
+    };
+
+    let payload = serde_json::to_value(&plans).unwrap_or(Value::Null);
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "brain.skill_plans".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "brain".to_string(),
+        action: "brain.plan_skill_calls".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(state.agent_id.clone()),
+        capability: Some("model.invoke".to_string()),
+        reason: Some(format!("skill_planner_enabled={enable_skill_planner}")),
+        duration_ms: None,
+        details: Some(json!({"count": plans.len()})),
+    });
+
+    Json(plans).into_response()
+}
+
+async fn autonomy_tick(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<AutonomyTickBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers, "autonomy.tick").await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let hours = body.hours.unwrap_or(12).max(1);
+    let enable_skill_planner = body
+        .enable_skill_planner
+        .unwrap_or(state.autonomy_skill_planner_enabled);
+
+    let result = match run_autonomy_tick_once(&state, hours, enable_skill_planner).await {
+        Ok(result) => result,
+        Err(error) => return internal_error(&error),
+    };
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "autonomy".to_string(),
+        action: "autonomy.tick".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(state.agent_id.clone()),
+        capability: Some("model.invoke".to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "hours": hours,
+            "executed_actions": result["executed_actions"],
+        })),
+    });
+
+    Json(result).into_response()
 }
 
 async fn actions(
@@ -1069,50 +1263,136 @@ async fn handle_ws(mut socket: WebSocket, state: ControlPlaneState) {
 }
 
 async fn run_demo_market_task(state: &ControlPlaneState) -> Result<Value> {
-    let mut engine = state.task_engine.lock().await;
-    let worker_id = state.agent_id.clone();
-
-    let task = engine.publish_task(
-        "market.match",
-        "T0",
-        json!({
-            "buy_orders": [
-                {"id":"c-buy-1", "price":120, "qty":5},
-                {"id":"c-buy-2", "price":118, "qty":3}
-            ],
-            "sell_orders": [
-                {"id":"c-sell-1", "price":110, "qty":2},
-                {"id":"c-sell-2", "price":112, "qty":6}
-            ]
-        }),
-        VerificationSpec {
-            mode: VerificationMode::Deterministic,
-            witnesses: None,
-        },
-        Reward {
-            watt: 12,
-            reputation: 3,
-            capacity: 4,
-        },
-        Sla { timeout_sec: 120 },
-    )?;
-
-    engine.claim_task(&task.task_id, &worker_id)?;
-    let result = engine.execute_task(&task.task_id)?;
-    engine.submit_task_result(&task.task_id, &result, &worker_id)?;
-
-    if !engine.verify_task(&task.task_id)? {
+    let task = state
+        .swarm_bridge
+        .run_task_contract(
+            &state.agent_id,
+            LegacyTaskEngineBridge::demo_market_contract(),
+        )
+        .await?;
+    if task.terminal_state != "finalized" {
         bail!("demo task verification failed");
     }
+    serde_json::to_value(task).context("serialize bridge demo task result")
+}
 
-    let ledger = engine.settle_task(&task.task_id)?;
-    engine.persist_ledger(&state.task_ledger_path)?;
+fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> Result<Value> {
+    let now = Utc::now().timestamp();
+    let events = state.event_log.get_all()?;
+    let report = generate_night_shift_report(&events, now - hours * 3600, now);
+    serde_json::to_value(report).context("serialize night shift report")
+}
+
+async fn build_brain_state(state: &ControlPlaneState, enable_skill_planner: bool) -> Result<Value> {
+    let events = state.event_log.get_all()?;
+    let pending_policy_requests = state.policy_engine.lock().await.list_pending().len();
+    let agent_view = state.swarm_bridge.agent_view(&state.agent_id).await?;
+    let latest_report_digest = events
+        .last()
+        .map_or_else(|| "no-events".to_string(), |event| event.hash.clone());
+
     Ok(json!({
-        "task_id": task.task_id,
-        "status": "SETTLED",
-        "ledger": ledger,
-        "result": result,
+        "events": events.len(),
+        "pending_policy_requests": pending_policy_requests,
+        "skill_planner_enabled": enable_skill_planner,
+        "latest_report_digest": latest_report_digest,
+        "agent_stats": agent_view.stats,
     }))
+}
+
+async fn check_action_capabilities(
+    state: &ControlPlaneState,
+    proposal: &ActionProposal,
+) -> Result<(bool, Vec<Value>)> {
+    let mut policy = state.policy_engine.lock().await;
+    let mut decisions = Vec::new();
+
+    for capability in &proposal.required_caps {
+        let decision = policy.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: format!("autonomy:{}", state.agent_id),
+            trust: TrustLevel::Verified,
+            capability: capability.clone(),
+            reason: Some("autonomy.tick".to_string()),
+            input_digest: None,
+        })?;
+
+        let allowed = decision.decision == DecisionKind::Allowed;
+        decisions.push(json!({
+            "capability": capability,
+            "decision": decision,
+            "allowed": allowed,
+        }));
+
+        if !allowed {
+            return Ok((false, decisions));
+        }
+    }
+
+    Ok((true, decisions))
+}
+
+pub async fn run_autonomy_tick_once(
+    state: &ControlPlaneState,
+    hours: i64,
+    enable_skill_planner: bool,
+) -> Result<Value> {
+    let brain_state = build_brain_state(state, enable_skill_planner).await?;
+    let proposals = state.brain_engine.propose_actions(&brain_state).await?;
+    let plans = state.brain_engine.plan_skill_calls(&brain_state).await?;
+    let report = load_night_shift_report(state, hours)?;
+    let human_report = state.brain_engine.humanize_night_shift(&report).await?;
+
+    let mut executed = Vec::new();
+    for proposal in &proposals {
+        let (allowed, capability_checks) = check_action_capabilities(state, proposal).await?;
+        if !allowed {
+            executed.push(json!({
+                "action": proposal.action,
+                "status": "blocked_by_policy",
+                "capability_checks": capability_checks,
+            }));
+            continue;
+        }
+
+        let execution = match proposal.action.as_str() {
+            "task.run_demo_market" => json!({
+                "action": proposal.action,
+                "status": "ok",
+                "result": run_demo_market_task(state).await?,
+                "capability_checks": capability_checks,
+            }),
+            _ => json!({
+                "action": proposal.action,
+                "status": "skipped_unsupported",
+                "capability_checks": capability_checks,
+            }),
+        };
+        executed.push(execution);
+    }
+
+    let payload = json!({
+        "status": "ok",
+        "hours": hours,
+        "skill_planner_enabled": enable_skill_planner,
+        "human_report": human_report,
+        "proposals": proposals,
+        "skill_plans": plans,
+        "executed_actions": executed,
+    });
+
+    state
+        .event_log
+        .append_signed("AUTONOMY_TICK", payload.clone(), &state.identity)?;
+
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "autonomy.tick".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+
+    Ok(payload)
 }
 
 async fn authorize(
@@ -1163,18 +1443,17 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    use crate::brain::{BrainEngine, BrainProviderConfig};
     use crate::capabilities::CapabilityPolicy;
     use crate::governance::{GovernanceEngine, PlanetCreationRequest};
     use crate::identity::Identity;
     use crate::mailbox::CrossSubnetMailbox;
-
     fn build_test_app(
         rate_limit: usize,
     ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
         let dir = tempfile::tempdir().unwrap();
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
-        let task_engine = TaskEngine::new(event_log.clone(), identity.clone());
         let ledger_path = dir.path().join("ledger.json");
         let governance_state_path = dir.path().join("governance/state.json");
         let mailbox_state_path = dir.path().join("mailbox/state.json");
@@ -1230,6 +1509,8 @@ mod tests {
         let mailbox = Arc::new(Mutex::new(CrossSubnetMailbox::default()));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
+        let bridge_event_log = event_log.clone();
+        let bridge_identity = identity.clone();
 
         let state = ControlPlaneState {
             agent_id: identity.agent_id.clone(),
@@ -1237,13 +1518,17 @@ mod tests {
             started_at: Utc::now().timestamp(),
             auth_token: token.clone(),
             event_log,
-            task_engine: Arc::new(Mutex::new(task_engine)),
-            task_ledger_path: ledger_path,
+            swarm_bridge: Arc::new(LegacyTaskEngineBridge::new(
+                crate::task_engine::TaskEngine::new(bridge_event_log, bridge_identity),
+                ledger_path,
+            )),
             governance_engine,
             governance_state_path,
             policy_engine: policy_engine.clone(),
             mailbox,
             mailbox_state_path,
+            brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
+            autonomy_skill_planner_enabled: true,
             audit_log,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
@@ -1485,8 +1770,10 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        let ledger =
-            crate::task_engine::TaskEngine::load_ledger(dir.path().join("ledger.json")).unwrap();
+        let ledger = crate::swarm_bridge::LegacyTaskEngineBridge::load_ledger(
+            dir.path().join("ledger.json"),
+        )
+        .unwrap();
         assert!(!ledger.is_empty());
         assert!(ledger.values().any(|stats| stats.watt > 0));
     }

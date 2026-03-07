@@ -22,6 +22,7 @@ pub mod signing;
 pub mod skill_package;
 pub mod skill_runtime;
 pub mod summary;
+pub mod swarm_bridge;
 pub mod task_engine;
 pub mod trust;
 pub mod types;
