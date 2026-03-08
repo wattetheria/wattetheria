@@ -35,12 +35,14 @@ use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, PublicIdentityRegistry,
 };
 use wattetheria_kernel::civilization::missions::MissionBoard;
+use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
+use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::PolicyEngine;
@@ -70,10 +72,14 @@ struct CivilizationRuntimeState {
     controller_binding_registry_state_path: PathBuf,
     citizen_registry: CitizenRegistry,
     citizen_registry_state_path: PathBuf,
+    organization_registry: OrganizationRegistry,
+    organization_registry_state_path: PathBuf,
     galaxy_state: GalaxyState,
     galaxy_state_path: PathBuf,
     galaxy_map_registry: GalaxyMapRegistry,
     galaxy_map_registry_state_path: PathBuf,
+    travel_state_registry: TravelStateRegistry,
+    travel_state_registry_state_path: PathBuf,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -294,10 +300,14 @@ fn build_control_state(
             .controller_binding_registry_state_path,
         citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
         citizen_registry_state_path: civilization_state.citizen_registry_state_path,
+        organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
+        organization_registry_state_path: civilization_state.organization_registry_state_path,
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_state_path: civilization_state.galaxy_state_path,
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
         galaxy_map_registry_state_path: civilization_state.galaxy_map_registry_state_path,
+        travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
+        travel_state_registry_state_path: civilization_state.travel_state_registry_state_path,
         brain_engine,
         audit_log,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
@@ -318,6 +328,9 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
         ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)?;
     let citizen_registry_state_path = cli.data_dir.join("civilization/profiles.json");
     let citizen_registry = CitizenRegistry::load_or_new(&citizen_registry_state_path)?;
+    let organization_registry_state_path = cli.data_dir.join("civilization/organizations.json");
+    let organization_registry =
+        OrganizationRegistry::load_or_new(&organization_registry_state_path)?;
     let galaxy_state_path = cli.data_dir.join("galaxy/state.json");
     let legacy_galaxy_state_path = cli.data_dir.join("world/state.json");
     let galaxy_state = if galaxy_state_path.exists() {
@@ -331,11 +344,29 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
     let mut galaxy_map_registry = GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path)?;
     galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?;
     galaxy_map_registry.persist(&galaxy_map_registry_state_path)?;
+    let travel_state_registry_state_path = cli.data_dir.join("galaxy/travel_state.json");
+    let mut travel_state_registry =
+        TravelStateRegistry::load_or_new(&travel_state_registry_state_path)?;
     let public_identity = public_identity_registry.ensure_local_default(agent_id);
-    let _ =
+    let controller_binding =
         controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_id);
+    if let Some(position) = resolve_anchor_position(
+        &galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?,
+        None,
+        None,
+    ) {
+        let _ = travel_state_registry.ensure_position(
+            &public_identity.public_id,
+            controller_binding
+                .controller_node_id
+                .as_deref()
+                .unwrap_or(agent_id),
+            position,
+        );
+    }
     public_identity_registry.persist(&public_identity_registry_state_path)?;
     controller_binding_registry.persist(&controller_binding_registry_state_path)?;
+    travel_state_registry.persist(&travel_state_registry_state_path)?;
 
     Ok(CivilizationRuntimeState {
         mission_board,
@@ -346,10 +377,14 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
         controller_binding_registry_state_path,
         citizen_registry,
         citizen_registry_state_path,
+        organization_registry,
+        organization_registry_state_path,
         galaxy_state,
         galaxy_state_path,
         galaxy_map_registry,
         galaxy_map_registry_state_path,
+        travel_state_registry,
+        travel_state_registry_state_path,
     })
 }
 

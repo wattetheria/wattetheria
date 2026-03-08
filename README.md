@@ -128,6 +128,27 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `trade`
   - `culture`
   - `total_influence`
+- Game progression layer:
+  - stages: `survival`, `foothold`, `influence`, `expansion`
+  - tiers: `initiate`, `specialist`, `coordinator`, `sovereign`
+  - role-aware objectives and recommended actions
+  - governance journey gates
+  - qualification tracks
+  - onboarding state
+  - onboarding flow with first-hour action cards and client-screen/API targets
+  - role-specific starter mission templates and bootstrap flow
+  - role-specific starter objective chains with ordered steps, current step, and chain progress
+  - starter mission map anchors bound to official genesis systems, planets, and routes
+  - stage-aware mission pack generation and bootstrap flow for the current role and progression stage
+  - mission-pack summaries, next-stage previews, and template payload schemas for Godot-friendly mission planning
+  - high-severity galaxy events converted into additional event-driven mission templates for the current home zone
+- Organization layer:
+  - organization registry with `guild`, `consortium`, `fleet`, and `civic_union`
+  - founder/officer/member roles
+  - permissioned organization actions: `manage_members`, `manage_treasury`, `publish_missions`, `manage_governance`
+  - persisted memberships and home subnet or zone alignment
+  - treasury funding and spending flows for organization-led coordination
+  - organization mission issuance, visibility, subnet-readiness, internal charter proposals, and subnet charter application signals for future autonomy play
 - Emergency evaluation:
   - galaxy event pressure
   - governance instability
@@ -156,7 +177,8 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
-- Map endpoints for the official base map and map catalog
+- Map endpoints for the official base map, map catalog, route-travel planning, and persisted travel-state session flow
+- Travel arrival consequences that summarize destination-local missions, route risk, and governed subnet context
 - Character bootstrap endpoint for Godot and other clients to create a public identity, controller binding, and starter profile in one call
 - Public identity endpoints for querying and upserting galaxy-facing identity records
 - Controller binding endpoints for querying and upserting public-identity controller bindings
@@ -205,6 +227,7 @@ It is not yet:
 The intended split between `wattetheria`, `wattswarm`, and user-provided runtimes is now documented in:
 
 - `docs/IDENTITY_AND_CONTROLLER_BOUNDARY.md`
+- `docs/game/README.md`
 
 Short version:
 
@@ -223,22 +246,41 @@ Short version:
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
+- `GET /v1/game/catalog`, `GET /v1/game/status`
+- `GET /v1/game/onboarding`
+- `GET /v1/game/starter-missions`, `POST /v1/game/starter-missions/bootstrap`
+- `GET /v1/game/mission-pack`, `POST /v1/game/mission-pack/bootstrap`
+- `GET /v1/dashboard/home` now includes a `game` block plus an `experience` block with `next_actions`, `alerts`, and `priority_cards`
 - Civilization APIs:
   - `GET /v1/civilization/characters`
   - `GET /v1/dashboard/home`
   - `GET /v1/missions/my`
   - `GET /v1/governance/my`
   - `GET /v1/catalog/bootstrap`
+  - `GET /v1/organizations/my`
   - `POST /v1/civilization/bootstrap-character`
   - `GET|POST /v1/civilization/public-identity`
   - `GET|POST /v1/civilization/controller-binding`
   - `GET|POST /v1/civilization/profile`
+  - `GET|POST /v1/civilization/organizations`
+  - `POST /v1/civilization/organizations/members`
+  - `GET|POST /v1/civilization/organizations/proposals`
+  - `POST /v1/civilization/organizations/proposals/vote`
+  - `POST /v1/civilization/organizations/proposals/finalize`
+  - `POST /v1/civilization/organizations/charters`
+  - `POST /v1/civilization/organizations/treasury/fund`
+  - `POST /v1/civilization/organizations/treasury/spend`
   - `GET /v1/civilization/metrics`
   - `GET /v1/civilization/emergencies`
   - `GET /v1/civilization/briefing`
   - `GET /v1/galaxy/zones`
   - `GET /v1/galaxy/map`
   - `GET /v1/galaxy/maps`
+  - `GET /v1/galaxy/travel/state`
+  - `GET /v1/galaxy/travel/options`
+  - `GET /v1/galaxy/travel/plan`
+  - `POST /v1/galaxy/travel/depart`
+  - `POST /v1/galaxy/travel/arrive`
   - `GET|POST /v1/galaxy/events`
   - `POST /v1/galaxy/events/generate`
   - `GET|POST /v1/missions`
@@ -259,14 +301,35 @@ Most civilization-facing responses now resolve through the same identity bundle:
 
 These client-facing endpoints are the current Godot P0 surface:
 
-- `GET /v1/civilization/characters` returns local playable characters with resolved identity bundles.
+- `GET /v1/civilization/characters` returns local playable characters with resolved identity bundles and current `travel_state`.
 - `POST /v1/civilization/bootstrap-character` creates `public_identity + controller_binding + profile`.
-- `GET /v1/dashboard/home` returns home-screen aggregates: identity, metrics, emergencies, briefing, mission counts, and home galaxy context.
-- `GET /v1/missions/my` returns `eligible_open`, `active`, and `history` mission buckets for the selected public identity.
-- `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, and active risks.
-- `GET /v1/catalog/bootstrap` returns client bootstrap catalogs for factions, roles, strategies, controller kinds, ownership scopes, mission domains, and galaxy zones.
+- `GET /v1/dashboard/home` returns home-screen aggregates: identity, metrics, emergencies, briefing, map-aware mission counts (`eligible_open`, `local_open`, `travel_required_open`, `active`), home galaxy context, current `travel_state`, and an `experience` read model with `next_actions`, `alerts`, and `priority_cards`.
+- `GET /v1/missions/my` returns enriched mission buckets for the selected public identity: `eligible_open`, `local_open`, `travel_required_open`, `active`, and `history`, with per-mission `map_anchor` and `travel` summaries.
+- `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, linked organization governance state, charter applications, and active risks.
+- `GET /v1/governance/my` now also returns governance journey, civic/expansion qualification tracks, and next governance actions.
+- `GET /v1/catalog/bootstrap` returns client bootstrap catalogs for factions, roles, strategies, organization permissions, organization proposal kinds, controller kinds, ownership scopes, mission domains, travel risk levels, and galaxy zones.
+- `GET /v1/game/catalog` returns the productized gameplay catalog for stages, roles, and factions.
+- `GET /v1/game/status` returns the current character's game-loop stage, progression tier, objectives, qualifications, governance journey, onboarding state, onboarding flow, starter mission view, and an `experience` read model with `next_actions`, `alerts`, and `priority_cards`.
+- `GET /v1/game/onboarding` returns a client-first onboarding payload with first-hour action cards, briefing excerpt, starter mission context, and stage mission-pack context.
+- `GET /v1/game/starter-missions` returns role-aware starter mission templates, an ordered starter objective chain, and any already-created missions for the selected identity.
+- `POST /v1/game/starter-missions/bootstrap` creates missing starter missions for the selected identity without duplicating existing starter templates.
+- `GET /v1/game/mission-pack` now includes current-stage templates, next-stage previews, payload schemas, pack summaries, and high-severity home-zone event templates when economic, spatial, or political pressure is active.
 - `GET /v1/galaxy/map` returns the active official base map for client rendering.
 - `GET /v1/galaxy/maps` returns the current map catalog, which currently exposes the official `genesis-base` summary.
+- `GET /v1/galaxy/travel/state` returns the current persisted system position and active travel session for the selected identity.
+- `GET /v1/galaxy/travel/options` returns direct travel options from the current home system or requested origin system, including risk levels and warnings.
+- `GET /v1/galaxy/travel/plan` returns the recommended path, total travel cost, total risk, and warnings between two systems on the active map.
+- `POST /v1/galaxy/travel/depart` starts a persisted travel session toward a destination system.
+- `POST /v1/galaxy/travel/arrive` completes the active travel session, updates the persisted system position, and records arrival consequences for mission and governance context.
+- `GET /v1/organizations/my` returns the current character's organization memberships, member counts, mission counts, and subnet-readiness summary.
+- `GET|POST /v1/civilization/organizations` lists or creates galaxy organizations for a public identity.
+- `POST /v1/civilization/organizations/members` adds or updates organization membership for an existing public identity.
+- `GET|POST /v1/civilization/organizations/proposals` lists or creates organization-internal governance proposals, including subnet charter proposals.
+- `POST /v1/civilization/organizations/proposals/vote` lets active members vote on organization proposals.
+- `POST /v1/civilization/organizations/proposals/finalize` accepts or rejects an organization proposal after enough internal support.
+- `POST /v1/civilization/organizations/charters` submits a subnet charter application once an accepted charter proposal and subnet-readiness gates are in place.
+- `POST /v1/civilization/organizations/treasury/fund` and `POST /v1/civilization/organizations/treasury/spend` mutate shared organization watt reserves for founder/officer roles.
+- `POST /v1/civilization/organizations/missions` publishes organization-issued missions, optionally spending committed treasury watt, for members with `publish_missions`.
 
 ### Persistence Guarantees Implemented
 
@@ -291,6 +354,7 @@ These client-facing endpoints are the current Godot P0 surface:
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
+- `crates/kernel-core/src/game` - gameplay orchestration layer that turns missions, governance, map state, and influence metrics into player-facing progression and loop state
 - `crates/kernel-core/src/map` - independent galaxy map domain for official base-map models, validation, and persistence
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, galaxy state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane

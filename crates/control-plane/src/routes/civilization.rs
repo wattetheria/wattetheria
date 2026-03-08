@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -21,6 +22,7 @@ use wattetheria_kernel::emergency::{evaluate_emergencies, generate_system_galaxy
 use wattetheria_kernel::identities::{
     ControllerBinding, ControllerKind, OwnershipScope, PublicIdentity,
 };
+use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::metrics::compute_scores;
 
 #[derive(Debug, Clone)]
@@ -123,6 +125,30 @@ async fn persist_bootstrap_character(
             body.home_zone_id.clone(),
         );
         registry.persist(&state.citizen_registry_state_path)?;
+    }
+    {
+        let map = state
+            .galaxy_map_registry
+            .lock()
+            .await
+            .get("genesis-base")
+            .context("default galaxy map missing")?;
+        let Some(position) = resolve_anchor_position(
+            &map,
+            body.home_subnet_id.as_deref(),
+            body.home_zone_id.as_deref(),
+        ) else {
+            anyhow::bail!("unable to resolve travel anchor");
+        };
+        let mut registry = state.travel_state_registry.lock().await;
+        registry.set_position(
+            &body.public_id,
+            plan.controller_node_id
+                .as_deref()
+                .unwrap_or(&state.agent_id),
+            position,
+        );
+        registry.persist(&state.travel_state_registry_state_path)?;
     }
 
     Ok(())

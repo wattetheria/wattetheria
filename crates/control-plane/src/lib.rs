@@ -4,11 +4,14 @@ pub mod routes {
     pub(crate) mod civilization;
     pub(crate) mod client;
     pub(crate) mod core;
+    pub(crate) mod experience;
+    pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod identity;
     pub(crate) mod mailbox;
     pub(crate) mod map;
     pub(crate) mod missions;
+    pub(crate) mod organizations;
     pub(crate) mod policy;
 }
 mod state;
@@ -25,6 +28,7 @@ pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
         .merge(core_router())
         .merge(client_router())
+        .merge(game_router())
         .merge(map_router())
         .merge(civilization_router())
         .merge(governance_router())
@@ -45,6 +49,33 @@ fn client_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/catalog/bootstrap",
             get(routes::client::bootstrap_catalog),
+        )
+        .route(
+            "/v1/organizations/my",
+            get(routes::organizations::my_organizations),
+        )
+}
+
+fn game_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/v1/game/catalog", get(routes::game::game_catalog))
+        .route("/v1/game/status", get(routes::game::game_status))
+        .route("/v1/game/onboarding", get(routes::game::game_onboarding))
+        .route(
+            "/v1/game/mission-pack",
+            get(routes::game::game_mission_pack),
+        )
+        .route(
+            "/v1/game/starter-missions",
+            get(routes::game::game_starter_missions),
+        )
+        .route(
+            "/v1/game/starter-missions/bootstrap",
+            post(routes::game::bootstrap_starter_missions_route),
+        )
+        .route(
+            "/v1/game/mission-pack/bootstrap",
+            post(routes::game::bootstrap_mission_pack_route),
         )
 }
 
@@ -73,6 +104,26 @@ fn map_router() -> Router<ControlPlaneState> {
     Router::new()
         .route("/v1/galaxy/map", get(routes::map::galaxy_map))
         .route("/v1/galaxy/maps", get(routes::map::galaxy_maps))
+        .route(
+            "/v1/galaxy/travel/state",
+            get(routes::map::galaxy_travel_state),
+        )
+        .route(
+            "/v1/galaxy/travel/options",
+            get(routes::map::galaxy_travel_options),
+        )
+        .route(
+            "/v1/galaxy/travel/plan",
+            get(routes::map::galaxy_travel_plan),
+        )
+        .route(
+            "/v1/galaxy/travel/depart",
+            post(routes::map::galaxy_travel_depart),
+        )
+        .route(
+            "/v1/galaxy/travel/arrive",
+            post(routes::map::galaxy_travel_arrive),
+        )
 }
 
 fn civilization_router() -> Router<ControlPlaneState> {
@@ -96,6 +147,7 @@ fn civilization_router() -> Router<ControlPlaneState> {
             get(routes::civilization::citizen_profile)
                 .post(routes::civilization::citizen_profile_upsert),
         )
+        .merge(organization_civilization_router())
         .route(
             "/v1/civilization/metrics",
             get(routes::civilization::civilization_metrics),
@@ -140,6 +192,48 @@ fn civilization_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/missions/settle",
             post(routes::missions::mission_settle),
+        )
+}
+
+fn organization_civilization_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/civilization/organizations",
+            get(routes::organizations::list_organizations)
+                .post(routes::organizations::create_organization),
+        )
+        .route(
+            "/v1/civilization/organizations/members",
+            post(routes::organizations::upsert_organization_member),
+        )
+        .route(
+            "/v1/civilization/organizations/proposals",
+            get(routes::organizations::list_organization_governance)
+                .post(routes::organizations::create_organization_proposal),
+        )
+        .route(
+            "/v1/civilization/organizations/proposals/vote",
+            post(routes::organizations::vote_organization_proposal),
+        )
+        .route(
+            "/v1/civilization/organizations/proposals/finalize",
+            post(routes::organizations::finalize_organization_proposal),
+        )
+        .route(
+            "/v1/civilization/organizations/charters",
+            post(routes::organizations::submit_subnet_charter_application),
+        )
+        .route(
+            "/v1/civilization/organizations/missions",
+            post(routes::organizations::publish_organization_mission),
+        )
+        .route(
+            "/v1/civilization/organizations/treasury/fund",
+            post(routes::organizations::fund_organization_treasury),
+        )
+        .route(
+            "/v1/civilization/organizations/treasury/spend",
+            post(routes::organizations::spend_organization_treasury),
         )
 }
 
@@ -241,6 +335,7 @@ mod tests {
         ControllerBindingRegistry, PublicIdentityRegistry,
     };
     use wattetheria_kernel::civilization::missions::MissionBoard;
+    use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
     use wattetheria_kernel::civilization::profiles::CitizenRegistry;
     use wattetheria_kernel::event_log::EventLog;
     use wattetheria_kernel::governance::{
@@ -268,8 +363,10 @@ mod tests {
         let controller_binding_registry_state_path =
             dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
+        let organization_registry_state_path = dir.path().join("civilization/organizations.json");
         let galaxy_state_path = dir.path().join("galaxy/state.json");
         let galaxy_map_registry_state_path = dir.path().join("galaxy/maps.json");
+        let travel_state_registry_state_path = dir.path().join("galaxy/travel_state.json");
 
         let policy_engine = Arc::new(Mutex::new(
             PolicyEngine::load_or_new(
@@ -344,6 +441,9 @@ mod tests {
         let citizen_registry = Arc::new(Mutex::new(
             CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
         ));
+        let organization_registry = Arc::new(Mutex::new(
+            OrganizationRegistry::load_or_new(&organization_registry_state_path).unwrap(),
+        ));
         let galaxy_state_loaded = GalaxyState::load_or_new(&galaxy_state_path).unwrap();
         let mut galaxy_map_registry_loaded =
             GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path).unwrap();
@@ -353,8 +453,26 @@ mod tests {
         galaxy_map_registry_loaded
             .persist(&galaxy_map_registry_state_path)
             .unwrap();
+        let default_map = galaxy_map_registry_loaded.get("genesis-base").unwrap();
         let galaxy_state = Arc::new(Mutex::new(galaxy_state_loaded));
         let galaxy_map_registry = Arc::new(Mutex::new(galaxy_map_registry_loaded));
+        let mut travel_state_registry =
+            wattetheria_kernel::map::state::TravelStateRegistry::load_or_new(
+                &travel_state_registry_state_path,
+            )
+            .unwrap();
+        let default_position =
+            wattetheria_kernel::map::state::resolve_anchor_position(&default_map, None, None)
+                .unwrap();
+        let _ = travel_state_registry.ensure_position(
+            &identity.agent_id,
+            &identity.agent_id,
+            default_position,
+        );
+        travel_state_registry
+            .persist(&travel_state_registry_state_path)
+            .unwrap();
+        let travel_state_registry = Arc::new(Mutex::new(travel_state_registry));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
         let bridge_event_log = event_log.clone();
@@ -383,10 +501,14 @@ mod tests {
             controller_binding_registry_state_path,
             citizen_registry,
             citizen_registry_state_path,
+            organization_registry,
+            organization_registry_state_path,
             galaxy_state,
             galaxy_state_path,
             galaxy_map_registry,
             galaxy_map_registry_state_path,
+            travel_state_registry,
+            travel_state_registry_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             audit_log,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
@@ -461,6 +583,19 @@ mod tests {
         .await;
     }
 
+    async fn bootstrap_broker_game(app: Router, token: &str, agent_id: &str) -> Value {
+        bootstrap_broker_character(app.clone(), token, agent_id).await;
+        let starter_bootstrap = authed_post_json(
+            app,
+            token,
+            "/v1/game/starter-missions/bootstrap",
+            json!({"public_id": "captain-aurora"}),
+        )
+        .await;
+        assert_eq!(starter_bootstrap["created"].as_array().unwrap().len(), 2);
+        starter_bootstrap
+    }
+
     struct TradeMissionSpec<'a> {
         title: &'a str,
         description: &'a str,
@@ -468,6 +603,8 @@ mod tests {
         reward_reputation: i64,
         objective: &'a str,
         required_faction: Option<&'a str>,
+        subnet_id: Option<&'a str>,
+        zone_id: Option<&'a str>,
     }
 
     async fn publish_trade_mission(app: Router, token: &str, spec: TradeMissionSpec<'_>) -> Value {
@@ -481,8 +618,8 @@ mod tests {
                 "publisher": "planet-test",
                 "publisher_kind": "planetary_government",
                 "domain": "trade",
-                "subnet_id": "planet-test",
-                "zone_id": "genesis-core",
+                "subnet_id": spec.subnet_id,
+                "zone_id": spec.zone_id,
                 "required_role": "broker",
                 "required_faction": spec.required_faction,
                 "reward": {
@@ -495,6 +632,416 @@ mod tests {
             }),
         )
         .await
+    }
+
+    async fn settle_trade_mission_for_agent(app: Router, token: &str, agent_id: &str) -> Value {
+        let mission = publish_trade_mission(
+            app.clone(),
+            token,
+            TradeMissionSpec {
+                title: "Bootstrap exchange route",
+                description: "Seed a frontier liquidity lane",
+                reward_watt: 40,
+                reward_reputation: 4,
+                objective: "seed-route",
+                required_faction: Some("freeport"),
+                subnet_id: Some("planet-test"),
+                zone_id: Some("genesis-core"),
+            },
+        )
+        .await;
+        let mission_id = mission["mission_id"].as_str().unwrap();
+        let _ = authed_post_json(
+            app.clone(),
+            token,
+            "/v1/missions/claim",
+            json!({"mission_id": mission_id, "agent_id": agent_id}),
+        )
+        .await;
+        let _ = authed_post_json(
+            app.clone(),
+            token,
+            "/v1/missions/complete",
+            json!({"mission_id": mission_id, "agent_id": agent_id}),
+        )
+        .await;
+        let _ = authed_post_json(
+            app,
+            token,
+            "/v1/missions/settle",
+            json!({"mission_id": mission_id}),
+        )
+        .await;
+        mission
+    }
+
+    async fn seed_client_view_missions(app: Router, token: &str, agent_id: &str) {
+        let eligible_open = publish_trade_mission(
+            app.clone(),
+            token,
+            TradeMissionSpec {
+                title: "Route liquidity relay",
+                description: "Rebalance frontier markets",
+                reward_watt: 50,
+                reward_reputation: 4,
+                objective: "rebalance",
+                required_faction: Some("freeport"),
+                subnet_id: Some("planet-test"),
+                zone_id: Some("genesis-core"),
+            },
+        )
+        .await;
+        assert_eq!(eligible_open["status"].as_str(), Some("open"));
+
+        let travel_required = publish_trade_mission(
+            app.clone(),
+            token,
+            TradeMissionSpec {
+                title: "Deep watch exchange run",
+                description: "Deliver market telemetry into deep space",
+                reward_watt: 45,
+                reward_reputation: 5,
+                objective: "deep-route",
+                required_faction: None,
+                subnet_id: None,
+                zone_id: Some("deep-space"),
+            },
+        )
+        .await;
+        assert_eq!(travel_required["status"].as_str(), Some("open"));
+
+        let active = publish_trade_mission(
+            app.clone(),
+            token,
+            TradeMissionSpec {
+                title: "Escort exchange convoy",
+                description: "Protect the settlement convoy",
+                reward_watt: 30,
+                reward_reputation: 3,
+                objective: "escort",
+                required_faction: None,
+                subnet_id: Some("planet-test"),
+                zone_id: Some("genesis-core"),
+            },
+        )
+        .await;
+        claim_mission(app.clone(), token, &active["mission_id"], agent_id).await;
+
+        let history = publish_trade_mission(
+            app.clone(),
+            token,
+            TradeMissionSpec {
+                title: "Close market books",
+                description: "Finalize settlement ledgers",
+                reward_watt: 20,
+                reward_reputation: 2,
+                objective: "settle",
+                required_faction: None,
+                subnet_id: Some("planet-test"),
+                zone_id: Some("genesis-core"),
+            },
+        )
+        .await;
+        complete_and_settle_mission(app, token, &history["mission_id"], agent_id).await;
+    }
+
+    fn assert_starter_templates_with_anchor(payload: &Value) {
+        assert_eq!(
+            payload["starter_missions"]["templates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            payload["starter_missions"]["objective_chain"]["steps"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            payload["starter_missions"]["templates"][0]["anchor"]["map_id"]
+                .as_str()
+                .is_some()
+        );
+    }
+
+    fn assert_game_status_payload(status_json: &Value) {
+        assert_eq!(
+            status_json["identity"]["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert!(status_json["onboarding"]["progress_pct"].as_u64().unwrap() > 0);
+        assert_eq!(
+            status_json["starter_missions"]["templates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            status_json["starter_missions"]["objective_chain"]["progress_pct"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            status_json["starter_missions"]["objective_chain"]["current_step_key"]
+                .as_str()
+                .is_some()
+        );
+        assert!(
+            status_json["status"]["qualifications"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 3
+        );
+        assert!(
+            status_json["status"]["qualifications"][0]["progress_pct"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            status_json["status"]["qualifications"][0]["unlocks"]
+                .as_array()
+                .is_some()
+        );
+        assert!(
+            status_json["starter_missions"]["templates"][0]["anchor"]["route_id"]
+                .as_str()
+                .is_some()
+        );
+        assert_eq!(
+            status_json["status"]["governance_journey"]["next_gate"].as_str(),
+            Some("influence_floor")
+        );
+        assert!(status_json["status"]["home_anchor"].is_object());
+        assert!(status_json["status"]["total_influence"].as_i64().unwrap() > 0);
+        assert!(
+            status_json["status"]["recommended_actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action
+                    .as_str()
+                    .is_some_and(|action| action.contains("trade")))
+        );
+        assert!(
+            status_json["onboarding_flow"]["action_cards"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 4
+        );
+        assert!(status_json["organizations"].as_array().is_some());
+        assert!(
+            status_json["experience"]["next_actions"]
+                .as_array()
+                .is_some_and(|actions| !actions.is_empty())
+        );
+        assert!(status_json["experience"]["alerts"].as_array().is_some());
+        assert!(
+            status_json["experience"]["priority_cards"]
+                .as_array()
+                .is_some_and(|cards| !cards.is_empty())
+        );
+    }
+
+    fn assert_game_mission_pack_payload(payload: &Value) {
+        assert_eq!(
+            payload["identity"]["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert_eq!(
+            payload["mission_pack"]["templates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            payload["mission_pack"]["summary"]["current_template_count"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            payload["mission_pack"]["summary"]["role_template_count"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            payload["mission_pack"]["summary"]["civic_template_count"].as_u64(),
+            Some(1)
+        );
+        assert!(
+            payload["mission_pack"]["templates"][0]["payload_schema"]["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field["key"].as_str() == Some("map_anchor"))
+        );
+        assert!(
+            payload["mission_pack"]["templates"][0]["anchor"]["system_id"]
+                .as_str()
+                .is_some()
+        );
+        assert!(
+            payload["mission_pack"]["templates"][0]["suggested_payload"]["objective"]
+                .as_str()
+                .is_some()
+        );
+        assert_eq!(
+            payload["mission_pack"]["upcoming_templates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            usize::try_from(
+                payload["mission_pack"]["summary"]["upcoming_template_count"]
+                    .as_u64()
+                    .unwrap()
+            )
+            .unwrap()
+        );
+    }
+
+    fn assert_dashboard_game_block(dashboard_json: &Value) {
+        assert_eq!(
+            dashboard_json["identity"]["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert!(dashboard_json["mission_summary"]["eligible_open_count"].is_number());
+        assert!(dashboard_json["mission_summary"]["local_open_count"].is_number());
+        assert!(dashboard_json["mission_summary"]["travel_required_open_count"].is_number());
+        assert!(dashboard_json["mission_summary"]["active_count"].is_number());
+        assert_eq!(
+            dashboard_json["home_planet"]["subnet_id"].as_str(),
+            Some("planet-test")
+        );
+        assert_eq!(
+            dashboard_json["game"]["status"]["stage"].as_str(),
+            Some("expansion")
+        );
+        assert!(
+            dashboard_json["game"]["starter_missions"]["templates"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+        assert!(
+            dashboard_json["game"]["starter_missions"]["objective_chain"]["steps"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+        assert!(
+            dashboard_json["game"]["mission_pack"]["templates"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+        assert!(
+            dashboard_json["game"]["mission_pack"]["upcoming_templates"]
+                .as_array()
+                .unwrap()
+                .len()
+                == usize::try_from(
+                    dashboard_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
+                        .as_u64()
+                        .unwrap()
+                )
+                .unwrap()
+        );
+        assert!(
+            dashboard_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
+                .as_u64()
+                .is_some()
+        );
+        assert!(
+            dashboard_json["game"]["onboarding_flow"]["first_hour_plan"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 2
+        );
+        assert!(dashboard_json["organizations"].as_array().is_some());
+        assert!(
+            dashboard_json["experience"]["next_actions"]
+                .as_array()
+                .is_some_and(|actions| !actions.is_empty())
+        );
+        assert!(dashboard_json["experience"]["alerts"].as_array().is_some());
+        assert!(
+            dashboard_json["experience"]["priority_cards"]
+                .as_array()
+                .is_some_and(|cards| !cards.is_empty())
+        );
+    }
+
+    fn assert_client_mission_travel_views(dashboard_json: &Value, my_missions_json: &Value) {
+        assert_eq!(dashboard_json["mission_summary"]["eligible_open_count"], 2);
+        assert_eq!(dashboard_json["mission_summary"]["local_open_count"], 1);
+        assert_eq!(
+            dashboard_json["mission_summary"]["travel_required_open_count"],
+            1
+        );
+        assert_eq!(
+            my_missions_json["eligible_open"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(my_missions_json["local_open"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            my_missions_json["travel_required_open"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(my_missions_json["active"].as_array().unwrap().len(), 1);
+        assert_eq!(my_missions_json["history"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            my_missions_json["local_open"][0]["map_anchor"]["system_id"].as_str(),
+            Some("frontier-gate")
+        );
+        assert_eq!(
+            my_missions_json["local_open"][0]["travel"]["requires_travel"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            my_missions_json["travel_required_open"][0]["map_anchor"]["system_id"].as_str(),
+            Some("abyss-watch")
+        );
+        assert_eq!(
+            my_missions_json["travel_required_open"][0]["travel"]["requires_travel"].as_bool(),
+            Some(true)
+        );
+    }
+
+    fn assert_game_onboarding_payload(payload: &Value) {
+        assert_eq!(
+            payload["identity"]["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert!(
+            payload["onboarding_flow"]["action_cards"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|card| card["key"].as_str() == Some("bootstrap_starter_missions"))
+        );
+        assert!(
+            payload["onboarding_flow"]["first_hour_plan"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| step.as_str().is_some())
+        );
+        assert!(
+            payload["briefing"]["human_report"].is_string()
+                || payload["briefing"]["human_report"].is_object()
+                || payload["briefing"]["human_report"].is_array()
+        );
     }
 
     async fn claim_mission(app: Router, token: &str, mission_id: &Value, agent_id: &str) {
@@ -1135,6 +1682,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn galaxy_travel_endpoints_expose_options_and_plans() {
+        let (_dir, app, token, _) = build_test_app(21);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+
+        let _event_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/galaxy/events",
+            json!({
+                "category": "spatial",
+                "zone_id": "frontier-belt",
+                "title": "Frontier turbulence",
+                "description": "Instability across the gate corridor.",
+                "severity": 8,
+                "tags": ["hazard"]
+            }),
+        )
+        .await;
+
+        let options_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/galaxy/travel/options?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            options_json["from_system_id"].as_str(),
+            Some("frontier-gate")
+        );
+        let options = options_json["options"].as_array().unwrap();
+        assert_eq!(options.len(), 2);
+        let abyss_option = options
+            .iter()
+            .find(|option| option["to_system_id"].as_str() == Some("abyss-watch"))
+            .unwrap();
+        assert_eq!(abyss_option["risk_level"].as_str(), Some("volatile"));
+        assert!(
+            abyss_option["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning["code"].as_str() == Some("route_risk_high"))
+        );
+
+        let plan_json = authed_get_json(
+            app,
+            &token,
+            "/v1/galaxy/travel/plan?public_id=captain-aurora&to_system_id=abyss-watch",
+        )
+        .await;
+        assert_eq!(plan_json["map_id"].as_str(), Some("genesis-base"));
+        assert_eq!(plan_json["total_travel_cost"].as_u64(), Some(5));
+        assert_eq!(plan_json["legs"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            plan_json["traversed_system_ids"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn galaxy_travel_state_and_session_flow_work() {
+        let (_dir, app, token, _) = build_test_app(21);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        let _ = publish_trade_mission(
+            app.clone(),
+            &token,
+            TradeMissionSpec {
+                title: "Deep watch market relay",
+                description: "Unlock deep-space market visibility",
+                reward_watt: 35,
+                reward_reputation: 4,
+                objective: "deep-watch",
+                required_faction: None,
+                subnet_id: None,
+                zone_id: Some("deep-space"),
+            },
+        )
+        .await;
+
+        let initial_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/galaxy/travel/state?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            initial_json["travel_state"]["current_position"]["system_id"].as_str(),
+            Some("frontier-gate")
+        );
+        assert!(initial_json["travel_state"]["active_session"].is_null());
+
+        let departed_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/galaxy/travel/depart",
+            json!({
+                "public_id": "captain-aurora",
+                "to_system_id": "abyss-watch"
+            }),
+        )
+        .await;
+        assert_eq!(
+            departed_json["travel_state"]["active_session"]["to_system_id"].as_str(),
+            Some("abyss-watch")
+        );
+        assert_eq!(
+            departed_json["travel_state"]["active_session"]["status"].as_str(),
+            Some("in_transit")
+        );
+
+        let arrived_json = authed_post_json(
+            app,
+            &token,
+            "/v1/galaxy/travel/arrive",
+            json!({
+                "public_id": "captain-aurora"
+            }),
+        )
+        .await;
+        assert_eq!(
+            arrived_json["travel_state"]["current_position"]["system_id"].as_str(),
+            Some("abyss-watch")
+        );
+        assert!(arrived_json["travel_state"]["active_session"].is_null());
+        assert_eq!(
+            arrived_json["travel_state"]["current_position"]["zone_id"].as_str(),
+            Some("deep-space")
+        );
+        assert_eq!(
+            arrived_json["travel_state"]["last_consequence"]["mission_impact"]["eligible_local_count"]
+                .as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            arrived_json["travel_state"]["last_consequence"]["route_risk_level"].as_str(),
+            Some("volatile")
+        );
+        assert!(
+            !arrived_json["travel_state"]["recent_consequences"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn mission_lifecycle_settles_and_funds_treasury() {
         let (dir, app, token, _) = build_test_app(30);
 
@@ -1458,8 +2155,10 @@ mod tests {
         let characters = characters_json["characters"].as_array().unwrap();
         assert!(characters.len() >= 2);
         assert!(characters.iter().any(|item| {
-            item["public_identity"]["public_id"].as_str() == Some("captain-aurora")
-                && item["profile"]["role"].as_str() == Some("broker")
+            item["identity"]["public_identity"]["public_id"].as_str() == Some("captain-aurora")
+                && item["identity"]["profile"]["role"].as_str() == Some("broker")
+                && item["travel_state"]["current_position"]["system_id"].as_str()
+                    == Some("frontier-gate")
         }));
 
         let catalog_json = authed_get_json(app, &token, "/v1/catalog/bootstrap").await;
@@ -1470,7 +2169,89 @@ mod tests {
                 .iter()
                 .any(|item| item.as_str() == Some("broker"))
         );
+        assert!(
+            catalog_json["travel_risk_levels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("volatile"))
+        );
+        assert!(
+            catalog_json["organization_kinds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("consortium"))
+        );
+        assert!(
+            catalog_json["organization_permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("publish_missions"))
+        );
+        assert!(
+            catalog_json["organization_permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("manage_governance"))
+        );
+        assert!(
+            catalog_json["organization_proposal_kinds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("subnet_charter"))
+        );
         assert_eq!(catalog_json["galaxy_zones"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn game_catalog_and_status_endpoints_work() {
+        let (_dir, app, token, _) = build_test_app(20);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        let _ = bootstrap_broker_game(app.clone(), &token, agent_id).await;
+        let _ = settle_trade_mission_for_agent(app.clone(), &token, agent_id).await;
+
+        let catalog_json = authed_get_json(app.clone(), &token, "/v1/game/catalog").await;
+        assert_eq!(catalog_json["roles"].as_array().unwrap().len(), 4);
+        assert_eq!(catalog_json["stages"].as_array().unwrap().len(), 4);
+        let starter_list = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/game/starter-missions?public_id=captain-aurora",
+        )
+        .await;
+        assert_starter_templates_with_anchor(&starter_list);
+        let pack_bootstrap = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/game/mission-pack/bootstrap",
+            json!({"public_id": "captain-aurora"}),
+        )
+        .await;
+        assert_eq!(pack_bootstrap["created"].as_array().unwrap().len(), 2);
+        let mission_pack_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/game/mission-pack?public_id=captain-aurora",
+        )
+        .await;
+        assert_game_mission_pack_payload(&mission_pack_json);
+        let onboarding_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/game/onboarding?public_id=captain-aurora",
+        )
+        .await;
+        assert_game_onboarding_payload(&onboarding_json);
+
+        let status_json =
+            authed_get_json(app, &token, "/v1/game/status?public_id=captain-aurora").await;
+        assert_game_status_payload(&status_json);
     }
 
     #[tokio::test]
@@ -1480,51 +2261,7 @@ mod tests {
         let agent_id = state_json["agent_id"].as_str().unwrap();
 
         bootstrap_broker_character(app.clone(), &token, agent_id).await;
-
-        let eligible_open = publish_trade_mission(
-            app.clone(),
-            &token,
-            TradeMissionSpec {
-                title: "Route liquidity relay",
-                description: "Rebalance frontier markets",
-                reward_watt: 50,
-                reward_reputation: 4,
-                objective: "rebalance",
-                required_faction: Some("freeport"),
-            },
-        )
-        .await;
-        assert_eq!(eligible_open["status"].as_str(), Some("open"));
-
-        let active = publish_trade_mission(
-            app.clone(),
-            &token,
-            TradeMissionSpec {
-                title: "Escort exchange convoy",
-                description: "Protect the settlement convoy",
-                reward_watt: 30,
-                reward_reputation: 3,
-                objective: "escort",
-                required_faction: None,
-            },
-        )
-        .await;
-        claim_mission(app.clone(), &token, &active["mission_id"], agent_id).await;
-
-        let history = publish_trade_mission(
-            app.clone(),
-            &token,
-            TradeMissionSpec {
-                title: "Close market books",
-                description: "Finalize settlement ledgers",
-                reward_watt: 20,
-                reward_reputation: 2,
-                objective: "settle",
-                required_faction: None,
-            },
-        )
-        .await;
-        complete_and_settle_mission(app.clone(), &token, &history["mission_id"], agent_id).await;
+        seed_client_view_missions(app.clone(), &token, agent_id).await;
 
         let dashboard_json = authed_get_json(
             app.clone(),
@@ -1532,16 +2269,7 @@ mod tests {
             "/v1/dashboard/home?public_id=captain-aurora",
         )
         .await;
-        assert_eq!(
-            dashboard_json["identity"]["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
-        );
-        assert_eq!(dashboard_json["mission_summary"]["eligible_open_count"], 1);
-        assert_eq!(dashboard_json["mission_summary"]["active_count"], 1);
-        assert_eq!(
-            dashboard_json["home_planet"]["subnet_id"].as_str(),
-            Some("planet-test")
-        );
+        assert_dashboard_game_block(&dashboard_json);
 
         let my_missions_json = authed_get_json(
             app.clone(),
@@ -1549,12 +2277,7 @@ mod tests {
             "/v1/missions/my?public_id=captain-aurora",
         )
         .await;
-        assert_eq!(
-            my_missions_json["eligible_open"].as_array().unwrap().len(),
-            1
-        );
-        assert_eq!(my_missions_json["active"].as_array().unwrap().len(), 1);
-        assert_eq!(my_missions_json["history"].as_array().unwrap().len(), 1);
+        assert_client_mission_travel_views(&dashboard_json, &my_missions_json);
 
         let my_governance_json =
             authed_get_json(app, &token, "/v1/governance/my?public_id=captain-aurora").await;
@@ -1572,6 +2295,518 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            my_governance_json["journey"]["next_gate"].as_str(),
+            Some("influence_floor")
+        );
+        assert!(
+            my_governance_json["qualification_tracks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|track| track["key"].as_str() == Some("civic_governance"))
+        );
+        assert!(
+            !my_governance_json["next_actions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn organization_endpoints_and_views_work() {
+        let (_dir, app, token, _) = build_test_app(80);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        let _ = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-character",
+            json!({
+                "public_id": "quartermaster-echo",
+                "display_name": "Quartermaster Echo",
+                "legacy_agent_id": "agent-echo",
+                "faction": "freeport",
+                "role": "operator",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "frontier-belt",
+                "controller_kind": "external_runtime",
+                "controller_ref": "external-echo",
+                "controller_node_id": "agent-echo",
+                "ownership_scope": "external"
+            }),
+        )
+        .await;
+        let _ = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-character",
+            json!({
+                "public_id": "scout-voss",
+                "display_name": "Scout Voss",
+                "legacy_agent_id": "agent-voss",
+                "faction": "freeport",
+                "role": "enforcer",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "frontier-belt",
+                "controller_kind": "external_runtime",
+                "controller_ref": "external-voss",
+                "controller_node_id": "agent-voss",
+                "ownership_scope": "external"
+            }),
+        )
+        .await;
+        let created_org = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations",
+            json!({
+                "public_id": "captain-aurora",
+                "organization_id": "aurora-consortium",
+                "name": "Aurora Consortium",
+                "kind": "consortium",
+                "summary": "Coordinates frontier logistics and trade corridors.",
+                "faction_alignment": "freeport",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "frontier-belt"
+            }),
+        )
+        .await;
+        assert_eq!(
+            created_org["organization"]["organization_id"].as_str(),
+            Some("aurora-consortium")
+        );
+
+        let member_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/members",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "public_id": "quartermaster-echo",
+                "role": "officer",
+                "title": "Quartermaster"
+            }),
+        )
+        .await;
+        assert_eq!(
+            member_json["membership"]["public_id"].as_str(),
+            Some("quartermaster-echo")
+        );
+
+        let funded_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/treasury/fund",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "amount_watt": 60,
+                "reason": "seed frontier treasury"
+            }),
+        )
+        .await;
+        assert_eq!(
+            funded_json["organization"]["treasury_watt"].as_i64(),
+            Some(60)
+        );
+
+        let spent_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/treasury/spend",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "amount_watt": 15,
+                "reason": "fund escort contract"
+            }),
+        )
+        .await;
+        assert_eq!(
+            spent_json["organization"]["treasury_watt"].as_i64(),
+            Some(45)
+        );
+
+        let forbidden_member_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/members",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "quartermaster-echo",
+                "public_id": "scout-voss",
+                "role": "member",
+                "title": "Scout"
+            }),
+        )
+        .await;
+        assert_eq!(
+            forbidden_member_json["error"].as_str(),
+            Some("officer role does not grant ManageMembers")
+        );
+
+        let scout_member_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/members",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "public_id": "scout-voss",
+                "role": "member",
+                "title": "Scout"
+            }),
+        )
+        .await;
+        assert_eq!(
+            scout_member_json["membership"]["public_id"].as_str(),
+            Some("scout-voss")
+        );
+
+        let published_mission = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/missions",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "quartermaster-echo",
+                "title": "Staff the frontier exchange",
+                "description": "Coordinate organization members around the exchange lane.",
+                "domain": "trade",
+                "subnet_id": "planet-test",
+                "zone_id": "frontier-belt",
+                "required_role": "broker",
+                "required_faction": "freeport",
+                "treasury_commit_watt": 5,
+                "reward": {
+                    "agent_watt": 30,
+                    "reputation": 3,
+                    "capacity": 2,
+                    "treasury_share_watt": 4
+                },
+                "payload": {
+                    "organization_id": "aurora-consortium"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            published_mission["mission"]["publisher_kind"].as_str(),
+            Some("organization")
+        );
+        assert_eq!(
+            published_mission["organization"]["treasury_watt"].as_i64(),
+            Some(40)
+        );
+        complete_and_settle_mission(
+            app.clone(),
+            &token,
+            &published_mission["mission"]["mission_id"],
+            agent_id,
+        )
+        .await;
+
+        let second_org_mission = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/missions",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "title": "Audit the frontier exchange",
+                "description": "Verify the route books before expansion.",
+                "domain": "power",
+                "subnet_id": "planet-test",
+                "zone_id": "frontier-belt",
+                "required_role": "broker",
+                "required_faction": "freeport",
+                "treasury_commit_watt": 0,
+                "reward": {
+                    "agent_watt": 20,
+                    "reputation": 2,
+                    "capacity": 1,
+                    "treasury_share_watt": 3
+                },
+                "payload": {
+                    "organization_id": "aurora-consortium"
+                }
+            }),
+        )
+        .await;
+        complete_and_settle_mission(
+            app.clone(),
+            &token,
+            &second_org_mission["mission"]["mission_id"],
+            agent_id,
+        )
+        .await;
+
+        let proposal_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/proposals",
+            json!({
+                "organization_id": "aurora-consortium",
+                "actor_public_id": "captain-aurora",
+                "kind": "subnet_charter",
+                "title": "Charter Aurora Reach",
+                "summary": "Request a dedicated subnet for consortium traffic and governance.",
+                "proposed_subnet_id": "planet-aurora",
+                "proposed_subnet_name": "Aurora Reach"
+            }),
+        )
+        .await;
+        let proposal_id = proposal_json["proposal"]["proposal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let founder_vote = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/proposals/vote",
+            json!({
+                "proposal_id": proposal_id.clone(),
+                "actor_public_id": "captain-aurora",
+                "approve": true
+            }),
+        )
+        .await;
+        assert_eq!(
+            founder_vote["proposal"]["votes_for"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let scout_vote = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/proposals/vote",
+            json!({
+                "proposal_id": proposal_id.clone(),
+                "actor_public_id": "scout-voss",
+                "approve": true
+            }),
+        )
+        .await;
+        assert_eq!(
+            scout_vote["proposal"]["votes_for"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let finalized_proposal = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/proposals/finalize",
+            json!({
+                "proposal_id": proposal_id.clone(),
+                "actor_public_id": "quartermaster-echo",
+                "min_votes_for": 2
+            }),
+        )
+        .await;
+        assert_eq!(
+            finalized_proposal["proposal"]["status"].as_str(),
+            Some("accepted")
+        );
+
+        let charter_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/charters",
+            json!({
+                "proposal_id": proposal_json["proposal"]["proposal_id"],
+                "actor_public_id": "captain-aurora"
+            }),
+        )
+        .await;
+        assert_eq!(
+            charter_json["charter_application"]["status"].as_str(),
+            Some("pending_governance")
+        );
+        assert_eq!(
+            charter_json["charter_application"]["sponsor_controller_id"].as_str(),
+            Some(agent_id)
+        );
+
+        let organizations_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            organizations_json["organizations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["active_member_count"].as_u64(),
+            Some(3)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["organization"]["treasury_watt"].as_i64(),
+            Some(40)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["open_mission_count"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["settled_mission_count"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["subnet_readiness"].as_str(),
+            Some("subnet-ready")
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["permissions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["autonomy_track"]["current_status"].as_str(),
+            Some("subnet-ready")
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["autonomy_track"]["eligible_for_subnet_charter"]
+                .as_bool(),
+            Some(true)
+        );
+        assert!(
+            organizations_json["organizations"][0]["autonomy_track"]["gates"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 5
+        );
+        assert!(
+            organizations_json["organizations"][0]["autonomy_track"]["next_action"]
+                .as_str()
+                .is_some()
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["governance_summary"]["accepted_proposals_count"]
+                .as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["governance_summary"]["charter_application_count"]
+                .as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            organizations_json["organizations"][0]["governance_summary"]["latest_charter_application"]["proposed_subnet_id"]
+                .as_str(),
+            Some("planet-aurora")
+        );
+
+        let governance_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/proposals?organization_id=aurora-consortium&public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(governance_json["proposals"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            governance_json["charter_applications"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let my_organizations_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/organizations/my?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            my_organizations_json["organizations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let officer_orgs_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/organizations/my?public_id=quartermaster-echo",
+        )
+        .await;
+        assert_eq!(
+            officer_orgs_json["organizations"][0]["permissions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(
+            officer_orgs_json["organizations"][0]["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|permission| permission.as_str() != Some("manage_members"))
+        );
+        assert!(
+            officer_orgs_json["organizations"][0]["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|permission| permission.as_str() == Some("manage_governance"))
+        );
+
+        let governance_my_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/governance/my?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            governance_my_json["organizations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            governance_my_json["charter_applications"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let dashboard_json =
+            authed_get_json(app, &token, "/v1/dashboard/home?public_id=captain-aurora").await;
+        assert_eq!(dashboard_json["organizations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            dashboard_json["game"]["organizations"][0]["organization"]["organization_id"].as_str(),
+            Some("aurora-consortium")
+        );
+        assert!(
+            dashboard_json["game"]["organizations"][0]["autonomy_track"]["eligible_for_subnet_charter"]
+                .as_bool()
+                == Some(true)
         );
     }
 }

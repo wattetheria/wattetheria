@@ -2,6 +2,7 @@
 
 pub mod brain;
 pub mod civilization;
+pub mod game;
 pub mod governance;
 pub mod map;
 pub mod security;
@@ -18,10 +19,16 @@ pub use civilization::galaxy;
 pub use civilization::identities;
 pub use civilization::metrics;
 pub use civilization::missions;
+pub use civilization::organizations;
 pub use civilization::profiles;
+pub use game::catalog as game_catalog;
+pub use game::progression as game_progression;
 pub use governance::mailbox;
 pub use governance::oracle;
+pub use map::consequence as map_consequence;
 pub use map::registry as map_registry;
+pub use map::state as map_state;
+pub use map::travel as map_travel;
 pub use map::validator as map_validator;
 pub use security::admission;
 pub use security::capabilities;

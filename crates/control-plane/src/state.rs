@@ -15,6 +15,9 @@ use wattetheria_kernel::civilization::identities::{
 use wattetheria_kernel::civilization::missions::{
     MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionStatus,
 };
+use wattetheria_kernel::civilization::organizations::{
+    OrganizationKind, OrganizationProposalKind, OrganizationRegistry, OrganizationRole,
+};
 use wattetheria_kernel::civilization::profiles::{
     CitizenRegistry, Faction, RolePath, StrategyProfile,
 };
@@ -23,6 +26,7 @@ use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
+use wattetheria_kernel::map::state::TravelStateRegistry;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
 use wattetheria_kernel::swarm_bridge::SwarmBridge;
 
@@ -85,10 +89,14 @@ pub struct ControlPlaneState {
     pub controller_binding_registry_state_path: PathBuf,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
     pub citizen_registry_state_path: PathBuf,
+    pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
+    pub organization_registry_state_path: PathBuf,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
     pub galaxy_state_path: PathBuf,
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
     pub galaxy_map_registry_state_path: PathBuf,
+    pub travel_state_registry: Arc<Mutex<TravelStateRegistry>>,
+    pub travel_state_registry_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub audit_log: AuditLog,
     pub rate_limiter: Arc<RateLimiter>,
@@ -339,6 +347,60 @@ pub struct GalaxyMapQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct GalaxyTravelOptionsQuery {
+    #[serde(rename = "map_id")]
+    pub map: Option<String>,
+    #[serde(rename = "public_id")]
+    pub public_identity: Option<String>,
+    #[serde(rename = "agent_id")]
+    pub controller: Option<String>,
+    #[serde(rename = "from_system_id")]
+    pub from_system: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalaxyTravelPlanQuery {
+    #[serde(rename = "map_id")]
+    pub map: Option<String>,
+    #[serde(rename = "public_id")]
+    pub public_identity: Option<String>,
+    #[serde(rename = "agent_id")]
+    pub controller: Option<String>,
+    #[serde(rename = "from_system_id")]
+    pub from_system: Option<String>,
+    #[serde(rename = "to_system_id")]
+    pub destination: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalaxyTravelStateQuery {
+    #[serde(rename = "public_id")]
+    pub public_identity: Option<String>,
+    #[serde(rename = "agent_id")]
+    pub controller: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalaxyTravelDepartBody {
+    #[serde(rename = "map_id")]
+    pub map: Option<String>,
+    #[serde(rename = "public_id")]
+    pub public_identity: Option<String>,
+    #[serde(rename = "agent_id")]
+    pub controller: Option<String>,
+    #[serde(rename = "to_system_id")]
+    pub destination: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalaxyTravelArriveBody {
+    #[serde(rename = "public_id")]
+    pub public_identity: Option<String>,
+    #[serde(rename = "agent_id")]
+    pub controller: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct EmergencyQuery {
     pub agent_id: Option<String>,
     pub public_id: Option<String>,
@@ -359,6 +421,95 @@ pub struct CharacterBootstrapBody {
     pub controller_node_id: Option<String>,
     pub ownership_scope: Option<OwnershipScope>,
     pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationsQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationCreateBody {
+    pub public_id: Option<String>,
+    pub organization_id: String,
+    pub name: String,
+    pub kind: OrganizationKind,
+    pub summary: String,
+    pub faction_alignment: Option<Faction>,
+    pub home_subnet_id: Option<String>,
+    pub home_zone_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationMemberBody {
+    pub organization_id: String,
+    pub actor_public_id: Option<String>,
+    pub public_id: String,
+    pub role: OrganizationRole,
+    pub title: Option<String>,
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationTreasuryBody {
+    pub organization_id: String,
+    pub actor_public_id: Option<String>,
+    pub amount_watt: i64,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationMissionPublishBody {
+    pub organization_id: String,
+    pub actor_public_id: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub domain: MissionDomain,
+    pub subnet_id: Option<String>,
+    pub zone_id: Option<String>,
+    pub required_role: Option<RolePath>,
+    pub required_faction: Option<Faction>,
+    pub reward: MissionReward,
+    pub treasury_commit_watt: Option<i64>,
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationProposalsQuery {
+    pub organization_id: String,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationProposalCreateBody {
+    pub organization_id: String,
+    pub actor_public_id: Option<String>,
+    pub kind: OrganizationProposalKind,
+    pub title: String,
+    pub summary: String,
+    pub proposed_subnet_id: Option<String>,
+    pub proposed_subnet_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationProposalVoteBody {
+    pub proposal_id: String,
+    pub actor_public_id: Option<String>,
+    pub approve: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationProposalFinalizeBody {
+    pub proposal_id: String,
+    pub actor_public_id: Option<String>,
+    pub min_votes_for: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrganizationCharterApplicationBody {
+    pub proposal_id: String,
+    pub actor_public_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -397,7 +548,25 @@ pub struct MyGovernanceQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct MyOrganizationsQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct BootstrapCatalogQuery {}
+
+#[derive(Debug, Deserialize)]
+pub struct GameStatusQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GameActionBody {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
 
 pub(crate) async fn send_stream_text(
     socket: &mut axum::extract::ws::WebSocket,

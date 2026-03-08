@@ -3,4 +3,5 @@ pub mod galaxy;
 pub mod identities;
 pub mod metrics;
 pub mod missions;
+pub mod organizations;
 pub mod profiles;
