@@ -10,7 +10,7 @@ use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{
     build_brain_state, load_night_shift_report, run_autonomy_tick_once, run_demo_market_task,
 };
-use crate::routes::civilization::identity_context_value;
+use crate::routes::identity::identity_context_value;
 use crate::state::{
     ActionRequest, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery,
     EventsQuery, NightShiftQuery, StreamEvent, send_stream_text,

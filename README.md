@@ -218,6 +218,11 @@ Short version:
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
 - Civilization APIs:
+  - `GET /v1/civilization/characters`
+  - `GET /v1/dashboard/home`
+  - `GET /v1/missions/my`
+  - `GET /v1/governance/my`
+  - `GET /v1/catalog/bootstrap`
   - `POST /v1/civilization/bootstrap-character`
   - `GET|POST /v1/civilization/public-identity`
   - `GET|POST /v1/civilization/controller-binding`
@@ -243,6 +248,15 @@ Most civilization-facing responses now resolve through the same identity bundle:
 - `public_memory_owner`
 
 `GET /v1/state` now also includes an `identity` object with that same resolved bundle.
+
+These client-facing endpoints are the current Godot P0 surface:
+
+- `GET /v1/civilization/characters` returns local playable characters with resolved identity bundles.
+- `POST /v1/civilization/bootstrap-character` creates `public_identity + controller_binding + profile`.
+- `GET /v1/dashboard/home` returns home-screen aggregates: identity, metrics, emergencies, briefing, mission counts, and home galaxy context.
+- `GET /v1/missions/my` returns `eligible_open`, `active`, and `history` mission buckets for the selected public identity.
+- `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, and active risks.
+- `GET /v1/catalog/bootstrap` returns client bootstrap catalogs for factions, roles, strategies, controller kinds, ownership scopes, mission domains, and galaxy zones.
 
 ### Persistence Guarantees Implemented
 
@@ -319,6 +333,12 @@ curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-character \
   -H "content-type: application/json" \
   -d '{"public_id":"captain-aurora","display_name":"Captain Aurora","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/civilization/characters
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/dashboard/home?public_id=captain-aurora
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/catalog/bootstrap
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/galaxy/zones
 curl -X POST http://127.0.0.1:7777/v1/civilization/profile \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
@@ -334,6 +354,10 @@ curl -X POST http://127.0.0.1:7777/v1/galaxy/events/generate \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
   -d '{"max_events":3}'
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/missions/my?public_id=captain-aurora
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/governance/my?public_id=captain-aurora
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/civilization/briefing?hours=12
 ```

@@ -2,8 +2,10 @@ mod auth;
 mod autonomy;
 pub mod routes {
     pub(crate) mod civilization;
+    pub(crate) mod client;
     pub(crate) mod core;
     pub(crate) mod governance;
+    pub(crate) mod identity;
     pub(crate) mod mailbox;
     pub(crate) mod missions;
     pub(crate) mod policy;
@@ -21,11 +23,27 @@ pub use state::{ControlPlaneState, RateLimiter, StreamEvent};
 pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
         .merge(core_router())
+        .merge(client_router())
         .merge(civilization_router())
         .merge(governance_router())
         .merge(mailbox_router())
         .merge(policy_router())
         .with_state(state)
+}
+
+fn client_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/civilization/characters",
+            get(routes::client::client_characters),
+        )
+        .route("/v1/dashboard/home", get(routes::client::dashboard_home))
+        .route("/v1/missions/my", get(routes::client::my_missions))
+        .route("/v1/governance/my", get(routes::client::my_governance))
+        .route(
+            "/v1/catalog/bootstrap",
+            get(routes::client::bootstrap_catalog),
+        )
 }
 
 fn core_router() -> Router<ControlPlaneState> {
@@ -402,6 +420,104 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    async fn bootstrap_broker_character(app: Router, token: &str, agent_id: &str) {
+        authed_post_json(
+            app,
+            token,
+            "/v1/civilization/bootstrap-character",
+            json!({
+                "public_id": "captain-aurora",
+                "display_name": "Captain Aurora",
+                "legacy_agent_id": agent_id,
+                "faction": "freeport",
+                "role": "broker",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "genesis-core"
+            }),
+        )
+        .await;
+    }
+
+    struct TradeMissionSpec<'a> {
+        title: &'a str,
+        description: &'a str,
+        reward_watt: u64,
+        reward_reputation: i64,
+        objective: &'a str,
+        required_faction: Option<&'a str>,
+    }
+
+    async fn publish_trade_mission(app: Router, token: &str, spec: TradeMissionSpec<'_>) -> Value {
+        authed_post_json(
+            app,
+            token,
+            "/v1/missions",
+            json!({
+                "title": spec.title,
+                "description": spec.description,
+                "publisher": "planet-test",
+                "publisher_kind": "planetary_government",
+                "domain": "trade",
+                "subnet_id": "planet-test",
+                "zone_id": "genesis-core",
+                "required_role": "broker",
+                "required_faction": spec.required_faction,
+                "reward": {
+                    "agent_watt": spec.reward_watt,
+                    "reputation": spec.reward_reputation,
+                    "capacity": 1,
+                    "treasury_share_watt": 5
+                },
+                "payload": {"objective": spec.objective}
+            }),
+        )
+        .await
+    }
+
+    async fn claim_mission(app: Router, token: &str, mission_id: &Value, agent_id: &str) {
+        assert_eq!(
+            authed_post(
+                app,
+                token,
+                "/v1/missions/claim",
+                json!({"mission_id": mission_id, "agent_id": agent_id}),
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+
+    async fn complete_and_settle_mission(
+        app: Router,
+        token: &str,
+        mission_id: &Value,
+        agent_id: &str,
+    ) {
+        for uri in ["/v1/missions/claim", "/v1/missions/complete"] {
+            assert_eq!(
+                authed_post(
+                    app.clone(),
+                    token,
+                    uri,
+                    json!({"mission_id": mission_id, "agent_id": agent_id}),
+                )
+                .await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            authed_post(
+                app,
+                token,
+                "/v1/missions/settle",
+                json!({"mission_id": mission_id}),
+            )
+            .await,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
@@ -1274,6 +1390,152 @@ mod tests {
         assert_eq!(
             bootstrap_event.payload["public_memory"]["controller_id"].as_str(),
             Some(agent_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn client_characters_and_catalog_endpoints_work() {
+        let (_dir, app, token, _) = build_test_app(20);
+
+        let bootstrap_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-character",
+            json!({
+                "public_id": "captain-aurora",
+                "display_name": "Captain Aurora",
+                "faction": "freeport",
+                "role": "broker",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "genesis-core"
+            }),
+        )
+        .await;
+        assert_eq!(
+            bootstrap_json["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+
+        let characters_json =
+            authed_get_json(app.clone(), &token, "/v1/civilization/characters").await;
+        let characters = characters_json["characters"].as_array().unwrap();
+        assert!(characters.len() >= 2);
+        assert!(characters.iter().any(|item| {
+            item["public_identity"]["public_id"].as_str() == Some("captain-aurora")
+                && item["profile"]["role"].as_str() == Some("broker")
+        }));
+
+        let catalog_json = authed_get_json(app, &token, "/v1/catalog/bootstrap").await;
+        assert!(
+            catalog_json["roles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item.as_str() == Some("broker"))
+        );
+        assert_eq!(catalog_json["galaxy_zones"].as_array().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn client_dashboard_and_my_views_work() {
+        let (_dir, app, token, _) = build_test_app(20);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+
+        let eligible_open = publish_trade_mission(
+            app.clone(),
+            &token,
+            TradeMissionSpec {
+                title: "Route liquidity relay",
+                description: "Rebalance frontier markets",
+                reward_watt: 50,
+                reward_reputation: 4,
+                objective: "rebalance",
+                required_faction: Some("freeport"),
+            },
+        )
+        .await;
+        assert_eq!(eligible_open["status"].as_str(), Some("open"));
+
+        let active = publish_trade_mission(
+            app.clone(),
+            &token,
+            TradeMissionSpec {
+                title: "Escort exchange convoy",
+                description: "Protect the settlement convoy",
+                reward_watt: 30,
+                reward_reputation: 3,
+                objective: "escort",
+                required_faction: None,
+            },
+        )
+        .await;
+        claim_mission(app.clone(), &token, &active["mission_id"], agent_id).await;
+
+        let history = publish_trade_mission(
+            app.clone(),
+            &token,
+            TradeMissionSpec {
+                title: "Close market books",
+                description: "Finalize settlement ledgers",
+                reward_watt: 20,
+                reward_reputation: 2,
+                objective: "settle",
+                required_faction: None,
+            },
+        )
+        .await;
+        complete_and_settle_mission(app.clone(), &token, &history["mission_id"], agent_id).await;
+
+        let dashboard_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/dashboard/home?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            dashboard_json["identity"]["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert_eq!(dashboard_json["mission_summary"]["eligible_open_count"], 1);
+        assert_eq!(dashboard_json["mission_summary"]["active_count"], 1);
+        assert_eq!(
+            dashboard_json["home_planet"]["subnet_id"].as_str(),
+            Some("planet-test")
+        );
+
+        let my_missions_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/missions/my?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            my_missions_json["eligible_open"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(my_missions_json["active"].as_array().unwrap().len(), 1);
+        assert_eq!(my_missions_json["history"].as_array().unwrap().len(), 1);
+
+        let my_governance_json =
+            authed_get_json(app, &token, "/v1/governance/my?public_id=captain-aurora").await;
+        assert_eq!(
+            my_governance_json["home_planet"]["subnet_id"].as_str(),
+            Some("planet-test")
+        );
+        assert_eq!(
+            my_governance_json["eligibility"]["has_valid_license"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            my_governance_json["governed_planets"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
     }
 }

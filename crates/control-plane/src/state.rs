@@ -369,6 +369,28 @@ pub struct GalaxyGenerateBody {
     pub max_events: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DashboardHomeQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+    pub hours: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MyMissionsQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MyGovernanceQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BootstrapCatalogQuery {}
+
 pub(crate) async fn send_stream_text(
     socket: &mut axum::extract::ws::WebSocket,
     payload: String,
