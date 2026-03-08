@@ -7,6 +7,7 @@ pub mod routes {
     pub(crate) mod governance;
     pub(crate) mod identity;
     pub(crate) mod mailbox;
+    pub(crate) mod map;
     pub(crate) mod missions;
     pub(crate) mod policy;
 }
@@ -24,6 +25,7 @@ pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
         .merge(core_router())
         .merge(client_router())
+        .merge(map_router())
         .merge(civilization_router())
         .merge(governance_router())
         .merge(mailbox_router())
@@ -65,6 +67,12 @@ fn core_router() -> Router<ControlPlaneState> {
         .route("/v1/autonomy/tick", post(routes::core::autonomy_tick))
         .route("/v1/audit", get(routes::core::audit_recent))
         .route("/v1/stream", get(routes::core::stream))
+}
+
+fn map_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/v1/galaxy/map", get(routes::map::galaxy_map))
+        .route("/v1/galaxy/maps", get(routes::map::galaxy_maps))
 }
 
 fn civilization_router() -> Router<ControlPlaneState> {
@@ -240,6 +248,7 @@ mod tests {
     };
     use wattetheria_kernel::identity::Identity;
     use wattetheria_kernel::mailbox::CrossSubnetMailbox;
+    use wattetheria_kernel::map::registry::GalaxyMapRegistry;
     use wattetheria_kernel::policy_engine::PolicyEngine;
     use wattetheria_kernel::swarm_bridge::LegacyTaskEngineBridge;
 
@@ -260,6 +269,7 @@ mod tests {
             dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
         let galaxy_state_path = dir.path().join("galaxy/state.json");
+        let galaxy_map_registry_state_path = dir.path().join("galaxy/maps.json");
 
         let policy_engine = Arc::new(Mutex::new(
             PolicyEngine::load_or_new(
@@ -334,9 +344,17 @@ mod tests {
         let citizen_registry = Arc::new(Mutex::new(
             CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
         ));
-        let galaxy_state = Arc::new(Mutex::new(
-            GalaxyState::load_or_new(&galaxy_state_path).unwrap(),
-        ));
+        let galaxy_state_loaded = GalaxyState::load_or_new(&galaxy_state_path).unwrap();
+        let mut galaxy_map_registry_loaded =
+            GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path).unwrap();
+        galaxy_map_registry_loaded
+            .ensure_default_genesis_map(&galaxy_state_loaded.zones())
+            .unwrap();
+        galaxy_map_registry_loaded
+            .persist(&galaxy_map_registry_state_path)
+            .unwrap();
+        let galaxy_state = Arc::new(Mutex::new(galaxy_state_loaded));
+        let galaxy_map_registry = Arc::new(Mutex::new(galaxy_map_registry_loaded));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
         let bridge_event_log = event_log.clone();
@@ -367,6 +385,8 @@ mod tests {
             citizen_registry_state_path,
             galaxy_state,
             galaxy_state_path,
+            galaxy_map_registry,
+            galaxy_map_registry_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             audit_log,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
@@ -1096,6 +1116,22 @@ mod tests {
             events_json["public_memory_owner"]["controller_id"].as_str(),
             Some(agent_id)
         );
+    }
+
+    #[tokio::test]
+    async fn galaxy_map_endpoints_expose_official_genesis_map() {
+        let (_dir, app, token, _) = build_test_app(20);
+
+        let map_list_json = authed_get_json(app.clone(), &token, "/v1/galaxy/maps").await;
+        let maps = map_list_json["maps"].as_array().unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!(maps[0]["map_id"].as_str(), Some("genesis-base"));
+        assert_eq!(maps[0]["system_count"].as_u64(), Some(3));
+
+        let selected_map_json = authed_get_json(app, &token, "/v1/galaxy/map").await;
+        assert_eq!(selected_map_json["map_id"].as_str(), Some("genesis-base"));
+        assert_eq!(selected_map_json["systems"].as_array().unwrap().len(), 3);
+        assert_eq!(selected_map_json["routes"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

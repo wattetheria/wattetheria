@@ -40,6 +40,7 @@ use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
+use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::PolicyEngine;
@@ -71,6 +72,8 @@ struct CivilizationRuntimeState {
     citizen_registry_state_path: PathBuf,
     galaxy_state: GalaxyState,
     galaxy_state_path: PathBuf,
+    galaxy_map_registry: GalaxyMapRegistry,
+    galaxy_map_registry_state_path: PathBuf,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -293,6 +296,8 @@ fn build_control_state(
         citizen_registry_state_path: civilization_state.citizen_registry_state_path,
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_state_path: civilization_state.galaxy_state_path,
+        galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
+        galaxy_map_registry_state_path: civilization_state.galaxy_map_registry_state_path,
         brain_engine,
         audit_log,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
@@ -322,6 +327,10 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
     } else {
         GalaxyState::load_or_new(&galaxy_state_path)?
     };
+    let galaxy_map_registry_state_path = cli.data_dir.join("galaxy/maps.json");
+    let mut galaxy_map_registry = GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path)?;
+    galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?;
+    galaxy_map_registry.persist(&galaxy_map_registry_state_path)?;
     let public_identity = public_identity_registry.ensure_local_default(agent_id);
     let _ =
         controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_id);
@@ -339,6 +348,8 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
         citizen_registry_state_path,
         galaxy_state,
         galaxy_state_path,
+        galaxy_map_registry,
+        galaxy_map_registry_state_path,
     })
 }
 

@@ -22,6 +22,7 @@ use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
+use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
 use wattetheria_kernel::swarm_bridge::SwarmBridge;
 
@@ -86,6 +87,8 @@ pub struct ControlPlaneState {
     pub citizen_registry_state_path: PathBuf,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
     pub galaxy_state_path: PathBuf,
+    pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
+    pub galaxy_map_registry_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub audit_log: AuditLog,
     pub rate_limiter: Arc<RateLimiter>,
@@ -328,6 +331,11 @@ pub struct MetricsQuery {
 #[derive(Debug, Deserialize)]
 pub struct GalaxyEventsQuery {
     pub zone_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GalaxyMapQuery {
+    pub map_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

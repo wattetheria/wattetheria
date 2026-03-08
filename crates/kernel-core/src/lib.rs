@@ -3,6 +3,7 @@
 pub mod brain;
 pub mod civilization;
 pub mod governance;
+pub mod map;
 pub mod security;
 pub mod storage;
 pub mod tasks;
@@ -20,6 +21,8 @@ pub use civilization::missions;
 pub use civilization::profiles;
 pub use governance::mailbox;
 pub use governance::oracle;
+pub use map::registry as map_registry;
+pub use map::validator as map_validator;
 pub use security::admission;
 pub use security::capabilities;
 pub use security::hashcash;

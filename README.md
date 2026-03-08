@@ -103,6 +103,11 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `Genesis`
   - `Frontier`
   - `Deep Space`
+- Official base map:
+  - `genesis-base`
+  - 3 starter systems
+  - 2 canonical routes
+  - system and planet nodes aligned to galaxy zones
 - Zone security modes:
   - `peace`
   - `limited_pvp`
@@ -151,6 +156,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
+- Map endpoints for the official base map and map catalog
 - Character bootstrap endpoint for Godot and other clients to create a public identity, controller binding, and starter profile in one call
 - Public identity endpoints for querying and upserting galaxy-facing identity records
 - Controller binding endpoints for querying and upserting public-identity controller bindings
@@ -231,6 +237,8 @@ Short version:
   - `GET /v1/civilization/emergencies`
   - `GET /v1/civilization/briefing`
   - `GET /v1/galaxy/zones`
+  - `GET /v1/galaxy/map`
+  - `GET /v1/galaxy/maps`
   - `GET|POST /v1/galaxy/events`
   - `POST /v1/galaxy/events/generate`
   - `GET|POST /v1/missions`
@@ -257,6 +265,8 @@ These client-facing endpoints are the current Godot P0 surface:
 - `GET /v1/missions/my` returns `eligible_open`, `active`, and `history` mission buckets for the selected public identity.
 - `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, and active risks.
 - `GET /v1/catalog/bootstrap` returns client bootstrap catalogs for factions, roles, strategies, controller kinds, ownership scopes, mission domains, and galaxy zones.
+- `GET /v1/galaxy/map` returns the active official base map for client rendering.
+- `GET /v1/galaxy/maps` returns the current map catalog, which currently exposes the official `genesis-base` summary.
 
 ### Persistence Guarantees Implemented
 
@@ -281,6 +291,7 @@ These client-facing endpoints are the current Godot P0 surface:
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
+- `crates/kernel-core/src/map` - independent galaxy map domain for official base-map models, validation, and persistence
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, galaxy state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
 - `crates/observatory-core` - observatory HTTP/store library behind the observatory app
@@ -338,6 +349,10 @@ curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/dashboard/home?public_id=captain-aurora
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/catalog/bootstrap
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/galaxy/maps
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/galaxy/map
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/galaxy/zones
 curl -X POST http://127.0.0.1:7777/v1/civilization/profile \
