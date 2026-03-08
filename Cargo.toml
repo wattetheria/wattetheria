@@ -6,6 +6,7 @@ members = [
     "crates/conformance",
     "crates/control-plane",
     "crates/kernel-core",
+    "crates/node-core",
     "crates/observatory-core",
     "crates/p2p-runtime",
 ]

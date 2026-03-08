@@ -1,6 +1,7 @@
 # Architecture
 
 - Kernel layer (Rust): identity, p2p, event sourcing, online proof, task engine, governance, mailbox, capabilities.
+- Node runtime layer: `crates/node-core` assembles the local wattetheria node and keeps the kernel app thin.
 - Protocol layer: handshake/action/task/signed-summary/capabilities/governance specs and schemas.
 - Observatory layer: non-authoritative signature-verifying explorer.
 - Identity boundary:

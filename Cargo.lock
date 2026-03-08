@@ -4070,19 +4070,9 @@ name = "wattetheria-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
- "libp2p",
- "reqwest",
- "serde",
- "serde_json",
  "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wattetheria-control-plane",
- "wattetheria-kernel-core",
- "wattetheria-p2p-runtime",
+ "wattetheria-node-core",
 ]
 
 [[package]]
@@ -4120,6 +4110,26 @@ dependencies = [
  "uuid",
  "walkdir",
  "wattswarm-protocol",
+]
+
+[[package]]
+name = "wattetheria-node-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "libp2p",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wattetheria-control-plane",
+ "wattetheria-kernel-core",
+ "wattetheria-p2p-runtime",
 ]
 
 [[package]]

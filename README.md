@@ -11,7 +11,8 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - policy, governance, MCP, brain, data, oracle, night-shift, and summary posting commands
   - cross-platform install and package scripts in `scripts/`
 - `wattetheria-kernel`
-  - local daemon assembly for identity, event log, P2P, control plane, policy, governance, mailbox, oracle, and civilization state
+  - thin binary entrypoint for the local node runtime
+  - delegates node assembly to `crates/node-core`
   - startup event-log recovery from local snapshots and remote HTTP recovery sources
   - optional autonomy loop, demo task, and demo planet bootstrap switches
 - `wattetheria-observatory`
@@ -41,7 +42,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - corruption recovery from local sources
   - backup export and import
   - data migration helpers
-- Remote recovery path in `apps/wattetheria-kernel/src/recovery.rs`
+- Remote recovery path in `crates/node-core/src/recovery.rs`
   - fetches exported events from peers
   - rewrites candidate local logs
   - accepts recovery only when the resulting chain verifies
@@ -264,6 +265,7 @@ Most civilization-facing responses now resolve through the same identity bundle:
 - `apps/wattetheria-kernel` - kernel daemon binary entrypoint
 - `apps/wattetheria-cli` - bootstrap and operator CLI
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
+- `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
