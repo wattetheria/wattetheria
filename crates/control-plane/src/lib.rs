@@ -82,14 +82,25 @@ fn civilization_router() -> Router<ControlPlaneState> {
             "/v1/civilization/briefing",
             get(routes::civilization::civilization_briefing),
         )
-        .route("/v1/world/zones", get(routes::civilization::world_zones))
+        .route("/v1/galaxy/zones", get(routes::civilization::galaxy_zones))
+        .route("/v1/world/zones", get(routes::civilization::galaxy_zones))
+        .route(
+            "/v1/galaxy/events",
+            get(routes::civilization::galaxy_events)
+                .post(routes::civilization::galaxy_event_publish),
+        )
         .route(
             "/v1/world/events",
-            get(routes::civilization::world_events).post(routes::civilization::world_event_publish),
+            get(routes::civilization::galaxy_events)
+                .post(routes::civilization::galaxy_event_publish),
+        )
+        .route(
+            "/v1/galaxy/events/generate",
+            post(routes::civilization::galaxy_event_generate),
         )
         .route(
             "/v1/world/events/generate",
-            post(routes::civilization::world_event_generate),
+            post(routes::civilization::galaxy_event_generate),
         )
         .route(
             "/v1/missions",
@@ -199,12 +210,12 @@ mod tests {
     use wattetheria_kernel::audit::AuditLog;
     use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
     use wattetheria_kernel::capabilities::CapabilityPolicy;
+    use wattetheria_kernel::civilization::galaxy::GalaxyState;
     use wattetheria_kernel::civilization::identities::{
         ControllerBindingRegistry, PublicIdentityRegistry,
     };
     use wattetheria_kernel::civilization::missions::MissionBoard;
     use wattetheria_kernel::civilization::profiles::CitizenRegistry;
-    use wattetheria_kernel::civilization::world::WorldState;
     use wattetheria_kernel::event_log::EventLog;
     use wattetheria_kernel::governance::{
         GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
@@ -230,7 +241,7 @@ mod tests {
         let controller_binding_registry_state_path =
             dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
-        let world_state_path = dir.path().join("world/state.json");
+        let galaxy_state_path = dir.path().join("galaxy/state.json");
 
         let policy_engine = Arc::new(Mutex::new(
             PolicyEngine::load_or_new(
@@ -305,8 +316,8 @@ mod tests {
         let citizen_registry = Arc::new(Mutex::new(
             CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
         ));
-        let world_state = Arc::new(Mutex::new(
-            WorldState::load_or_new(&world_state_path).unwrap(),
+        let galaxy_state = Arc::new(Mutex::new(
+            GalaxyState::load_or_new(&galaxy_state_path).unwrap(),
         ));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
@@ -336,8 +347,8 @@ mod tests {
             controller_binding_registry_state_path,
             citizen_registry,
             citizen_registry_state_path,
-            world_state,
-            world_state_path,
+            galaxy_state,
+            galaxy_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             audit_log,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
@@ -903,7 +914,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn world_event_publish_and_query_works() {
+    async fn galaxy_event_publish_and_query_works() {
         let (_dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
@@ -922,7 +933,7 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/v1/world/events")
+                    .uri("/v1/galaxy/events")
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(axum::body::Body::from(publish_body.to_string()))
@@ -936,7 +947,7 @@ mod tests {
             .clone()
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/v1/world/zones")
+                    .uri("/v1/galaxy/zones")
                     .header("authorization", format!("Bearer {token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -952,7 +963,7 @@ mod tests {
         let events_resp = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/v1/world/events?zone_id=genesis-core")
+                    .uri("/v1/galaxy/events?zone_id=genesis-core")
                     .header("authorization", format!("Bearer {token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -1138,7 +1149,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn civilization_briefing_and_generated_world_events_work() {
+    async fn civilization_briefing_and_generated_galaxy_events_work() {
         let (_dir, app, token, _) = build_test_app(40);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
@@ -1179,7 +1190,7 @@ mod tests {
                 StatusCode::CREATED,
             ),
             (
-                "/v1/world/events/generate",
+                "/v1/galaxy/events/generate",
                 json!({"max_events": 3}),
                 StatusCode::OK,
             ),

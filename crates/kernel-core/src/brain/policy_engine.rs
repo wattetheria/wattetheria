@@ -411,7 +411,7 @@ mod tests {
                 timestamp: 0,
                 subject: "controller:reader".to_string(),
                 trust: TrustLevel::Untrusted,
-                capability: "fs.read:/world".to_string(),
+                capability: "fs.read:/galaxy".to_string(),
                 reason: None,
                 input_digest: None,
             })

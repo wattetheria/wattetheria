@@ -1,4 +1,4 @@
-//! Galaxy-layer task intent model for mapping Wattetheria world tasks into Wattswarm contracts.
+//! Galaxy-layer task intent model for mapping Wattetheria galaxy-network tasks into Wattswarm contracts.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -84,7 +84,7 @@ pub struct GalaxyTaskIntent {
     pub task_type: String,
     pub objective: String,
     pub scope: GalaxyTaskScope,
-    pub world_context: Value,
+    pub galaxy_context: Value,
     pub task_inputs: Value,
     pub output_schema: Value,
     pub verifier_policy: PolicyBinding,
@@ -101,7 +101,7 @@ impl GalaxyTaskIntent {
         let galaxy_metadata = json!({
             "objective": self.objective,
             "scope": self.scope,
-            "world_context": self.world_context,
+            "galaxy_context": self.galaxy_context,
             "reward": self.reward,
         });
 
@@ -204,7 +204,7 @@ impl GalaxyTaskIntent {
                 scope_id: "genesis-mainnet".to_owned(),
                 broadcast: GalaxyBroadcastMode::FullNetwork,
             },
-            world_context: json!({
+            galaxy_context: json!({
                 "galaxy": "wattetheria",
                 "phase": "genesis",
                 "market_id": "genesis-market-1"

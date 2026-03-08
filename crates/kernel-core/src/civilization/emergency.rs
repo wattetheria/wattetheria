@@ -1,6 +1,6 @@
+use crate::civilization::galaxy::{DynamicEvent, DynamicEventCategory, GalaxyState};
 use crate::civilization::missions::{MissionBoard, MissionDomain, MissionStatus};
 use crate::civilization::profiles::{CitizenRegistry, strategy_directive};
-use crate::civilization::world::{DynamicEvent, DynamicEventCategory, WorldState};
 use crate::governance::{GovernanceEngine, GovernmentStatus};
 use anyhow::Result;
 use chrono::Utc;
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EmergencyKind {
-    WorldEvent,
+    GalaxyEvent,
     GovernanceInstability,
     RecallElection,
     Custody,
@@ -36,7 +36,7 @@ pub fn evaluate_emergencies(
     profiles: &CitizenRegistry,
     missions: &MissionBoard,
     governance: &GovernanceEngine,
-    world: &WorldState,
+    galaxy: &GalaxyState,
 ) -> Vec<EmergencyState> {
     let Some(profile) = profiles.profile(agent_id) else {
         return Vec::new();
@@ -88,13 +88,13 @@ pub fn evaluate_emergencies(
     }
 
     if let Some(home_zone_id) = profile.home_zone_id.as_deref() {
-        for event in world.events(Some(home_zone_id)) {
+        for event in galaxy.events(Some(home_zone_id)) {
             if event.severity < directive.emergency_recall_threshold {
                 continue;
             }
             emergencies.push(build_emergency(EmergencySpec {
                 agent_id: agent_id.to_string(),
-                kind: EmergencyKind::WorldEvent,
+                kind: EmergencyKind::GalaxyEvent,
                 severity: event.severity,
                 title: event.title,
                 description: event.description,
@@ -134,8 +134,8 @@ pub fn evaluate_emergencies(
     emergencies
 }
 
-pub fn generate_system_world_events(
-    world: &mut WorldState,
+pub fn generate_system_galaxy_events(
+    galaxy: &mut GalaxyState,
     governance: &GovernanceEngine,
     missions: &MissionBoard,
     max_events: usize,
@@ -147,7 +147,7 @@ pub fn generate_system_world_events(
             break;
         }
         if planet.stability <= 30 {
-            generated.push(world.publish_event(
+            generated.push(galaxy.publish_event(
                 DynamicEventCategory::Political,
                 "frontier-belt",
                 &format!("Governance crisis on {}", planet.name),
@@ -168,8 +168,8 @@ pub fn generate_system_world_events(
             MissionDomain::Security | MissionDomain::Trade
         ) {
             let zone_id = mission.zone_id.as_deref().unwrap_or("frontier-belt");
-            if world.zones().iter().any(|zone| zone.zone_id == zone_id) {
-                generated.push(world.publish_event(
+            if galaxy.zones().iter().any(|zone| zone.zone_id == zone_id) {
+                generated.push(galaxy.publish_event(
                     DynamicEventCategory::Spatial,
                     zone_id,
                     &format!("Mission pressure: {}", mission.title),
@@ -220,7 +220,7 @@ mod tests {
     use crate::identity::Identity;
 
     #[test]
-    fn emergencies_reflect_profile_governance_and_world() {
+    fn emergencies_reflect_profile_governance_and_galaxy() {
         let mut profiles = CitizenRegistry::default();
         profiles.set_profile(
             "agent-a",
@@ -261,8 +261,8 @@ mod tests {
             .unwrap();
         governance.adjust_stability("planet-a", -60).unwrap();
 
-        let mut world = WorldState::default_with_core_zones();
-        world
+        let mut galaxy = GalaxyState::default_with_core_zones();
+        galaxy
             .publish_event(
                 DynamicEventCategory::Economic,
                 "genesis-core",
@@ -295,12 +295,12 @@ mod tests {
         );
 
         let emergencies =
-            evaluate_emergencies("agent-a", &profiles, &missions, &governance, &world);
+            evaluate_emergencies("agent-a", &profiles, &missions, &governance, &galaxy);
         assert!(emergencies.len() >= 2);
         assert!(
             emergencies
                 .iter()
-                .any(|item| item.kind == EmergencyKind::WorldEvent)
+                .any(|item| item.kind == EmergencyKind::GalaxyEvent)
         );
         assert!(
             emergencies
@@ -361,9 +361,9 @@ mod tests {
             serde_json::json!({}),
         );
 
-        let mut world = WorldState::default_with_core_zones();
+        let mut galaxy = GalaxyState::default_with_core_zones();
         let generated =
-            generate_system_world_events(&mut world, &governance, &missions, 3).unwrap();
+            generate_system_galaxy_events(&mut galaxy, &governance, &missions, 3).unwrap();
         assert!(!generated.is_empty());
     }
 }

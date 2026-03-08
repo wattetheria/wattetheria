@@ -14,13 +14,13 @@ Current implementation status in `wattetheria`:
 - control-plane endpoints expose both records and a unified identity bundle
 - `GET /v1/state` returns the resolved identity bundle for the local node
 - `POST /v1/civilization/bootstrap-character` creates a public identity, controller binding, and starter profile in one operation
-- control-plane writes now attach `public_memory` ownership metadata to identity/world events in the local event log
+- control-plane writes now attach `public_memory` ownership metadata to identity/galaxy events in the local event log
 
 ## Why This Split Exists
 
 The project has two different identity concerns:
 
-- the identity seen by the galaxy/network/social world
+- the identity seen by the galaxy/network/social layer
 - the identity that actually signs, coordinates, and executes decisions locally
 
 These are not the same thing and should not remain permanently collapsed into one `agent_id`.
@@ -37,14 +37,14 @@ This layer is responsible for:
 - public profile and social metadata
 - faction, role path, qualifications, and public eligibility
 - governance eligibility and public reputation
-- mission history, governance history, and public world history
-- public memory and world-facing state
+- mission history, governance history, and public galaxy history
+- public memory and galaxy-facing state
 
 Recommended neutral term until final naming is decided:
 
 - `PublicIdentity`
 
-This is the object a Godot client creates when a player enters the world.
+This is the object a Godot client creates when a player enters the galaxy network.
 
 ### 2. Controller Layer (`wattswarm`)
 
@@ -102,7 +102,7 @@ Suggested fields:
 - `created_at`
 - `updated_at`
 
-This object replaces the idea that a raw signing key alone is the in-world character.
+This object replaces the idea that a raw signing key alone is the in-galaxy character.
 
 ### ControllerBinding
 
@@ -128,7 +128,7 @@ This object answers:
 
 - who controls this public identity
 - whether control is local or external
-- which controller/node is currently authoritative for world-facing actions
+- which controller/node is currently authoritative for galaxy-facing actions
 
 ### SwarmController
 
@@ -148,13 +148,13 @@ It may be:
 
 Owned by `wattetheria`.
 
-This is public world history:
+This is public galaxy history:
 
 - mission participation
 - governance participation
 - public identity updates
 - public reputation effects
-- public world events linked to the identity
+- public galaxy events linked to the identity
 
 Current building blocks already exist:
 
@@ -193,7 +193,7 @@ Examples:
 
 ### Direction: `wattetheria` -> `wattswarm`
 
-`wattetheria` sends galaxy/world task intent to the controller layer.
+`wattetheria` sends galaxy-network task intent to the controller layer.
 
 Current shape:
 
@@ -205,7 +205,7 @@ Information currently sent includes:
 
 - objective
 - scope
-- world context
+- galaxy context
 - reward context
 - task inputs
 - output schema
@@ -239,7 +239,7 @@ Future shape should additionally include:
 - civilization profiles
 - governance state
 - missions
-- world zones and dynamic events
+- galaxy zones and dynamic events
 - public event log
 - signed summaries
 - `SwarmBridge`
@@ -288,7 +288,7 @@ Examples:
 
 These still need separation between:
 
-- world-facing identity
+- galaxy-facing identity
 - controller/signer identity
 
 ### 4. Godot role creation flow is not yet formalized
@@ -297,7 +297,7 @@ The client-side intended flow is:
 
 1. create `PublicIdentity`
 2. bind to local or external controller
-3. initialize profile and world state
+3. initialize profile and galaxy state
 4. start accumulating public memory
 
 This flow is not yet represented as a formal API/model.
@@ -324,7 +324,7 @@ Do not tightly couple `wattetheria` to `wattswarm` internals.
 
 - galaxy intent is submitted
 - controller execution is observed
-- controller outputs are normalized back into public-world semantics
+- controller outputs are normalized back into public-galaxy semantics
 
 ### Step 4. Define Godot-first creation and binding flow
 

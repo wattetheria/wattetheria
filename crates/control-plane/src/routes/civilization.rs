@@ -10,12 +10,12 @@ use crate::auth::{authorize, internal_error};
 use crate::autonomy::build_operator_briefing;
 use crate::state::{
     CharacterBootstrapBody, CitizenProfileBody, CitizenProfileQuery, ControlPlaneState,
-    ControllerBindingBody, ControllerBindingQuery, EmergencyQuery, MetricsQuery, NightShiftQuery,
-    PublicIdentityBody, PublicIdentityQuery, StreamEvent, WorldEventBody, WorldEventsQuery,
-    WorldGenerateBody,
+    ControllerBindingBody, ControllerBindingQuery, EmergencyQuery, GalaxyEventBody,
+    GalaxyEventsQuery, GalaxyGenerateBody, MetricsQuery, NightShiftQuery, PublicIdentityBody,
+    PublicIdentityQuery, StreamEvent,
 };
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::emergency::{evaluate_emergencies, generate_system_world_events};
+use wattetheria_kernel::emergency::{evaluate_emergencies, generate_system_galaxy_events};
 use wattetheria_kernel::identities::{
     ControllerBinding, ControllerKind, OwnershipScope, PublicIdentity,
 };
@@ -611,16 +611,16 @@ pub(crate) async fn civilization_metrics(
     let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
-    let world = state.world_state.lock().await;
+    let galaxy = state.galaxy_state.lock().await;
     let scores = compute_scores(
         &agent_id,
         &agent_stats,
         &missions,
         &profiles,
         &governance,
-        &world,
+        &galaxy,
     );
-    drop(world);
+    drop(galaxy);
     drop(governance);
     drop(profiles);
     drop(missions);
@@ -655,7 +655,7 @@ pub(crate) async fn civilization_metrics(
     .into_response()
 }
 
-pub(crate) async fn world_zones(
+pub(crate) async fn galaxy_zones(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
 ) -> Response {
@@ -663,12 +663,12 @@ pub(crate) async fn world_zones(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let zones = state.world_state.lock().await.zones();
+    let zones = state.galaxy_state.lock().await.zones();
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "world".to_string(),
-        action: "world.zones.query".to_string(),
+        category: "galaxy".to_string(),
+        action: "galaxy.zones.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: None,
@@ -680,17 +680,17 @@ pub(crate) async fn world_zones(
     Json(zones).into_response()
 }
 
-pub(crate) async fn world_events(
+pub(crate) async fn galaxy_events(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Query(query): Query<WorldEventsQuery>,
+    Query(query): Query<GalaxyEventsQuery>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
     let events = state
-        .world_state
+        .galaxy_state
         .lock()
         .await
         .events(query.zone_id.as_deref());
@@ -698,8 +698,8 @@ pub(crate) async fn world_events(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "world".to_string(),
-        action: "world.events.query".to_string(),
+        category: "galaxy".to_string(),
+        action: "galaxy.events.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: query.zone_id,
@@ -715,17 +715,17 @@ pub(crate) async fn world_events(
     .into_response()
 }
 
-pub(crate) async fn world_event_publish(
+pub(crate) async fn galaxy_event_publish(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Json(body): Json<WorldEventBody>,
+    Json(body): Json<GalaxyEventBody>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
-    let mut world = state.world_state.lock().await;
-    let event = match world.publish_event(
+    let mut galaxy = state.galaxy_state.lock().await;
+    let event = match galaxy.publish_event(
         body.category,
         &body.zone_id,
         &body.title,
@@ -743,36 +743,36 @@ pub(crate) async fn world_event_publish(
                 .into_response();
         }
     };
-    if let Err(error) = world.persist(&state.world_state_path) {
+    if let Err(error) = galaxy.persist(&state.galaxy_state_path) {
         return internal_error(&error);
     }
-    drop(world);
+    drop(galaxy);
 
     let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
     let payload = public_memory_payload(
         &context,
-        "world",
+        "galaxy",
         serde_json::to_value(&event).unwrap_or(Value::Null),
     );
     let _ = state.stream_tx.send(StreamEvent {
-        kind: "world.event.published".to_string(),
+        kind: "galaxy.event.published".to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
     let _ =
         state
             .event_log
-            .append_signed("WORLD_EVENT_PUBLISHED", payload.clone(), &state.identity);
+            .append_signed("GALAXY_EVENT_PUBLISHED", payload.clone(), &state.identity);
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "world".to_string(),
-        action: "world.event.publish".to_string(),
+        category: "galaxy".to_string(),
+        action: "galaxy.event.publish".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: Some(body.zone_id),
-        capability: Some("world.event.publish".to_string()),
+        capability: Some("galaxy.event.publish".to_string()),
         reason: None,
         duration_ms: None,
         details: Some(payload.clone()),
@@ -785,10 +785,10 @@ pub(crate) async fn world_event_publish(
     .into_response()
 }
 
-pub(crate) async fn world_event_generate(
+pub(crate) async fn galaxy_event_generate(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Json(body): Json<WorldGenerateBody>,
+    Json(body): Json<GalaxyGenerateBody>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
@@ -796,9 +796,9 @@ pub(crate) async fn world_event_generate(
     };
     let missions = state.mission_board.lock().await;
     let governance = state.governance_engine.lock().await;
-    let mut world = state.world_state.lock().await;
-    let generated = match generate_system_world_events(
-        &mut world,
+    let mut galaxy = state.galaxy_state.lock().await;
+    let generated = match generate_system_galaxy_events(
+        &mut galaxy,
         &governance,
         &missions,
         body.max_events.unwrap_or(5).max(1),
@@ -806,37 +806,37 @@ pub(crate) async fn world_event_generate(
         Ok(events) => events,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = world.persist(&state.world_state_path) {
+    if let Err(error) = galaxy.persist(&state.galaxy_state_path) {
         return internal_error(&error);
     }
-    drop(world);
+    drop(galaxy);
     drop(governance);
     drop(missions);
 
     let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
     let payload = public_memory_payload(
         &context,
-        "world",
+        "galaxy",
         serde_json::to_value(&generated).unwrap_or(Value::Null),
     );
     let _ = state.stream_tx.send(StreamEvent {
-        kind: "world.events.generated".to_string(),
+        kind: "galaxy.events.generated".to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
     let _ =
         state
             .event_log
-            .append_signed("WORLD_EVENTS_GENERATED", payload.clone(), &state.identity);
+            .append_signed("GALAXY_EVENTS_GENERATED", payload.clone(), &state.identity);
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "world".to_string(),
-        action: "world.events.generate".to_string(),
+        category: "galaxy".to_string(),
+        action: "galaxy.events.generate".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: None,
-        capability: Some("world.events.generate".to_string()),
+        capability: Some("galaxy.events.generate".to_string()),
         reason: None,
         duration_ms: None,
         details: Some(payload),
@@ -868,8 +868,8 @@ pub(crate) async fn civilization_emergencies(
     let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
-    let world = state.world_state.lock().await;
-    let emergencies = evaluate_emergencies(&agent_id, &profiles, &missions, &governance, &world);
+    let galaxy = state.galaxy_state.lock().await;
+    let emergencies = evaluate_emergencies(&agent_id, &profiles, &missions, &governance, &galaxy);
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),

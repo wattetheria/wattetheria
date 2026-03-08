@@ -39,14 +39,14 @@ pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value
     let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
-    let world = state.world_state.lock().await;
+    let galaxy = state.galaxy_state.lock().await;
     let profile = profiles.profile(&state.agent_id);
     let strategy = profile.as_ref().map_or_else(
         || strategy_directive(&wattetheria_kernel::profiles::StrategyProfile::Balanced),
         |entry| strategy_directive(&entry.strategy),
     );
     let emergencies =
-        evaluate_emergencies(&state.agent_id, &profiles, &missions, &governance, &world);
+        evaluate_emergencies(&state.agent_id, &profiles, &missions, &governance, &galaxy);
 
     Ok(json!({
         "events": events.len(),

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
+use wattetheria_kernel::civilization::galaxy::{DynamicEventCategory, GalaxyState};
 use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, ControllerKind, OwnershipScope, PublicIdentityRegistry,
 };
@@ -17,7 +18,6 @@ use wattetheria_kernel::civilization::missions::{
 use wattetheria_kernel::civilization::profiles::{
     CitizenRegistry, Faction, RolePath, StrategyProfile,
 };
-use wattetheria_kernel::civilization::world::{DynamicEventCategory, WorldState};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
@@ -84,8 +84,8 @@ pub struct ControlPlaneState {
     pub controller_binding_registry_state_path: PathBuf,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
     pub citizen_registry_state_path: PathBuf,
-    pub world_state: Arc<Mutex<WorldState>>,
-    pub world_state_path: PathBuf,
+    pub galaxy_state: Arc<Mutex<GalaxyState>>,
+    pub galaxy_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub audit_log: AuditLog,
     pub rate_limiter: Arc<RateLimiter>,
@@ -326,7 +326,7 @@ pub struct MetricsQuery {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct WorldEventsQuery {
+pub struct GalaxyEventsQuery {
     pub zone_id: Option<String>,
 }
 
@@ -354,7 +354,7 @@ pub struct CharacterBootstrapBody {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct WorldEventBody {
+pub struct GalaxyEventBody {
     pub category: DynamicEventCategory,
     pub zone_id: String,
     pub title: String,
@@ -365,7 +365,7 @@ pub struct WorldEventBody {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct WorldGenerateBody {
+pub struct GalaxyGenerateBody {
     pub max_events: Option<usize>,
 }
 

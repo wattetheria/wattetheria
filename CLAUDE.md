@@ -76,7 +76,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 5. **Task Engine** — Deterministic task lifecycle: PUBLISHED → CLAIMED → EXECUTED → SUBMITTED → VERIFIED → SETTLED (`crates/kernel-core/src/tasks/task_engine.rs`). Market matching for buy/sell orders. Settles `watt`, `reputation`, `capacity`.
 6. **Capabilities** — Trust levels (Trusted/Verified/Untrusted) with default-deny policy engine (`crates/kernel-core/src/security/capabilities.rs`, `crates/kernel-core/src/brain/policy_engine.rs`). Grants scoped as Once/Session/Permanent.
 7. **Extensions** — MCP adapter (`crates/kernel-core/src/brain/mcp.rs`), plugin registry (`crates/kernel-core/src/brain/plugin_registry.rs`), brain providers (`crates/kernel-core/src/brain/engine.rs`: rules/ollama/openai-compatible).
-8. **Civilization Layer** — Citizen profiles, mission board, world zones/events, emergency evaluation, and offline strategy state (`crates/kernel-core/src/civilization/`).
+8. **Civilization Layer** — Citizen profiles, mission board, galaxy zones/events, emergency evaluation, and offline strategy state (`crates/kernel-core/src/civilization/`).
 9. **Governance** — Planet (subnet) creation, constitution templates, treasury/stability, recall/custody/takeover, proposals, voting, validator rotation (`crates/kernel-core/src/governance/engine.rs`). Cross-subnet mailbox (`crates/kernel-core/src/governance/mailbox.rs`).
 10. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`crates/kernel-core/src/governance/oracle.rs`).
 
@@ -92,7 +92,7 @@ Supporting directories: `protocols/` (protocol specs including agent DNA), `sche
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
 - `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
-- Civilization: profile/metrics/emergencies/briefing, world zones/events/generate, missions publish/claim/complete/settle
+- Civilization: profile/metrics/emergencies/briefing, galaxy zones/events/generate, missions publish/claim/complete/settle
 - Governance: planets/proposals/vote/finalize, treasury fund/spend, stability adjust, recall start/resolve, custody enter/release, hostile takeover
 - Policy: check/pending/approve/revoke/grants
 - Mailbox: `POST /v1/mailbox/messages`, `GET /v1/mailbox/messages`, `POST /v1/mailbox/ack`
@@ -140,7 +140,7 @@ Node state lives in a configurable data dir (default `.wattetheria`):
 - `mailbox/state.json` — Cross-subnet mailbox
 - `missions/state.json` — Civil mission board
 - `civilization/profiles.json` — Citizen identity and offline strategy profiles
-- `world/state.json` — World zones and dynamic event state
+- `galaxy/state.json` — Galaxy zones and dynamic event state
 - `mcp/servers.json` — MCP server configs
 - `oracle/state.json` — Oracle feed registry
 

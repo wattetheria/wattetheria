@@ -99,7 +99,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - max auto actions
   - high-risk allowance
   - emergency recall threshold
-- World zones:
+- Galaxy zones:
   - `Genesis`
   - `Frontier`
   - `Deep Space`
@@ -107,7 +107,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `peace`
   - `limited_pvp`
   - `open_pvp`
-- Dynamic world events:
+- Dynamic galaxy events:
   - `economic`
   - `spatial`
   - `political`
@@ -124,12 +124,12 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `culture`
   - `total_influence`
 - Emergency evaluation:
-  - world event pressure
+  - galaxy event pressure
   - governance instability
   - recall
   - custody
   - urgent security/power missions
-- System-generated world events driven by governance instability and unresolved frontier pressure
+- System-generated galaxy events driven by governance instability and unresolved frontier pressure
 
 ### Brain, MCP, And Operator Assistance
 
@@ -150,7 +150,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Request rate limiting
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
-- Civilization endpoints for profile, metrics, emergencies, briefing, zones, world events, and mission lifecycle
+- Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
 - Character bootstrap endpoint for Godot and other clients to create a public identity, controller binding, and starter profile in one call
 - Public identity endpoints for querying and upserting galaxy-facing identity records
 - Controller binding endpoints for querying and upserting public-identity controller bindings
@@ -187,7 +187,7 @@ In short, the current model is:
 - local authoritative public event history
 - remote export and recovery for consistency
 - signed summaries and mirror sync for visibility
-- public-memory ownership metadata attached to identity and world writes through the control plane
+- public-memory ownership metadata attached to identity and galaxy-event writes through the control plane
 
 It is not yet:
 
@@ -225,9 +225,9 @@ Short version:
   - `GET /v1/civilization/metrics`
   - `GET /v1/civilization/emergencies`
   - `GET /v1/civilization/briefing`
-  - `GET /v1/world/zones`
-  - `GET|POST /v1/world/events`
-  - `POST /v1/world/events/generate`
+  - `GET /v1/galaxy/zones`
+  - `GET|POST /v1/galaxy/events`
+  - `POST /v1/galaxy/events/generate`
   - `GET|POST /v1/missions`
   - `POST /v1/missions/claim`, `POST /v1/missions/complete`, `POST /v1/missions/settle`
 - Governance APIs: planets/proposals/vote/finalize, treasury fund/spend, stability adjust, recall start/resolve, custody enter/release, hostile takeover
@@ -267,7 +267,7 @@ Most civilization-facing responses now resolve through the same identity bundle:
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
-- `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
+- `crates/kernel-core/src/civilization` - application-layer civilization models for missions, galaxy state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
 - `crates/observatory-core` - observatory HTTP/store library behind the observatory app
 - `crates/p2p-runtime` - isolated libp2p transport runtime and gossip guards
@@ -319,7 +319,7 @@ curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-character \
   -H "content-type: application/json" \
   -d '{"public_id":"captain-aurora","display_name":"Captain Aurora","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
-  http://127.0.0.1:7777/v1/world/zones
+  http://127.0.0.1:7777/v1/galaxy/zones
 curl -X POST http://127.0.0.1:7777/v1/civilization/profile \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
@@ -330,7 +330,7 @@ curl -X POST http://127.0.0.1:7777/v1/missions \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
   -d '{"title":"Secure relay","description":"Restore frontier uptime","publisher":"planet-a","publisher_kind":"planetary_government","domain":"security","subnet_id":"planet-a","zone_id":"frontier-belt","required_role":"enforcer","required_faction":null,"reward":{"agent_watt":120,"reputation":8,"capacity":2,"treasury_share_watt":30},"payload":{"objective":"relay_repair"}}'
-curl -X POST http://127.0.0.1:7777/v1/world/events/generate \
+curl -X POST http://127.0.0.1:7777/v1/galaxy/events/generate \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
   -d '{"max_events":3}'

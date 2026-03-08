@@ -1,6 +1,6 @@
+use crate::civilization::galaxy::{DynamicEventCategory, GalaxyState};
 use crate::civilization::missions::{MissionBoard, MissionDomain, MissionStatus};
 use crate::civilization::profiles::{CitizenRegistry, Faction, RolePath};
-use crate::civilization::world::{DynamicEventCategory, WorldState};
 use crate::governance::GovernanceEngine;
 use crate::types::AgentStats;
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub fn compute_scores(
     missions: &MissionBoard,
     profiles: &CitizenRegistry,
     governance: &GovernanceEngine,
-    world: &WorldState,
+    galaxy: &GalaxyState,
 ) -> CivilizationScores {
     let settled_status = MissionStatus::Settled;
     let settled = missions.list(Some(&settled_status));
@@ -67,7 +67,7 @@ pub fn compute_scores(
         None => 0,
     };
 
-    let event_pressure = world
+    let event_pressure = galaxy
         .events(None)
         .into_iter()
         .filter(|event| event.severity >= 6)
@@ -112,9 +112,9 @@ pub fn compute_scores(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::civilization::galaxy::{DynamicEventCategory, GalaxyState};
     use crate::civilization::missions::{MissionPublisherKind, MissionReward};
     use crate::civilization::profiles::{CitizenRegistry, StrategyProfile};
-    use crate::civilization::world::{DynamicEventCategory, WorldState};
 
     #[test]
     fn metrics_include_profiles_missions_and_governance() {
@@ -155,8 +155,8 @@ mod tests {
         governance.issue_license("agent-a", "agent-a", "proof", 7);
         governance.lock_bond("agent-a", 100, 30);
 
-        let mut world = WorldState::default_with_core_zones();
-        world
+        let mut galaxy = GalaxyState::default_with_core_zones();
+        galaxy
             .publish_event(
                 DynamicEventCategory::Economic,
                 "genesis-core",
@@ -179,7 +179,7 @@ mod tests {
             &missions,
             &profiles,
             &governance,
-            &world,
+            &galaxy,
         );
 
         assert!(scores.wealth > 0);

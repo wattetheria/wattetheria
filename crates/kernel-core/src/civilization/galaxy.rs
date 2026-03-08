@@ -29,7 +29,7 @@ pub enum DynamicEventCategory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorldZone {
+pub struct GalaxyZone {
     pub zone_id: String,
     pub name: String,
     pub kind: ZoneKind,
@@ -52,24 +52,24 @@ pub struct DynamicEvent {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct WorldState {
-    zones: Vec<WorldZone>,
+pub struct GalaxyState {
+    zones: Vec<GalaxyZone>,
     events: Vec<DynamicEvent>,
 }
 
-impl WorldState {
+impl GalaxyState {
     pub fn load_or_new(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create world state directory")?;
+            fs::create_dir_all(parent).context("create galaxy state directory")?;
         }
         if !path.as_ref().exists() {
             return Ok(Self::default_with_core_zones());
         }
-        let raw = fs::read_to_string(path.as_ref()).context("read world state")?;
+        let raw = fs::read_to_string(path.as_ref()).context("read galaxy state")?;
         if raw.trim().is_empty() {
             return Ok(Self::default_with_core_zones());
         }
-        let mut state: Self = serde_json::from_str(&raw).context("parse world state")?;
+        let mut state: Self = serde_json::from_str(&raw).context("parse galaxy state")?;
         if state.zones.is_empty() {
             state.zones = Self::default_with_core_zones().zones;
         }
@@ -78,16 +78,16 @@ impl WorldState {
 
     pub fn persist(&self, path: impl AsRef<Path>) -> Result<()> {
         if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create world state directory")?;
+            fs::create_dir_all(parent).context("create galaxy state directory")?;
         }
-        fs::write(path.as_ref(), serde_json::to_string_pretty(self)?).context("write world state")
+        fs::write(path.as_ref(), serde_json::to_string_pretty(self)?).context("write galaxy state")
     }
 
     #[must_use]
     pub fn default_with_core_zones() -> Self {
         Self {
             zones: vec![
-                WorldZone {
+                GalaxyZone {
                     zone_id: "genesis-core".to_string(),
                     name: "Genesis Core".to_string(),
                     kind: ZoneKind::Genesis,
@@ -96,7 +96,7 @@ impl WorldState {
                     description: "Stable starter core with strong institutional guardrails."
                         .to_string(),
                 },
-                WorldZone {
+                GalaxyZone {
                     zone_id: "frontier-belt".to_string(),
                     name: "Frontier Belt".to_string(),
                     kind: ZoneKind::Frontier,
@@ -105,7 +105,7 @@ impl WorldState {
                     description: "Half-governed expansion belt with sovereignty pressure."
                         .to_string(),
                 },
-                WorldZone {
+                GalaxyZone {
                     zone_id: "deep-space".to_string(),
                     name: "Deep Space".to_string(),
                     kind: ZoneKind::DeepSpace,
@@ -120,7 +120,7 @@ impl WorldState {
     }
 
     #[must_use]
-    pub fn zones(&self) -> Vec<WorldZone> {
+    pub fn zones(&self) -> Vec<GalaxyZone> {
         self.zones.clone()
     }
 
@@ -145,7 +145,7 @@ impl WorldState {
         tags: Vec<String>,
     ) -> Result<DynamicEvent> {
         if !self.zones.iter().any(|zone| zone.zone_id == zone_id) {
-            anyhow::bail!("unknown world zone");
+            anyhow::bail!("unknown galaxy zone");
         }
 
         let event = DynamicEvent {
@@ -170,13 +170,13 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn world_state_bootstraps_and_persists_events() {
+    fn galaxy_state_bootstraps_and_persists_events() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("world.json");
-        let mut world = WorldState::load_or_new(&path).unwrap();
-        assert_eq!(world.zones().len(), 3);
+        let path = dir.path().join("galaxy.json");
+        let mut galaxy = GalaxyState::load_or_new(&path).unwrap();
+        assert_eq!(galaxy.zones().len(), 3);
 
-        let event = world
+        let event = galaxy
             .publish_event(
                 DynamicEventCategory::Economic,
                 "genesis-core",
@@ -187,9 +187,9 @@ mod tests {
                 vec!["supply".to_string()],
             )
             .unwrap();
-        world.persist(&path).unwrap();
+        galaxy.persist(&path).unwrap();
 
-        let loaded = WorldState::load_or_new(&path).unwrap();
+        let loaded = GalaxyState::load_or_new(&path).unwrap();
         assert_eq!(loaded.events(Some("genesis-core")).len(), 1);
         assert_eq!(loaded.events(None)[0], event);
     }
