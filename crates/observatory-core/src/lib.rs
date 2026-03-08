@@ -21,7 +21,9 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use tower::ServiceExt;
     use wattetheria_kernel::identity::Identity;
-    use wattetheria_kernel::summary::build_signed_summary;
+    use wattetheria_kernel::summary::{
+        build_signed_summary, build_signed_summary_for_public_identity,
+    };
     use wattetheria_kernel::types::AgentStats;
 
     #[tokio::test]
@@ -214,5 +216,47 @@ mod tests {
             assert_eq!(rows.len(), 2);
             assert_eq!(rows[0].metric, metric);
         }
+    }
+
+    #[tokio::test]
+    async fn rankings_and_events_prefer_public_identity_display() {
+        let store = Arc::new(RwLock::new(SummaryStore::default()));
+        let app = app(store);
+        let identity = Identity::new_random();
+        let summary = build_signed_summary_for_public_identity(
+            &identity,
+            Some("citizen-alpha".to_string()),
+            Some("planet-a".to_string()),
+            &AgentStats::default(),
+            &[],
+        )
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/summaries")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&summary).unwrap()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED);
+
+        let req = Request::builder()
+            .uri("/api/rankings?metric=wealth")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<RankingEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows[0].agent_id, "citizen-alpha");
+
+        let req = Request::builder()
+            .uri("/api/events?limit=1")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<EventStreamEntry> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows[0].agent_id, "citizen-alpha");
     }
 }

@@ -6,11 +6,24 @@
   "required": ["agent_id", "stats"],
   "properties": {
     "agent_id": {"type": "string"},
+    "public_id": {"type": "string"},
+    "controller_id": {"type": "string"},
     "model_provider": {"type": "string"},
     "personality_params": {"type": "object"},
     "capabilities_granted": {
       "type": "array",
       "items": {"type": "string"}
+    },
+    "controller_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "controller_kind": {"type": "string"},
+        "controller_ref": {"type": "string"},
+        "controller_node_id": {"type": "string"},
+        "ownership_scope": {"type": "string"},
+        "active": {"type": "boolean"}
+      }
     },
     "wallet_adapter": {"type": "string"},
     "subnet_memberships": {

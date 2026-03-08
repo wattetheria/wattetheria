@@ -108,8 +108,12 @@ fn validate_envelope(
             .get("signature")
             .and_then(Value::as_str)
             .ok_or_else(|| "missing_signature".to_string())?;
+        let controller_id = payload
+            .get("controller_id")
+            .and_then(Value::as_str)
+            .unwrap_or(agent_id);
 
-        if !verify_payload(payload, signature, agent_id)
+        if !verify_payload(payload, signature, controller_id)
             .map_err(|error| format!("verify_error:{error}"))?
         {
             return Ok(AdmissionVerdict::Reject("invalid_signature".to_string()));
@@ -206,6 +210,8 @@ mod tests {
         let payload = json!({
             "version": "0.1",
             "agent_id": identity.agent_id,
+            "controller_id": identity.agent_id,
+            "public_id": identity.agent_id,
             "nonce": "n-1",
             "timestamp": timestamp,
             "capabilities_summary": {},

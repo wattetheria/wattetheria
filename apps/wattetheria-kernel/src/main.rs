@@ -23,7 +23,7 @@ use bootstrap::{
 };
 use cli::Cli;
 use demo::{ignite_demo_planet, run_demo_task};
-use handshake::build_signed_handshake;
+use handshake::build_signed_handshake_for_public_identity;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, log_listeners, run_loop};
 use wattetheria_control_plane::{
@@ -33,6 +33,9 @@ use wattetheria_kernel::admission::{AdmissionConfig, NonceTracker};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::capabilities::CapabilityPolicy;
+use wattetheria_kernel::civilization::identities::{
+    ControllerBindingRegistry, PublicIdentityRegistry,
+};
 use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::world::WorldState;
@@ -63,6 +66,10 @@ struct RuntimeState {
 struct CivilizationRuntimeState {
     mission_board: MissionBoard,
     mission_board_state_path: PathBuf,
+    public_identity_registry: PublicIdentityRegistry,
+    public_identity_registry_state_path: PathBuf,
+    controller_binding_registry: ControllerBindingRegistry,
+    controller_binding_registry_state_path: PathBuf,
     citizen_registry: CitizenRegistry,
     citizen_registry_state_path: PathBuf,
     world_state: WorldState,
@@ -170,7 +177,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     )?));
     let mailbox_state_path = cli.data_dir.join("mailbox/state.json");
     let mailbox = CrossSubnetMailbox::load_or_new(&mailbox_state_path)?;
-    let civilization_state = load_civilization_runtime_state(cli)?;
+    let civilization_state = load_civilization_runtime_state(cli, &identity.agent_id)?;
 
     let (listen_addr, bootstrap_addrs) = parse_multiaddrs(cli)?;
     let p2p_config = P2PConfig {
@@ -185,7 +192,13 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     };
     let mut p2p = P2PNode::new_with_config(&cli.topic, listen_addr, &bootstrap_addrs, p2p_config)?;
 
-    let handshake = build_signed_handshake(&identity, &online_proof, cli.enable_hashcash)?;
+    let public_id = resolve_public_identity_id(&civilization_state, &identity);
+    let handshake = build_signed_handshake_for_public_identity(
+        &identity,
+        Some(public_id.as_str()),
+        &online_proof,
+        cli.enable_hashcash,
+    )?;
     p2p.publish_json(&handshake)?;
 
     info!(agent_id = %identity.agent_id, "kernel started");
@@ -223,6 +236,30 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     })
 }
 
+fn resolve_public_identity_id(
+    civilization_state: &CivilizationRuntimeState,
+    identity: &Identity,
+) -> String {
+    civilization_state
+        .controller_binding_registry
+        .active_for_controller(&identity.agent_id)
+        .and_then(|binding| {
+            civilization_state
+                .public_identity_registry
+                .get(&binding.public_id)
+                .filter(|public_identity| public_identity.active)
+        })
+        .or_else(|| {
+            civilization_state
+                .public_identity_registry
+                .active_for_legacy_agent(&identity.agent_id)
+        })
+        .map_or_else(
+            || identity.agent_id.clone(),
+            |public_identity| public_identity.public_id,
+        )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_control_state(
     cli: &Cli,
@@ -254,6 +291,13 @@ fn build_control_state(
         mailbox_state_path,
         mission_board: Arc::new(Mutex::new(civilization_state.mission_board)),
         mission_board_state_path: civilization_state.mission_board_state_path,
+        public_identity_registry: Arc::new(Mutex::new(civilization_state.public_identity_registry)),
+        public_identity_registry_state_path: civilization_state.public_identity_registry_state_path,
+        controller_binding_registry: Arc::new(Mutex::new(
+            civilization_state.controller_binding_registry,
+        )),
+        controller_binding_registry_state_path: civilization_state
+            .controller_binding_registry_state_path,
         citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
         citizen_registry_state_path: civilization_state.citizen_registry_state_path,
         world_state: Arc::new(Mutex::new(civilization_state.world_state)),
@@ -265,17 +309,34 @@ fn build_control_state(
     }
 }
 
-fn load_civilization_runtime_state(cli: &Cli) -> Result<CivilizationRuntimeState> {
+fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<CivilizationRuntimeState> {
     let mission_board_state_path = cli.data_dir.join("missions/state.json");
     let mission_board = MissionBoard::load_or_new(&mission_board_state_path)?;
+    let public_identity_registry_state_path =
+        cli.data_dir.join("civilization/public_identities.json");
+    let mut public_identity_registry =
+        PublicIdentityRegistry::load_or_new(&public_identity_registry_state_path)?;
+    let controller_binding_registry_state_path =
+        cli.data_dir.join("civilization/controller_bindings.json");
+    let mut controller_binding_registry =
+        ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)?;
     let citizen_registry_state_path = cli.data_dir.join("civilization/profiles.json");
     let citizen_registry = CitizenRegistry::load_or_new(&citizen_registry_state_path)?;
     let world_state_path = cli.data_dir.join("world/state.json");
     let world_state = WorldState::load_or_new(&world_state_path)?;
+    let public_identity = public_identity_registry.ensure_local_default(agent_id);
+    let _ =
+        controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_id);
+    public_identity_registry.persist(&public_identity_registry_state_path)?;
+    controller_binding_registry.persist(&controller_binding_registry_state_path)?;
 
     Ok(CivilizationRuntimeState {
         mission_board,
         mission_board_state_path,
+        public_identity_registry,
+        public_identity_registry_state_path,
+        controller_binding_registry,
+        controller_binding_registry_state_path,
         citizen_registry,
         citizen_registry_state_path,
         world_state,

@@ -13,6 +13,8 @@ use crate::types::{AgentStats, SignedSummary, TaskStats};
 #[derive(Debug, Serialize)]
 struct SummarySignable<'a> {
     agent_id: &'a str,
+    controller_id: &'a Option<String>,
+    public_id: &'a Option<String>,
     timestamp: i64,
     subnet_id: &'a Option<String>,
     power: i64,
@@ -29,8 +31,25 @@ pub fn build_signed_summary(
     ledger: &AgentStats,
     recent_events: &[EventRecord],
 ) -> Result<SignedSummary> {
+    build_signed_summary_for_public_identity(
+        identity,
+        Some(identity.agent_id.clone()),
+        subnet_id,
+        ledger,
+        recent_events,
+    )
+}
+
+pub fn build_signed_summary_for_public_identity(
+    identity: &Identity,
+    public_id: Option<String>,
+    subnet_id: Option<String>,
+    ledger: &AgentStats,
+    recent_events: &[EventRecord],
+) -> Result<SignedSummary> {
     let events_digest = digest_events(recent_events);
     let timestamp = Utc::now().timestamp();
+    let controller_id = Some(identity.agent_id.clone());
 
     let completed = recent_events
         .iter()
@@ -63,6 +82,8 @@ pub fn build_signed_summary(
 
     let signable = SummarySignable {
         agent_id: &identity.agent_id,
+        controller_id: &controller_id,
+        public_id: &public_id,
         timestamp,
         subnet_id: &subnet_id,
         power: ledger.power,
@@ -76,6 +97,8 @@ pub fn build_signed_summary(
     let signature = sign_payload(&signable, identity)?;
     Ok(SignedSummary {
         agent_id: identity.agent_id.clone(),
+        controller_id,
+        public_id,
         timestamp,
         subnet_id,
         power: ledger.power,
@@ -110,6 +133,8 @@ mod tests {
 
         let signable = SummarySignable {
             agent_id: &summary.agent_id,
+            controller_id: &summary.controller_id,
+            public_id: &summary.public_id,
             timestamp: summary.timestamp,
             subnet_id: &summary.subnet_id,
             power: summary.power,

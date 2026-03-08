@@ -8,6 +8,9 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
+use wattetheria_kernel::civilization::identities::{
+    ControllerBindingRegistry, ControllerKind, OwnershipScope, PublicIdentityRegistry,
+};
 use wattetheria_kernel::civilization::missions::{
     MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionStatus,
 };
@@ -75,6 +78,10 @@ pub struct ControlPlaneState {
     pub mailbox_state_path: PathBuf,
     pub mission_board: Arc<Mutex<MissionBoard>>,
     pub mission_board_state_path: PathBuf,
+    pub public_identity_registry: Arc<Mutex<PublicIdentityRegistry>>,
+    pub public_identity_registry_state_path: PathBuf,
+    pub controller_binding_registry: Arc<Mutex<ControllerBindingRegistry>>,
+    pub controller_binding_registry_state_path: PathBuf,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
     pub citizen_registry_state_path: PathBuf,
     pub world_state: Arc<Mutex<WorldState>>,
@@ -271,6 +278,35 @@ pub struct MissionSettleBody {
 #[derive(Debug, Deserialize)]
 pub struct CitizenProfileQuery {
     pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublicIdentityQuery {
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ControllerBindingQuery {
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublicIdentityBody {
+    pub public_id: String,
+    pub display_name: String,
+    pub legacy_agent_id: Option<String>,
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ControllerBindingBody {
+    pub public_id: String,
+    pub controller_kind: ControllerKind,
+    pub controller_ref: String,
+    pub controller_node_id: Option<String>,
+    pub ownership_scope: OwnershipScope,
+    pub active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,6 +322,7 @@ pub struct CitizenProfileBody {
 #[derive(Debug, Deserialize)]
 pub struct MetricsQuery {
     pub agent_id: Option<String>,
+    pub public_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,6 +333,24 @@ pub struct WorldEventsQuery {
 #[derive(Debug, Deserialize)]
 pub struct EmergencyQuery {
     pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CharacterBootstrapBody {
+    pub public_id: String,
+    pub display_name: String,
+    pub legacy_agent_id: Option<String>,
+    pub faction: Faction,
+    pub role: RolePath,
+    pub strategy: StrategyProfile,
+    pub home_subnet_id: Option<String>,
+    pub home_zone_id: Option<String>,
+    pub controller_kind: Option<ControllerKind>,
+    pub controller_ref: Option<String>,
+    pub controller_node_id: Option<String>,
+    pub ownership_scope: Option<OwnershipScope>,
+    pub active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

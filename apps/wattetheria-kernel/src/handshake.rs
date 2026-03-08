@@ -23,8 +23,9 @@ fn build_handshake_payload(identity: &Identity, enable_hashcash: bool) -> Option
         .map(|stamp| json!({"stamp": stamp, "bits": 12, "resource": identity.agent_id}))
 }
 
-pub fn build_signed_handshake(
+pub fn build_signed_handshake_for_public_identity(
     identity: &Identity,
+    public_id: Option<&str>,
     online_proof: &OnlineProofManager,
     enable_hashcash: bool,
 ) -> Result<SignedEnvelope<Value>> {
@@ -35,6 +36,8 @@ pub fn build_signed_handshake(
     let payload = json!({
         "version": "0.1",
         "agent_id": identity.agent_id,
+        "controller_id": identity.agent_id,
+        "public_id": public_id,
         "nonce": uuid::Uuid::new_v4().to_string(),
         "timestamp": chrono::Utc::now().timestamp(),
         "capabilities_summary": {

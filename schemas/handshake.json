@@ -7,6 +7,8 @@
   "properties": {
     "version": {"type": "string"},
     "agent_id": {"type": "string"},
+    "controller_id": {"type": "string"},
+    "public_id": {"type": "string"},
     "nonce": {"type": "string"},
     "timestamp": {"type": "integer"},
     "capabilities_summary": {"type": "object"},

@@ -6,6 +6,8 @@
   "required": ["agent_id", "timestamp", "power", "watt", "reputation", "capacity", "task_stats", "events_digest", "signature"],
   "properties": {
     "agent_id": {"type": "string"},
+    "controller_id": {"type": "string"},
+    "public_id": {"type": "string"},
     "timestamp": {"type": "integer"},
     "subnet_id": {"type": "string"},
     "power": {"type": "integer"},

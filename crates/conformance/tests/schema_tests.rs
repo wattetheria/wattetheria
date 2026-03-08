@@ -8,6 +8,8 @@ fn handshake_schema_accepts_valid_payload() {
     let payload = json!({
         "version": "0.1",
         "agent_id": "abc",
+        "controller_id": "controller-abc",
+        "public_id": "citizen-abc",
         "nonce": "n1",
         "timestamp": 1_700_000_000,
         "capabilities_summary": {"p2p":{"publish":{"rate_limit":120}}},
@@ -40,6 +42,8 @@ fn task_schema_rejects_invalid_mode() {
 fn signed_summary_schema_accepts_valid_payload() {
     let payload = json!({
         "agent_id": "abc",
+        "controller_id": "controller-abc",
+        "public_id": "citizen-abc",
         "timestamp": 1_700_000_000,
         "power": 10,
         "watt": 20,

@@ -20,6 +20,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::{CapabilityPolicy, TrustLevel};
+use wattetheria_kernel::civilization::identities::{
+    ControllerBindingRegistry, PublicIdentityRegistry,
+};
 use wattetheria_kernel::data_ops::{
     create_snapshot, export_backup, import_backup, migrate_data_dir, recover_if_corrupt,
     recover_if_corrupt_with_sources,
@@ -32,7 +35,7 @@ use wattetheria_kernel::mcp::{
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind, PolicyEngine};
-use wattetheria_kernel::summary::build_signed_summary;
+use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
 
 #[tokio::main]
@@ -817,7 +820,9 @@ async fn post_summary(
     let events = read_events(events_path)?;
 
     let ledger = latest_stats(&events).unwrap_or_default();
-    let summary = build_signed_summary(&identity, subnet, &ledger, &events)?;
+    let public_id = resolve_public_identity_id(identity_path, &identity);
+    let summary =
+        build_signed_summary_for_public_identity(&identity, public_id, subnet, &ledger, &events)?;
 
     if dry_run {
         let rendered = serde_json::to_string_pretty(&summary)?;
@@ -834,6 +839,25 @@ async fn post_summary(
     )?;
     println!("{response}");
     Ok(())
+}
+
+fn resolve_public_identity_id(identity_path: &Path, identity: &Identity) -> Option<String> {
+    let Some(data_dir) = identity_path.parent() else {
+        return Some(identity.agent_id.clone());
+    };
+    let public_registry_path = data_dir.join("civilization/public_identities.json");
+    let binding_registry_path = data_dir.join("civilization/controller_bindings.json");
+
+    let public_registry = PublicIdentityRegistry::load_or_new(&public_registry_path).ok()?;
+    let binding_registry = ControllerBindingRegistry::load_or_new(&binding_registry_path).ok()?;
+
+    binding_registry
+        .active_for_controller(&identity.agent_id)
+        .and_then(|binding| public_registry.get(&binding.public_id))
+        .filter(|public_identity| public_identity.active)
+        .or_else(|| public_registry.active_for_legacy_agent(&identity.agent_id))
+        .map(|public_identity| public_identity.public_id)
+        .or_else(|| Some(identity.agent_id.clone()))
 }
 
 fn read_events(path: &PathBuf) -> Result<Vec<EventRecord>> {

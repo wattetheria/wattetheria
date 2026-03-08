@@ -13,6 +13,7 @@ pub use brain::night_shift;
 pub use brain::plugin_registry;
 pub use brain::policy_engine;
 pub use civilization::emergency;
+pub use civilization::identities;
 pub use civilization::metrics;
 pub use civilization::missions;
 pub use civilization::profiles;

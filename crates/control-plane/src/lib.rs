@@ -52,6 +52,20 @@ fn core_router() -> Router<ControlPlaneState> {
 fn civilization_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
+            "/v1/civilization/bootstrap-character",
+            post(routes::civilization::bootstrap_character),
+        )
+        .route(
+            "/v1/civilization/public-identity",
+            get(routes::civilization::public_identity)
+                .post(routes::civilization::public_identity_upsert),
+        )
+        .route(
+            "/v1/civilization/controller-binding",
+            get(routes::civilization::controller_binding)
+                .post(routes::civilization::controller_binding_upsert),
+        )
+        .route(
             "/v1/civilization/profile",
             get(routes::civilization::citizen_profile)
                 .post(routes::civilization::citizen_profile_upsert),
@@ -185,6 +199,9 @@ mod tests {
     use wattetheria_kernel::audit::AuditLog;
     use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
     use wattetheria_kernel::capabilities::CapabilityPolicy;
+    use wattetheria_kernel::civilization::identities::{
+        ControllerBindingRegistry, PublicIdentityRegistry,
+    };
     use wattetheria_kernel::civilization::missions::MissionBoard;
     use wattetheria_kernel::civilization::profiles::CitizenRegistry;
     use wattetheria_kernel::civilization::world::WorldState;
@@ -197,6 +214,7 @@ mod tests {
     use wattetheria_kernel::policy_engine::PolicyEngine;
     use wattetheria_kernel::swarm_bridge::LegacyTaskEngineBridge;
 
+    #[allow(clippy::too_many_lines)]
     fn build_test_app(
         rate_limit: usize,
     ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
@@ -207,6 +225,10 @@ mod tests {
         let governance_state_path = dir.path().join("governance/state.json");
         let mailbox_state_path = dir.path().join("mailbox/state.json");
         let mission_board_state_path = dir.path().join("missions/state.json");
+        let public_identity_registry_state_path =
+            dir.path().join("civilization/public_identities.json");
+        let controller_binding_registry_state_path =
+            dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
         let world_state_path = dir.path().join("world/state.json");
 
@@ -265,6 +287,21 @@ mod tests {
         let mission_board = Arc::new(Mutex::new(
             MissionBoard::load_or_new(&mission_board_state_path).unwrap(),
         ));
+        let mut public_identity_registry =
+            PublicIdentityRegistry::load_or_new(&public_identity_registry_state_path).unwrap();
+        public_identity_registry.ensure_local_default(&identity.agent_id);
+        public_identity_registry
+            .persist(&public_identity_registry_state_path)
+            .unwrap();
+        let public_identity_registry = Arc::new(Mutex::new(public_identity_registry));
+        let mut controller_binding_registry =
+            ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)
+                .unwrap();
+        controller_binding_registry.ensure_local_wattswarm(&identity.agent_id, &identity.agent_id);
+        controller_binding_registry
+            .persist(&controller_binding_registry_state_path)
+            .unwrap();
+        let controller_binding_registry = Arc::new(Mutex::new(controller_binding_registry));
         let citizen_registry = Arc::new(Mutex::new(
             CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
         ));
@@ -293,6 +330,10 @@ mod tests {
             mailbox_state_path,
             mission_board,
             mission_board_state_path,
+            public_identity_registry,
+            public_identity_registry_state_path,
+            controller_binding_registry,
+            controller_binding_registry_state_path,
             citizen_registry,
             citizen_registry_state_path,
             world_state,
@@ -336,6 +377,20 @@ mod tests {
         .await
         .unwrap()
         .status()
+    }
+
+    async fn authed_post_json(app: Router, token: &str, uri: &str, body: Value) -> Value {
+        request_json(
+            app,
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
     }
 
     #[tokio::test]
@@ -685,6 +740,10 @@ mod tests {
         let state_json: Value =
             serde_json::from_slice(&state_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
+        assert_eq!(
+            state_json["identity"]["public_identity"]["public_id"].as_str(),
+            state_json["agent_id"].as_str()
+        );
         let agent_id = state_json["agent_id"].as_str().unwrap();
 
         let profile_body = json!({
@@ -740,14 +799,114 @@ mod tests {
             serde_json::from_slice(&metrics_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert!(
-            metrics_json["total_influence"].as_i64().unwrap() >= 3,
+            metrics_json["metrics"]["total_influence"].as_i64().unwrap() >= 3,
             "expected profile bonus to affect influence"
         );
+        assert_eq!(
+            metrics_json["public_memory_owner"]["controller_id"].as_str(),
+            Some(agent_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn public_identity_and_controller_binding_flow_works() {
+        let (dir, app, token, _) = build_test_app(20);
+
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        let default_identity =
+            authed_get_json(app.clone(), &token, "/v1/civilization/public-identity").await;
+        assert_eq!(
+            default_identity["public_identity"]["public_id"].as_str(),
+            Some(agent_id)
+        );
+        assert_eq!(
+            default_identity["public_memory_owner"]["controller_id"].as_str(),
+            Some(agent_id)
+        );
+
+        let default_binding =
+            authed_get_json(app.clone(), &token, "/v1/civilization/controller-binding").await;
+        assert_eq!(
+            default_binding["controller_binding"]["controller_kind"].as_str(),
+            Some("local_wattswarm")
+        );
+
+        let public_identity_status = authed_post(
+            app.clone(),
+            &token,
+            "/v1/civilization/public-identity",
+            json!({
+                "public_id": "citizen-alpha",
+                "display_name": "Citizen Alpha",
+                "legacy_agent_id": agent_id,
+                "active": true
+            }),
+        )
+        .await;
+        assert_eq!(public_identity_status, StatusCode::OK);
+
+        let binding_status = authed_post(
+            app.clone(),
+            &token,
+            "/v1/civilization/controller-binding",
+            json!({
+                "public_id": "citizen-alpha",
+                "controller_kind": "external_runtime",
+                "controller_ref": "openclaw://alpha",
+                "controller_node_id": null,
+                "ownership_scope": "external",
+                "active": true
+            }),
+        )
+        .await;
+        assert_eq!(binding_status, StatusCode::OK);
+
+        let fetched_identity = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/public-identity?public_id=citizen-alpha",
+        )
+        .await;
+        assert_eq!(
+            fetched_identity["public_identity"]["display_name"].as_str(),
+            Some("Citizen Alpha")
+        );
+
+        let fetched_binding = authed_get_json(
+            app,
+            &token,
+            "/v1/civilization/controller-binding?public_id=citizen-alpha",
+        )
+        .await;
+        assert_eq!(
+            fetched_binding["controller_binding"]["controller_ref"].as_str(),
+            Some("openclaw://alpha")
+        );
+        assert_eq!(
+            fetched_binding["public_memory_owner"]["public_id"].as_str(),
+            Some("citizen-alpha")
+        );
+
+        let persisted_identities = PublicIdentityRegistry::load_or_new(
+            dir.path().join("civilization/public_identities.json"),
+        )
+        .unwrap();
+        assert!(persisted_identities.get("citizen-alpha").is_some());
+
+        let persisted_bindings = ControllerBindingRegistry::load_or_new(
+            dir.path().join("civilization/controller_bindings.json"),
+        )
+        .unwrap();
+        assert!(persisted_bindings.get("citizen-alpha").is_some());
     }
 
     #[tokio::test]
     async fn world_event_publish_and_query_works() {
         let (_dir, app, token, _) = build_test_app(20);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
 
         let publish_body = json!({
             "category": "economic",
@@ -804,8 +963,12 @@ mod tests {
         let events_json: Value =
             serde_json::from_slice(&events_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(events_json.as_array().unwrap().len(), 1);
-        assert_eq!(events_json[0]["title"], "Power Shortage");
+        assert_eq!(events_json["events"].as_array().unwrap().len(), 1);
+        assert_eq!(events_json["events"][0]["title"], "Power Shortage");
+        assert_eq!(
+            events_json["public_memory_owner"]["controller_id"].as_str(),
+            Some(agent_id)
+        );
     }
 
     #[tokio::test]
@@ -1026,10 +1189,80 @@ mod tests {
 
         let emergencies_json =
             authed_get_json(app.clone(), &token, "/v1/civilization/emergencies").await;
-        assert!(!emergencies_json.as_array().unwrap().is_empty());
+        assert!(
+            !emergencies_json["emergencies"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
 
         let briefing_json =
             authed_get_json(app.clone(), &token, "/v1/civilization/briefing?hours=12").await;
-        assert!(briefing_json["emergencies"].as_array().is_some());
+        assert!(
+            briefing_json["briefing"]["emergencies"]
+                .as_array()
+                .is_some()
+        );
+        assert_eq!(
+            briefing_json["public_memory_owner"]["controller_id"].as_str(),
+            Some(agent_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_character_returns_unified_identity_bundle_and_public_memory_owner() {
+        let (dir, app, token, _) = build_test_app(20);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_id = state_json["agent_id"].as_str().unwrap();
+
+        let bootstrap_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-character",
+            json!({
+                "public_id": "captain-aurora",
+                "display_name": "Captain Aurora",
+                "faction": "freeport",
+                "role": "broker",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "genesis-core"
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            bootstrap_json["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert_eq!(
+            bootstrap_json["controller_binding"]["controller_kind"].as_str(),
+            Some("local_wattswarm")
+        );
+        assert_eq!(
+            bootstrap_json["profile"]["agent_id"].as_str(),
+            Some(agent_id)
+        );
+        assert_eq!(
+            bootstrap_json["public_memory_owner"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+
+        let events = EventLog::new(dir.path().join("events.jsonl"))
+            .unwrap()
+            .get_all()
+            .unwrap();
+        let bootstrap_event = events
+            .iter()
+            .find(|event| event.event_type == "CIVILIZATION_CHARACTER_BOOTSTRAPPED")
+            .unwrap();
+        assert_eq!(
+            bootstrap_event.payload["public_memory"]["public_id"].as_str(),
+            Some("captain-aurora")
+        );
+        assert_eq!(
+            bootstrap_event.payload["public_memory"]["controller_id"].as_str(),
+            Some(agent_id)
+        );
     }
 }

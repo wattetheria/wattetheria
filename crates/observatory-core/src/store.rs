@@ -20,6 +20,8 @@ pub struct SummaryStore {
 #[derive(Debug, Serialize)]
 struct SummarySignable<'a> {
     agent_id: &'a str,
+    controller_id: &'a Option<String>,
+    public_id: &'a Option<String>,
     timestamp: i64,
     subnet_id: &'a Option<String>,
     power: i64,
@@ -99,6 +101,8 @@ impl SummaryStore {
     fn verify_summary(summary: &SignedSummary) -> Result<()> {
         let signable = SummarySignable {
             agent_id: &summary.agent_id,
+            controller_id: &summary.controller_id,
+            public_id: &summary.public_id,
             timestamp: summary.timestamp,
             subnet_id: &summary.subnet_id,
             power: summary.power,
@@ -108,7 +112,14 @@ impl SummaryStore {
             task_stats: &summary.task_stats,
             events_digest: &summary.events_digest,
         };
-        if !verify_payload(&signable, &summary.signature, &summary.agent_id)? {
+        if !verify_payload(
+            &signable,
+            &summary.signature,
+            summary
+                .controller_id
+                .as_deref()
+                .unwrap_or(&summary.agent_id),
+        )? {
             anyhow::bail!("invalid signed summary signature");
         }
         Ok(())
@@ -229,11 +240,12 @@ impl SummaryStore {
     pub fn rankings(&self, metric: &str, limit: usize) -> Vec<RankingEntry> {
         let mut latest: BTreeMap<String, SignedSummary> = BTreeMap::new();
         for summary in self.entries.values() {
+            let identity_key = summary_identity(summary);
             let keep = latest
-                .get(&summary.agent_id)
+                .get(&identity_key)
                 .is_none_or(|old| old.timestamp < summary.timestamp);
             if keep {
-                latest.insert(summary.agent_id.clone(), summary.clone());
+                latest.insert(identity_key, summary.clone());
             }
         }
 
@@ -242,7 +254,7 @@ impl SummaryStore {
             .map(|summary| {
                 let value = ranking_value(&summary, metric);
                 RankingEntry {
-                    agent_id: summary.agent_id,
+                    agent_id: summary_identity(&summary),
                     subnet_id: summary.subnet_id.unwrap_or_else(|| "global".to_string()),
                     metric: metric.to_string(),
                     value,
@@ -268,7 +280,7 @@ impl SummaryStore {
             .values()
             .map(|summary| EventStreamEntry {
                 timestamp: summary.timestamp,
-                agent_id: summary.agent_id.clone(),
+                agent_id: summary_identity(summary),
                 subnet_id: summary
                     .subnet_id
                     .clone()
@@ -334,6 +346,13 @@ fn ranking_value(summary: &SignedSummary, metric: &str) -> i64 {
         "power_raw" => summary.power,
         _ => summary.watt,
     }
+}
+
+fn summary_identity(summary: &SignedSummary) -> String {
+    summary
+        .public_id
+        .clone()
+        .unwrap_or_else(|| summary.agent_id.clone())
 }
 
 fn prune_window(entries: &mut Vec<i64>, now: i64, window_sec: i64) {

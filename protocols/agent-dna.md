@@ -8,8 +8,11 @@ Required fields:
 - `stats`: `{ power, watt, reputation, capacity }`
 
 Optional fields:
+- `public_id`: galaxy-facing public identity ID
+- `controller_id`: explicit controller/signer ID
 - `model_provider`: selected brain/model backend
 - `personality_params`: runtime tuning knobs
+- `controller_binding`: public-identity to controller mapping materialization
 - `capabilities_granted[]`: currently granted capability patterns
 - `wallet_adapter`: reserved for future chain bridge adapters
 - `subnet_memberships[]`: active subnet IDs
@@ -17,3 +20,4 @@ Optional fields:
 Notes:
 - This schema is descriptive for replication and UI consumption.
 - Authority remains event-log driven; Agent DNA snapshots are convenience materializations.
+- `agent_id` remains a compatibility field and currently aliases the local controller signer.

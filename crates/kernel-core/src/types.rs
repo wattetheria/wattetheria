@@ -78,6 +78,10 @@ pub struct TaskStats {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignedSummary {
     pub agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controller_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_id: Option<String>,
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subnet_id: Option<String>,
@@ -94,6 +98,10 @@ pub struct SignedSummary {
 pub struct HandshakePayload {
     pub version: String,
     pub agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub controller_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public_id: Option<String>,
     pub nonce: String,
     pub timestamp: i64,
     pub capabilities_summary: Value,
