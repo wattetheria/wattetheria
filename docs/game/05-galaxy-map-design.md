@@ -18,8 +18,8 @@ The first layer is the official genesis map.
 
 It exists to provide:
 
-- a guaranteed playable starting network
-- a stable onboarding space
+- a guaranteed starting network
+- a stable bootstrap space
 - canonical starter systems and routes
 - a fixed anchor for later community expansion
 
@@ -74,4 +74,4 @@ Already implemented in code:
 Still missing:
 
 - richer travel consequences on mission state mutation, governance pressure shifts, and longer public-memory trails
-- Godot map editor workflow
+- lightweight map authoring and supervision workflow

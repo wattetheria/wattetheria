@@ -12,7 +12,7 @@ use crate::routes::identity::{
     identity_context_response, public_memory_payload, resolve_identity_context,
 };
 use crate::state::{
-    CharacterBootstrapBody, CitizenProfileBody, CitizenProfileQuery, ControlPlaneState,
+    BootstrapIdentityBody, CitizenProfileBody, CitizenProfileQuery, ControlPlaneState,
     ControllerBindingBody, ControllerBindingQuery, EmergencyQuery, GalaxyEventBody,
     GalaxyEventsQuery, GalaxyGenerateBody, MetricsQuery, NightShiftQuery, PublicIdentityBody,
     PublicIdentityQuery, StreamEvent,
@@ -26,7 +26,7 @@ use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::metrics::compute_scores;
 
 #[derive(Debug, Clone)]
-struct BootstrapCharacterPlan {
+struct BootstrapIdentityPlan {
     controller_kind: ControllerKind,
     controller_ref: String,
     controller_node_id: Option<String>,
@@ -35,10 +35,10 @@ struct BootstrapCharacterPlan {
     active: bool,
 }
 
-fn plan_bootstrap_character(
-    body: &CharacterBootstrapBody,
+fn plan_bootstrap_identity(
+    body: &BootstrapIdentityBody,
     state_agent_id: &str,
-) -> Result<BootstrapCharacterPlan, String> {
+) -> Result<BootstrapIdentityPlan, String> {
     let controller_kind = body
         .controller_kind
         .clone()
@@ -73,7 +73,7 @@ fn plan_bootstrap_character(
         .to_string()
     });
 
-    Ok(BootstrapCharacterPlan {
+    Ok(BootstrapIdentityPlan {
         controller_kind,
         controller_ref,
         controller_node_id,
@@ -83,10 +83,10 @@ fn plan_bootstrap_character(
     })
 }
 
-async fn persist_bootstrap_character(
+async fn persist_bootstrap_identity(
     state: &ControlPlaneState,
-    body: &CharacterBootstrapBody,
-    plan: &BootstrapCharacterPlan,
+    body: &BootstrapIdentityBody,
+    plan: &BootstrapIdentityPlan,
 ) -> Result<(), anyhow::Error> {
     {
         let mut registry = state.public_identity_registry.lock().await;
@@ -365,33 +365,33 @@ pub(crate) async fn citizen_profile_upsert(
     Json(identity_context_response(&context)).into_response()
 }
 
-pub(crate) async fn bootstrap_character(
+pub(crate) async fn bootstrap_identity(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Json(body): Json<CharacterBootstrapBody>,
+    Json(body): Json<BootstrapIdentityBody>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
-    let plan = match plan_bootstrap_character(&body, &state.agent_id) {
+    let plan = match plan_bootstrap_identity(&body, &state.agent_id) {
         Ok(plan) => plan,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
         }
     };
-    if let Err(error) = persist_bootstrap_character(&state, &body, &plan).await {
+    if let Err(error) = persist_bootstrap_identity(&state, &body, &plan).await {
         return internal_error(&error);
     }
     let context = resolve_identity_context(&state, Some(&body.public_id), None).await;
     let payload = public_memory_payload(&context, "identity", identity_context_response(&context));
     let _ = state.stream_tx.send(StreamEvent {
-        kind: "civilization.character.bootstrapped".to_string(),
+        kind: "civilization.identity.bootstrapped".to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
     let _ = state.event_log.append_signed(
-        "CIVILIZATION_CHARACTER_BOOTSTRAPPED",
+        "CIVILIZATION_IDENTITY_BOOTSTRAPPED",
         payload.clone(),
         &state.identity,
     );
@@ -399,11 +399,11 @@ pub(crate) async fn bootstrap_character(
         id: String::new(),
         timestamp: 0,
         category: "civilization".to_string(),
-        action: "civilization.character.bootstrap".to_string(),
+        action: "civilization.identity.bootstrap".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: Some(body.public_id),
-        capability: Some("civilization.character.bootstrap".to_string()),
+        capability: Some("civilization.identity.bootstrap".to_string()),
         reason: None,
         duration_ms: None,
         details: Some(payload),
@@ -835,4 +835,12 @@ pub(crate) async fn civilization_briefing(
         "public_memory_owner": context.public_memory_owner,
     }))
     .into_response()
+}
+
+pub(crate) async fn supervision_briefing(
+    state: State<ControlPlaneState>,
+    headers: HeaderMap,
+    query: Query<NightShiftQuery>,
+) -> Response {
+    civilization_briefing(state, headers, query).await
 }

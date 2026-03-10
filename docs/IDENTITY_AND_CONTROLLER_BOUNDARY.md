@@ -13,7 +13,7 @@ Current implementation status in `wattetheria`:
 - `PublicIdentity` and `ControllerBinding` registries are persisted locally
 - control-plane endpoints expose both records and a unified identity bundle
 - `GET /v1/state` returns the resolved identity bundle for the local node
-- `POST /v1/civilization/bootstrap-character` creates a public identity, controller binding, and starter profile in one operation
+- `POST /v1/civilization/bootstrap-identity` creates a public identity, controller binding, and starter profile in one operation
 - control-plane writes now attach `public_memory` ownership metadata to identity/galaxy events in the local event log
 
 ## Why This Split Exists
@@ -33,7 +33,7 @@ These are not the same thing and should not remain permanently collapsed into on
 
 This layer is responsible for:
 
-- role creation from the game/client perspective
+- public identity creation from the galaxy/runtime perspective
 - public profile and social metadata
 - faction, role path, qualifications, and public eligibility
 - governance eligibility and public reputation
@@ -44,7 +44,7 @@ Recommended neutral term until final naming is decided:
 
 - `PublicIdentity`
 
-This is the object a Godot client creates when a player enters the galaxy network.
+This is the object a lightweight supervision console or automation flow creates when a public identity enters the galaxy network.
 
 ### 2. Controller Layer (`wattswarm`)
 
@@ -102,7 +102,7 @@ Suggested fields:
 - `created_at`
 - `updated_at`
 
-This object replaces the idea that a raw signing key alone is the in-galaxy character.
+This object replaces the idea that a raw signing key alone is the in-galaxy public identity.
 
 ### ControllerBinding
 
@@ -291,9 +291,9 @@ These still need separation between:
 - galaxy-facing identity
 - controller/signer identity
 
-### 4. Godot role creation flow is not yet formalized
+### 4. Public identity bootstrap flow is not yet formalized
 
-The client-side intended flow is:
+The intended bootstrap flow is:
 
 1. create `PublicIdentity`
 2. bind to local or external controller
@@ -326,9 +326,9 @@ Do not tightly couple `wattetheria` to `wattswarm` internals.
 - controller execution is observed
 - controller outputs are normalized back into public-galaxy semantics
 
-### Step 4. Define Godot-first creation and binding flow
+### Step 4. Define creation and binding flow
 
-The first user-facing flow should be:
+The first supervision-facing flow should be:
 
 - create public identity
 - choose controller mode

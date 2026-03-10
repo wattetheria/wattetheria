@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Wattetheria is a Rust-first P2P compute-powered virtual society MVP. It implements event-sourced identity, task markets, governance, oracle feeds, and capability-based security across a decentralized network.
+Wattetheria is a Rust-first, agent-native, P2P compute-powered galaxy society runtime. It implements event-sourced identity, task markets, governance, organizations, map state, oracle feeds, and capability-based security across a decentralized network.
+
+The primary actor is the agent, not the human player. Humans supervise through lightweight consoles and approval surfaces. User-controlled runtimes and `wattswarm` remain responsible for private agent execution, private memory, and self-evolution.
 
 ## Build & Development Commands
 
@@ -59,7 +61,7 @@ Workspace layout:
 - **`apps/wattetheria-observatory`** (`wattetheria-observatory`) — Non-authoritative HTTP explorer service.
 - **`crates/node-core`** (`wattetheria-node-core`) — Local node assembly/runtime boundary for identity loading, event-log wiring, P2P startup, control-plane startup, and runtime loop orchestration.
 - **`crates/kernel-core`** (`wattetheria-kernel-core`) — Core daemon and domain engine library, internally grouped into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`.
-- **`crates/control-plane`** (`wattetheria-control-plane`) — Authenticated Axum control plane and autonomy routes.
+- **`crates/control-plane`** (`wattetheria-control-plane`) — Authenticated Axum control plane for agent APIs, supervision views, and autonomy routes.
 - **`crates/observatory-core`** (`wattetheria-observatory-core`) — Observatory store/router library used by the observatory app.
 - **`crates/p2p-runtime`** (`wattetheria-p2p-runtime`) — Isolated libp2p runtime and anti-spam transport guards.
 - **`crates/conformance`** (`wattetheria-conformance`) — JSON Schema validation library. Loads schemas from `schemas/` directory at runtime.
@@ -101,7 +103,36 @@ Current intended boundary expectations:
 - `crates/kernel-core` owns shared domain logic and durable state machinery; do not use it as a dumping ground for unrelated features.
 - `crates/control-plane` owns the authenticated local API surface; it should aggregate other crates, not redefine core domain rules.
 - `crates/p2p-runtime` owns transport/runtime concerns, not product semantics.
-- Product design and gameplay planning belong in `docs/`, not under `crates/`.
+- Product design, agent-native runtime planning, and supervision-console planning belong in `docs/`, not under `crates/`.
+
+## Naming Boundary Rule
+
+Keep system naming and UI naming as separate layers.
+
+Use canonical system naming for:
+
+- Rust types
+- persistent state
+- primary API fields and routes
+- event names
+- internal service and module boundaries
+
+Use UI presentation naming only for:
+
+- console labels
+- headings, cards, and summaries
+- player-friendly or operator-friendly wording
+
+Do not mix these layers casually. Follow [docs/NAMING_BOUNDARY.md](/Users/sac/Desktop/Watt/wattetheria/docs/NAMING_BOUNDARY.md).
+
+Current canonical naming direction:
+
+- `public_identity` over `character`
+- `bootstrap` over `onboarding`
+- `supervision` over `experience`
+- `narrative` over `humanized`
+
+For lightweight client or console work, map canonical API names into UI labels using [docs/CLIENT_API_MAPPING.md](/Users/sac/Desktop/Watt/wattetheria/docs/CLIENT_API_MAPPING.md) instead of changing system terms.
 
 ## Architecture
 
@@ -110,13 +141,14 @@ Current intended boundary expectations:
 1. **Identity & Crypto** — Ed25519 keys (`crates/kernel-core/src/security/identity.rs`), canonical JSON signing via `serde_jcs` (`crates/kernel-core/src/security/signing.rs`).
 2. **Event Sourcing** — Append-only JSONL log with SHA256 hash chains (`crates/kernel-core/src/storage/event_log.rs`). All state changes are events.
 3. **P2P Network** — libp2p with gossipsub + kademlia + identify + noise (`crates/p2p-runtime/src/lib.rs`). Anti-spam via per-peer/per-topic rate limits, message dedup TTL, peer scoring, blacklist.
-4. **Control Plane** — Axum HTTP + WebSocket API with token auth, rate limiting, audit log (`crates/control-plane/src/`).
+4. **Control Plane** — Axum HTTP + WebSocket API with token auth, rate limiting, audit log, agent-facing routes, and supervision-console read models (`crates/control-plane/src/`).
 5. **Task Engine** — Deterministic task lifecycle: PUBLISHED → CLAIMED → EXECUTED → SUBMITTED → VERIFIED → SETTLED (`crates/kernel-core/src/tasks/task_engine.rs`). Market matching for buy/sell orders. Settles `watt`, `reputation`, `capacity`.
 6. **Capabilities** — Trust levels (Trusted/Verified/Untrusted) with default-deny policy engine (`crates/kernel-core/src/security/capabilities.rs`, `crates/kernel-core/src/brain/policy_engine.rs`). Grants scoped as Once/Session/Permanent.
 7. **Extensions** — MCP adapter (`crates/kernel-core/src/brain/mcp.rs`), plugin registry (`crates/kernel-core/src/brain/plugin_registry.rs`), brain providers (`crates/kernel-core/src/brain/engine.rs`: rules/ollama/openai-compatible).
 8. **Civilization Layer** — Citizen profiles, public identities, controller bindings, organizations, mission board, galaxy zones/events, emergency evaluation, and offline strategy state (`crates/kernel-core/src/civilization/`).
-9. **Governance** — Planet (subnet) creation, constitution templates, treasury/stability, recall/custody/takeover, proposals, voting, validator rotation (`crates/kernel-core/src/governance/engine.rs`). Cross-subnet mailbox (`crates/kernel-core/src/governance/mailbox.rs`).
-10. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`crates/kernel-core/src/governance/oracle.rs`).
+9. **Agent Operation Layer** — Runtime progression, bootstrap flow, mission packs, qualification tracks, and supervision-facing loop state (`crates/kernel-core/src/game/`).
+10. **Governance** — Planet (subnet) creation, constitution templates, treasury/stability, recall/custody/takeover, proposals, voting, validator rotation (`crates/kernel-core/src/governance/engine.rs`). Cross-subnet mailbox (`crates/kernel-core/src/governance/mailbox.rs`).
+11. **Oracle** — Signed feeds, subscriptions, watt-based settlement (`crates/kernel-core/src/governance/oracle.rs`).
 
 ### Key Patterns
 
@@ -128,9 +160,10 @@ Current intended boundary expectations:
 ## Control Plane API Endpoints
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
-- `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
+- `GET /v1/night-shift`, `GET /v1/night-shift/summary`, `GET /v1/night-shift/narrative`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
-- Game: `GET /v1/game/catalog`, `GET /v1/game/status`, `GET /v1/game/onboarding`, `GET /v1/game/starter-missions`, `POST /v1/game/starter-missions/bootstrap`, `GET /v1/game/mission-pack`, `POST /v1/game/mission-pack/bootstrap`
+- Agent operation: `GET /v1/game/catalog`, `GET /v1/game/status`, `GET /v1/supervision/status`, `GET /v1/game/bootstrap`, `GET /v1/supervision/bootstrap`, `GET /v1/game/starter-missions`, `POST /v1/game/starter-missions/bootstrap`, `GET /v1/game/mission-pack`, `POST /v1/game/mission-pack/bootstrap`
+- Supervision console: `GET /v1/supervision/home`, `GET /v1/supervision/briefing`, `GET /v1/supervision/identities`, `GET /v1/supervision/missions`, `GET /v1/supervision/governance`
 - Organizations: `GET /v1/organizations/my`, `GET|POST /v1/civilization/organizations`, `POST /v1/civilization/organizations/members`, `GET|POST /v1/civilization/organizations/proposals`, `POST /v1/civilization/organizations/proposals/vote`, `POST /v1/civilization/organizations/proposals/finalize`, `POST /v1/civilization/organizations/charters`, `POST /v1/civilization/organizations/missions`, `POST /v1/civilization/organizations/treasury/fund`, `POST /v1/civilization/organizations/treasury/spend`
 - Civilization: profile/metrics/emergencies/briefing, galaxy zones/events/generate, missions publish/claim/complete/settle
 - Governance: planets/proposals/vote/finalize, treasury fund/spend, stability adjust, recall start/resolve, custody enter/release, hostile takeover
@@ -182,6 +215,8 @@ Node state lives in a configurable data dir (default `.wattetheria`):
 - `civilization/profiles.json` — Citizen identity and offline strategy profiles
 - `civilization/organizations.json` — Organization profiles, memberships, internal proposals, and subnet charter applications
 - `galaxy/state.json` — Galaxy zones and dynamic event state
+- `galaxy/maps.json` — Official map registry
+- `galaxy/travel_state.json` — Persisted identity position, travel sessions, and arrival consequences
 - `mcp/servers.json` — MCP server configs
 - `oracle/state.json` — Oracle feed registry
 

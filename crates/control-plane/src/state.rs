@@ -407,7 +407,7 @@ pub struct EmergencyQuery {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CharacterBootstrapBody {
+pub struct BootstrapIdentityBody {
     pub public_id: String,
     pub display_name: String,
     pub legacy_agent_id: Option<String>,

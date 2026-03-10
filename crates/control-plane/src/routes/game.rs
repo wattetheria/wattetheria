@@ -4,20 +4,20 @@ use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::game::{
-    GameComputation, bootstrap_mission_pack, bootstrap_starter_missions, catalog,
-    compute_onboarding_flow, compute_onboarding_state, compute_qualifications, compute_status,
-    mission_pack_set, starter_mission_set,
+    BootstrapFlow, BootstrapState, GameComputation, bootstrap_mission_pack,
+    bootstrap_starter_missions, catalog, compute_bootstrap_flow, compute_bootstrap_state,
+    compute_qualifications, compute_status, mission_pack_set, starter_mission_set,
 };
 
 use crate::auth::{authorize, internal_error};
-use crate::routes::experience::build_gameplay_experience;
 use crate::routes::identity::{
     IdentityContextView, identity_context_response, public_memory_payload, resolve_identity_context,
 };
 use crate::routes::organizations::{OrganizationView, build_organization_views};
+use crate::routes::supervision::build_supervision_view;
 use crate::state::{ControlPlaneState, GameActionBody, GameStatusQuery, StreamEvent};
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,8 +25,8 @@ pub(crate) struct GameView {
     pub agent_stats: wattetheria_kernel::types::AgentStats,
     pub scores: wattetheria_kernel::metrics::CivilizationScores,
     pub status: wattetheria_kernel::game::GameStatus,
-    pub onboarding: wattetheria_kernel::game::OnboardingState,
-    pub onboarding_flow: wattetheria_kernel::game::OnboardingFlow,
+    pub bootstrap: BootstrapState,
+    pub bootstrap_flow: BootstrapFlow,
     pub starter_missions: Option<wattetheria_kernel::game::StarterMissionSet>,
     pub mission_pack: Option<wattetheria_kernel::game::GameMissionPack>,
     pub travel_state: Option<wattetheria_kernel::map::TravelStateRecord>,
@@ -97,16 +97,16 @@ pub(crate) async fn build_game_view(
             &missions,
         )
     });
-    let onboarding = compute_onboarding_state(
+    let bootstrap = compute_bootstrap_state(
         &controller_id,
         context.public_identity.as_ref(),
         &status,
         &missions,
     );
-    let onboarding_flow = compute_onboarding_flow(
+    let bootstrap_flow = compute_bootstrap_flow(
         context.public_identity.as_ref(),
         &status,
-        onboarding.clone(),
+        bootstrap.clone(),
         starter_missions.as_ref(),
         mission_pack.as_ref(),
     );
@@ -130,12 +130,27 @@ pub(crate) async fn build_game_view(
         agent_stats,
         scores,
         status,
-        onboarding,
-        onboarding_flow,
+        bootstrap,
+        bootstrap_flow,
         starter_missions,
         mission_pack,
         travel_state,
         organizations: organization_views,
+    })
+}
+
+#[must_use]
+pub(crate) fn game_view_payload(view: &GameView) -> Value {
+    json!({
+        "agent_stats": view.agent_stats,
+        "scores": view.scores,
+        "status": view.status,
+        "bootstrap": view.bootstrap.clone(),
+        "bootstrap_flow": view.bootstrap_flow.clone(),
+        "starter_missions": view.starter_missions,
+        "mission_pack": view.mission_pack,
+        "travel_state": view.travel_state,
+        "organizations": view.organizations,
     })
 }
 
@@ -189,7 +204,7 @@ pub(crate) async fn game_status(
         Ok(view) => view,
         Err(error) => return internal_error(&error),
     };
-    let experience = build_gameplay_experience(&view, None);
+    let supervision = build_supervision_view(&view, None);
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -209,23 +224,19 @@ pub(crate) async fn game_status(
         })),
     });
 
-    Json(json!({
-        "identity": identity_context_response(&context),
-        "agent_stats": view.agent_stats,
-        "scores": view.scores,
-        "status": view.status,
-        "onboarding": view.onboarding,
-        "onboarding_flow": view.onboarding_flow,
-        "starter_missions": view.starter_missions,
-        "mission_pack": view.mission_pack,
-        "travel_state": view.travel_state,
-        "organizations": view.organizations,
-        "experience": experience,
-    }))
-    .into_response()
+    let mut payload = game_view_payload(&view)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    payload.insert(
+        "identity".to_string(),
+        json!(identity_context_response(&context)),
+    );
+    payload.insert("supervision".to_string(), json!(supervision));
+    Json(payload).into_response()
 }
 
-pub(crate) async fn game_onboarding(
+pub(crate) async fn game_bootstrap_payload(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Query(query): Query<GameStatusQuery>,
@@ -253,7 +264,7 @@ pub(crate) async fn game_onboarding(
         id: String::new(),
         timestamp: 0,
         category: "game".to_string(),
-        action: "game.onboarding.query".to_string(),
+        action: "game.bootstrap.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: context.public_memory_owner.public.clone(),
@@ -261,17 +272,17 @@ pub(crate) async fn game_onboarding(
         reason: None,
         duration_ms: None,
         details: Some(json!({
-            "phase": view.onboarding.current_phase,
-            "progress_pct": view.onboarding.progress_pct,
-            "action_count": view.onboarding_flow.action_cards.len(),
+            "phase": view.bootstrap.current_phase,
+            "progress_pct": view.bootstrap.progress_pct,
+            "action_count": view.bootstrap_flow.action_cards.len(),
         })),
     });
 
     Json(json!({
         "identity": identity_context_response(&context),
         "status": view.status,
-        "onboarding": view.onboarding,
-        "onboarding_flow": view.onboarding_flow,
+        "bootstrap": view.bootstrap,
+        "bootstrap_flow": view.bootstrap_flow,
         "starter_missions": view.starter_missions,
         "mission_pack": view.mission_pack,
         "briefing": {
@@ -282,6 +293,14 @@ pub(crate) async fn game_onboarding(
         },
     }))
     .into_response()
+}
+
+pub(crate) async fn game_bootstrap(
+    state: State<ControlPlaneState>,
+    headers: HeaderMap,
+    query: Query<GameStatusQuery>,
+) -> Response {
+    game_bootstrap_payload(state, headers, query).await
 }
 
 pub(crate) async fn game_mission_pack(

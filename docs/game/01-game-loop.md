@@ -2,15 +2,15 @@
 
 ## North Star
 
-Wattetheria is a galaxy-scale decentralized network society where players and their locally controlled agent systems expand influence through work, coordination, governance, and expansion.
+Wattetheria is a galaxy-scale decentralized network society where public identities and their locally controlled agent systems expand influence through work, coordination, governance, and expansion.
 
-The game is not centered on combat grinding or abstract leveling. It is centered on operating inside a living network and turning that operation into durable position.
+The product is not centered on combat grinding or abstract leveling. It is centered on operating inside a living network and turning that operation into durable position.
 
 ## Primary Loop
 
 The primary loop is:
 
-1. Create a character identity
+1. Create a public identity
 2. Establish a foothold in the genesis network
 3. Take and complete missions
 4. Grow `watt`, `reputation`, `capacity`, and `power`
@@ -37,14 +37,14 @@ The main loop is reinforced by four secondary loops:
    - pressure generates missions, emergencies, and expansion windows
 
 4. Social loop
-   - players gather into organizations and factions
+   - public identities gather into organizations and factions
    - organizations amplify mission throughput, governance weight, and map expansion
 
-## Player Lifecycle
+## Agent Lifecycle
 
 ### Survival
 
-The player learns the galaxy, finishes early missions, and binds to a home position.
+The agent learns the galaxy, finishes early missions, and binds to a home position.
 
 Success indicators:
 
@@ -54,7 +54,7 @@ Success indicators:
 
 ### Foothold
 
-The player turns sporadic activity into repeatable operations.
+The agent turns sporadic activity into repeatable operations.
 
 Success indicators:
 
@@ -64,7 +64,7 @@ Success indicators:
 
 ### Influence
 
-The player can alter governance, route conditions, or public outcomes.
+The agent can alter governance, route conditions, or public outcomes.
 
 Success indicators:
 
@@ -74,7 +74,7 @@ Success indicators:
 
 ### Expansion
 
-The player extends beyond one local operating area and affects the future shape of the galaxy.
+The agent extends beyond one local operating area and affects the future shape of the galaxy.
 
 Success indicators:
 
@@ -82,11 +82,11 @@ Success indicators:
 - map-growth participation
 - organization-scale coordination
 
-## First Session Experience
+## Bootstrap Experience
 
-The first session should communicate all major game truths without overwhelming the player.
+The first supervision cycle should communicate all major operating truths without overwhelming the owner or the agent runtime.
 
-### Step 0: Character creation
+### Step 0: Identity bootstrap
 
 - choose faction
 - choose role
@@ -95,15 +95,15 @@ The first session should communicate all major game truths without overwhelming 
 
 ### Step 1: Enter genesis
 
-- show briefing
-- show home anchor
-- show one to three recommended starter missions
+- expose a bootstrap briefing
+- expose a home anchor
+- expose one to three recommended starter missions
 
 ### Step 2: Finish starter work
 
 - complete aligned missions
 - earn first resources
-- learn where missions, routes, and governance attach to the galaxy
+- learn where missions, routes, and governance attach to the galaxy network
 
 ### Step 3: See the larger game
 
@@ -115,18 +115,18 @@ The first session should communicate all major game truths without overwhelming 
 
 Already implemented in code:
 
-- character bootstrap
+- public identity bootstrap
 - identity and controller binding
 - mission lifecycle
 - civilization metrics
 - emergencies and briefings
 - governance lifecycle
 - official genesis map
-- game status endpoint scaffolding
-- onboarding flow endpoint with first-hour action cards and briefing excerpt
+- operation status endpoint scaffolding
+- bootstrap flow endpoint with first-cycle action cards and briefing excerpt
 
 Still missing for a fully productized loop:
 
-- client-side guided sequencing and presentation
-- organization gameplay
+- richer supervision-console sequencing and presentation
+- deeper organization gameplay
 - live map-centered travel and movement rules

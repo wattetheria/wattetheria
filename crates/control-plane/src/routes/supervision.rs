@@ -1,24 +1,24 @@
 use serde::Serialize;
 use serde_json::Value;
 use wattetheria_kernel::civilization::emergency::EmergencyState;
-use wattetheria_kernel::game::OnboardingActionKind;
+use wattetheria_kernel::game::BootstrapActionKind;
 use wattetheria_kernel::map::{TravelRiskLevel, TravelStateRecord};
 
 use crate::routes::game::GameView;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum GameplayActionKind {
+pub(crate) enum SupervisionActionKind {
     ApiCall,
     OpenScreen,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct GameplayNextAction {
+pub(crate) struct SupervisionNextAction {
     pub key: String,
     pub title: String,
     pub summary: String,
-    pub kind: GameplayActionKind,
+    pub kind: SupervisionActionKind,
     pub target: String,
     pub method: Option<String>,
     pub payload: Option<Value>,
@@ -27,7 +27,7 @@ pub(crate) struct GameplayNextAction {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct GameplayAlert {
+pub(crate) struct SupervisionAlert {
     pub key: String,
     pub severity: u8,
     pub title: String,
@@ -36,7 +36,7 @@ pub(crate) struct GameplayAlert {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct GameplayPriorityCard {
+pub(crate) struct SupervisionPriorityCard {
     pub key: String,
     pub title: String,
     pub summary: String,
@@ -46,49 +46,49 @@ pub(crate) struct GameplayPriorityCard {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct GameplayExperience {
-    pub next_actions: Vec<GameplayNextAction>,
-    pub alerts: Vec<GameplayAlert>,
-    pub priority_cards: Vec<GameplayPriorityCard>,
+pub(crate) struct SupervisionView {
+    pub next_actions: Vec<SupervisionNextAction>,
+    pub alerts: Vec<SupervisionAlert>,
+    pub priority_cards: Vec<SupervisionPriorityCard>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct DashboardExperienceSignals<'a> {
+pub(crate) struct SupervisionSignals<'a> {
     pub emergencies: &'a [EmergencyState],
     pub eligible_open_count: usize,
     pub local_open_count: usize,
     pub travel_required_open_count: usize,
 }
 
-pub(crate) fn build_gameplay_experience(
+pub(crate) fn build_supervision_view(
     game: &GameView,
-    dashboard: Option<DashboardExperienceSignals<'_>>,
-) -> GameplayExperience {
-    GameplayExperience {
-        next_actions: build_next_actions(game, dashboard),
-        alerts: build_alerts(game, dashboard),
+    supervision_signals: Option<SupervisionSignals<'_>>,
+) -> SupervisionView {
+    SupervisionView {
+        next_actions: build_next_actions(game, supervision_signals),
+        alerts: build_alerts(game, supervision_signals),
         priority_cards: build_priority_cards(game),
     }
 }
 
 fn build_next_actions(
     game: &GameView,
-    dashboard: Option<DashboardExperienceSignals<'_>>,
-) -> Vec<GameplayNextAction> {
+    supervision_signals: Option<SupervisionSignals<'_>>,
+) -> Vec<SupervisionNextAction> {
     let mut actions = Vec::new();
-    push_onboarding_actions(&mut actions, game);
+    push_bootstrap_actions(&mut actions, game);
     push_travel_actions(&mut actions, game);
     push_organization_actions(&mut actions, game);
-    push_dashboard_actions(&mut actions, dashboard);
+    push_supervision_actions(&mut actions, supervision_signals);
     push_recommended_actions(&mut actions, game);
 
     actions.truncate(6);
     actions
 }
 
-fn push_onboarding_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
+fn push_bootstrap_actions(actions: &mut Vec<SupervisionNextAction>, game: &GameView) {
     for action in game
-        .onboarding_flow
+        .bootstrap_flow
         .action_cards
         .iter()
         .filter(|action| action.ready)
@@ -96,7 +96,7 @@ fn push_onboarding_actions(actions: &mut Vec<GameplayNextAction>, game: &GameVie
     {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: action.key.clone(),
                 title: action.title.clone(),
                 summary: action.summary.clone(),
@@ -111,7 +111,7 @@ fn push_onboarding_actions(actions: &mut Vec<GameplayNextAction>, game: &GameVie
     }
 }
 
-fn push_travel_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
+fn push_travel_actions(actions: &mut Vec<SupervisionNextAction>, game: &GameView) {
     let Some(travel_state) = game.travel_state.as_ref() else {
         return;
     };
@@ -119,11 +119,11 @@ fn push_travel_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
     if travel_state.active_session.is_some() {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: "complete_active_travel".to_string(),
                 title: "Resolve your active travel route".to_string(),
-                summary: "Your character is currently in transit. Finish the route and review the arrival outcome.".to_string(),
-                kind: GameplayActionKind::OpenScreen,
+                summary: "Your public identity is currently in transit. Finish the route and review the arrival outcome.".to_string(),
+                kind: SupervisionActionKind::OpenScreen,
                 target: "galaxy_map".to_string(),
                 method: None,
                 payload: None,
@@ -141,12 +141,12 @@ fn push_travel_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
     {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: "review_arrival_contracts".to_string(),
                 title: "Review newly reachable local contracts".to_string(),
                 summary: "Your latest arrival unlocked local work at the current landing point."
                     .to_string(),
-                kind: GameplayActionKind::OpenScreen,
+                kind: SupervisionActionKind::OpenScreen,
                 target: "missions".to_string(),
                 method: None,
                 payload: None,
@@ -157,7 +157,7 @@ fn push_travel_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
     }
 }
 
-fn push_organization_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
+fn push_organization_actions(actions: &mut Vec<SupervisionNextAction>, game: &GameView) {
     if game.organizations.is_empty()
         && !matches!(
             game.status.stage,
@@ -166,11 +166,11 @@ fn push_organization_actions(actions: &mut Vec<GameplayNextAction>, game: &GameV
     {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: "create_or_join_organization".to_string(),
                 title: "Create or join an organization".to_string(),
                 summary: "Organizations unlock shared treasury, mission publishing, and longer-term civic progression.".to_string(),
-                kind: GameplayActionKind::OpenScreen,
+                kind: SupervisionActionKind::OpenScreen,
                 target: "organizations".to_string(),
                 method: None,
                 payload: None,
@@ -187,12 +187,12 @@ fn push_organization_actions(actions: &mut Vec<GameplayNextAction>, game: &GameV
     {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: "review_organization_governance".to_string(),
                 title: "Review open organization proposals".to_string(),
                 summary: "Your organization has governance work waiting on member action."
                     .to_string(),
-                kind: GameplayActionKind::OpenScreen,
+                kind: SupervisionActionKind::OpenScreen,
                 target: "organizations".to_string(),
                 method: None,
                 payload: None,
@@ -203,21 +203,21 @@ fn push_organization_actions(actions: &mut Vec<GameplayNextAction>, game: &GameV
     }
 }
 
-fn push_dashboard_actions(
-    actions: &mut Vec<GameplayNextAction>,
-    dashboard: Option<DashboardExperienceSignals<'_>>,
+fn push_supervision_actions(
+    actions: &mut Vec<SupervisionNextAction>,
+    supervision_signals: Option<SupervisionSignals<'_>>,
 ) {
-    if let Some(signals) = dashboard
+    if let Some(signals) = supervision_signals
         && signals.local_open_count == 0
         && signals.travel_required_open_count > 0
     {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: "travel_for_next_contracts".to_string(),
                 title: "Travel for the next available contracts".to_string(),
                 summary: "Your best current contracts are off-anchor. Plan a route before the local board goes dry.".to_string(),
-                kind: GameplayActionKind::OpenScreen,
+                kind: SupervisionActionKind::OpenScreen,
                 target: "galaxy_map".to_string(),
                 method: None,
                 payload: None,
@@ -228,16 +228,16 @@ fn push_dashboard_actions(
     }
 }
 
-fn push_recommended_actions(actions: &mut Vec<GameplayNextAction>, game: &GameView) {
+fn push_recommended_actions(actions: &mut Vec<SupervisionNextAction>, game: &GameView) {
     for (index, action) in game.status.recommended_actions.iter().take(2).enumerate() {
         push_unique_action(
             actions,
-            GameplayNextAction {
+            SupervisionNextAction {
                 key: format!("recommended-action-{}", index + 1),
                 title: "Follow your current role recommendation".to_string(),
                 summary: action.clone(),
-                kind: GameplayActionKind::OpenScreen,
-                target: "dashboard_home".to_string(),
+                kind: SupervisionActionKind::OpenScreen,
+                target: "supervision_home".to_string(),
                 method: None,
                 payload: None,
                 ready: true,
@@ -249,13 +249,13 @@ fn push_recommended_actions(actions: &mut Vec<GameplayNextAction>, game: &GameVi
 
 fn build_alerts(
     game: &GameView,
-    dashboard: Option<DashboardExperienceSignals<'_>>,
-) -> Vec<GameplayAlert> {
+    supervision_signals: Option<SupervisionSignals<'_>>,
+) -> Vec<SupervisionAlert> {
     let mut alerts = Vec::new();
 
-    if let Some(signals) = dashboard {
+    if let Some(signals) = supervision_signals {
         for emergency in signals.emergencies.iter().take(3) {
-            alerts.push(GameplayAlert {
+            alerts.push(SupervisionAlert {
                 key: emergency.emergency_id.clone(),
                 severity: emergency.severity,
                 title: emergency.title.clone(),
@@ -265,7 +265,7 @@ fn build_alerts(
         }
 
         if signals.local_open_count == 0 && signals.travel_required_open_count > 0 {
-            alerts.push(GameplayAlert {
+            alerts.push(SupervisionAlert {
                 key: "travel_required_contracts".to_string(),
                 severity: 4,
                 title: "Available contracts are off your current route".to_string(),
@@ -283,7 +283,7 @@ fn build_alerts(
     {
         let severity = travel_alert_severity(&consequence.route_risk_level);
         if severity > 0 {
-            alerts.push(GameplayAlert {
+            alerts.push(SupervisionAlert {
                 key: "travel_risk_after_arrival".to_string(),
                 severity,
                 title: "Your last route was risky".to_string(),
@@ -298,7 +298,7 @@ fn build_alerts(
         .iter()
         .any(|organization| organization.governance_summary.open_proposals_count > 0)
     {
-        alerts.push(GameplayAlert {
+        alerts.push(SupervisionAlert {
             key: "organization_governance_pending".to_string(),
             severity: 3,
             title: "Organization governance is waiting on members".to_string(),
@@ -314,18 +314,18 @@ fn build_alerts(
     alerts
 }
 
-fn build_priority_cards(game: &GameView) -> Vec<GameplayPriorityCard> {
-    let mut cards = vec![GameplayPriorityCard {
-        key: "onboarding".to_string(),
-        title: "First-session progression".to_string(),
-        summary: game.onboarding.current_focus.clone(),
-        status_label: game.onboarding.current_phase.clone(),
-        progress_pct: game.onboarding.progress_pct,
-        target: "game_onboarding".to_string(),
+fn build_priority_cards(game: &GameView) -> Vec<SupervisionPriorityCard> {
+    let mut cards = vec![SupervisionPriorityCard {
+        key: "bootstrap".to_string(),
+        title: "Bootstrap progression".to_string(),
+        summary: game.bootstrap.current_focus.clone(),
+        status_label: game.bootstrap.current_phase.clone(),
+        progress_pct: game.bootstrap.progress_pct,
+        target: "game_bootstrap".to_string(),
     }];
 
     if let Some(starter_set) = game.starter_missions.as_ref() {
-        cards.push(GameplayPriorityCard {
+        cards.push(SupervisionPriorityCard {
             key: "starter_chain".to_string(),
             title: starter_set.objective_chain.title.clone(),
             summary: starter_set.objective_chain.summary.clone(),
@@ -347,7 +347,7 @@ fn build_priority_cards(game: &GameView) -> Vec<GameplayPriorityCard> {
                 / mission_pack.summary.current_template_count;
             u8::try_from(progress.min(100)).unwrap_or(100)
         };
-        cards.push(GameplayPriorityCard {
+        cards.push(SupervisionPriorityCard {
             key: "mission_pack".to_string(),
             title: "Current stage mission pack".to_string(),
             summary: format!(
@@ -374,7 +374,7 @@ fn build_priority_cards(game: &GameView) -> Vec<GameplayPriorityCard> {
             .count();
         let total_gates = organization.autonomy_track.gates.len().max(1);
         let progress_pct = u8::try_from((complete_gates * 100) / total_gates).unwrap_or(100);
-        cards.push(GameplayPriorityCard {
+        cards.push(SupervisionPriorityCard {
             key: "organization_progression".to_string(),
             title: organization.organization.name.clone(),
             summary: organization.autonomy_track.next_action.clone(),
@@ -388,9 +388,9 @@ fn build_priority_cards(game: &GameView) -> Vec<GameplayPriorityCard> {
     cards
 }
 
-fn travel_priority_card(travel_state: &TravelStateRecord) -> GameplayPriorityCard {
+fn travel_priority_card(travel_state: &TravelStateRecord) -> SupervisionPriorityCard {
     if let Some(session) = travel_state.active_session.as_ref() {
-        return GameplayPriorityCard {
+        return SupervisionPriorityCard {
             key: "active_travel".to_string(),
             title: "Active route in progress".to_string(),
             summary: format!(
@@ -404,7 +404,7 @@ fn travel_priority_card(travel_state: &TravelStateRecord) -> GameplayPriorityCar
     }
 
     if let Some(consequence) = travel_state.last_consequence.as_ref() {
-        return GameplayPriorityCard {
+        return SupervisionPriorityCard {
             key: "last_arrival".to_string(),
             title: "Latest arrival outcome".to_string(),
             summary: consequence.summary.clone(),
@@ -414,7 +414,7 @@ fn travel_priority_card(travel_state: &TravelStateRecord) -> GameplayPriorityCar
         };
     }
 
-    GameplayPriorityCard {
+    SupervisionPriorityCard {
         key: "travel_position".to_string(),
         title: "Current route position".to_string(),
         summary: format!(
@@ -427,14 +427,14 @@ fn travel_priority_card(travel_state: &TravelStateRecord) -> GameplayPriorityCar
     }
 }
 
-fn map_action_kind(kind: &OnboardingActionKind) -> GameplayActionKind {
+fn map_action_kind(kind: &BootstrapActionKind) -> SupervisionActionKind {
     match kind {
-        OnboardingActionKind::ApiCall => GameplayActionKind::ApiCall,
-        OnboardingActionKind::OpenScreen => GameplayActionKind::OpenScreen,
+        BootstrapActionKind::ApiCall => SupervisionActionKind::ApiCall,
+        BootstrapActionKind::OpenScreen => SupervisionActionKind::OpenScreen,
     }
 }
 
-fn push_unique_action(actions: &mut Vec<GameplayNextAction>, candidate: GameplayNextAction) {
+fn push_unique_action(actions: &mut Vec<SupervisionNextAction>, candidate: SupervisionNextAction) {
     if actions.iter().any(|existing| existing.key == candidate.key) {
         return;
     }

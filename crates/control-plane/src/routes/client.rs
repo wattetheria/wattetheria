@@ -16,12 +16,12 @@ use wattetheria_kernel::map::travel::{TravelRiskLevel, TravelWarning, travel_pla
 
 use crate::auth::{authorize, internal_error};
 use crate::autonomy::build_operator_briefing;
-use crate::routes::experience::{DashboardExperienceSignals, build_gameplay_experience};
-use crate::routes::game::build_game_view;
+use crate::routes::game::{build_game_view, game_view_payload};
 use crate::routes::identity::{
     IdentityContextView, identity_context_response, resolve_identity_context,
 };
 use crate::routes::organizations::{OrganizationView, build_organization_views};
+use crate::routes::supervision::{SupervisionSignals, build_supervision_view};
 use crate::state::{
     BootstrapCatalogQuery, ControlPlaneState, DashboardHomeQuery, MyGovernanceQuery,
     MyMissionsQuery,
@@ -324,7 +324,7 @@ fn build_mission_client_buckets(
     }
 }
 
-fn dashboard_open_mission_counts(
+fn supervision_open_mission_counts(
     missions: &MissionBoard,
     profile: Option<&wattetheria_kernel::profiles::CitizenProfile>,
     travel_state: Option<&wattetheria_kernel::map::TravelStateRecord>,
@@ -358,7 +358,7 @@ fn dashboard_open_mission_counts(
     )
 }
 
-fn dashboard_active_mission_count(missions: &MissionBoard, controller_id: &str) -> usize {
+fn supervision_active_mission_count(missions: &MissionBoard, controller_id: &str) -> usize {
     missions
         .list(None)
         .into_iter()
@@ -371,7 +371,7 @@ fn dashboard_active_mission_count(missions: &MissionBoard, controller_id: &str) 
         .count()
 }
 
-async fn build_dashboard_view(
+async fn build_supervision_home_view(
     state: &ControlPlaneState,
     context: &IdentityContextView,
     hours: i64,
@@ -416,8 +416,8 @@ async fn build_dashboard_view(
                 .find(|zone| zone.zone_id == zone_id)
         });
     let (eligible_open_count, local_open_count, travel_required_open_count) =
-        dashboard_open_mission_counts(&missions, profile, travel_state.as_ref(), &maps, &galaxy);
-    let active_count = dashboard_active_mission_count(&missions, &controller_id);
+        supervision_open_mission_counts(&missions, profile, travel_state.as_ref(), &maps, &galaxy);
+    let active_count = supervision_active_mission_count(&missions, &controller_id);
     let home_zone_events = profile
         .and_then(|profile| profile.home_zone_id.as_deref())
         .map_or_else(
@@ -456,7 +456,7 @@ async fn build_dashboard_view(
     })
 }
 
-pub(crate) async fn client_characters(
+pub(crate) async fn public_identities(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
 ) -> Response {
@@ -479,7 +479,7 @@ pub(crate) async fn client_characters(
             .collect::<Vec<_>>()
     };
 
-    let mut characters = Vec::with_capacity(public_ids.len());
+    let mut identities = Vec::with_capacity(public_ids.len());
     for public_id in &public_ids {
         let context = resolve_identity_context(&state, Some(public_id), None).await;
         let travel_state = state.travel_state_registry.lock().await.get(public_id);
@@ -489,7 +489,7 @@ pub(crate) async fn client_characters(
             let governance = state.governance_engine.lock().await;
             build_organization_views(&organizations, &missions, &governance, public_id)
         };
-        characters.push(json!({
+        identities.push(json!({
             "identity": context,
             "travel_state": travel_state,
             "organizations": organizations,
@@ -499,21 +499,24 @@ pub(crate) async fn client_characters(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "client".to_string(),
-        action: "client.characters.query".to_string(),
+        category: "supervision".to_string(),
+        action: "supervision.identities.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: None,
         capability: None,
         reason: None,
         duration_ms: None,
-        details: Some(json!({"count": characters.len()})),
+        details: Some(json!({"count": identities.len()})),
     });
 
-    Json(json!({ "characters": characters })).into_response()
+    Json(json!({
+        "public_identities": identities,
+    }))
+    .into_response()
 }
 
-pub(crate) async fn dashboard_home(
+pub(crate) async fn supervision_home(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Query(query): Query<DashboardHomeQuery>,
@@ -529,7 +532,7 @@ pub(crate) async fn dashboard_home(
     )
     .await;
     let hours = query.hours.unwrap_or(12).max(1);
-    let view = match build_dashboard_view(&state, &context, hours).await {
+    let view = match build_supervision_home_view(&state, &context, hours).await {
         Ok(view) => view,
         Err(error) => return internal_error(&error),
     };
@@ -537,9 +540,9 @@ pub(crate) async fn dashboard_home(
         Ok(game) => game,
         Err(error) => return internal_error(&error),
     };
-    let experience = build_gameplay_experience(
+    let supervision = build_supervision_view(
         &game,
-        Some(DashboardExperienceSignals {
+        Some(SupervisionSignals {
             emergencies: &view.emergencies,
             eligible_open_count: view.eligible_open_count,
             local_open_count: view.local_open_count,
@@ -550,8 +553,8 @@ pub(crate) async fn dashboard_home(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "client".to_string(),
-        action: "client.dashboard.home".to_string(),
+        category: "supervision".to_string(),
+        action: "supervision.home.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: context.public_memory_owner.public.clone(),
@@ -572,8 +575,8 @@ pub(crate) async fn dashboard_home(
         "metrics": view.metrics,
         "emergencies": view.emergencies,
         "briefing": view.briefing,
-        "game": game,
-        "experience": experience,
+        "game": game_view_payload(&game),
+        "supervision": supervision,
         "mission_summary": {
             "eligible_open_count": view.eligible_open_count,
             "local_open_count": view.local_open_count,

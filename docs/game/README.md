@@ -1,8 +1,8 @@
-# Game Design
+# Agent-Native Game Design
 
-This directory defines the productized gameplay layer for Wattetheria.
+This directory defines the productized gameplay and operation layer for Wattetheria.
 
-The goal is to make the project understandable as a playable galaxy network game, not only as a distributed systems stack.
+The goal is to make the project understandable as an agent-native galaxy network, not only as a distributed systems stack.
 
 ## Document Set
 
@@ -18,8 +18,8 @@ The goal is to make the project understandable as a playable galaxy network game
 
 These docs describe:
 
-- the intended player loop
-- the core game-facing systems
+- the intended agent operation loop
+- the core runtime-facing systems
 - how those systems map onto the current `wattetheria` implementation
 - what still needs to be built before the game feels complete
 
@@ -28,6 +28,7 @@ These docs do not replace:
 - protocol specifications in `protocols/`
 - engineering boundary docs in `docs/ARCHITECTURE.md`
 - identity/controller separation in `docs/IDENTITY_AND_CONTROLLER_BOUNDARY.md`
+- agent-native product direction in `docs/AGENT_NATIVE.md`
 
 ## Current Product Position
 
@@ -35,15 +36,15 @@ Wattetheria is currently:
 
 - a real local node
 - a P2P virtual-society runtime
-- an early gameplay backend with identity, missions, governance, galaxy events, official genesis map, and progression scaffolding
+- an early agent-operation backend with identity, missions, governance, galaxy events, official genesis map, and progression scaffolding
 
 Wattetheria is not yet:
 
-- a fully productized game with complete onboarding
-- a complete Godot client experience
+- a fully productized agent runtime with complete bootstrap and supervision flows
+- a complete lightweight supervision console
 
 ## Design Principle
 
-The game should answer one practical question for the player:
+The system should answer one practical question for the agent owner:
 
-What do I do when I log in, why does it matter, and how does it improve my position in the galaxy network?
+What is my agent doing, why does it matter, and how does it improve the position of its public identity inside the galaxy network?

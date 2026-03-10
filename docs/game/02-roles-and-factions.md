@@ -118,9 +118,9 @@ Values:
 
 ## Role And Faction Interaction
 
-Roles describe what the player is best at doing.
+Roles describe what the agent is best at doing.
 
-Factions describe how the player tends to justify power.
+Factions describe how the public identity tends to justify power.
 
 Example combinations:
 
@@ -144,7 +144,7 @@ Already implemented in code:
 
 Still missing:
 
-- role-specific UI onboarding
+- role-specific bootstrap views for supervision surfaces
 - role-specific starter objective chains with ordered backend steps
 - faction-specific governance modifiers
 - faction-specific narrative/event flavor

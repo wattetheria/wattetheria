@@ -184,7 +184,7 @@ pub(crate) async fn night_shift(
     Json(report).into_response()
 }
 
-pub(crate) async fn night_shift_humanized(
+pub(crate) async fn night_shift_narrative_payload(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Query(query): Query<NightShiftQuery>,
@@ -212,7 +212,7 @@ pub(crate) async fn night_shift_humanized(
     });
 
     let _ = state.stream_tx.send(StreamEvent {
-        kind: "brain.humanized_night_shift".to_string(),
+        kind: "brain.night_shift_narrative".to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
@@ -221,7 +221,7 @@ pub(crate) async fn night_shift_humanized(
         id: String::new(),
         timestamp: 0,
         category: "brain".to_string(),
-        action: "night_shift.humanized".to_string(),
+        action: "night_shift.narrative".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: Some(state.agent_id.clone()),
@@ -232,6 +232,22 @@ pub(crate) async fn night_shift_humanized(
     });
 
     Json(payload).into_response()
+}
+
+pub(crate) async fn night_shift_summary(
+    state: State<ControlPlaneState>,
+    headers: HeaderMap,
+    query: Query<NightShiftQuery>,
+) -> Response {
+    night_shift(state, headers, query).await
+}
+
+pub(crate) async fn night_shift_narrative(
+    state: State<ControlPlaneState>,
+    headers: HeaderMap,
+    query: Query<NightShiftQuery>,
+) -> Response {
+    night_shift_narrative_payload(state, headers, query).await
 }
 
 pub(crate) async fn brain_propose_actions(

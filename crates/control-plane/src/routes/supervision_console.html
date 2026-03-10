@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wattetheria Supervision Console</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4efe3;
+      --surface: #fffaf0;
+      --ink: #17212b;
+      --muted: #5f6c76;
+      --line: #d8cdb9;
+      --accent: #145c75;
+      --accent-soft: #d7ebf0;
+      --danger: #8a2f2f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, #efe6d1 0, transparent 26rem),
+        linear-gradient(180deg, #f7f2e8 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+
+    header, main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 1.25rem;
+    }
+
+    header {
+      padding-top: 2rem;
+      padding-bottom: 0.5rem;
+    }
+
+    h1 {
+      margin: 0 0 0.4rem;
+      font-size: 2rem;
+      line-height: 1.1;
+    }
+
+    .lead {
+      margin: 0;
+      color: var(--muted);
+      max-width: 60rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 1rem;
+      box-shadow: 0 10px 30px rgba(23, 33, 43, 0.06);
+    }
+
+    .stack {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .toolbar {
+      display: grid;
+      gap: 0.75rem;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      align-items: end;
+    }
+
+    label {
+      display: grid;
+      gap: 0.35rem;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    input, select, button {
+      font: inherit;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 0.7rem 0.8rem;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 0.8rem 1rem;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+    }
+
+    button.secondary {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+
+    .section-title {
+      margin: 0 0 0.75rem;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    .metric-list, .list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0.5rem;
+    }
+
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding-bottom: 0.35rem;
+      border-bottom: 1px dashed var(--line);
+    }
+
+    .code {
+      margin: 0;
+      background: #f7f6f2;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 0.75rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.85rem;
+    }
+
+    .notice {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .error {
+      color: var(--danger);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Wattetheria Supervision Console</h1>
+    <p class="lead">
+      Local observation surface for public identities, bootstrap state, mission pressure,
+      governance posture, travel state, and operator briefing. This console reads canonical
+      supervision APIs only.
+    </p>
+  </header>
+  <main class="stack">
+    <section class="panel stack">
+      <div class="toolbar">
+        <label>
+          Control token
+          <input id="token" type="password" placeholder="Paste .wattetheria/control.token">
+        </label>
+        <label>
+          Public identity
+          <select id="public-id">
+            <option value="">Load identities first</option>
+          </select>
+        </label>
+        <label>
+          Briefing window (hours)
+          <input id="hours" type="number" min="1" max="168" value="12">
+        </label>
+      </div>
+      <div class="toolbar">
+        <button id="load-identities" type="button">Load identities</button>
+        <button id="refresh" type="button">Refresh supervision</button>
+        <button id="save-settings" class="secondary" type="button">Save local settings</button>
+      </div>
+      <div id="status" class="notice">Enter a control token, then load public identities.</div>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2 class="section-title">Identity</h2>
+        <ul id="identity-metrics" class="metric-list"></ul>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Supervision Signals</h2>
+        <ul id="supervision-signals" class="metric-list"></ul>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Travel State</h2>
+        <pre id="travel-state" class="code">No travel state loaded yet.</pre>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2 class="section-title">Next Actions</h2>
+        <ul id="next-actions" class="list"></ul>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Alerts</h2>
+        <ul id="alerts" class="list"></ul>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Priority Cards</h2>
+        <ul id="priority-cards" class="list"></ul>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2 class="section-title">Briefing</h2>
+        <pre id="briefing" class="code">No briefing loaded yet.</pre>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Missions</h2>
+        <pre id="missions" class="code">No mission view loaded yet.</pre>
+      </article>
+      <article class="panel">
+        <h2 class="section-title">Governance</h2>
+        <pre id="governance" class="code">No governance view loaded yet.</pre>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const storageKey = "wattetheria-supervision-console";
+
+    const statusEl = document.getElementById("status");
+    const tokenEl = document.getElementById("token");
+    const publicIdEl = document.getElementById("public-id");
+    const hoursEl = document.getElementById("hours");
+
+    const identityMetricsEl = document.getElementById("identity-metrics");
+    const supervisionSignalsEl = document.getElementById("supervision-signals");
+    const travelStateEl = document.getElementById("travel-state");
+    const nextActionsEl = document.getElementById("next-actions");
+    const alertsEl = document.getElementById("alerts");
+    const priorityCardsEl = document.getElementById("priority-cards");
+    const briefingEl = document.getElementById("briefing");
+    const missionsEl = document.getElementById("missions");
+    const governanceEl = document.getElementById("governance");
+
+    function loadSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        if (saved.token) tokenEl.value = saved.token;
+        if (saved.publicId) publicIdEl.dataset.savedPublicId = saved.publicId;
+        if (saved.hours) hoursEl.value = saved.hours;
+      } catch (_) {}
+    }
+
+    function saveSettings() {
+      localStorage.setItem(storageKey, JSON.stringify({
+        token: tokenEl.value.trim(),
+        publicId: publicIdEl.value,
+        hours: hoursEl.value
+      }));
+      setStatus("Local supervision-console settings saved.");
+    }
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? "notice error" : "notice";
+    }
+
+    function authHeaders() {
+      const token = tokenEl.value.trim();
+      if (!token) {
+        throw new Error("Control token is required.");
+      }
+      return { authorization: `Bearer ${token}` };
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, { headers: authHeaders() });
+      const text = await response.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (_) {
+        throw new Error(`Non-JSON response from ${url}`);
+      }
+      if (!response.ok) {
+        throw new Error(data.error || `${response.status} ${response.statusText}`);
+      }
+      return data;
+    }
+
+    function renderMetricList(target, items) {
+      target.innerHTML = "";
+      for (const [label, value] of items) {
+        const item = document.createElement("li");
+        item.className = "metric";
+        const left = document.createElement("span");
+        left.textContent = label;
+        const right = document.createElement("strong");
+        right.textContent = value == null ? "-" : String(value);
+        item.appendChild(left);
+        item.appendChild(right);
+        target.appendChild(item);
+      }
+    }
+
+    function renderList(target, entries, formatter) {
+      target.innerHTML = "";
+      const values = entries || [];
+      if (!values.length) {
+        const item = document.createElement("li");
+        item.textContent = "None";
+        target.appendChild(item);
+        return;
+      }
+      for (const entry of values) {
+        const item = document.createElement("li");
+        item.textContent = formatter(entry);
+        target.appendChild(item);
+      }
+    }
+
+    function pretty(value) {
+      return JSON.stringify(value, null, 2);
+    }
+
+    async function loadIdentities() {
+      setStatus("Loading public identities...");
+      try {
+        const payload = await fetchJson("/v1/civilization/identities");
+        const identities = payload.public_identities || [];
+        publicIdEl.innerHTML = "";
+        if (!identities.length) {
+          const option = document.createElement("option");
+          option.value = "";
+          option.textContent = "No public identities";
+          publicIdEl.appendChild(option);
+          setStatus("No public identities found. Bootstrap one first.");
+          return;
+        }
+        for (const record of identities) {
+          const option = document.createElement("option");
+          option.value = record.public_identity.public_id;
+          option.textContent = `${record.public_identity.display_name} (${record.public_identity.public_id})`;
+          publicIdEl.appendChild(option);
+        }
+        if (publicIdEl.dataset.savedPublicId) {
+          publicIdEl.value = publicIdEl.dataset.savedPublicId;
+        }
+        setStatus(`Loaded ${identities.length} public identities.`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    async function refreshSupervision() {
+      const publicId = publicIdEl.value;
+      if (!publicId) {
+        setStatus("Choose a public identity first.", true);
+        return;
+      }
+
+      const hours = Number(hoursEl.value || 12);
+      setStatus(`Refreshing supervision for ${publicId}...`);
+
+      try {
+        const query = `public_id=${encodeURIComponent(publicId)}`;
+        const [home, status, briefing, missions, governance] = await Promise.all([
+          fetchJson(`/v1/supervision/home?${query}`),
+          fetchJson(`/v1/supervision/status?${query}`),
+          fetchJson(`/v1/supervision/briefing?hours=${encodeURIComponent(hours)}`),
+          fetchJson(`/v1/supervision/missions?${query}`),
+          fetchJson(`/v1/supervision/governance?${query}`)
+        ]);
+
+        const identity = home.identity?.public_identity || {};
+        const metrics = home.metrics || {};
+        const supervision = home.supervision || status.supervision || {};
+
+        renderMetricList(identityMetricsEl, [
+          ["Public ID", identity.public_id],
+          ["Display Name", identity.display_name],
+          ["Faction", home.identity?.profile?.faction],
+          ["Role", home.identity?.profile?.role],
+          ["Strategy", home.identity?.profile?.strategy]
+        ]);
+
+        renderMetricList(supervisionSignalsEl, [
+          ["Stage", status.status?.stage],
+          ["Tier", status.status?.tier],
+          ["Wealth", metrics.wealth],
+          ["Power", metrics.power],
+          ["Trade", metrics.trade],
+          ["Culture", metrics.culture]
+        ]);
+
+        travelStateEl.textContent = pretty(home.travel_state || {});
+        briefingEl.textContent = pretty(briefing.briefing || briefing);
+        missionsEl.textContent = pretty(missions);
+        governanceEl.textContent = pretty(governance);
+
+        renderList(nextActionsEl, supervision.next_actions, (entry) =>
+          `${entry.label || entry.kind || "action"}${entry.target ? ` -> ${entry.target}` : ""}`
+        );
+        renderList(alertsEl, supervision.alerts, (entry) =>
+          `${entry.title || entry.kind || "alert"}${entry.summary ? `: ${entry.summary}` : ""}`
+        );
+        renderList(priorityCardsEl, supervision.priority_cards, (entry) =>
+          `${entry.title || entry.kind || "card"}${entry.summary ? `: ${entry.summary}` : ""}`
+        );
+
+        saveSettings();
+        setStatus(`Supervision data refreshed for ${publicId}.`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    }
+
+    document.getElementById("load-identities").addEventListener("click", loadIdentities);
+    document.getElementById("refresh").addEventListener("click", refreshSupervision);
+    document.getElementById("save-settings").addEventListener("click", saveSettings);
+
+    loadSettings();
+  </script>
+</body>
+</html>

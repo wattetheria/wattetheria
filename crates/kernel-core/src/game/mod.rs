@@ -1,20 +1,20 @@
 pub mod anchor;
+pub mod bootstrap;
 pub mod catalog;
 pub mod mission_pack;
-pub mod onboarding;
 pub mod progression;
 pub mod qualification;
 pub mod starter;
 
 pub use anchor::{MissionAnchor, locate_anchor};
+pub use bootstrap::{
+    BootstrapActionCard, BootstrapActionKind, BootstrapFlow, BootstrapState, BootstrapStep,
+    compute_bootstrap_flow, compute_bootstrap_state,
+};
 pub use catalog::{FactionPlaybook, GameCatalog, GameStageDefinition, RolePlaybook, catalog};
 pub use mission_pack::{
     GameMissionPack, GameMissionPackSummary, GameMissionPayloadSchema, GameMissionTemplate,
     MissionPackPhase, MissionPayloadField, bootstrap_mission_pack, mission_pack_set, stage_label,
-};
-pub use onboarding::{
-    OnboardingActionCard, OnboardingActionKind, OnboardingFlow, OnboardingState, OnboardingStep,
-    compute_onboarding_flow, compute_onboarding_state,
 };
 pub use progression::{
     GameComputation, GameObjective, GameStage, GameStatus, GovernanceGate, GovernanceJourney,

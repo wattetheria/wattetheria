@@ -1,6 +1,21 @@
 # wattetheria
 
-Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
+Rust-first implementation of an agent-native, pure P2P, compute-powered galaxy society runtime.
+
+## Product Direction
+
+Wattetheria is now explicitly agent-native:
+
+- agents are the primary actors inside the network
+- humans supervise, approve, and observe
+- `wattetheria` provides the rules, data, and public-memory layer
+- `wattswarm` and user-provided runtimes keep control over private agent execution
+
+The current architecture split is documented in [docs/AGENT_NATIVE.md](/Users/sac/Desktop/Watt/wattetheria/docs/AGENT_NATIVE.md).
+
+Canonical system naming versus UI presentation naming is defined in [docs/NAMING_BOUNDARY.md](/Users/sac/Desktop/Watt/wattetheria/docs/NAMING_BOUNDARY.md).
+
+Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.md](/Users/sac/Desktop/Watt/wattetheria/docs/CLIENT_API_MAPPING.md).
 
 ## What Is Implemented Today
 
@@ -88,7 +103,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 
 ### Civilization Layer
 
-- Public identity registry for galaxy-facing character records
+- Public identity registry for galaxy-facing runtime records
 - Controller binding registry for mapping public identities to local or external controllers
 - Citizen identity registry
   - `faction`: `order`, `freeport`, `raider`
@@ -117,7 +132,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `spatial`
   - `political`
 - Mission board:
-  - publishers: player, organization, planetary government, neutral hub, system
+  - publishers: direct public identity, organization, planetary government, neutral hub, system
   - domains: wealth, power, security, trade, culture
   - statuses: open, claimed, completed, settled, cancelled
   - qualification filters by role and faction
@@ -128,19 +143,19 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `trade`
   - `culture`
   - `total_influence`
-- Game progression layer:
+- Agent operation layer:
   - stages: `survival`, `foothold`, `influence`, `expansion`
   - tiers: `initiate`, `specialist`, `coordinator`, `sovereign`
   - role-aware objectives and recommended actions
   - governance journey gates
   - qualification tracks
-  - onboarding state
-  - onboarding flow with first-hour action cards and client-screen/API targets
+  - bootstrap state
+  - bootstrap flow with first-cycle action cards and API targets
   - role-specific starter mission templates and bootstrap flow
   - role-specific starter objective chains with ordered steps, current step, and chain progress
   - starter mission map anchors bound to official genesis systems, planets, and routes
   - stage-aware mission pack generation and bootstrap flow for the current role and progression stage
-  - mission-pack summaries, next-stage previews, and template payload schemas for Godot-friendly mission planning
+  - mission-pack summaries, next-stage previews, and template payload schemas for agent and console planning
   - high-severity galaxy events converted into additional event-driven mission templates for the current home zone
 - Organization layer:
   - organization registry with `guild`, `consortium`, `fleet`, and `civic_union`
@@ -163,7 +178,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
   - `rules`
   - `ollama`
   - `openai-compatible`
-- Night-shift report generation and humanized rendering
+- Night-shift report generation and narrative rendering
 - Brain action proposal endpoint
 - Local autonomy tick with policy and capability checks
 - MCP registry with add, enable, disable, list, and test flows
@@ -179,7 +194,7 @@ Rust-first implementation of a pure P2P, compute-powered virtual society MVP.
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
 - Map endpoints for the official base map, map catalog, route-travel planning, and persisted travel-state session flow
 - Travel arrival consequences that summarize destination-local missions, route risk, and governed subnet context
-- Character bootstrap endpoint for Godot and other clients to create a public identity, controller binding, and starter profile in one call
+- Public identity bootstrap endpoint for lightweight supervision consoles and automation to create a public identity, controller binding, and starter profile in one call
 - Public identity endpoints for querying and upserting galaxy-facing identity records
 - Controller binding endpoints for querying and upserting public-identity controller bindings
 - Governance endpoints for planets, proposals, vote/finalize, treasury, stability, recall, custody, and takeover
@@ -244,21 +259,25 @@ Short version:
 ### Control Plane API
 
 - `GET /v1/health`, `GET /v1/state`, `GET /v1/events`, `GET /v1/events/export`
-- `GET /v1/night-shift`, `GET /v1/night-shift/humanized`, `POST /v1/actions`
+- `GET /v1/night-shift`, `GET /v1/night-shift/summary`, `GET /v1/night-shift/narrative`, `POST /v1/actions`
 - `GET /v1/brain/propose-actions`, `POST /v1/autonomy/tick`
 - `GET /v1/game/catalog`, `GET /v1/game/status`
-- `GET /v1/game/onboarding`
+- `GET /v1/game/bootstrap`
 - `GET /v1/game/starter-missions`, `POST /v1/game/starter-missions/bootstrap`
 - `GET /v1/game/mission-pack`, `POST /v1/game/mission-pack/bootstrap`
-- `GET /v1/dashboard/home` now includes a `game` block plus an `experience` block with `next_actions`, `alerts`, and `priority_cards`
+- `GET /v1/supervision/home`, `GET /v1/supervision/status`, `GET /v1/supervision/bootstrap`
 - Civilization APIs:
-  - `GET /v1/civilization/characters`
-  - `GET /v1/dashboard/home`
+  - `GET /v1/civilization/identities`
+  - `GET /v1/supervision/identities`
+  - `POST /v1/civilization/bootstrap-identity`
+  - `GET /v1/supervision/home`
+  - `GET /v1/supervision/briefing`
   - `GET /v1/missions/my`
+  - `GET /v1/supervision/missions`
   - `GET /v1/governance/my`
+  - `GET /v1/supervision/governance`
   - `GET /v1/catalog/bootstrap`
   - `GET /v1/organizations/my`
-  - `POST /v1/civilization/bootstrap-character`
   - `GET|POST /v1/civilization/public-identity`
   - `GET|POST /v1/civilization/controller-binding`
   - `GET|POST /v1/civilization/profile`
@@ -299,18 +318,24 @@ Most civilization-facing responses now resolve through the same identity bundle:
 
 `GET /v1/state` now also includes an `identity` object with that same resolved bundle.
 
-These client-facing endpoints are the current Godot P0 surface:
+These control-plane endpoints are the current agent-native and supervision-console surface:
 
-- `GET /v1/civilization/characters` returns local playable characters with resolved identity bundles and current `travel_state`.
-- `POST /v1/civilization/bootstrap-character` creates `public_identity + controller_binding + profile`.
-- `GET /v1/dashboard/home` returns home-screen aggregates: identity, metrics, emergencies, briefing, map-aware mission counts (`eligible_open`, `local_open`, `travel_required_open`, `active`), home galaxy context, current `travel_state`, and an `experience` read model with `next_actions`, `alerts`, and `priority_cards`.
+- `GET /supervision` serves a lightweight local supervision console that reads the canonical APIs below.
+- `GET /v1/civilization/identities` returns the canonical public-identity listing.
+- `GET /v1/supervision/identities` exposes the same public-identity listing through the supervision namespace.
+- `POST /v1/civilization/bootstrap-identity` creates `public_identity + controller_binding + profile`.
+- `GET /v1/supervision/home` returns top-level supervision aggregates: identity, metrics, emergencies, briefing, map-aware mission counts (`eligible_open`, `local_open`, `travel_required_open`, `active`), home galaxy context, current `travel_state`, and a supervision read model.
 - `GET /v1/missions/my` returns enriched mission buckets for the selected public identity: `eligible_open`, `local_open`, `travel_required_open`, `active`, and `history`, with per-mission `map_anchor` and `travel` summaries.
+- `GET /v1/supervision/missions` returns the same mission buckets through the supervision namespace.
 - `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, linked organization governance state, charter applications, and active risks.
 - `GET /v1/governance/my` now also returns governance journey, civic/expansion qualification tracks, and next governance actions.
-- `GET /v1/catalog/bootstrap` returns client bootstrap catalogs for factions, roles, strategies, organization permissions, organization proposal kinds, controller kinds, ownership scopes, mission domains, travel risk levels, and galaxy zones.
-- `GET /v1/game/catalog` returns the productized gameplay catalog for stages, roles, and factions.
-- `GET /v1/game/status` returns the current character's game-loop stage, progression tier, objectives, qualifications, governance journey, onboarding state, onboarding flow, starter mission view, and an `experience` read model with `next_actions`, `alerts`, and `priority_cards`.
-- `GET /v1/game/onboarding` returns a client-first onboarding payload with first-hour action cards, briefing excerpt, starter mission context, and stage mission-pack context.
+- `GET /v1/supervision/governance` returns the same governance payload through the supervision namespace.
+- `GET /v1/catalog/bootstrap` returns bootstrap catalogs for factions, roles, strategies, organization permissions, organization proposal kinds, controller kinds, ownership scopes, mission domains, travel risk levels, and galaxy zones.
+- `GET /v1/game/catalog` returns the current operation catalog for stages, roles, and factions.
+- `GET /v1/game/status` returns the current public identity's operation stage, progression tier, objectives, qualifications, governance journey, bootstrap state, bootstrap flow, starter mission view, and a `supervision` read model with `next_actions`, `alerts`, and `priority_cards`.
+- `GET /v1/supervision/status` returns the same payload through the supervision namespace.
+- `GET /v1/game/bootstrap` returns the canonical bootstrap payload.
+- `GET /v1/supervision/bootstrap` returns the same bootstrap payload through the supervision namespace.
 - `GET /v1/game/starter-missions` returns role-aware starter mission templates, an ordered starter objective chain, and any already-created missions for the selected identity.
 - `POST /v1/game/starter-missions/bootstrap` creates missing starter missions for the selected identity without duplicating existing starter templates.
 - `GET /v1/game/mission-pack` now includes current-stage templates, next-stage previews, payload schemas, pack summaries, and high-severity home-zone event templates when economic, spatial, or political pressure is active.
@@ -321,7 +346,10 @@ These client-facing endpoints are the current Godot P0 surface:
 - `GET /v1/galaxy/travel/plan` returns the recommended path, total travel cost, total risk, and warnings between two systems on the active map.
 - `POST /v1/galaxy/travel/depart` starts a persisted travel session toward a destination system.
 - `POST /v1/galaxy/travel/arrive` completes the active travel session, updates the persisted system position, and records arrival consequences for mission and governance context.
-- `GET /v1/organizations/my` returns the current character's organization memberships, member counts, mission counts, and subnet-readiness summary.
+- `GET /v1/organizations/my` returns the current public identity's organization memberships, member counts, mission counts, and subnet-readiness summary.
+- `GET /v1/supervision/briefing` returns the current briefing payload for supervision surfaces.
+- `GET /v1/night-shift/summary` mirrors the raw night-shift report.
+- `GET /v1/night-shift/narrative` mirrors the narrative-form night-shift payload.
 - `GET|POST /v1/civilization/organizations` lists or creates galaxy organizations for a public identity.
 - `POST /v1/civilization/organizations/members` adds or updates organization membership for an existing public identity.
 - `GET|POST /v1/civilization/organizations/proposals` lists or creates organization-internal governance proposals, including subnet charter proposals.
@@ -354,7 +382,7 @@ These client-facing endpoints are the current Godot P0 surface:
 - `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
-- `crates/kernel-core/src/game` - gameplay orchestration layer that turns missions, governance, map state, and influence metrics into player-facing progression and loop state
+- `crates/kernel-core/src/game` - agent-operation orchestration layer that turns missions, governance, map state, and influence metrics into runtime progression and supervision state
 - `crates/kernel-core/src/map` - independent galaxy map domain for official base-map models, validation, and persistence
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, galaxy state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
@@ -403,16 +431,22 @@ cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria subscribe 
 cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria pull btc-price
 
 # civilization and missions (control-plane examples)
-curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-character \
+curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-identity \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
   -d '{"public_id":"captain-aurora","display_name":"Captain Aurora","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
+curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-identity \
+  -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  -H "content-type: application/json" \
+  -d '{"public_id":"captain-aurora-alt","display_name":"Captain Aurora Alt","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
-  http://127.0.0.1:7777/v1/civilization/characters
+  http://127.0.0.1:7777/v1/civilization/identities
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
-  http://127.0.0.1:7777/v1/dashboard/home?public_id=captain-aurora
+  http://127.0.0.1:7777/v1/supervision/home?public_id=captain-aurora
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/catalog/bootstrap
+curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
+  http://127.0.0.1:7777/v1/supervision/briefing?hours=12
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/galaxy/maps
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \

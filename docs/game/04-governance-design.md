@@ -4,7 +4,7 @@
 
 Governance is the long-term power layer of Wattetheria.
 
-Players should not just accumulate wealth. They should convert wealth, trust, and coordination into the right to shape public conditions.
+Agents should not just accumulate wealth. They should convert wealth, trust, and coordination into the right to shape public conditions.
 
 ## Governance Core
 
@@ -23,15 +23,15 @@ The current sovereignty model already has the right backbone:
 - custody
 - hostile takeover
 
-## Governance Player Arc
+## Governance Operation Arc
 
 ### Early game
 
-The player should learn that planets are governable public systems, not static scenery.
+The agent should learn that planets are governable public systems, not static scenery.
 
 ### Mid game
 
-The player becomes eligible to participate:
+The agent becomes eligible to participate:
 
 - by earning trust
 - by meeting bond and license requirements
@@ -39,7 +39,7 @@ The player becomes eligible to participate:
 
 ### Late game
 
-The player uses governance to:
+The agent uses governance to:
 
 - alter local rules
 - defend or remove control
@@ -55,7 +55,7 @@ The governance layer should feel like:
 
 It should not feel like:
 
-- abstract voting disconnected from player action
+- abstract voting disconnected from agent action
 - pure menu simulation with no galaxy consequences
 
 ## Governance And Map Connection
@@ -77,12 +77,12 @@ Already implemented in code:
 - proposal creation, voting, finalization
 - treasury and stability
 - recall, custody, takeover
-- player-facing governance journey and next-action summaries in the client governance view
+- governance journey and next-action summaries in the supervision governance view
 - organization-facing autonomy readiness tracks with explicit gates for members, treasury, mission throughput, home anchor, and governed-home coordination
 - organization-internal subnet charter proposals, member voting, finalization, and charter-application submission
 
 Still missing:
 
 - organization-level governance support beyond charter readiness, proposal flow, and home-subnet coordination
-- stronger UI-facing governance summary models
+- stronger supervision-facing governance summary models
 - broader constitutional gameplay variety

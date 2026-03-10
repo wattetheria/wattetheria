@@ -8,7 +8,7 @@ use super::progression::{GameStage, GameStatus};
 use super::{GameMissionPack, StarterMissionSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OnboardingStep {
+pub struct BootstrapStep {
     pub key: String,
     pub title: String,
     pub complete: bool,
@@ -17,39 +17,41 @@ pub struct OnboardingStep {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OnboardingState {
+pub struct BootstrapState {
     pub current_phase: String,
     pub progress_pct: u8,
     pub current_focus: String,
-    pub steps: Vec<OnboardingStep>,
+    pub steps: Vec<BootstrapStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum OnboardingActionKind {
+pub enum BootstrapActionKind {
     ApiCall,
     OpenScreen,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct OnboardingActionCard {
+pub struct BootstrapActionCard {
     pub key: String,
     pub title: String,
     pub summary: String,
     pub ready: bool,
     pub progress_pct: u8,
-    pub kind: OnboardingActionKind,
+    pub kind: BootstrapActionKind,
     pub target: String,
     pub method: Option<String>,
     pub payload: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct OnboardingFlow {
-    pub state: OnboardingState,
+pub struct BootstrapFlow {
+    pub state: BootstrapState,
     pub first_hour_focus: String,
     pub first_hour_plan: Vec<String>,
-    pub action_cards: Vec<OnboardingActionCard>,
+    pub first_cycle_focus: String,
+    pub first_cycle_plan: Vec<String>,
+    pub action_cards: Vec<BootstrapActionCard>,
 }
 
 struct ActionTargetSpec<'a> {
@@ -59,12 +61,12 @@ struct ActionTargetSpec<'a> {
 }
 
 #[must_use]
-pub fn compute_onboarding_state(
+pub fn compute_bootstrap_state(
     controller_id: &str,
     public_identity: Option<&PublicIdentity>,
     status: &GameStatus,
     missions: &MissionBoard,
-) -> OnboardingState {
+) -> BootstrapState {
     let open_starters = starter_count(missions, controller_id, Some(&MissionStatus::Open));
     let claimed_starters = starter_count(missions, controller_id, Some(&MissionStatus::Claimed));
     let settled_starters = starter_count(missions, controller_id, Some(&MissionStatus::Settled));
@@ -74,7 +76,7 @@ pub fn compute_onboarding_state(
             "create_identity",
             "Create a public identity",
             public_identity.is_some(),
-            "Your character needs a public identity before it can act meaningfully inside the galaxy network.",
+            "This public identity needs to be bound and initialized before it can act meaningfully inside the galaxy network.",
         ),
         step(
             "set_home_anchor",
@@ -124,7 +126,7 @@ pub fn compute_onboarding_state(
         "operational".to_string()
     };
 
-    OnboardingState {
+    BootstrapState {
         current_phase,
         progress_pct,
         current_focus,
@@ -133,17 +135,17 @@ pub fn compute_onboarding_state(
 }
 
 #[must_use]
-pub fn compute_onboarding_flow(
+pub fn compute_bootstrap_flow(
     public_identity: Option<&PublicIdentity>,
     status: &GameStatus,
-    onboarding: OnboardingState,
+    bootstrap: BootstrapState,
     starter_missions: Option<&StarterMissionSet>,
     mission_pack: Option<&GameMissionPack>,
-) -> OnboardingFlow {
-    let action_cards = onboarding_action_cards(
+) -> BootstrapFlow {
+    let action_cards = bootstrap_action_cards(
         public_identity,
         status,
-        &onboarding,
+        &bootstrap,
         starter_missions,
         mission_pack,
     );
@@ -168,21 +170,26 @@ pub fn compute_onboarding_flow(
                 .collect()
         });
 
-    OnboardingFlow {
-        first_hour_focus: onboarding.current_focus.clone(),
-        state: onboarding,
+    BootstrapFlow {
+        first_hour_focus: bootstrap.current_focus.clone(),
+        state: bootstrap,
+        first_cycle_focus: first_hour_plan
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "Review the current bootstrap plan.".to_string()),
+        first_cycle_plan: first_hour_plan.clone(),
         first_hour_plan,
         action_cards,
     }
 }
 
-fn onboarding_action_cards(
+fn bootstrap_action_cards(
     public_identity: Option<&PublicIdentity>,
     status: &GameStatus,
-    onboarding: &OnboardingState,
+    bootstrap: &BootstrapState,
     starter_missions: Option<&StarterMissionSet>,
     mission_pack: Option<&GameMissionPack>,
-) -> Vec<OnboardingActionCard> {
+) -> Vec<BootstrapActionCard> {
     let first_open_starter = starter_missions.and_then(|starter_set| {
         starter_set
             .existing
@@ -193,7 +200,7 @@ fn onboarding_action_cards(
     let starter_missing =
         starter_missions.map_or(0, |starter_set| starter_set.missing_template_ids.len());
     let pack_missing = mission_pack.map_or(0, |pack| pack.missing_template_ids.len());
-    let has_settled_starter = onboarding
+    let has_settled_starter = bootstrap
         .steps
         .iter()
         .find(|step| step.key == "settle_starter")
@@ -202,12 +209,12 @@ fn onboarding_action_cards(
         action_card(
             "open_briefing",
             "Read your operator briefing",
-            "Start every first session by reading the current briefing and emergency profile for your home anchor.",
+            "Start every supervision cycle by reading the current briefing and emergency profile for your home anchor.",
             true,
             100,
-            OnboardingActionKind::OpenScreen,
+            BootstrapActionKind::OpenScreen,
             ActionTargetSpec {
-                target: "dashboard_home",
+                target: "supervision_home",
                 method: None,
                 payload: None,
             },
@@ -218,7 +225,7 @@ fn onboarding_action_cards(
             "Use the genesis map to understand which system, planet, and route your first work attaches to.",
             status.home_anchor.is_some(),
             if status.home_anchor.is_some() { 100 } else { 0 },
-            OnboardingActionKind::OpenScreen,
+            BootstrapActionKind::OpenScreen,
             ActionTargetSpec {
                 target: "galaxy_map",
                 method: None,
@@ -231,7 +238,7 @@ fn onboarding_action_cards(
             starter_chain_summary(starter_missions),
             public_identity.is_some() && status.home_anchor.is_some(),
             completion_progress(starter_missing == 0),
-            OnboardingActionKind::ApiCall,
+            BootstrapActionKind::ApiCall,
             ActionTargetSpec {
                 target: "/v1/game/starter-missions/bootstrap",
                 method: Some("POST"),
@@ -246,7 +253,7 @@ fn onboarding_action_cards(
             "Move from setup into action by claiming one starter mission tied to your home anchor.",
             first_open_starter.is_some(),
             completion_progress(has_settled_starter || status.active_missions > 0),
-            OnboardingActionKind::OpenScreen,
+            BootstrapActionKind::OpenScreen,
             ActionTargetSpec {
                 target: "missions",
                 method: None,
@@ -259,7 +266,7 @@ fn onboarding_action_cards(
             "Once starter work is flowing, generate the next set of role and civic missions for your current stage.",
             public_identity.is_some() && has_settled_starter,
             completion_progress(pack_missing == 0),
-            OnboardingActionKind::ApiCall,
+            BootstrapActionKind::ApiCall,
             ActionTargetSpec {
                 target: "/v1/game/mission-pack/bootstrap",
                 method: Some("POST"),
@@ -274,7 +281,7 @@ fn onboarding_action_cards(
             "See which civic gates still separate your current role from formal governance participation.",
             true,
             completion_progress(status.can_enter_governance),
-            OnboardingActionKind::OpenScreen,
+            BootstrapActionKind::OpenScreen,
             ActionTargetSpec {
                 target: "governance",
                 method: None,
@@ -303,8 +310,8 @@ fn starter_count(
         .count()
 }
 
-fn step(key: &str, title: &str, complete: bool, summary: &str) -> OnboardingStep {
-    OnboardingStep {
+fn step(key: &str, title: &str, complete: bool, summary: &str) -> BootstrapStep {
+    BootstrapStep {
         key: key.to_string(),
         title: title.to_string(),
         complete,
@@ -319,10 +326,10 @@ fn count_step(
     current: usize,
     required: usize,
     summary: &str,
-) -> OnboardingStep {
+) -> BootstrapStep {
     let required = required.max(1);
     let progress_pct = u8::try_from((current.min(required) * 100) / required).unwrap_or(100);
-    OnboardingStep {
+    BootstrapStep {
         key: key.to_string(),
         title: title.to_string(),
         complete: current >= required,
@@ -341,10 +348,10 @@ fn action_card(
     summary: &str,
     ready: bool,
     progress_pct: u8,
-    kind: OnboardingActionKind,
+    kind: BootstrapActionKind,
     target: ActionTargetSpec<'_>,
-) -> OnboardingActionCard {
-    OnboardingActionCard {
+) -> BootstrapActionCard {
+    BootstrapActionCard {
         key: key.to_string(),
         title: title.to_string(),
         summary: summary.to_string(),
@@ -368,7 +375,7 @@ mod tests {
     use crate::map::registry::GalaxyMapRegistry;
 
     #[test]
-    fn onboarding_progress_moves_with_identity_and_starter_missions() {
+    fn bootstrap_progress_moves_with_identity_and_starter_missions() {
         let mut board = MissionBoard::default();
         let profile = CitizenProfile {
             agent_id: "agent-a".to_string(),
@@ -383,7 +390,7 @@ mod tests {
         maps.ensure_default_genesis_map(&GalaxyState::default_with_core_zones().zones())
             .unwrap();
         let created = bootstrap_starter_missions("agent-a", &profile, &maps, &mut board);
-        let state = compute_onboarding_state(
+        let state = compute_bootstrap_state(
             "agent-a",
             Some(&PublicIdentity {
                 public_id: "captain-aurora".to_string(),
@@ -422,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_flow_surfaces_first_hour_actions() {
+    fn bootstrap_flow_surfaces_first_hour_actions() {
         let mut board = MissionBoard::default();
         let profile = CitizenProfile {
             agent_id: "agent-a".to_string(),
@@ -451,12 +458,11 @@ mod tests {
         );
         let public_identity = test_public_identity();
         let status = test_foothold_status();
-        let onboarding =
-            compute_onboarding_state("agent-a", Some(&public_identity), &status, &board);
-        let flow = compute_onboarding_flow(
+        let bootstrap = compute_bootstrap_state("agent-a", Some(&public_identity), &status, &board);
+        let flow = compute_bootstrap_flow(
             Some(&public_identity),
             &status,
-            onboarding,
+            bootstrap,
             Some(&starter_set),
             Some(&mission_pack),
         );
@@ -466,6 +472,7 @@ mod tests {
                 .any(|card| card.key == "bootstrap_stage_pack")
         );
         assert!(!flow.first_hour_plan.is_empty());
+        assert_eq!(flow.first_cycle_plan, flow.first_hour_plan);
         assert_eq!(flow.first_hour_plan[0], "Seed your first trade corridor");
     }
 

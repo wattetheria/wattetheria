@@ -3,8 +3,8 @@ mod autonomy;
 pub mod routes {
     pub(crate) mod civilization;
     pub(crate) mod client;
+    pub(crate) mod console;
     pub(crate) mod core;
-    pub(crate) mod experience;
     pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod identity;
@@ -13,6 +13,7 @@ pub mod routes {
     pub(crate) mod missions;
     pub(crate) mod organizations;
     pub(crate) mod policy;
+    pub(crate) mod supervision;
 }
 mod state;
 
@@ -26,6 +27,7 @@ pub use state::{ControlPlaneState, RateLimiter, StreamEvent};
 
 pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
+        .merge(console_router())
         .merge(core_router())
         .merge(client_router())
         .merge(game_router())
@@ -37,14 +39,35 @@ pub fn app(state: ControlPlaneState) -> Router {
         .with_state(state)
 }
 
+fn console_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/supervision", get(routes::console::supervision_console))
+        .route(
+            "/supervision/console",
+            get(routes::console::supervision_console),
+        )
+}
+
 fn client_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
-            "/v1/civilization/characters",
-            get(routes::client::client_characters),
+            "/v1/civilization/identities",
+            get(routes::client::public_identities),
         )
-        .route("/v1/dashboard/home", get(routes::client::dashboard_home))
+        .route(
+            "/v1/supervision/identities",
+            get(routes::client::public_identities),
+        )
+        .route(
+            "/v1/supervision/home",
+            get(routes::client::supervision_home),
+        )
+        .route("/v1/supervision/missions", get(routes::client::my_missions))
         .route("/v1/missions/my", get(routes::client::my_missions))
+        .route(
+            "/v1/supervision/governance",
+            get(routes::client::my_governance),
+        )
         .route("/v1/governance/my", get(routes::client::my_governance))
         .route(
             "/v1/catalog/bootstrap",
@@ -59,8 +82,13 @@ fn client_router() -> Router<ControlPlaneState> {
 fn game_router() -> Router<ControlPlaneState> {
     Router::new()
         .route("/v1/game/catalog", get(routes::game::game_catalog))
+        .route("/v1/supervision/status", get(routes::game::game_status))
         .route("/v1/game/status", get(routes::game::game_status))
-        .route("/v1/game/onboarding", get(routes::game::game_onboarding))
+        .route(
+            "/v1/supervision/bootstrap",
+            get(routes::game::game_bootstrap),
+        )
+        .route("/v1/game/bootstrap", get(routes::game::game_bootstrap))
         .route(
             "/v1/game/mission-pack",
             get(routes::game::game_mission_pack),
@@ -87,8 +115,12 @@ fn core_router() -> Router<ControlPlaneState> {
         .route("/v1/events/export", get(routes::core::events_export))
         .route("/v1/night-shift", get(routes::core::night_shift))
         .route(
-            "/v1/night-shift/humanized",
-            get(routes::core::night_shift_humanized),
+            "/v1/night-shift/summary",
+            get(routes::core::night_shift_summary),
+        )
+        .route(
+            "/v1/night-shift/narrative",
+            get(routes::core::night_shift_narrative),
         )
         .route("/v1/actions", post(routes::core::actions))
         .route(
@@ -129,8 +161,8 @@ fn map_router() -> Router<ControlPlaneState> {
 fn civilization_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
-            "/v1/civilization/bootstrap-character",
-            post(routes::civilization::bootstrap_character),
+            "/v1/civilization/bootstrap-identity",
+            post(routes::civilization::bootstrap_identity),
         )
         .route(
             "/v1/civilization/public-identity",
@@ -159,6 +191,10 @@ fn civilization_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/civilization/briefing",
             get(routes::civilization::civilization_briefing),
+        )
+        .route(
+            "/v1/supervision/briefing",
+            get(routes::civilization::supervision_briefing),
         )
         .route("/v1/galaxy/zones", get(routes::civilization::galaxy_zones))
         .route("/v1/world/zones", get(routes::civilization::galaxy_zones))
@@ -523,6 +559,16 @@ mod tests {
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
     }
 
+    async fn request_text(
+        app: Router,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> (StatusCode, String) {
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
     async fn authed_get_json(app: Router, token: &str, uri: &str) -> Value {
         request_json(
             app,
@@ -564,11 +610,11 @@ mod tests {
         .await
     }
 
-    async fn bootstrap_broker_character(app: Router, token: &str, agent_id: &str) {
+    async fn bootstrap_broker_identity(app: Router, token: &str, agent_id: &str) {
         authed_post_json(
             app,
             token,
-            "/v1/civilization/bootstrap-character",
+            "/v1/civilization/bootstrap-identity",
             json!({
                 "public_id": "captain-aurora",
                 "display_name": "Captain Aurora",
@@ -584,7 +630,7 @@ mod tests {
     }
 
     async fn bootstrap_broker_game(app: Router, token: &str, agent_id: &str) -> Value {
-        bootstrap_broker_character(app.clone(), token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), token, agent_id).await;
         let starter_bootstrap = authed_post_json(
             app,
             token,
@@ -772,7 +818,7 @@ mod tests {
             status_json["identity"]["public_identity"]["public_id"].as_str(),
             Some("captain-aurora")
         );
-        assert!(status_json["onboarding"]["progress_pct"].as_u64().unwrap() > 0);
+        assert!(status_json["bootstrap"]["progress_pct"].as_u64().unwrap() > 0);
         assert_eq!(
             status_json["starter_missions"]["templates"]
                 .as_array()
@@ -828,7 +874,7 @@ mod tests {
                     .is_some_and(|action| action.contains("trade")))
         );
         assert!(
-            status_json["onboarding_flow"]["action_cards"]
+            status_json["bootstrap_flow"]["action_cards"]
                 .as_array()
                 .unwrap()
                 .len()
@@ -836,13 +882,13 @@ mod tests {
         );
         assert!(status_json["organizations"].as_array().is_some());
         assert!(
-            status_json["experience"]["next_actions"]
+            status_json["supervision"]["next_actions"]
                 .as_array()
                 .is_some_and(|actions| !actions.is_empty())
         );
-        assert!(status_json["experience"]["alerts"].as_array().is_some());
+        assert!(status_json["supervision"]["alerts"].as_array().is_some());
         assert!(
-            status_json["experience"]["priority_cards"]
+            status_json["supervision"]["priority_cards"]
                 .as_array()
                 .is_some_and(|cards| !cards.is_empty())
         );
@@ -903,87 +949,97 @@ mod tests {
         );
     }
 
-    fn assert_dashboard_game_block(dashboard_json: &Value) {
+    fn assert_supervision_home_game_block(supervision_home_json: &Value) {
         assert_eq!(
-            dashboard_json["identity"]["public_identity"]["public_id"].as_str(),
+            supervision_home_json["identity"]["public_identity"]["public_id"].as_str(),
             Some("captain-aurora")
         );
-        assert!(dashboard_json["mission_summary"]["eligible_open_count"].is_number());
-        assert!(dashboard_json["mission_summary"]["local_open_count"].is_number());
-        assert!(dashboard_json["mission_summary"]["travel_required_open_count"].is_number());
-        assert!(dashboard_json["mission_summary"]["active_count"].is_number());
+        assert!(supervision_home_json["mission_summary"]["eligible_open_count"].is_number());
+        assert!(supervision_home_json["mission_summary"]["local_open_count"].is_number());
+        assert!(supervision_home_json["mission_summary"]["travel_required_open_count"].is_number());
+        assert!(supervision_home_json["mission_summary"]["active_count"].is_number());
         assert_eq!(
-            dashboard_json["home_planet"]["subnet_id"].as_str(),
+            supervision_home_json["home_planet"]["subnet_id"].as_str(),
             Some("planet-test")
         );
         assert_eq!(
-            dashboard_json["game"]["status"]["stage"].as_str(),
+            supervision_home_json["game"]["status"]["stage"].as_str(),
             Some("expansion")
         );
         assert!(
-            dashboard_json["game"]["starter_missions"]["templates"]
+            supervision_home_json["game"]["starter_missions"]["templates"]
                 .as_array()
                 .unwrap()
                 .len()
                 >= 2
         );
         assert!(
-            dashboard_json["game"]["starter_missions"]["objective_chain"]["steps"]
+            supervision_home_json["game"]["starter_missions"]["objective_chain"]["steps"]
                 .as_array()
                 .unwrap()
                 .len()
                 >= 2
         );
         assert!(
-            dashboard_json["game"]["mission_pack"]["templates"]
+            supervision_home_json["game"]["mission_pack"]["templates"]
                 .as_array()
                 .unwrap()
                 .len()
                 >= 2
         );
         assert!(
-            dashboard_json["game"]["mission_pack"]["upcoming_templates"]
+            supervision_home_json["game"]["mission_pack"]["upcoming_templates"]
                 .as_array()
                 .unwrap()
                 .len()
                 == usize::try_from(
-                    dashboard_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
+                    supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
                         .as_u64()
                         .unwrap()
                 )
                 .unwrap()
         );
         assert!(
-            dashboard_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
+            supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
                 .as_u64()
                 .is_some()
         );
         assert!(
-            dashboard_json["game"]["onboarding_flow"]["first_hour_plan"]
+            supervision_home_json["game"]["bootstrap_flow"]["first_cycle_plan"]
                 .as_array()
                 .unwrap()
                 .len()
                 >= 2
         );
-        assert!(dashboard_json["organizations"].as_array().is_some());
+        assert!(supervision_home_json["organizations"].as_array().is_some());
         assert!(
-            dashboard_json["experience"]["next_actions"]
+            supervision_home_json["supervision"]["next_actions"]
                 .as_array()
                 .is_some_and(|actions| !actions.is_empty())
         );
-        assert!(dashboard_json["experience"]["alerts"].as_array().is_some());
         assert!(
-            dashboard_json["experience"]["priority_cards"]
+            supervision_home_json["supervision"]["alerts"]
+                .as_array()
+                .is_some()
+        );
+        assert!(
+            supervision_home_json["supervision"]["priority_cards"]
                 .as_array()
                 .is_some_and(|cards| !cards.is_empty())
         );
     }
 
-    fn assert_client_mission_travel_views(dashboard_json: &Value, my_missions_json: &Value) {
-        assert_eq!(dashboard_json["mission_summary"]["eligible_open_count"], 2);
-        assert_eq!(dashboard_json["mission_summary"]["local_open_count"], 1);
+    fn assert_client_mission_travel_views(supervision_home_json: &Value, my_missions_json: &Value) {
         assert_eq!(
-            dashboard_json["mission_summary"]["travel_required_open_count"],
+            supervision_home_json["mission_summary"]["eligible_open_count"],
+            2
+        );
+        assert_eq!(
+            supervision_home_json["mission_summary"]["local_open_count"],
+            1
+        );
+        assert_eq!(
+            supervision_home_json["mission_summary"]["travel_required_open_count"],
             1
         );
         assert_eq!(
@@ -1018,20 +1074,20 @@ mod tests {
         );
     }
 
-    fn assert_game_onboarding_payload(payload: &Value) {
+    fn assert_game_bootstrap_payload(payload: &Value) {
         assert_eq!(
             payload["identity"]["public_identity"]["public_id"].as_str(),
             Some("captain-aurora")
         );
         assert!(
-            payload["onboarding_flow"]["action_cards"]
+            payload["bootstrap_flow"]["action_cards"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|card| card["key"].as_str() == Some("bootstrap_starter_missions"))
         );
         assert!(
-            payload["onboarding_flow"]["first_hour_plan"]
+            payload["bootstrap_flow"]["first_cycle_plan"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1101,6 +1157,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn night_shift_alias_endpoints_match_primary_routes() {
+        let (_dir, app, token, _) = build_test_app(20);
+        let summary_json = authed_get_json(app.clone(), &token, "/v1/night-shift?hours=12").await;
+        let summary_alias_json =
+            authed_get_json(app.clone(), &token, "/v1/night-shift/summary?hours=12").await;
+        assert_eq!(summary_alias_json, summary_json);
+
+        let narrative_json =
+            authed_get_json(app, &token, "/v1/night-shift/narrative?hours=12").await;
+        assert_eq!(narrative_json["hours"].as_i64(), Some(12));
+        assert!(narrative_json["report"].is_object());
     }
 
     #[tokio::test]
@@ -1686,7 +1756,7 @@ mod tests {
         let (_dir, app, token, _) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
-        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
 
         let _event_json = authed_post_json(
             app.clone(),
@@ -1748,7 +1818,7 @@ mod tests {
         let (_dir, app, token, _) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
-        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
         let _ = publish_trade_mission(
             app.clone(),
             &token,
@@ -2067,10 +2137,28 @@ mod tests {
             briefing_json["public_memory_owner"]["controller_id"].as_str(),
             Some(agent_id)
         );
+
+        let supervision_briefing_json =
+            authed_get_json(app.clone(), &token, "/v1/supervision/briefing?hours=12").await;
+        let briefing_emergencies = briefing_json["briefing"]["emergencies"].as_array().unwrap();
+        let supervision_emergencies = supervision_briefing_json["briefing"]["emergencies"]
+            .as_array()
+            .unwrap();
+        assert_eq!(supervision_emergencies.len(), briefing_emergencies.len());
+        assert_eq!(
+            supervision_emergencies
+                .iter()
+                .map(|item| item["title"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            briefing_emergencies
+                .iter()
+                .map(|item| item["title"].as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
-    async fn bootstrap_character_returns_unified_identity_bundle_and_public_memory_owner() {
+    async fn bootstrap_identity_returns_unified_identity_bundle_and_public_memory_owner() {
         let (dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
@@ -2078,7 +2166,7 @@ mod tests {
         let bootstrap_json = authed_post_json(
             app.clone(),
             &token,
-            "/v1/civilization/bootstrap-character",
+            "/v1/civilization/bootstrap-identity",
             json!({
                 "public_id": "captain-aurora",
                 "display_name": "Captain Aurora",
@@ -2108,13 +2196,40 @@ mod tests {
             Some("captain-aurora")
         );
 
+        let bootstrap_identity_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-identity",
+            json!({
+                "public_id": "captain-aurora-alt",
+                "display_name": "Captain Aurora Alt",
+                "faction": "freeport",
+                "role": "broker",
+                "strategy": "balanced",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "genesis-core"
+            }),
+        )
+        .await;
+        assert_eq!(
+            bootstrap_identity_json["public_identity"]["public_id"].as_str(),
+            Some("captain-aurora-alt")
+        );
+
         let events = EventLog::new(dir.path().join("events.jsonl"))
             .unwrap()
             .get_all()
             .unwrap();
-        let bootstrap_event = events
+        let bootstrap_events: Vec<_> = events
             .iter()
-            .find(|event| event.event_type == "CIVILIZATION_CHARACTER_BOOTSTRAPPED")
+            .filter(|event| event.event_type == "CIVILIZATION_IDENTITY_BOOTSTRAPPED")
+            .collect();
+        assert_eq!(bootstrap_events.len(), 2);
+        let bootstrap_event = bootstrap_events
+            .iter()
+            .find(|event| {
+                event.payload["public_memory"]["public_id"].as_str() == Some("captain-aurora")
+            })
             .unwrap();
         assert_eq!(
             bootstrap_event.payload["public_memory"]["public_id"].as_str(),
@@ -2127,13 +2242,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_characters_and_catalog_endpoints_work() {
+    async fn public_identities_and_catalog_endpoints_work() {
         let (_dir, app, token, _) = build_test_app(20);
 
         let bootstrap_json = authed_post_json(
             app.clone(),
             &token,
-            "/v1/civilization/bootstrap-character",
+            "/v1/civilization/bootstrap-identity",
             json!({
                 "public_id": "captain-aurora",
                 "display_name": "Captain Aurora",
@@ -2150,16 +2265,22 @@ mod tests {
             Some("captain-aurora")
         );
 
-        let characters_json =
-            authed_get_json(app.clone(), &token, "/v1/civilization/characters").await;
-        let characters = characters_json["characters"].as_array().unwrap();
-        assert!(characters.len() >= 2);
-        assert!(characters.iter().any(|item| {
+        let identities_json =
+            authed_get_json(app.clone(), &token, "/v1/civilization/identities").await;
+        let public_identities = identities_json["public_identities"].as_array().unwrap();
+        assert!(public_identities.len() >= 2);
+        assert!(public_identities.iter().any(|item| {
             item["identity"]["public_identity"]["public_id"].as_str() == Some("captain-aurora")
                 && item["identity"]["profile"]["role"].as_str() == Some("broker")
                 && item["travel_state"]["current_position"]["system_id"].as_str()
                     == Some("frontier-gate")
         }));
+        let supervision_identities_json =
+            authed_get_json(app.clone(), &token, "/v1/supervision/identities").await;
+        assert_eq!(
+            supervision_identities_json["public_identities"],
+            identities_json["public_identities"]
+        );
 
         let catalog_json = authed_get_json(app, &token, "/v1/catalog/bootstrap").await;
         assert!(
@@ -2241,35 +2362,59 @@ mod tests {
         )
         .await;
         assert_game_mission_pack_payload(&mission_pack_json);
-        let onboarding_json = authed_get_json(
+        let bootstrap_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/game/onboarding?public_id=captain-aurora",
+            "/v1/game/bootstrap?public_id=captain-aurora",
         )
         .await;
-        assert_game_onboarding_payload(&onboarding_json);
+        assert_game_bootstrap_payload(&bootstrap_json);
+        let supervision_bootstrap_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/supervision/bootstrap?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            supervision_bootstrap_json["bootstrap_flow"],
+            bootstrap_json["bootstrap_flow"]
+        );
 
-        let status_json =
-            authed_get_json(app, &token, "/v1/game/status?public_id=captain-aurora").await;
+        let status_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/game/status?public_id=captain-aurora",
+        )
+        .await;
         assert_game_status_payload(&status_json);
+        let supervision_status_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/supervision/status?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(supervision_status_json["status"], status_json["status"]);
+        assert_eq!(
+            supervision_status_json["supervision"],
+            status_json["supervision"]
+        );
     }
 
     #[tokio::test]
-    async fn client_dashboard_and_my_views_work() {
+    async fn supervision_home_and_my_views_work() {
         let (_dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
 
-        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
         seed_client_view_missions(app.clone(), &token, agent_id).await;
-
-        let dashboard_json = authed_get_json(
+        let supervision_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/dashboard/home?public_id=captain-aurora",
+            "/v1/supervision/home?public_id=captain-aurora",
         )
         .await;
-        assert_dashboard_game_block(&dashboard_json);
+        assert_supervision_home_game_block(&supervision_json);
 
         let my_missions_json = authed_get_json(
             app.clone(),
@@ -2277,10 +2422,34 @@ mod tests {
             "/v1/missions/my?public_id=captain-aurora",
         )
         .await;
-        assert_client_mission_travel_views(&dashboard_json, &my_missions_json);
+        assert_client_mission_travel_views(&supervision_json, &my_missions_json);
+        let supervision_missions_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/supervision/missions?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            supervision_missions_json["eligible_open"],
+            my_missions_json["eligible_open"]
+        );
 
-        let my_governance_json =
-            authed_get_json(app, &token, "/v1/governance/my?public_id=captain-aurora").await;
+        let my_governance_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/governance/my?public_id=captain-aurora",
+        )
+        .await;
+        let supervision_governance_json = authed_get_json(
+            app,
+            &token,
+            "/v1/supervision/governance?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(
+            supervision_governance_json["journey"],
+            my_governance_json["journey"]
+        );
         assert_eq!(
             my_governance_json["home_planet"]["subnet_id"].as_str(),
             Some("planet-test")
@@ -2322,11 +2491,11 @@ mod tests {
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_id = state_json["agent_id"].as_str().unwrap();
 
-        bootstrap_broker_character(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
         let _ = authed_post_json(
             app.clone(),
             &token,
-            "/v1/civilization/bootstrap-character",
+            "/v1/civilization/bootstrap-identity",
             json!({
                 "public_id": "quartermaster-echo",
                 "display_name": "Quartermaster Echo",
@@ -2346,7 +2515,7 @@ mod tests {
         let _ = authed_post_json(
             app.clone(),
             &token,
-            "/v1/civilization/bootstrap-character",
+            "/v1/civilization/bootstrap-identity",
             json!({
                 "public_id": "scout-voss",
                 "display_name": "Scout Voss",
@@ -2796,17 +2965,43 @@ mod tests {
             1
         );
 
-        let dashboard_json =
-            authed_get_json(app, &token, "/v1/dashboard/home?public_id=captain-aurora").await;
-        assert_eq!(dashboard_json["organizations"].as_array().unwrap().len(), 1);
+        let supervision_home_json =
+            authed_get_json(app, &token, "/v1/supervision/home?public_id=captain-aurora").await;
         assert_eq!(
-            dashboard_json["game"]["organizations"][0]["organization"]["organization_id"].as_str(),
+            supervision_home_json["organizations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            supervision_home_json["game"]["organizations"][0]["organization"]["organization_id"]
+                .as_str(),
             Some("aurora-consortium")
         );
         assert!(
-            dashboard_json["game"]["organizations"][0]["autonomy_track"]["eligible_for_subnet_charter"]
+            supervision_home_json["game"]["organizations"][0]["autonomy_track"]["eligible_for_subnet_charter"]
                 .as_bool()
                 == Some(true)
         );
+    }
+
+    #[tokio::test]
+    async fn supervision_console_page_serves_canonical_surface() {
+        let (_dir, app, _token, _) = build_test_app(20);
+        let (status, body) = request_text(
+            app,
+            axum::http::Request::builder()
+                .uri("/supervision")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("Wattetheria Supervision Console"));
+        assert!(body.contains("/v1/civilization/identities"));
+        assert!(body.contains("/v1/supervision/home"));
+        assert!(body.contains("/v1/supervision/briefing"));
     }
 }

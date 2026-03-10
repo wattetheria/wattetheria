@@ -407,7 +407,7 @@ fn objectives_for_stage(
                 "home_anchor",
                 "Anchor to a home zone or subnet",
                 has_home_anchor,
-                "Bind your character to a home location so the rest of the galaxy can orient around your role.",
+                "Bind this public identity to a home location so the rest of the galaxy can orient around its role.",
             ),
             influence_objective(
                 "starter_influence",

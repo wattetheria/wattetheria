@@ -6,10 +6,10 @@ Wattetheria should not use a traditional numeric level grind as its primary prog
 
 Instead, progression should answer:
 
-- how much can this character operate
-- how much can this character influence
-- how much can this character govern
-- how much can this character expand
+- how much can this public identity operate
+- how much can this public identity influence
+- how much can this public identity govern
+- how much can this public identity expand
 
 ## Current Core Stats
 
@@ -63,7 +63,7 @@ This layer is now present in the backend `game` module.
 
 It keeps the game aligned with the galaxy-society fantasy.
 
-Players are not just “leveling up.” They are:
+Public identities are not just “leveling up.” They are:
 
 - earning position
 - building civic leverage

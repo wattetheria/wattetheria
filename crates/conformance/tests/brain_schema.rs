@@ -1,4 +1,4 @@
-// Validates brain output schemas used by humanized reports and proposals.
+// Validates brain output schemas used by narrative reports and proposals.
 
 use serde_json::json;
 use wattetheria_conformance::validate;

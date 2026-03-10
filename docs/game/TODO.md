@@ -11,39 +11,39 @@ Status labels:
 ## P0: Required For A Cohesive First Playable Product
 
 - `done` Official genesis base map
-- `done` Character bootstrap with public identity and controller binding
+- `done` Public identity bootstrap with controller binding
 - `done` Roles, factions, strategies, and profile persistence
 - `done` Mission lifecycle with role/faction qualification
 - `done` Governance core: license, bond, proposals, treasury, stability, recall, custody, takeover
 - `done` Civilization scoring and total influence
 - `done` Game catalog and game status endpoints
-- `partial` New-player onboarding flow and tutorial sequencing, with backend onboarding flow and first-hour action cards now available
+- `partial` New-identity bootstrap flow and first-cycle sequencing, with backend bootstrap flow and first-cycle action cards now available
 - `done` Role-specific starter objective chains
-- `partial` Dashboard and client views for a polished first-session experience, including embedded game progression, mission-pack state, map-aware mission/travel summaries, and backend `next_actions / alerts / priority_cards`
+- `partial` Supervision-home views for a polished first-session experience, including embedded game progression, mission-pack state, map-aware mission/travel summaries, and backend `next_actions / alerts / priority_cards`
 - `partial` Explicit organization gameplay, with backend organization registry, memberships, permissioned roles, treasury flows, organization-issued missions, autonomy readiness tracks, internal charter proposal/vote/finalize flow, subnet charter applications, and client-facing organization views now available
 - `partial` Live route/travel interaction rules beyond static map structure, with persisted location, depart/arrive session flow, and arrival consequences now available
 
 ## P1: Required For Strong Productization
 
 - `partial` Mission design templates by role and phase, with current-stage packs, next-stage previews, summaries, and payload schemas now available
-- `partial` Governance experience design that explains why a player should care before they can rule
+- `partial` Governance supervision design that explains why an owner should care before an agent can rule
 - `partial` Map-aware mission generation using actual systems and routes, with client mission views now exposing map anchors and travel summaries
 - `partial` Qualification unlock model for profession and civic gates
 - `partial` More explicit sovereignty journey from citizen to governor
-- `partial` Client-first onboarding and briefing flow for Godot
+- `partial` Agent-first bootstrap and briefing flow for a lightweight supervision console
 - `partial` Better event-to-mission conversion for economic, spatial, and political pressure
 
 ## P2: Required For Creator Tooling
 
-- `todo` Godot map editor flow
-- `todo` Richer map authoring validation surfaced to the client
+- `todo` Lightweight map authoring console flow
+- `todo` Richer map authoring validation surfaced to the supervision console
 
 ## Gaps By System
 
 ## Game Loop
 
-- `partial` The backend can compute stage, tier, objectives, recommended actions, onboarding state, onboarding flow, governance journey, starter mission bootstrap, map-anchored starter templates, current-stage mission packs, and a first-session `experience` read model.
-- `partial` The backend now exposes a first-hour onboarding path and action cards, but the Godot-side guided sequence is still missing.
+- `partial` The backend can compute stage, tier, objectives, recommended actions, bootstrap state, bootstrap flow, governance journey, starter mission bootstrap, map-anchored starter templates, current-stage mission packs, and a first-session `supervision` read model.
+- `partial` The backend now exposes a first-cycle bootstrap path and action cards, but the lightweight supervision-console flow is still missing.
 
 ## Roles And Factions
 
@@ -66,7 +66,7 @@ Status labels:
 
 - `done` Official map foundation exists.
 - `partial` Route-travel planning, persisted travel state, arrival consequences, and map-aware mission travel summaries exist, but deeper movement consequences and long-running travel sessions are still missing.
-- `todo` Godot-side map editing workflow does not exist yet.
+- `todo` Lightweight supervision-console map editing workflow does not exist yet.
 
 ## Progression
 

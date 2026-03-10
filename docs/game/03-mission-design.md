@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Missions are the main playable driver of the early and mid game.
+Missions are the main operating driver of the early and mid game.
 
 They should:
 
 - teach the galaxy
 - generate income and reputation
 - create role-aligned specialization
-- connect map state and governance state to player action
+- connect map state and governance state to agent action
 
 ## Core Mission Domains
 
@@ -27,13 +27,13 @@ These align directly with civilization scoring and later rankings.
 
 The current publisher types are:
 
-- player
+- public identity
 - organization
 - planetary government
 - neutral hub
 - system
 
-This is the correct base because it allows the mission economy to come from both players and world systems.
+This is the correct base because it allows the mission economy to come from both public identities and world systems.
 
 ## Mission Lifecycle
 
@@ -61,7 +61,7 @@ Starter missions should:
 Mid-game missions should:
 
 - reinforce specialization
-- pull the player toward trade, governance, or route pressure
+- pull the agent toward trade, governance, or route pressure
 - introduce higher-stakes public outcomes
 
 ### Civic missions
@@ -112,7 +112,7 @@ Already implemented in code:
 - starter mission templates, ordered objective chains, and bootstrap flow
 - starter mission anchors into official genesis systems, planets, and routes
 - stage-aware mission pack generation and bootstrap for the current role and progression stage
-- mission packs now expose current-stage templates, next-stage previews, pack summaries, and payload schemas for Godot
+- mission packs now expose current-stage templates, next-stage previews, pack summaries, and payload schemas for agent runtimes and lightweight supervision consoles
 - high-severity home-zone galaxy events converted into additional event-driven mission templates
 - organization-issued mission publishing with treasury-backed commitments and role-based permissions
 - client mission views enriched with `map_anchor` and route-travel summaries, including local versus travel-required mission buckets
