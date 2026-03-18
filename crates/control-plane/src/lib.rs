@@ -3,6 +3,7 @@ mod autonomy;
 pub mod routes {
     pub(crate) mod civilization;
     pub(crate) mod client;
+    pub(crate) mod client_api;
     pub(crate) mod console;
     pub(crate) mod core;
     pub(crate) mod game;
@@ -11,9 +12,11 @@ pub mod routes {
     pub(crate) mod mailbox;
     pub(crate) mod map;
     pub(crate) mod missions;
+    pub(crate) mod network;
     pub(crate) mod organizations;
     pub(crate) mod policy;
     pub(crate) mod supervision;
+    pub(crate) mod topics;
 }
 mod state;
 
@@ -30,6 +33,8 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(console_router())
         .merge(core_router())
         .merge(client_router())
+        .merge(client_facing_router())
+        .merge(network_router())
         .merge(game_router())
         .merge(map_router())
         .merge(civilization_router())
@@ -37,6 +42,12 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(mailbox_router())
         .merge(policy_router())
         .with_state(state)
+}
+
+fn network_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/v1/network/status", get(routes::network::network_status))
+        .route("/v1/network/peers", get(routes::network::network_peers))
 }
 
 fn console_router() -> Router<ControlPlaneState> {
@@ -77,6 +88,30 @@ fn client_router() -> Router<ControlPlaneState> {
             "/v1/organizations/my",
             get(routes::organizations::my_organizations),
         )
+}
+
+fn client_facing_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/client/network/status",
+            get(routes::client_api::client_network_status),
+        )
+        .route("/v1/client/peers", get(routes::client_api::client_peers))
+        .route("/v1/client/self", get(routes::client_api::client_self))
+        .route(
+            "/v1/client/rpc-logs",
+            get(routes::client_api::client_rpc_logs),
+        )
+        .route("/v1/client/tasks", get(routes::client_api::client_tasks))
+        .route(
+            "/v1/client/organizations",
+            get(routes::client_api::client_organizations),
+        )
+        .route(
+            "/v1/client/leaderboard",
+            get(routes::client_api::client_leaderboard),
+        )
+        .route("/v1/client/export", get(routes::client_api::client_export))
 }
 
 fn game_router() -> Router<ControlPlaneState> {
@@ -180,6 +215,7 @@ fn civilization_router() -> Router<ControlPlaneState> {
                 .post(routes::civilization::citizen_profile_upsert),
         )
         .merge(organization_civilization_router())
+        .merge(topic_civilization_router())
         .route(
             "/v1/civilization/metrics",
             get(routes::civilization::civilization_metrics),
@@ -228,6 +264,22 @@ fn civilization_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/missions/settle",
             post(routes::missions::mission_settle),
+        )
+}
+
+fn topic_civilization_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/civilization/topics",
+            get(routes::topics::list_topics).post(routes::topics::create_topic),
+        )
+        .route(
+            "/v1/civilization/topics/messages",
+            get(routes::topics::topic_messages).post(routes::topics::post_topic_message),
+        )
+        .route(
+            "/v1/civilization/topics/subscribe",
+            post(routes::topics::subscribe_topic),
         )
 }
 
@@ -360,6 +412,7 @@ mod tests {
     use chrono::Utc;
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tokio::sync::{Mutex, broadcast};
     use tower::ServiceExt;
@@ -373,6 +426,7 @@ mod tests {
     use wattetheria_kernel::civilization::missions::MissionBoard;
     use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
     use wattetheria_kernel::civilization::profiles::CitizenRegistry;
+    use wattetheria_kernel::civilization::topics::TopicRegistry;
     use wattetheria_kernel::event_log::EventLog;
     use wattetheria_kernel::governance::{
         GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
@@ -381,7 +435,13 @@ mod tests {
     use wattetheria_kernel::mailbox::CrossSubnetMailbox;
     use wattetheria_kernel::map::registry::GalaxyMapRegistry;
     use wattetheria_kernel::policy_engine::PolicyEngine;
-    use wattetheria_kernel::swarm_bridge::LegacyTaskEngineBridge;
+    use wattetheria_kernel::signing::verify_payload;
+    use wattetheria_kernel::swarm_bridge::{
+        LegacyTaskEngineBridge, SwarmAgentView, SwarmBridge, SwarmNetworkStatusView, SwarmPeerView,
+        SwarmTaskProjectionView, SwarmTaskReceipt, SwarmTopicCursorView, SwarmTopicMessageView,
+    };
+    use wattetheria_kernel::types::AgentStats;
+    use wattswarm_protocol::types::{EventPayload, TaskContract};
 
     #[allow(clippy::too_many_lines)]
     fn build_test_app(
@@ -391,6 +451,23 @@ mod tests {
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let ledger_path = dir.path().join("ledger.json");
+        let bridge_event_log = event_log.clone();
+        let bridge_identity = identity.clone();
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(LegacyTaskEngineBridge::new(
+            wattetheria_kernel::task_engine::TaskEngine::new(bridge_event_log, bridge_identity),
+            ledger_path,
+        ));
+        build_test_app_with_bridge(rate_limit, dir, identity, event_log, bridge)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_test_app_with_bridge(
+        rate_limit: usize,
+        dir: tempfile::TempDir,
+        identity: Identity,
+        event_log: EventLog,
+        swarm_bridge: Arc<dyn SwarmBridge>,
+    ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
         let governance_state_path = dir.path().join("governance/state.json");
         let mailbox_state_path = dir.path().join("mailbox/state.json");
         let mission_board_state_path = dir.path().join("missions/state.json");
@@ -400,6 +477,7 @@ mod tests {
             dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
         let organization_registry_state_path = dir.path().join("civilization/organizations.json");
+        let topic_registry_state_path = dir.path().join("civilization/topics.json");
         let galaxy_state_path = dir.path().join("galaxy/state.json");
         let galaxy_map_registry_state_path = dir.path().join("galaxy/maps.json");
         let travel_state_registry_state_path = dir.path().join("galaxy/travel_state.json");
@@ -480,6 +558,9 @@ mod tests {
         let organization_registry = Arc::new(Mutex::new(
             OrganizationRegistry::load_or_new(&organization_registry_state_path).unwrap(),
         ));
+        let topic_registry = Arc::new(Mutex::new(
+            TopicRegistry::load_or_new(&topic_registry_state_path).unwrap(),
+        ));
         let galaxy_state_loaded = GalaxyState::load_or_new(&galaxy_state_path).unwrap();
         let mut galaxy_map_registry_loaded =
             GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path).unwrap();
@@ -511,8 +592,6 @@ mod tests {
         let travel_state_registry = Arc::new(Mutex::new(travel_state_registry));
         let (stream_tx, _) = broadcast::channel(32);
         let token = "test-token".to_string();
-        let bridge_event_log = event_log.clone();
-        let bridge_identity = identity.clone();
 
         let state = ControlPlaneState {
             agent_id: identity.agent_id.clone(),
@@ -520,10 +599,7 @@ mod tests {
             started_at: Utc::now().timestamp(),
             auth_token: token.clone(),
             event_log,
-            swarm_bridge: Arc::new(LegacyTaskEngineBridge::new(
-                wattetheria_kernel::task_engine::TaskEngine::new(bridge_event_log, bridge_identity),
-                ledger_path,
-            )),
+            swarm_bridge,
             governance_engine,
             governance_state_path,
             policy_engine: policy_engine.clone(),
@@ -539,6 +615,8 @@ mod tests {
             citizen_registry_state_path,
             organization_registry,
             organization_registry_state_path,
+            topic_registry,
+            topic_registry_state_path,
             galaxy_state,
             galaxy_state_path,
             galaxy_map_registry,
@@ -581,6 +659,17 @@ mod tests {
         .await
     }
 
+    async fn public_get_json(app: Router, uri: &str) -> Value {
+        request_json(
+            app,
+            axum::http::Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
     async fn authed_post(app: Router, token: &str, uri: &str, body: Value) -> StatusCode {
         app.oneshot(
             axum::http::Request::builder()
@@ -608,6 +697,131 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    struct MockSwarmBridge {
+        local_node_id: String,
+        agent_stats: BTreeMap<String, AgentStats>,
+        network_status: SwarmNetworkStatusView,
+        peers: Vec<SwarmPeerView>,
+        subscriptions: Mutex<Vec<(String, String, String, bool)>>,
+        messages: Mutex<Vec<SwarmTopicMessageView>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SwarmBridge for MockSwarmBridge {
+        async fn submit_task_contract(
+            &self,
+            _submitter_id: &str,
+            _contract: TaskContract,
+        ) -> anyhow::Result<SwarmTaskReceipt> {
+            Err(anyhow::anyhow!("not implemented in mock bridge"))
+        }
+
+        async fn task_projection(
+            &self,
+            _task_id: &str,
+        ) -> anyhow::Result<Option<SwarmTaskProjectionView>> {
+            Ok(None)
+        }
+
+        async fn task_events(&self, _task_id: &str) -> anyhow::Result<Vec<EventPayload>> {
+            Ok(Vec::new())
+        }
+
+        async fn run_task_contract(
+            &self,
+            _worker_id: &str,
+            _contract: TaskContract,
+        ) -> anyhow::Result<SwarmTaskProjectionView> {
+            Err(anyhow::anyhow!("not implemented in mock bridge"))
+        }
+
+        async fn agent_view(&self, agent_id: &str) -> anyhow::Result<SwarmAgentView> {
+            Ok(SwarmAgentView {
+                agent_id: agent_id.to_string(),
+                stats: self.agent_stats.get(agent_id).cloned().unwrap_or_default(),
+            })
+        }
+
+        async fn subscribe_topic(
+            &self,
+            subscriber_id: &str,
+            feed_key: &str,
+            scope_hint: &str,
+            active: bool,
+        ) -> anyhow::Result<()> {
+            self.subscriptions.lock().await.push((
+                subscriber_id.to_string(),
+                feed_key.to_string(),
+                scope_hint.to_string(),
+                active,
+            ));
+            Ok(())
+        }
+
+        async fn post_topic_message(
+            &self,
+            feed_key: &str,
+            scope_hint: &str,
+            content: Value,
+            reply_to_message_id: Option<String>,
+        ) -> anyhow::Result<()> {
+            let mut messages = self.messages.lock().await;
+            let next_id = messages.len() + 1;
+            messages.push(SwarmTopicMessageView {
+                message_id: format!("msg-{next_id}"),
+                network_id: format!("local:{}", self.local_node_id),
+                feed_key: feed_key.to_string(),
+                scope_hint: scope_hint.to_string(),
+                author_node_id: self.local_node_id.clone(),
+                content,
+                reply_to_message_id,
+                created_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),
+            });
+            Ok(())
+        }
+
+        async fn list_topic_messages(
+            &self,
+            feed_key: &str,
+            scope_hint: &str,
+            limit: usize,
+            _before_created_at: Option<u64>,
+            _before_message_id: Option<String>,
+        ) -> anyhow::Result<Vec<SwarmTopicMessageView>> {
+            Ok(self
+                .messages
+                .lock()
+                .await
+                .iter()
+                .filter(|message| message.feed_key == feed_key && message.scope_hint == scope_hint)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+
+        async fn topic_cursor(
+            &self,
+            feed_key: &str,
+            subscriber_id: Option<&str>,
+        ) -> anyhow::Result<Option<SwarmTopicCursorView>> {
+            Ok(Some(SwarmTopicCursorView {
+                subscriber_node_id: subscriber_id.unwrap_or(&self.local_node_id).to_string(),
+                feed_key: feed_key.to_string(),
+                scope_hint: "group:crew-7".to_string(),
+                last_event_seq: self.messages.lock().await.len() as u64,
+                updated_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),
+            }))
+        }
+
+        async fn network_status(&self) -> anyhow::Result<SwarmNetworkStatusView> {
+            Ok(self.network_status.clone())
+        }
+
+        async fn peers(&self) -> anyhow::Result<Vec<SwarmPeerView>> {
+            Ok(self.peers.clone())
+        }
     }
 
     async fn bootstrap_broker_identity(app: Router, token: &str, agent_id: &str) {
@@ -2482,6 +2696,293 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn network_routes_surface_bridge_read_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_id.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: [("v0.1".to_string(), 2_u64)].into_iter().collect(),
+            },
+            peers: vec![
+                SwarmPeerView {
+                    node_id: "peer-a".to_string(),
+                },
+                SwarmPeerView {
+                    node_id: "peer-b".to_string(),
+                },
+            ],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let (_dir, app, token, _) =
+            build_test_app_with_bridge(20, dir, identity, event_log, bridge);
+
+        let status_json = authed_get_json(app.clone(), &token, "/v1/network/status").await;
+        assert_eq!(status_json["running"].as_bool(), Some(true));
+        assert_eq!(status_json["total_nodes"].as_u64(), Some(3));
+        assert_eq!(status_json["active_nodes"].as_u64(), Some(3));
+
+        let peers_json = authed_get_json(app, &token, "/v1/network/peers?limit=1").await;
+        assert_eq!(peers_json["peers"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            peers_json["peers"][0]["coordinate_source"].as_str(),
+            Some("derived")
+        );
+    }
+
+    #[tokio::test]
+    async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_id.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "local".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: Vec::new(),
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+        let (_dir, app, token, _) =
+            build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+
+        let created = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/topics",
+            json!({
+                "feed_key": "crew.chat",
+                "scope_hint": "group:crew-7",
+                "display_name": "Crew Seven",
+                "projection_kind": "working_group",
+                "summary": "Operations thread",
+                "why_this_exists": "Mission pressure",
+                "initial_message": {"text": "hello crew"}
+            }),
+        )
+        .await;
+        assert_eq!(
+            created["topic"]["topic_id"].as_str(),
+            Some("crew.chat@group:crew-7")
+        );
+
+        let topics_json = authed_get_json(app.clone(), &token, "/v1/civilization/topics").await;
+        assert_eq!(topics_json["topics"].as_array().unwrap().len(), 1);
+
+        let messages_json = authed_get_json(
+            app,
+            &token,
+            "/v1/civilization/topics/messages?feed_key=crew.chat&scope_hint=group:crew-7",
+        )
+        .await;
+        assert_eq!(messages_json["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            messages_json["messages"][0]["author_public_id"].as_str(),
+            Some(created["topic"]["created_by_public_id"].as_str().unwrap())
+        );
+
+        let subscriptions = bridge.subscriptions.lock().await;
+        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions[0].1, "crew.chat");
+        drop(subscriptions);
+        assert_eq!(bridge.messages.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn client_api_routes_align_with_client_dtos() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let mut agent_stats = BTreeMap::new();
+        agent_stats.insert(
+            identity.agent_id.clone(),
+            AgentStats {
+                power: 4,
+                watt: 77,
+                reputation: 9,
+                capacity: 3,
+            },
+        );
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_id.clone(),
+            agent_stats,
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: [("v0.1".to_string(), 1_u64)].into_iter().collect(),
+            },
+            peers: vec![SwarmPeerView {
+                node_id: "peer-a".to_string(),
+            }],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let (_dir, app, token, _) =
+            build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_id).await;
+        let _published = publish_trade_mission(
+            app.clone(),
+            &token,
+            TradeMissionSpec {
+                title: "Calibrate relay",
+                description: "Tune the frontier relay.",
+                reward_watt: 24,
+                reward_reputation: 3,
+                objective: "relay_calibration",
+                required_faction: None,
+                subnet_id: Some("planet-test"),
+                zone_id: Some("genesis-core"),
+            },
+        )
+        .await;
+        let _organization = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations",
+            json!({
+                "public_id": "captain-aurora",
+                "organization_id": "aurora-guild",
+                "name": "Aurora Guild",
+                "kind": "guild",
+                "summary": "Relay keepers",
+                "home_subnet_id": "planet-test",
+                "home_zone_id": "genesis-core"
+            }),
+        )
+        .await;
+        let _funded = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/organizations/treasury/fund",
+            json!({
+                "organization_id": "aurora-guild",
+                "actor_public_id": "captain-aurora",
+                "amount_watt": 55,
+                "reason": "seed treasury"
+            }),
+        )
+        .await;
+
+        let network_status =
+            authed_get_json(app.clone(), &token, "/v1/client/network/status").await;
+        assert_eq!(network_status["total_nodes"].as_u64(), Some(2));
+        assert_eq!(network_status["active_nodes"].as_u64(), Some(2));
+
+        let peers_json = authed_get_json(app.clone(), &token, "/v1/client/peers?limit=1").await;
+        assert_eq!(peers_json.as_array().unwrap().len(), 1);
+        assert_eq!(peers_json[0]["id"].as_str(), Some("peer-a"));
+
+        let self_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/client/self?public_id=captain-aurora",
+        )
+        .await;
+        assert_eq!(self_json["id"].as_str(), Some("captain-aurora"));
+        assert_eq!(self_json["display_name"].as_str(), Some("Captain Aurora"));
+        assert_eq!(self_json["watt_balance"].as_i64(), Some(77));
+
+        let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
+        assert_eq!(tasks_json.as_array().unwrap().len(), 1);
+        assert_eq!(tasks_json[0]["title"].as_str(), Some("Calibrate relay"));
+        assert_eq!(tasks_json[0]["status"].as_str(), Some("published"));
+
+        let organizations_json =
+            authed_get_json(app.clone(), &token, "/v1/client/organizations").await;
+        assert_eq!(organizations_json.as_array().unwrap().len(), 1);
+        assert_eq!(organizations_json[0]["name"].as_str(), Some("Aurora Guild"));
+        assert_eq!(organizations_json[0]["treasury_watt"].as_i64(), Some(55));
+        assert_eq!(organizations_json[0]["member_count"].as_u64(), Some(1));
+
+        let leaderboard_json = authed_get_json(
+            app.clone(),
+            &token,
+            "/v1/client/leaderboard?category=wealth",
+        )
+        .await;
+        assert_eq!(leaderboard_json.as_array().unwrap().len(), 1);
+        assert_eq!(leaderboard_json[0]["rank"].as_u64(), Some(1));
+        assert_eq!(
+            leaderboard_json[0]["display_name"].as_str(),
+            Some("Captain Aurora")
+        );
+
+        let rpc_logs_json = authed_get_json(app, &token, "/v1/client/rpc-logs?limit=5").await;
+        assert!(!rpc_logs_json.as_array().unwrap().is_empty());
+        assert!(rpc_logs_json[0]["timestamp"].is_string());
+        assert!(rpc_logs_json[0]["message"].is_string());
+        assert!(rpc_logs_json[0]["level"].is_string());
+    }
+
+    #[tokio::test]
+    async fn client_export_is_public_and_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let mut agent_stats = BTreeMap::new();
+        agent_stats.insert(
+            identity.agent_id.clone(),
+            AgentStats {
+                power: 3,
+                watt: 42,
+                reputation: 5,
+                capacity: 2,
+            },
+        );
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_id.clone(),
+            agent_stats,
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: [("v0.1".to_string(), 1_u64)].into_iter().collect(),
+            },
+            peers: vec![SwarmPeerView {
+                node_id: "peer-a".to_string(),
+            }],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let (_dir, app, token, _) =
+            build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_id).await;
+
+        let export_json = public_get_json(
+            app,
+            "/v1/client/export?public_id=captain-aurora&peer_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5",
+        )
+        .await;
+        assert_eq!(
+            export_json["payload"]["operator"]["display_name"].as_str(),
+            Some("Captain Aurora")
+        );
+        assert_eq!(
+            export_json["payload"]["network_status"]["total_nodes"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(export_json["payload"]["peers"].as_array().unwrap().len(), 1);
+        let verified = verify_payload(
+            &export_json["payload"],
+            export_json["signature"].as_str().unwrap(),
+            export_json["payload"]["public_key"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert!(verified);
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ use wattetheria_kernel::civilization::organizations::{
 use wattetheria_kernel::civilization::profiles::{
     CitizenRegistry, Faction, RolePath, StrategyProfile,
 };
+use wattetheria_kernel::civilization::topics::{TopicProjectionKind, TopicRegistry};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
@@ -91,6 +92,8 @@ pub struct ControlPlaneState {
     pub citizen_registry_state_path: PathBuf,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
     pub organization_registry_state_path: PathBuf,
+    pub topic_registry: Arc<Mutex<TopicRegistry>>,
+    pub topic_registry_state_path: PathBuf,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
     pub galaxy_state_path: PathBuf,
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
@@ -248,6 +251,94 @@ pub struct MailboxFetchQuery {
 pub struct MailboxAckBody {
     pub subnet_id: String,
     pub message_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopicsQuery {
+    pub organization_id: Option<String>,
+    pub mission_id: Option<String>,
+    pub projection_kind: Option<TopicProjectionKind>,
+    pub include_inactive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopicCreateBody {
+    pub public_id: Option<String>,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub display_name: String,
+    pub summary: Option<String>,
+    pub projection_kind: TopicProjectionKind,
+    pub organization_id: Option<String>,
+    pub mission_id: Option<String>,
+    pub why_this_exists: Option<String>,
+    pub initial_message: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopicMessagesQuery {
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub limit: Option<usize>,
+    pub before_created_at: Option<u64>,
+    pub before_message_id: Option<String>,
+    pub subscriber_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopicSubscriptionBody {
+    pub public_id: Option<String>,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TopicMessageBody {
+    pub public_id: Option<String>,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub content: Value,
+    pub reply_to_message_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NetworkPeersQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientIdentityQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientListQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientRpcLogsQuery {
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientLeaderboardQuery {
+    pub category: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClientExportQuery {
+    pub agent_id: Option<String>,
+    pub public_id: Option<String>,
+    pub peer_limit: Option<usize>,
+    pub task_limit: Option<usize>,
+    pub organization_limit: Option<usize>,
+    pub rpc_log_limit: Option<usize>,
+    pub leaderboard_limit: Option<usize>,
+    pub leaderboard_category: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -21,6 +21,7 @@ pub use civilization::metrics;
 pub use civilization::missions;
 pub use civilization::organizations;
 pub use civilization::profiles;
+pub use civilization::topics;
 pub use game::catalog as game_catalog;
 pub use game::progression as game_progression;
 pub use governance::mailbox;

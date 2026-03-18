@@ -41,6 +41,8 @@ pub struct Cli {
     pub p2p_message_ttl_sec: i64,
     #[arg(long, default_value = "127.0.0.1:7777")]
     pub control_plane_bind: String,
+    #[arg(long)]
+    pub wattswarm_ui_base_url: Option<String>,
     #[arg(long, default_value_t = 60)]
     pub control_plane_rate_limit: usize,
     #[arg(long, default_value = "rules")]

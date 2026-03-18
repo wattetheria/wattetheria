@@ -37,6 +37,7 @@ use wattetheria_kernel::civilization::identities::{
 use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
+use wattetheria_kernel::civilization::topics::TopicRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
@@ -46,7 +47,7 @@ use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_positio
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::PolicyEngine;
-use wattetheria_kernel::swarm_bridge::{LegacyTaskEngineBridge, SwarmBridge};
+use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
 use wattetheria_kernel::trust::{TrustConfig, WebOfTrust};
 use wattetheria_p2p_runtime::{P2PConfig, P2PNode};
 
@@ -74,6 +75,8 @@ struct CivilizationRuntimeState {
     citizen_registry_state_path: PathBuf,
     organization_registry: OrganizationRegistry,
     organization_registry_state_path: PathBuf,
+    topic_registry: TopicRegistry,
+    topic_registry_state_path: PathBuf,
     galaxy_state: GalaxyState,
     galaxy_state_path: PathBuf,
     galaxy_map_registry: GalaxyMapRegistry,
@@ -167,9 +170,10 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         identity.clone(),
         &ledger_path,
     )?;
-    let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(LegacyTaskEngineBridge::new(
+    let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(HybridSwarmBridge::new(
         legacy_task_engine,
         ledger_path.clone(),
+        cli.wattswarm_ui_base_url.as_deref(),
     ));
     let governance_state_path = cli.data_dir.join("governance/state.json");
     let governance_engine = Arc::new(Mutex::new(GovernanceEngine::load_or_new(
@@ -302,6 +306,8 @@ fn build_control_state(
         citizen_registry_state_path: civilization_state.citizen_registry_state_path,
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
         organization_registry_state_path: civilization_state.organization_registry_state_path,
+        topic_registry: Arc::new(Mutex::new(civilization_state.topic_registry)),
+        topic_registry_state_path: civilization_state.topic_registry_state_path,
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_state_path: civilization_state.galaxy_state_path,
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
@@ -331,6 +337,8 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
     let organization_registry_state_path = cli.data_dir.join("civilization/organizations.json");
     let organization_registry =
         OrganizationRegistry::load_or_new(&organization_registry_state_path)?;
+    let topic_registry_state_path = cli.data_dir.join("civilization/topics.json");
+    let topic_registry = TopicRegistry::load_or_new(&topic_registry_state_path)?;
     let galaxy_state_path = cli.data_dir.join("galaxy/state.json");
     let legacy_galaxy_state_path = cli.data_dir.join("world/state.json");
     let galaxy_state = if galaxy_state_path.exists() {
@@ -379,6 +387,8 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
         citizen_registry_state_path,
         organization_registry,
         organization_registry_state_path,
+        topic_registry,
+        topic_registry_state_path,
         galaxy_state,
         galaxy_state_path,
         galaxy_map_registry,

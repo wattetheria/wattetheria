@@ -23,6 +23,8 @@ uuid.workspace = true
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 
 [dev-dependencies]
+async-trait.workspace = true
 tempfile.workspace = true
 tower = "0.5"
 http-body-util = "0.1"
+wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", rev = "9965eea30b88b4ebb16a4e6a855f4d37ecb70284", package = "wattswarm-protocol" }

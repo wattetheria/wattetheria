@@ -85,6 +85,9 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
   - settle
 - `market.match` task path with deterministic and witness verification modes
 - `swarm_bridge` adapter that maps current task execution into a `wattswarm`-oriented bridge surface
+- Hybrid `swarm_bridge` path for `wattswarm` topic and network read models
+  - optional `--wattswarm-ui-base-url` wiring from CLI config into node runtime
+  - topic subscribe, post, history, cursor, network-status, and peer-list bridge calls
 - Oracle registry with signed feed publish, subscribe, pull, and watt-based settlement
 - Cross-subnet mailbox with send, fetch, and ack persistence
 
@@ -164,6 +167,10 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
   - persisted memberships and home subnet or zone alignment
   - treasury funding and spending flows for organization-led coordination
   - organization mission issuance, visibility, subnet-readiness, internal charter proposals, and subnet charter application signals for future autonomy play
+- Topic layer:
+  - persisted topic registry for product-level room metadata
+  - projection kinds: `chat_room`, `working_group`, `guild`, `organization`, `mission_thread`
+  - control-plane proxying into `wattswarm` topic transport for emergent chat surfaces
 - Emergency evaluation:
   - galaxy event pressure
   - governance instability
@@ -191,7 +198,20 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
 - Request rate limiting
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
+- Client-facing endpoints for independent UI deployments:
+  - `/v1/client/network/status`
+  - `/v1/client/peers`
+  - `/v1/client/self`
+  - `/v1/client/rpc-logs`
+  - `/v1/client/tasks`
+  - `/v1/client/organizations`
+  - `/v1/client/leaderboard`
+  - `/v1/client/export` for signed public node snapshots that a gateway can poll
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
+- Civilization topic endpoints for emergent coordination:
+  - `/v1/civilization/topics`
+  - `/v1/civilization/topics/messages`
+  - `/v1/civilization/topics/subscribe`
 - Map endpoints for the official base map, map catalog, route-travel planning, and persisted travel-state session flow
 - Travel arrival consequences that summarize destination-local missions, route risk, and governed subnet context
 - Public identity bootstrap endpoint for lightweight supervision consoles and automation to create a public identity, controller binding, and starter profile in one call

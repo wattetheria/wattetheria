@@ -25,6 +25,8 @@ pub(crate) struct LocalConfig {
     #[serde(default)]
     pub(crate) brain_provider: BrainProviderConfig,
     #[serde(default)]
+    pub(crate) wattswarm_ui_base_url: Option<String>,
+    #[serde(default)]
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
@@ -55,6 +57,7 @@ impl Default for LocalConfig {
             p2p_topic_shards: default_p2p_topic_shards(),
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
+            wattswarm_ui_base_url: None,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
         }
@@ -171,6 +174,9 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     command
         .arg("--autonomy-interval-sec")
         .arg(config.autonomy_interval_sec.max(5).to_string());
+    if let Some(base_url) = &config.wattswarm_ui_base_url {
+        command.arg("--wattswarm-ui-base-url").arg(base_url);
+    }
 
     match &config.brain_provider {
         BrainProviderConfig::Rules => {

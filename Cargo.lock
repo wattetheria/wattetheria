@@ -4053,6 +4053,7 @@ name = "wattetheria-control-plane"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "http-body-util",
@@ -4063,6 +4064,7 @@ dependencies = [
  "tower",
  "uuid",
  "wattetheria-kernel-core",
+ "wattswarm-protocol",
 ]
 
 [[package]]

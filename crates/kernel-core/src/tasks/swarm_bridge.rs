@@ -1,10 +1,10 @@
 //! Bridge layer that keeps wattetheria app flows independent from the current legacy task engine.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::collections::HashMap;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 use wattswarm_protocol::types::{
@@ -42,6 +42,39 @@ pub struct SwarmAgentView {
     pub stats: AgentStats,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTopicMessageView {
+    pub message_id: String,
+    pub network_id: String,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub author_node_id: String,
+    pub content: Value,
+    pub reply_to_message_id: Option<String>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTopicCursorView {
+    pub subscriber_node_id: String,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub last_event_seq: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmPeerView {
+    pub node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmNetworkStatusView {
+    pub running: bool,
+    pub mode: String,
+    pub peer_protocol_distribution: BTreeMap<String, u64>,
+}
+
 #[async_trait]
 pub trait SwarmBridge: Send + Sync {
     async fn submit_task_contract(
@@ -61,6 +94,53 @@ pub trait SwarmBridge: Send + Sync {
     ) -> Result<SwarmTaskProjectionView>;
 
     async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView>;
+
+    async fn subscribe_topic(
+        &self,
+        _subscriber_id: &str,
+        _feed_key: &str,
+        _scope_hint: &str,
+        _active: bool,
+    ) -> Result<()> {
+        Err(anyhow!("wattswarm topic subscriptions are not configured"))
+    }
+
+    async fn post_topic_message(
+        &self,
+        _feed_key: &str,
+        _scope_hint: &str,
+        _content: Value,
+        _reply_to_message_id: Option<String>,
+    ) -> Result<()> {
+        Err(anyhow!("wattswarm topic messages are not configured"))
+    }
+
+    async fn list_topic_messages(
+        &self,
+        _feed_key: &str,
+        _scope_hint: &str,
+        _limit: usize,
+        _before_created_at: Option<u64>,
+        _before_message_id: Option<String>,
+    ) -> Result<Vec<SwarmTopicMessageView>> {
+        Err(anyhow!("wattswarm topic history is not configured"))
+    }
+
+    async fn topic_cursor(
+        &self,
+        _feed_key: &str,
+        _subscriber_id: Option<&str>,
+    ) -> Result<Option<SwarmTopicCursorView>> {
+        Err(anyhow!("wattswarm topic cursors are not configured"))
+    }
+
+    async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
+        Err(anyhow!("wattswarm network status is not configured"))
+    }
+
+    async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
+        Err(anyhow!("wattswarm peers are not configured"))
+    }
 
     async fn submit_galaxy_task(
         &self,
@@ -86,6 +166,11 @@ pub struct LegacyTaskEngineBridge {
     ledger_path: PathBuf,
 }
 
+pub struct HybridSwarmBridge {
+    task_bridge: LegacyTaskEngineBridge,
+    topic_api: Option<HttpWattswarmApi>,
+}
+
 impl LegacyTaskEngineBridge {
     #[must_use]
     pub fn new(engine: TaskEngine, ledger_path: PathBuf) -> Self {
@@ -97,6 +182,122 @@ impl LegacyTaskEngineBridge {
 
     pub fn load_ledger(path: impl AsRef<Path>) -> Result<HashMap<String, AgentStats>> {
         TaskEngine::load_ledger(path)
+    }
+}
+
+impl HybridSwarmBridge {
+    #[must_use]
+    pub fn new(
+        engine: TaskEngine,
+        ledger_path: PathBuf,
+        wattswarm_ui_base_url: Option<&str>,
+    ) -> Self {
+        Self {
+            task_bridge: LegacyTaskEngineBridge::new(engine, ledger_path),
+            topic_api: wattswarm_ui_base_url.map(HttpWattswarmApi::new),
+        }
+    }
+
+    fn topic_api(&self) -> Result<&HttpWattswarmApi> {
+        self.topic_api
+            .as_ref()
+            .ok_or_else(|| anyhow!("wattswarm UI base URL is not configured"))
+    }
+}
+
+#[async_trait]
+impl SwarmBridge for HybridSwarmBridge {
+    async fn submit_task_contract(
+        &self,
+        submitter_id: &str,
+        contract: TaskContract,
+    ) -> Result<SwarmTaskReceipt> {
+        self.task_bridge
+            .submit_task_contract(submitter_id, contract)
+            .await
+    }
+
+    async fn task_projection(&self, task_id: &str) -> Result<Option<SwarmTaskProjectionView>> {
+        self.task_bridge.task_projection(task_id).await
+    }
+
+    async fn task_events(&self, task_id: &str) -> Result<Vec<EventPayload>> {
+        self.task_bridge.task_events(task_id).await
+    }
+
+    async fn run_task_contract(
+        &self,
+        worker_id: &str,
+        contract: TaskContract,
+    ) -> Result<SwarmTaskProjectionView> {
+        self.task_bridge
+            .run_task_contract(worker_id, contract)
+            .await
+    }
+
+    async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView> {
+        self.task_bridge.agent_view(agent_id).await
+    }
+
+    async fn subscribe_topic(
+        &self,
+        subscriber_id: &str,
+        feed_key: &str,
+        scope_hint: &str,
+        active: bool,
+    ) -> Result<()> {
+        self.topic_api()?
+            .subscribe_topic(subscriber_id, feed_key, scope_hint, active)
+            .await
+    }
+
+    async fn post_topic_message(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        content: Value,
+        reply_to_message_id: Option<String>,
+    ) -> Result<()> {
+        self.topic_api()?
+            .post_topic_message(feed_key, scope_hint, content, reply_to_message_id)
+            .await
+    }
+
+    async fn list_topic_messages(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        limit: usize,
+        before_created_at: Option<u64>,
+        before_message_id: Option<String>,
+    ) -> Result<Vec<SwarmTopicMessageView>> {
+        self.topic_api()?
+            .list_topic_messages(
+                feed_key,
+                scope_hint,
+                limit,
+                before_created_at,
+                before_message_id,
+            )
+            .await
+    }
+
+    async fn topic_cursor(
+        &self,
+        feed_key: &str,
+        subscriber_id: Option<&str>,
+    ) -> Result<Option<SwarmTopicCursorView>> {
+        self.topic_api()?
+            .topic_cursor(feed_key, subscriber_id)
+            .await
+    }
+
+    async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
+        self.topic_api()?.network_status().await
+    }
+
+    async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
+        self.topic_api()?.peers().await
     }
 }
 
@@ -188,6 +389,178 @@ impl SwarmBridge for LegacyTaskEngineBridge {
             stats: engine.get_ledger(agent_id),
         })
     }
+}
+
+struct HttpWattswarmApi {
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl HttpWattswarmApi {
+    fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn subscribe_topic(
+        &self,
+        subscriber_id: &str,
+        feed_key: &str,
+        scope_hint: &str,
+        active: bool,
+    ) -> Result<()> {
+        self.client
+            .post(format!("{}/api/topic/subscriptions", self.base_url))
+            .json(&json!({
+                "subscriber_node_id": subscriber_id,
+                "feed_key": feed_key,
+                "scope_hint": scope_hint,
+                "active": active,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    async fn post_topic_message(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        content: Value,
+        reply_to_message_id: Option<String>,
+    ) -> Result<()> {
+        self.client
+            .post(format!("{}/api/topic/messages", self.base_url))
+            .json(&json!({
+                "feed_key": feed_key,
+                "scope_hint": scope_hint,
+                "content": content,
+                "reply_to_message_id": reply_to_message_id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    async fn list_topic_messages(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        limit: usize,
+        before_created_at: Option<u64>,
+        before_message_id: Option<String>,
+    ) -> Result<Vec<SwarmTopicMessageView>> {
+        let response = self
+            .client
+            .get(format!("{}/api/topic/messages", self.base_url))
+            .query(&TopicMessagesQuery {
+                feed_key: feed_key.to_owned(),
+                scope_hint: scope_hint.to_owned(),
+                limit,
+                before_created_at,
+                before_message_id,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TopicMessagesResponse>()
+            .await?;
+        Ok(response.messages)
+    }
+
+    async fn topic_cursor(
+        &self,
+        feed_key: &str,
+        subscriber_id: Option<&str>,
+    ) -> Result<Option<SwarmTopicCursorView>> {
+        let response = self
+            .client
+            .get(format!("{}/api/topic/cursor", self.base_url))
+            .query(&TopicCursorQuery {
+                feed_key: feed_key.to_owned(),
+                subscriber_node_id: subscriber_id.map(ToOwned::to_owned),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TopicCursorResponse>()
+            .await?;
+        Ok(response.cursor)
+    }
+
+    async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
+        let response = self
+            .client
+            .get(format!("{}/api/node/status", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<NodeStatusResponse>()
+            .await?;
+        Ok(SwarmNetworkStatusView {
+            running: response.running,
+            mode: response.mode,
+            peer_protocol_distribution: response.peer_protocol_distribution,
+        })
+    }
+
+    async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
+        let response = self
+            .client
+            .get(format!("{}/api/peers/list", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PeersListResponse>()
+            .await?;
+        Ok(response
+            .peers
+            .into_iter()
+            .map(|node_id| SwarmPeerView { node_id })
+            .collect())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TopicMessagesQuery {
+    feed_key: String,
+    scope_hint: String,
+    limit: usize,
+    before_created_at: Option<u64>,
+    before_message_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TopicCursorQuery {
+    feed_key: String,
+    subscriber_node_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TopicMessagesResponse {
+    messages: Vec<SwarmTopicMessageView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TopicCursorResponse {
+    cursor: Option<SwarmTopicCursorView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeStatusResponse {
+    running: bool,
+    mode: String,
+    #[serde(default)]
+    peer_protocol_distribution: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeersListResponse {
+    peers: Vec<String>,
 }
 
 fn map_task_projection(task: Task) -> SwarmTaskProjectionView {
