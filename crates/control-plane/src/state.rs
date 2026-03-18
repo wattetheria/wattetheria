@@ -329,7 +329,7 @@ pub struct ClientLeaderboardQuery {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientExportQuery {
     pub agent_id: Option<String>,
     pub public_id: Option<String>,

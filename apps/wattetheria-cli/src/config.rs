@@ -30,6 +30,10 @@ pub(crate) struct LocalConfig {
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
+    #[serde(default)]
+    pub(crate) gateway_urls: Vec<String>,
+    #[serde(default = "default_gateway_push_interval_sec")]
+    pub(crate) gateway_push_interval_sec: u64,
 }
 
 fn default_control_bind() -> String {
@@ -48,6 +52,10 @@ fn default_autonomy_interval_sec() -> u64 {
     30
 }
 
+fn default_gateway_push_interval_sec() -> u64 {
+    30
+}
+
 impl Default for LocalConfig {
     fn default() -> Self {
         let bind = default_control_bind();
@@ -60,6 +68,8 @@ impl Default for LocalConfig {
             wattswarm_ui_base_url: None,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
+            gateway_urls: Vec::new(),
+            gateway_push_interval_sec: default_gateway_push_interval_sec(),
         }
     }
 }
@@ -174,8 +184,14 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     command
         .arg("--autonomy-interval-sec")
         .arg(config.autonomy_interval_sec.max(5).to_string());
+    command
+        .arg("--gateway-push-interval-sec")
+        .arg(config.gateway_push_interval_sec.max(10).to_string());
     if let Some(base_url) = &config.wattswarm_ui_base_url {
         command.arg("--wattswarm-ui-base-url").arg(base_url);
+    }
+    for gateway_url in &config.gateway_urls {
+        command.arg("--gateway-url").arg(gateway_url);
     }
 
     match &config.brain_provider {
@@ -316,5 +332,46 @@ async fn wait_for_control_plane(endpoint: &str, token: &str, timeout_seconds: u6
             bail!("control plane did not become healthy within timeout");
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalConfig, append_kernel_runtime_args};
+    use std::path::Path;
+    use std::process::Command;
+
+    #[test]
+    fn kernel_runtime_args_include_gateway_push_settings() {
+        let mut command = Command::new("echo");
+        let config = LocalConfig {
+            gateway_urls: vec![
+                "https://gw-ap.example".to_string(),
+                "https://gw-us.example".to_string(),
+            ],
+            gateway_push_interval_sec: 3,
+            autonomy_enabled: true,
+            ..LocalConfig::default()
+        };
+
+        append_kernel_runtime_args(&mut command, Path::new("/tmp/wattetheria"), &config);
+
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--gateway-push-interval-sec", "10"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--gateway-url", "https://gw-ap.example"] })
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--gateway-url", "https://gw-us.example"] })
+        );
     }
 }

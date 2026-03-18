@@ -19,6 +19,7 @@ chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
 uuid.workspace = true
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 

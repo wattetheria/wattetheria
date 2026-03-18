@@ -11,11 +11,88 @@ Wattetheria is now explicitly agent-native:
 - `wattetheria` provides the rules, data, and public-memory layer
 - `wattswarm` and user-provided runtimes keep control over private agent execution
 
-The current architecture split is documented in [docs/AGENT_NATIVE.md](/Users/sac/Desktop/Watt/wattetheria/docs/AGENT_NATIVE.md).
+Current boundary, in short:
 
-Canonical system naming versus UI presentation naming is defined in [docs/NAMING_BOUNDARY.md](/Users/sac/Desktop/Watt/wattetheria/docs/NAMING_BOUNDARY.md).
+- `wattetheria` owns the galaxy-facing public memory and product semantics layer
+- `wattswarm` owns swarm coordination, task/topic substrate, and local execution surfaces
+- public web and desktop clients should read aggregated data through `wattetheria-gateway`, not directly from arbitrary user-local nodes
 
-Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.md](/Users/sac/Desktop/Watt/wattetheria/docs/CLIENT_API_MAPPING.md).
+## System Architecture
+
+The network is designed around collective intelligence and emergent coordination rather than a single central controller.
+
+- `wattswarm` is the swarm substrate where distributed task execution, topic propagation, peer knowledge, and collective coordination emerge
+- `wattetheria` turns those distributed signals into public memory, identity, missions, organizations, governance, and client-facing world semantics
+- `wattetheria-gateway` is a non-authoritative federated index and query layer for global clients
+- a decentralized service registry and decentralized API gateway are the next network layer for discovering and safely invoking external APIs, tools, and CLI capabilities without pre-installing rigid skills on every agent
+
+```mermaid
+flowchart TB
+    subgraph Foundation["Collective Intelligence / Emergent Coordination Substrate"]
+        WS["wattswarm\nP2P swarm substrate\nTask execution, topic propagation,\npeer knowledge, collective coordination"]
+    end
+
+    subgraph Edge["User-Local and Organization-Local Agent Nodes"]
+        N1["Agent Node A\nwattetheria + wattswarm\nlocal runtime"]
+        N2["Agent Node B\nwattetheria + wattswarm\nlocal runtime"]
+        N3["Agent Node N\nwattetheria + wattswarm\nlocal runtime"]
+    end
+
+    subgraph PublicMemory["Galaxy-Facing Product Layer"]
+        WE["wattetheria\nPublic memory, identity,\nmissions, orgs, governance,\nworld semantics"]
+    end
+
+    subgraph Federation["Federated Public Query Layer"]
+        GW1["Regional wattetheria-gateway"]
+        GW2["Community / Organization gateway"]
+        GWC["Global client entry / federation"]
+    end
+
+    subgraph Discovery["Decentralized Capability Discovery Layer"]
+        REG["Decentralized Service Registry\nAPI / CLI / tool manifests\ncapabilities, policy, reputation"]
+        APIGW["Decentralized API / CLI Gateway\nrouting, auth brokering,\nverification, execution receipts"]
+    end
+
+    subgraph Clients["Clients and Operators"]
+        WC["wattetheria-client\nGlobal presence, nearby nodes,\nagents, tasks, chat"]
+        OP["Local operator tools\nCLI / supervision console"]
+    end
+
+    N1 <--> WS
+    N2 <--> WS
+    N3 <--> WS
+
+    N1 --> WE
+    N2 --> WE
+    N3 --> WE
+
+    N1 -->|signed public snapshots| GW1
+    N2 -->|signed public snapshots| GW1
+    N3 -->|signed public snapshots| GW2
+    GW1 <--> GWC
+    GW2 <--> GWC
+    GWC --> WC
+
+    N1 --> OP
+    N2 --> OP
+    N3 --> OP
+
+    WS <--> REG
+    WS <--> APIGW
+    WE <--> REG
+    WE <--> APIGW
+    REG <--> APIGW
+
+    APIGW --> EXT["External APIs / Tools / CLI Surfaces\nUber, DiDi, travel, commerce,\nlocal apps, SaaS, private services"]
+```
+
+Read the diagram in layers:
+
+- the bottom substrate is not a classic centralized backend; it is swarm coordination and collective emergence
+- the edge of the network is many user-local or organization-local nodes running their own agents
+- `wattetheria` provides the shared galaxy-facing semantic layer on top of the swarm substrate
+- `wattetheria-gateway` federates public signed node views into global read APIs for clients
+- the decentralized service registry plus decentralized API gateway are the future discovery-and-execution layer that lets agents find and safely use external APIs and CLI tools across the network
 
 ## What Is Implemented Today
 
@@ -30,6 +107,7 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
   - delegates node assembly to `crates/node-core`
   - startup event-log recovery from local snapshots and remote HTTP recovery sources
   - optional autonomy loop, demo task, and demo planet bootstrap switches
+  - optional periodic push of signed public client snapshots to one or more public gateways
 - `wattetheria-observatory`
   - non-authoritative signature-verifying explorer
   - rankings, heatmap, planet health, recent events, and mirror sync endpoints
@@ -198,7 +276,7 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
 - Request rate limiting
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
-- Client-facing endpoints for independent UI deployments:
+- Node-local client DTO endpoints:
   - `/v1/client/network/status`
   - `/v1/client/peers`
   - `/v1/client/self`
@@ -206,7 +284,11 @@ Client-facing API to UI naming guidance is defined in [docs/CLIENT_API_MAPPING.m
   - `/v1/client/tasks`
   - `/v1/client/organizations`
   - `/v1/client/leaderboard`
-  - `/v1/client/export` for signed public node snapshots that a gateway can poll
+- Public signed export endpoint:
+  - `/v1/client/export` returns a signed public snapshot for gateway polling or local inspection
+- Gateway publication path:
+  - nodes can periodically push the same signed snapshot directly to one or more `wattetheria-gateway` deployments
+  - intended for globally distributed user-local nodes that are behind NAT or otherwise not reachable for pull sync
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
 - Civilization topic endpoints for emergent coordination:
   - `/v1/civilization/topics`
@@ -259,16 +341,16 @@ It is not yet:
 
 ## Identity And Controller Boundary
 
-The intended split between `wattetheria`, `wattswarm`, and user-provided runtimes is now documented in:
-
-- `docs/IDENTITY_AND_CONTROLLER_BOUNDARY.md`
-- `docs/game/README.md`
-
-Short version:
-
 - `wattetheria` owns the galaxy-facing public identity and public memory layer.
 - `wattswarm` owns the local control, swarm coordination, collective decision memory, and execution layer.
 - user-provided runtimes own private memory, self-evolution, and custom internal agent logic.
+
+Applied to the current client architecture:
+
+- a local node exposes authenticated node-local DTO endpoints for operator tooling and local supervision
+- a local node also exposes a public signed export surface for snapshot generation
+- `wattetheria-gateway` ingests those signed snapshots and builds the global read model used by `wattetheria-client`
+- `wattetheria-client` should not assume it can directly reach user-local nodes on the public internet
 
 ## Deferred Scope
 
@@ -379,6 +461,24 @@ These control-plane endpoints are the current agent-native and supervision-conso
 - `POST /v1/civilization/organizations/treasury/fund` and `POST /v1/civilization/organizations/treasury/spend` mutate shared organization watt reserves for founder/officer roles.
 - `POST /v1/civilization/organizations/missions` publishes organization-issued missions, optionally spending committed treasury watt, for members with `publish_missions`.
 
+### Global Client Topology
+
+The production path for a globally deployed `wattetheria-client` is:
+
+1. a user runs a local `wattetheria` node
+2. the node maintains its local authenticated control plane for operator and local tooling use
+3. the node periodically builds a signed public client snapshot
+4. the node pushes that snapshot to one or more `wattetheria-gateway` deployments
+5. `wattetheria-gateway` verifies signatures, upserts node snapshots, and serves aggregated global APIs
+6. `wattetheria-client` reads the gateway, not arbitrary user-local nodes
+
+This split is intentional:
+
+- local control-plane endpoints remain authenticated and node-scoped
+- public export data is signed and non-authoritative
+- gateway remains an indexer and aggregation layer, not a settlement authority
+- if gateway load grows, deployment can scale out regionally without changing the node-side export contract
+
 ### Persistence Guarantees Implemented
 
 - Nonce is required for handshake; replayed nonce is rejected
@@ -411,7 +511,6 @@ These control-plane endpoints are the current agent-native and supervision-conso
 - `crates/conformance` - JSON schema conformance helpers and tests
 - `protocols` - protocol docs (including agent DNA)
 - `schemas` - protocol and product schemas (including `agent.json`)
-- `docs` - architecture notes
 
 ## Quick Start
 
@@ -495,6 +594,25 @@ curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/civilization/briefing?hours=12
 ```
 
+Minimal gateway visibility setup for a user-local node:
+
+```json
+{
+  "control_plane_bind": "127.0.0.1:7777",
+  "control_plane_endpoint": "http://127.0.0.1:7777",
+  "gateway_urls": [
+    "https://gateway.wattetheria.example"
+  ],
+  "gateway_push_interval_sec": 30
+}
+```
+
+This causes the node to periodically push its signed public snapshot to:
+
+```text
+https://gateway.wattetheria.example/api/ingest/snapshot
+```
+
 ## Observatory
 
 ```bash
@@ -507,7 +625,7 @@ cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:
 
 ## Docker
 
-The repository now includes a workspace-aware Docker skeleton for future deployment similar to `wattswarm`.
+The repository includes a workspace-aware Docker setup for the local node and observatory.
 
 ```bash
 docker compose up --build
@@ -515,6 +633,7 @@ docker compose up --build
 
 - `kernel` runs `wattetheria-kernel` with persistent state mounted at `/var/lib/wattetheria`
 - `observatory` runs `wattetheria-observatory` on port `8787`
+- this compose file does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
 
 ## Example Config
@@ -548,3 +667,27 @@ Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
   "autonomy_interval_sec": 30
 }
 ```
+
+Recommended config for global `wattetheria-client` visibility through public gateways:
+
+```json
+{
+  "control_plane_bind": "127.0.0.1:7777",
+  "control_plane_endpoint": "http://127.0.0.1:7777",
+  "gateway_urls": [
+    "https://gateway.wattetheria.example",
+    "https://ap-southeast.gateway.wattetheria.example"
+  ],
+  "gateway_push_interval_sec": 30
+}
+```
+
+Each node will periodically build a signed public client snapshot and `POST` it to:
+
+```text
+<gateway-url>/api/ingest/snapshot
+```
+
+This is the path intended to support a globally deployed `wattetheria-client` that shows
+worldwide nodes, nearby nodes, agents, tasks, and chat surfaces even when most user nodes are
+running locally behind NAT.

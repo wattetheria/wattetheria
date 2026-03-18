@@ -1,6 +1,7 @@
 mod bootstrap;
 pub mod cli;
 mod demo;
+mod gateway_sync;
 mod handshake;
 mod oracle_sync;
 mod recovery;
@@ -20,6 +21,7 @@ use bootstrap::{
 };
 pub use cli::Cli;
 use demo::{ignite_demo_planet, run_demo_task};
+use gateway_sync::spawn_gateway_publish_task;
 use handshake::build_signed_handshake_for_public_identity;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, log_listeners, run_loop};
@@ -105,6 +107,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
+    let gateway_publish_task = spawn_gateway_publish_task(&cli, runtime.control_state.clone());
     let admission_config = build_admission_config(&cli);
     let mut nonce_tracker = NonceTracker::new(admission_config.max_time_drift_sec * 2);
     let run_result = run_loop(
@@ -125,6 +128,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     .await;
     control_task.abort();
     if let Some(task) = autonomy_task {
+        task.abort();
+    }
+    if let Some(task) = gateway_publish_task {
         task.abort();
     }
     run_result

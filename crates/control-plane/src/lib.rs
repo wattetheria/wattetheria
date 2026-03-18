@@ -26,7 +26,11 @@ use axum::routing::{get, post};
 use std::net::SocketAddr;
 
 pub use autonomy::run_autonomy_tick_once;
-pub use state::{ControlPlaneState, RateLimiter, StreamEvent};
+pub use routes::client_api::{
+    SignedPublicClientSnapshot, build_signed_public_client_snapshot,
+    push_signed_public_client_snapshot,
+};
+pub use state::{ClientExportQuery, ControlPlaneState, RateLimiter, StreamEvent};
 
 pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
@@ -408,6 +412,7 @@ pub async fn serve_control_plane(state: ControlPlaneState, bind: SocketAddr) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Json;
     use axum::http::StatusCode;
     use chrono::Utc;
     use http_body_util::BodyExt;
@@ -468,6 +473,24 @@ mod tests {
         event_log: EventLog,
         swarm_bridge: Arc<dyn SwarmBridge>,
     ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
+        let (dir, state, token, policy_engine) =
+            build_test_state_with_bridge(rate_limit, dir, identity, event_log, swarm_bridge);
+        (dir, app(state), token, policy_engine)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn build_test_state_with_bridge(
+        rate_limit: usize,
+        dir: tempfile::TempDir,
+        identity: Identity,
+        event_log: EventLog,
+        swarm_bridge: Arc<dyn SwarmBridge>,
+    ) -> (
+        tempfile::TempDir,
+        ControlPlaneState,
+        String,
+        Arc<Mutex<PolicyEngine>>,
+    ) {
         let governance_state_path = dir.path().join("governance/state.json");
         let mailbox_state_path = dir.path().join("mailbox/state.json");
         let mission_board_state_path = dir.path().join("missions/state.json");
@@ -629,7 +652,7 @@ mod tests {
             stream_tx,
         };
 
-        (dir, app(state), token, policy_engine)
+        (dir, state, token, policy_engine)
     }
 
     async fn request_json(app: Router, request: axum::http::Request<axum::body::Body>) -> Value {
@@ -2983,6 +3006,84 @@ mod tests {
         )
         .unwrap();
         assert!(verified);
+    }
+
+    #[tokio::test]
+    async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_id.clone(),
+            agent_stats: [(identity.agent_id.clone(), AgentStats::default())]
+                .into_iter()
+                .collect(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: vec![SwarmPeerView {
+                node_id: "peer-a".to_string(),
+            }],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+        });
+        let (_dir, state, token, _) =
+            build_test_state_with_bridge(20, dir, identity.clone(), event_log, bridge);
+        let app = app(state.clone());
+        bootstrap_broker_identity(app, &token, &identity.agent_id).await;
+
+        let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let ingest_app = axum::Router::new().route(
+            "/api/ingest/snapshot",
+            post({
+                let received = Arc::clone(&received);
+                move |Json(payload): Json<Value>| {
+                    let received = Arc::clone(&received);
+                    async move {
+                        received.lock().await.push(payload);
+                        Json(json!({"status":"ok"}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, ingest_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let pushed = push_signed_public_client_snapshot(
+            &client,
+            &format!("http://{addr}"),
+            &state,
+            &ClientExportQuery {
+                public_id: Some("captain-aurora".to_string()),
+                peer_limit: Some(1),
+                task_limit: Some(5),
+                organization_limit: Some(5),
+                rpc_log_limit: Some(5),
+                leaderboard_limit: Some(5),
+                ..ClientExportQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let received = received.lock().await;
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0]["payload"]["node_id"].as_str(),
+            Some(pushed.payload.node_id.as_str())
+        );
+        assert_eq!(
+            received[0]["signature"].as_str(),
+            Some(pushed.signature.as_str())
+        );
+
+        server.abort();
     }
 
     #[tokio::test]

@@ -3,6 +3,8 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::{TimeZone, Utc};
+use reqwest::Client;
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -24,25 +26,25 @@ use crate::state::{
     ClientRpcLogsQuery, ControlPlaneState,
 };
 
-#[derive(Debug, Clone, Serialize)]
-struct PublicClientSnapshot {
-    generated_at: i64,
-    node_id: String,
-    public_key: String,
-    network_status: Value,
-    peers: Vec<Value>,
-    operator: Value,
-    rpc_logs: Vec<Value>,
-    tasks: Vec<Value>,
-    organizations: Vec<Value>,
-    leaderboard: Vec<Value>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicClientSnapshot {
+    pub generated_at: i64,
+    pub node_id: String,
+    pub public_key: String,
+    pub network_status: Value,
+    pub peers: Vec<Value>,
+    pub operator: Value,
+    pub rpc_logs: Vec<Value>,
+    pub tasks: Vec<Value>,
+    pub organizations: Vec<Value>,
+    pub leaderboard: Vec<Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct SignedPublicClientSnapshot {
-    payload: PublicClientSnapshot,
-    signature: String,
-    signer_agent_id: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedPublicClientSnapshot {
+    pub payload: PublicClientSnapshot,
+    pub signature: String,
+    pub signer_agent_id: String,
 }
 
 async fn build_client_network_status_payload(state: &ControlPlaneState) -> anyhow::Result<Value> {
@@ -428,28 +430,18 @@ pub(crate) async fn client_export(
     State(state): State<ControlPlaneState>,
     Query(query): Query<ClientExportQuery>,
 ) -> Response {
-    let public_id_query = ClientIdentityQuery {
-        agent_id: query.agent_id.clone(),
-        public_id: query.public_id.clone(),
-    };
-    let leaderboard_category =
-        match LeaderboardCategory::parse(query.leaderboard_category.as_deref()) {
-            Ok(category) => category,
-            Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
-            }
-        };
-    let snapshot =
-        match build_public_client_snapshot(&state, &query, &public_id_query, leaderboard_category)
-            .await
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => return internal_error(&error),
-        };
-    let signature = match sign_payload(&snapshot, &state.identity) {
-        Ok(signature) => signature,
+    let signed_snapshot = match build_signed_public_client_snapshot(&state, &query).await {
+        Ok(snapshot) => snapshot,
+        Err(error) if error.to_string().contains("unknown leaderboard category") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": error.to_string() })),
+            )
+                .into_response();
+        }
         Err(error) => return internal_error(&error),
     };
+    let snapshot = &signed_snapshot.payload;
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -468,12 +460,52 @@ pub(crate) async fn client_export(
             "leaderboard_count": snapshot.leaderboard.len(),
         })),
     });
-    Json(SignedPublicClientSnapshot {
+    Json(signed_snapshot).into_response()
+}
+
+pub async fn build_signed_public_client_snapshot(
+    state: &ControlPlaneState,
+    query: &ClientExportQuery,
+) -> anyhow::Result<SignedPublicClientSnapshot> {
+    let public_id_query = ClientIdentityQuery {
+        agent_id: query.agent_id.clone(),
+        public_id: query.public_id.clone(),
+    };
+    let leaderboard_category = LeaderboardCategory::parse(query.leaderboard_category.as_deref())
+        .map_err(anyhow::Error::msg)?;
+    let snapshot =
+        build_public_client_snapshot(state, query, &public_id_query, leaderboard_category).await?;
+    let signature = sign_payload(&snapshot, &state.identity)?;
+    Ok(SignedPublicClientSnapshot {
         payload: snapshot,
         signature,
         signer_agent_id: state.identity.agent_id.clone(),
     })
-    .into_response()
+}
+
+pub async fn push_signed_public_client_snapshot(
+    client: &Client,
+    gateway_url: &str,
+    state: &ControlPlaneState,
+    query: &ClientExportQuery,
+) -> anyhow::Result<SignedPublicClientSnapshot> {
+    let snapshot = build_signed_public_client_snapshot(state, query).await?;
+    client
+        .post(normalized_gateway_ingest_url(gateway_url))
+        .json(&snapshot)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(snapshot)
+}
+
+fn normalized_gateway_ingest_url(gateway_url: &str) -> String {
+    let trimmed = gateway_url.trim_end_matches('/');
+    if trimmed.ends_with("/api/ingest/snapshot") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/api/ingest/snapshot")
+    }
 }
 
 fn controller_id_for_identity(
