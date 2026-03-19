@@ -600,14 +600,24 @@ Minimal gateway visibility setup for a user-local node:
 {
   "control_plane_bind": "127.0.0.1:7777",
   "control_plane_endpoint": "http://127.0.0.1:7777",
+  "gateway_registry_urls": [
+    "https://registry.wattetheria.example"
+  ],
   "gateway_urls": [
     "https://gateway.wattetheria.example"
   ],
-  "gateway_push_interval_sec": 30
+  "gateway_push_interval_sec": 30,
+  "gateway_discovery_interval_sec": 300
 }
 ```
 
-This causes the node to periodically push its signed public snapshot to:
+This causes the node to:
+
+- periodically push its signed public snapshot to the statically configured gateways
+- periodically refresh additional public ingest gateways from the configured registries
+- fan out to a bounded set of discovered ingest gateways for failover without blasting every registry result
+
+Static pushes target:
 
 ```text
 https://gateway.wattetheria.example/api/ingest/snapshot
@@ -674,11 +684,16 @@ Recommended config for global `wattetheria-client` visibility through public gat
 {
   "control_plane_bind": "127.0.0.1:7777",
   "control_plane_endpoint": "http://127.0.0.1:7777",
+  "gateway_registry_urls": [
+    "https://registry.wattetheria.example",
+    "https://ap-southeast.gateway.wattetheria.example"
+  ],
   "gateway_urls": [
     "https://gateway.wattetheria.example",
     "https://ap-southeast.gateway.wattetheria.example"
   ],
-  "gateway_push_interval_sec": 30
+  "gateway_push_interval_sec": 30,
+  "gateway_discovery_interval_sec": 300
 }
 ```
 
@@ -691,3 +706,13 @@ Each node will periodically build a signed public client snapshot and `POST` it 
 This is the path intended to support a globally deployed `wattetheria-client` that shows
 worldwide nodes, nearby nodes, agents, tasks, and chat surfaces even when most user nodes are
 running locally behind NAT.
+
+When `gateway_registry_urls` is configured, the node also polls:
+
+```text
+<registry-url>/api/registry/bootstrap
+<registry-url>/api/registry/discovery?role=ingest
+```
+
+It merges those discovery results with `gateway_urls`, deduplicates them, and caps dynamic fanout
+to keep gateway publishing bounded even as the public gateway network grows.

@@ -32,8 +32,12 @@ pub(crate) struct LocalConfig {
     pub(crate) autonomy_interval_sec: u64,
     #[serde(default)]
     pub(crate) gateway_urls: Vec<String>,
+    #[serde(default)]
+    pub(crate) gateway_registry_urls: Vec<String>,
     #[serde(default = "default_gateway_push_interval_sec")]
     pub(crate) gateway_push_interval_sec: u64,
+    #[serde(default = "default_gateway_discovery_interval_sec")]
+    pub(crate) gateway_discovery_interval_sec: u64,
 }
 
 fn default_control_bind() -> String {
@@ -56,6 +60,10 @@ fn default_gateway_push_interval_sec() -> u64 {
     30
 }
 
+fn default_gateway_discovery_interval_sec() -> u64 {
+    300
+}
+
 impl Default for LocalConfig {
     fn default() -> Self {
         let bind = default_control_bind();
@@ -69,7 +77,9 @@ impl Default for LocalConfig {
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
             gateway_urls: Vec::new(),
+            gateway_registry_urls: Vec::new(),
             gateway_push_interval_sec: default_gateway_push_interval_sec(),
+            gateway_discovery_interval_sec: default_gateway_discovery_interval_sec(),
         }
     }
 }
@@ -187,11 +197,17 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     command
         .arg("--gateway-push-interval-sec")
         .arg(config.gateway_push_interval_sec.max(10).to_string());
+    command
+        .arg("--gateway-discovery-interval-sec")
+        .arg(config.gateway_discovery_interval_sec.max(30).to_string());
     if let Some(base_url) = &config.wattswarm_ui_base_url {
         command.arg("--wattswarm-ui-base-url").arg(base_url);
     }
     for gateway_url in &config.gateway_urls {
         command.arg("--gateway-url").arg(gateway_url);
+    }
+    for registry_url in &config.gateway_registry_urls {
+        command.arg("--gateway-registry-url").arg(registry_url);
     }
 
     match &config.brain_provider {
@@ -349,7 +365,12 @@ mod tests {
                 "https://gw-ap.example".to_string(),
                 "https://gw-us.example".to_string(),
             ],
+            gateway_registry_urls: vec![
+                "https://registry-a.example".to_string(),
+                "https://registry-b.example/api/registry/discovery".to_string(),
+            ],
             gateway_push_interval_sec: 3,
+            gateway_discovery_interval_sec: 12,
             autonomy_enabled: true,
             ..LocalConfig::default()
         };
@@ -367,11 +388,25 @@ mod tests {
         );
         assert!(
             args.windows(2)
+                .any(|pair| { pair == ["--gateway-discovery-interval-sec", "30"] })
+        );
+        assert!(
+            args.windows(2)
                 .any(|pair| { pair == ["--gateway-url", "https://gw-ap.example"] })
         );
         assert!(
             args.windows(2)
                 .any(|pair| { pair == ["--gateway-url", "https://gw-us.example"] })
         );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair == ["--gateway-registry-url", "https://registry-a.example"] })
+        );
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--gateway-registry-url",
+                "https://registry-b.example/api/registry/discovery",
+            ]
+        }));
     }
 }

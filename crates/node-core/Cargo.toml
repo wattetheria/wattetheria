@@ -23,3 +23,6 @@ uuid.workspace = true
 wattetheria-control-plane = { path = "../control-plane" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 wattetheria-p2p-runtime = { path = "../p2p-runtime" }
+
+[dev-dependencies]
+axum.workspace = true

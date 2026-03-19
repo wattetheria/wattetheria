@@ -59,6 +59,10 @@ pub struct Cli {
     pub autonomy_interval_sec: u64,
     #[arg(long = "gateway-url")]
     pub gateway_urls: Vec<String>,
+    #[arg(long = "gateway-registry-url")]
+    pub gateway_registry_urls: Vec<String>,
     #[arg(long, default_value_t = 30)]
     pub gateway_push_interval_sec: u64,
+    #[arg(long, default_value_t = 300)]
+    pub gateway_discovery_interval_sec: u64,
 }

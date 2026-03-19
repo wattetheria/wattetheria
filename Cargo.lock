@@ -4120,6 +4120,7 @@ name = "wattetheria-node-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "clap",
  "libp2p",

@@ -1,6 +1,7 @@
 mod bootstrap;
 pub mod cli;
 mod demo;
+mod gateway_registry;
 mod gateway_sync;
 mod handshake;
 mod oracle_sync;
