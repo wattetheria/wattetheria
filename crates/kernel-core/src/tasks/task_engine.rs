@@ -114,7 +114,7 @@ impl TaskEngine {
         reward: Reward,
         sla: Sla,
     ) -> Result<Task> {
-        let created_by = self.identity.agent_id.clone();
+        let created_by = self.identity.agent_did.clone();
         let task_id = uuid::Uuid::new_v4().to_string();
 
         let signable = TaskSignable {
@@ -261,8 +261,8 @@ impl TaskEngine {
     }
 
     #[must_use]
-    pub fn get_ledger(&self, agent_id: &str) -> AgentStats {
-        self.ledger.get(agent_id).cloned().unwrap_or_default()
+    pub fn get_ledger(&self, agent_did: &str) -> AgentStats {
+        self.ledger.get(agent_did).cloned().unwrap_or_default()
     }
 
     #[must_use]
@@ -413,11 +413,11 @@ mod tests {
             .unwrap();
 
         engine
-            .claim_task(&task.task_id, &identity.agent_id)
+            .claim_task(&task.task_id, &identity.agent_did)
             .unwrap();
         let result = engine.execute_task(&task.task_id).unwrap();
         engine
-            .submit_task_result(&task.task_id, &result, &identity.agent_id)
+            .submit_task_result(&task.task_id, &result, &identity.agent_did)
             .unwrap();
         engine.verify_task(&task.task_id).unwrap();
         engine.settle_task(&task.task_id).unwrap();
@@ -425,7 +425,7 @@ mod tests {
         engine.persist_ledger(&ledger_path).unwrap();
 
         let loaded_ledger = TaskEngine::load_ledger(&ledger_path).unwrap();
-        let stats = loaded_ledger.get(&identity.agent_id).unwrap();
+        let stats = loaded_ledger.get(&identity.agent_did).unwrap();
         assert_eq!(stats.watt, 15);
         assert_eq!(stats.reputation, 4);
         assert_eq!(stats.capacity, 6);
@@ -460,11 +460,11 @@ mod tests {
             .unwrap();
 
         engine
-            .claim_task(&task.task_id, &identity.agent_id)
+            .claim_task(&task.task_id, &identity.agent_did)
             .unwrap();
         let result = engine.execute_task(&task.task_id).unwrap();
         engine
-            .submit_task_result(&task.task_id, &result, &identity.agent_id)
+            .submit_task_result(&task.task_id, &result, &identity.agent_did)
             .unwrap();
         assert!(engine.verify_task(&task.task_id).unwrap());
 
@@ -502,11 +502,11 @@ mod tests {
             .unwrap();
 
         engine
-            .claim_task(&task.task_id, &identity.agent_id)
+            .claim_task(&task.task_id, &identity.agent_did)
             .unwrap();
         let result = engine.execute_task(&task.task_id).unwrap();
         engine
-            .submit_task_result(&task.task_id, &result, &identity.agent_id)
+            .submit_task_result(&task.task_id, &result, &identity.agent_did)
             .unwrap();
 
         assert!(engine.verify_task(&task.task_id).unwrap());
@@ -541,12 +541,12 @@ mod tests {
             .unwrap();
 
         engine
-            .claim_task(&task.task_id, &identity.agent_id)
+            .claim_task(&task.task_id, &identity.agent_did)
             .unwrap();
         let mut result = engine.execute_task(&task.task_id).unwrap();
         result["trade_count"] = json!(999);
         engine
-            .submit_task_result(&task.task_id, &result, &identity.agent_id)
+            .submit_task_result(&task.task_id, &result, &identity.agent_did)
             .unwrap();
 
         assert!(!engine.verify_task(&task.task_id).unwrap());

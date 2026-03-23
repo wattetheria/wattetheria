@@ -80,7 +80,7 @@ pub fn starter_mission_set(
         .list(None)
         .into_iter()
         .filter(|mission| {
-            mission.payload["starter_owner_agent_id"].as_str() == Some(controller_id)
+            mission.payload["starter_owner_agent_did"].as_str() == Some(controller_id)
                 && mission.payload["starter_template_id"].is_string()
         })
         .collect();
@@ -133,7 +133,7 @@ pub fn bootstrap_starter_missions(
             template.reward.clone(),
             json!({
                 "starter_template_id": template.template_id,
-                "starter_owner_agent_id": controller_id,
+                "starter_owner_agent_did": controller_id,
                 "starter_step_key": template.step_key,
                 "starter_step_title": template.step_title,
                 "starter_step_order": template.step_order,
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn starter_bootstrap_creates_only_missing_templates() {
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,

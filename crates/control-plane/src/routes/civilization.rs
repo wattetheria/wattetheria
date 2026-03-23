@@ -31,13 +31,13 @@ struct BootstrapIdentityPlan {
     controller_ref: String,
     controller_node_id: Option<String>,
     ownership_scope: OwnershipScope,
-    legacy_agent_id: Option<String>,
+    agent_did: Option<String>,
     active: bool,
 }
 
 fn plan_bootstrap_identity(
     body: &BootstrapIdentityBody,
-    state_agent_id: &str,
+    state_agent_did: &str,
 ) -> Result<BootstrapIdentityPlan, String> {
     let controller_kind = body
         .controller_kind
@@ -47,16 +47,16 @@ fn plan_bootstrap_identity(
         ControllerKind::LocalWattswarm => Some(
             body.controller_node_id
                 .clone()
-                .unwrap_or_else(|| state_agent_id.to_string()),
+                .unwrap_or_else(|| state_agent_did.to_string()),
         ),
         ControllerKind::ExternalRuntime => body.controller_node_id.clone(),
     };
-    let legacy_agent_id = body
-        .legacy_agent_id
+    let agent_did = body
+        .agent_did
         .clone()
         .or_else(|| controller_node_id.clone());
-    if matches!(controller_kind, ControllerKind::ExternalRuntime) && legacy_agent_id.is_none() {
-        return Err("external_runtime requires legacy_agent_id or controller_node_id".to_string());
+    if matches!(controller_kind, ControllerKind::ExternalRuntime) && agent_did.is_none() {
+        return Err("external_runtime requires agent_did or controller_node_id".to_string());
     }
     let ownership_scope = body
         .ownership_scope
@@ -78,7 +78,7 @@ fn plan_bootstrap_identity(
         controller_ref,
         controller_node_id,
         ownership_scope,
-        legacy_agent_id,
+        agent_did,
         active: body.active.unwrap_or(true),
     })
 }
@@ -93,7 +93,7 @@ async fn persist_bootstrap_identity(
         registry.upsert(
             &body.public_id,
             body.display_name.clone(),
-            plan.legacy_agent_id.clone(),
+            plan.agent_did.clone(),
             plan.active,
         );
         registry.persist(&state.public_identity_registry_state_path)?;
@@ -111,13 +111,13 @@ async fn persist_bootstrap_identity(
         registry.persist(&state.controller_binding_registry_state_path)?;
     }
     {
-        let profile_agent_id = plan
-            .legacy_agent_id
+        let profile_agent_did = plan
+            .agent_did
             .clone()
-            .unwrap_or_else(|| state.agent_id.clone());
+            .unwrap_or_else(|| state.agent_did.clone());
         let mut registry = state.citizen_registry.lock().await;
         registry.set_profile(
-            &profile_agent_id,
+            &profile_agent_did,
             body.faction.clone(),
             body.role.clone(),
             body.strategy.clone(),
@@ -145,7 +145,7 @@ async fn persist_bootstrap_identity(
             &body.public_id,
             plan.controller_node_id
                 .as_deref()
-                .unwrap_or(&state.agent_id),
+                .unwrap_or(&state.agent_did),
             position,
         );
         registry.persist(&state.travel_state_registry_state_path)?;
@@ -166,7 +166,7 @@ pub(crate) async fn citizen_profile(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let subject = context
@@ -206,7 +206,7 @@ pub(crate) async fn public_identity(
         .public_memory_owner
         .public
         .clone()
-        .unwrap_or_else(|| state.agent_id.clone());
+        .unwrap_or_else(|| state.agent_did.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -238,7 +238,7 @@ pub(crate) async fn public_identity_upsert(
     let identity = registry.upsert(
         &body.public_id,
         body.display_name,
-        body.legacy_agent_id,
+        body.agent_did,
         body.active.unwrap_or(true),
     );
     if let Err(error) = registry.persist(&state.public_identity_registry_state_path) {
@@ -263,7 +263,7 @@ pub(crate) async fn controller_binding(
         .public_memory_owner
         .public
         .clone()
-        .unwrap_or_else(|| state.agent_id.clone());
+        .unwrap_or_else(|| state.agent_did.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -319,7 +319,7 @@ pub(crate) async fn citizen_profile_upsert(
     };
     let mut registry = state.citizen_registry.lock().await;
     let profile = registry.set_profile(
-        &body.agent_id,
+        &body.agent_did,
         body.faction,
         body.role,
         body.strategy,
@@ -331,7 +331,7 @@ pub(crate) async fn citizen_profile_upsert(
     }
     drop(registry);
 
-    let context = resolve_identity_context(&state, None, Some(&body.agent_id)).await;
+    let context = resolve_identity_context(&state, None, Some(&body.agent_did)).await;
     let payload = public_memory_payload(
         &context,
         "identity",
@@ -355,7 +355,7 @@ pub(crate) async fn citizen_profile_upsert(
         action: "civilization.profile.update".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(body.agent_id),
+        subject: Some(body.agent_did),
         capability: None,
         reason: None,
         duration_ms: None,
@@ -374,7 +374,7 @@ pub(crate) async fn bootstrap_identity(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let plan = match plan_bootstrap_identity(&body, &state.agent_id) {
+    let plan = match plan_bootstrap_identity(&body, &state.agent_did) {
         Ok(plan) => plan,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
@@ -498,11 +498,11 @@ pub(crate) async fn civilization_metrics(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
-    let agent_id = context.public_memory_owner.controller.clone();
-    let agent_stats = match state.swarm_bridge.agent_view(&agent_id).await {
+    let agent_did = context.public_memory_owner.controller.clone();
+    let agent_stats = match state.swarm_bridge.agent_view(&agent_did).await {
         Ok(view) => view.stats,
         Err(error) => return internal_error(&error),
     };
@@ -511,7 +511,7 @@ pub(crate) async fn civilization_metrics(
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
     let scores = compute_scores(
-        &agent_id,
+        &agent_did,
         &agent_stats,
         &missions,
         &profiles,
@@ -535,7 +535,7 @@ pub(crate) async fn civilization_metrics(
                 .public_memory_owner
                 .public
                 .clone()
-                .unwrap_or_else(|| agent_id.clone()),
+                .unwrap_or_else(|| agent_did.clone()),
         ),
         capability: None,
         reason: None,
@@ -592,7 +592,7 @@ pub(crate) async fn galaxy_events(
         .lock()
         .await
         .events(query.zone_id.as_deref());
-    let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
+    let context = resolve_identity_context(&state, None, Some(&state.agent_did)).await;
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -646,7 +646,7 @@ pub(crate) async fn galaxy_event_publish(
     }
     drop(galaxy);
 
-    let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
+    let context = resolve_identity_context(&state, None, Some(&state.agent_did)).await;
     let payload = public_memory_payload(
         &context,
         "galaxy",
@@ -711,7 +711,7 @@ pub(crate) async fn galaxy_event_generate(
     drop(governance);
     drop(missions);
 
-    let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
+    let context = resolve_identity_context(&state, None, Some(&state.agent_did)).await;
     let payload = public_memory_payload(
         &context,
         "galaxy",
@@ -759,15 +759,15 @@ pub(crate) async fn civilization_emergencies(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
-    let agent_id = context.public_memory_owner.controller.clone();
+    let agent_did = context.public_memory_owner.controller.clone();
     let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
-    let emergencies = evaluate_emergencies(&agent_id, &profiles, &missions, &governance, &galaxy);
+    let emergencies = evaluate_emergencies(&agent_did, &profiles, &missions, &governance, &galaxy);
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -781,7 +781,7 @@ pub(crate) async fn civilization_emergencies(
                 .public_memory_owner
                 .public
                 .clone()
-                .unwrap_or_else(|| agent_id.clone()),
+                .unwrap_or_else(|| agent_did.clone()),
         ),
         capability: None,
         reason: None,
@@ -820,13 +820,13 @@ pub(crate) async fn civilization_briefing(
         action: "civilization.briefing.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: None,
         reason: Some(format!("hours={hours}")),
         duration_ms: None,
         details: Some(json!({"emergencies": briefing["emergencies"]})),
     });
-    let context = resolve_identity_context(&state, None, Some(&state.agent_id)).await;
+    let context = resolve_identity_context(&state, None, Some(&state.agent_did)).await;
     Json(json!({
         "briefing": briefing,
         "public_identity": context.public_identity,

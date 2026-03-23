@@ -3,9 +3,9 @@
   "$id": "agent.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agent_id", "stats"],
+  "required": ["agent_did", "stats"],
   "properties": {
-    "agent_id": {"type": "string"},
+    "agent_did": {"type": "string"},
     "public_id": {"type": "string"},
     "controller_id": {"type": "string"},
     "model_provider": {"type": "string"},

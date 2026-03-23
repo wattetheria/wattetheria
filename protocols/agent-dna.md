@@ -4,7 +4,7 @@
 capabilities gating, and client rendering.
 
 Required fields:
-- `agent_id`: Ed25519 public key (base64)
+- `agent_did`: Ed25519 public key (base64)
 - `stats`: `{ power, watt, reputation, capacity }`
 
 Optional fields:
@@ -20,4 +20,4 @@ Optional fields:
 Notes:
 - This schema is descriptive for replication and UI consumption.
 - Authority remains event-log driven; Agent DNA snapshots are convenience materializations.
-- `agent_id` remains a compatibility field and currently aliases the local controller signer.
+- `agent_did` is the canonical local controller signer identifier.

@@ -1,7 +1,7 @@
 # Signed Summary v0.1
 
 Node optional telemetry payload:
-- `agent_id`
+- `agent_did`
 - optional `controller_id`
 - optional `public_id`
 - `timestamp`
@@ -12,4 +12,4 @@ Node optional telemetry payload:
 - `signature`
 
 Observatory must only verify, dedupe, aggregate, and display.
-`agent_id` remains the legacy signer/controller alias for compatibility.
+`agent_did` is the canonical signer/controller identifier.

@@ -31,7 +31,7 @@ pub fn spawn_gateway_publish_task(
         .gateway_discovery_interval_sec
         .max(MIN_GATEWAY_DISCOVERY_INTERVAL_SEC);
     let startup_jitter_sec =
-        gateway_startup_jitter_secs(&control_state.identity.agent_id, interval_sec);
+        gateway_startup_jitter_secs(&control_state.identity.agent_did, interval_sec);
     Some(tokio::spawn(async move {
         let client = match reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
@@ -145,13 +145,13 @@ fn select_publish_gateways(
     selected
 }
 
-fn gateway_startup_jitter_secs(agent_id: &str, interval_sec: u64) -> u64 {
+fn gateway_startup_jitter_secs(agent_did: &str, interval_sec: u64) -> u64 {
     let jitter_window = interval_sec.min(MAX_GATEWAY_STARTUP_JITTER_SEC);
     if jitter_window == 0 {
         return 0;
     }
     let mut hasher = DefaultHasher::new();
-    agent_id.hash(&mut hasher);
+    agent_did.hash(&mut hasher);
     hasher.finish() % (jitter_window + 1)
 }
 

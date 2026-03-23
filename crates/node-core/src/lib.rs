@@ -163,7 +163,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 
     let online_proof_path = cli.data_dir.join("online_proof.json");
     let mut online_proof = OnlineProofManager::load_or_new(&online_proof_path).unwrap_or_default();
-    online_proof.create_lease(&identity.agent_id, 300, 20);
+    online_proof.create_lease(&identity.agent_did, 300, 20);
     let web_of_trust = WebOfTrust::new(TrustConfig {
         blacklist_weight_threshold: 3,
     });
@@ -188,7 +188,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     )?));
     let mailbox_state_path = cli.data_dir.join("mailbox/state.json");
     let mailbox = CrossSubnetMailbox::load_or_new(&mailbox_state_path)?;
-    let civilization_state = load_civilization_runtime_state(cli, &identity.agent_id)?;
+    let civilization_state = load_civilization_runtime_state(cli, &identity)?;
 
     let (listen_addr, bootstrap_addrs) = parse_multiaddrs(cli)?;
     let p2p_config = P2PConfig {
@@ -212,7 +212,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     )?;
     p2p.publish_json(&handshake)?;
 
-    info!(agent_id = %identity.agent_id, "kernel started");
+    info!(agent_did = %identity.agent_did, "kernel started");
     log_listeners(&p2p);
 
     let (stream_tx, _) = broadcast::channel(128);
@@ -253,7 +253,7 @@ fn resolve_public_identity_id(
 ) -> String {
     civilization_state
         .controller_binding_registry
-        .active_for_controller(&identity.agent_id)
+        .active_for_controller(&identity.agent_did)
         .and_then(|binding| {
             civilization_state
                 .public_identity_registry
@@ -263,10 +263,10 @@ fn resolve_public_identity_id(
         .or_else(|| {
             civilization_state
                 .public_identity_registry
-                .active_for_legacy_agent(&identity.agent_id)
+                .active_for_agent_did(&identity.agent_did)
         })
         .map_or_else(
-            || identity.agent_id.clone(),
+            || identity.agent_did.clone(),
             |public_identity| public_identity.public_id,
         )
 }
@@ -289,7 +289,7 @@ fn build_control_state(
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
     ControlPlaneState {
-        agent_id: identity.agent_id.clone(),
+        agent_did: identity.agent_did.clone(),
         identity: identity.clone(),
         started_at: chrono::Utc::now().timestamp(),
         auth_token: control_token,
@@ -328,7 +328,11 @@ fn build_control_state(
     }
 }
 
-fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<CivilizationRuntimeState> {
+fn load_civilization_runtime_state(
+    cli: &Cli,
+    identity: &Identity,
+) -> Result<CivilizationRuntimeState> {
+    let agent_did = &identity.agent_did;
     let mission_board_state_path = cli.data_dir.join("missions/state.json");
     let mission_board = MissionBoard::load_or_new(&mission_board_state_path)?;
     let public_identity_registry_state_path =
@@ -362,9 +366,10 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
     let travel_state_registry_state_path = cli.data_dir.join("galaxy/travel_state.json");
     let mut travel_state_registry =
         TravelStateRegistry::load_or_new(&travel_state_registry_state_path)?;
-    let public_identity = public_identity_registry.ensure_local_default(agent_id);
+    let public_identity =
+        public_identity_registry.ensure_local_default_for_agent(agent_did, Some(agent_did));
     let controller_binding =
-        controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_id);
+        controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_did);
     if let Some(position) = resolve_anchor_position(
         &galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?,
         None,
@@ -375,7 +380,7 @@ fn load_civilization_runtime_state(cli: &Cli, agent_id: &str) -> Result<Civiliza
             controller_binding
                 .controller_node_id
                 .as_deref()
-                .unwrap_or(agent_id),
+                .unwrap_or(agent_did),
             position,
         );
     }

@@ -57,8 +57,8 @@
         json('/api/events?limit=10')
       ]);
       draw('heat', ['Subnet','Agents','Watt','Power'], heat.map(i => [i.subnet_id,i.active_agents,i.total_watt,i.total_power]));
-      draw('rank', ['Agent','Subnet','Metric','Value'], rank.map(i => [i.agent_id.slice(0,10)+'...',i.subnet_id,i.metric,i.value]));
-      draw('events', ['Time','Agent','Subnet','Digest'], events.map(i => [new Date(i.timestamp*1000).toLocaleTimeString(), i.agent_id.slice(0,10)+'...', i.subnet_id, i.events_digest.slice(0,8)+'...']));
+      draw('rank', ['Agent','Subnet','Metric','Value'], rank.map(i => [i.agent_did.slice(0,10)+'...',i.subnet_id,i.metric,i.value]));
+      draw('events', ['Time','Agent','Subnet','Digest'], events.map(i => [new Date(i.timestamp*1000).toLocaleTimeString(), i.agent_did.slice(0,10)+'...', i.subnet_id, i.events_digest.slice(0,8)+'...']));
     }
     refresh(); setInterval(refresh, 5000);
   </script>

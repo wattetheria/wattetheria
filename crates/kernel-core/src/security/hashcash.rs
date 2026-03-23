@@ -24,17 +24,24 @@ impl HashcashStamp {
 
     #[must_use]
     pub fn parse(stamp: &str) -> Option<Self> {
-        let parts: Vec<&str> = stamp.split(':').collect();
-        if parts.len() != 6 {
-            return None;
-        }
+        let mut head = stamp.splitn(4, ':');
+        let version = head.next()?.parse().ok()?;
+        let bits = head.next()?.parse().ok()?;
+        let date = head.next()?.to_string();
+        let tail = head.next()?;
+
+        let mut tail_parts = tail.rsplitn(3, ':');
+        let counter = tail_parts.next()?.parse().ok()?;
+        let nonce = tail_parts.next()?.to_string();
+        let resource = tail_parts.next()?.to_string();
+
         Some(Self {
-            version: parts[0].parse().ok()?,
-            bits: parts[1].parse().ok()?,
-            date: parts[2].to_string(),
-            resource: parts[3].to_string(),
-            nonce: parts[4].to_string(),
-            counter: parts[5].parse().ok()?,
+            version,
+            bits,
+            date,
+            resource,
+            nonce,
+            counter,
         })
     }
 }
@@ -105,5 +112,13 @@ mod tests {
         let stamp = mint("agent-a", 12, 200_000).expect("mint hashcash");
         assert!(verify(&stamp, "agent-a", 12));
         assert!(!verify(&stamp, "agent-b", 12));
+    }
+
+    #[test]
+    fn hashcash_roundtrip_with_did_resource() {
+        let resource = "did:key:z6MkhaXg8SC7t8v4AbCdEfGh1234567890";
+        let stamp = mint(resource, 12, 200_000).expect("mint hashcash");
+        assert!(verify(&stamp, resource, 12));
+        assert!(!verify(&stamp, "did:key:z6Mkother", 12));
     }
 }

@@ -32,7 +32,7 @@ pub enum StrategyProfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CitizenProfile {
-    pub agent_id: String,
+    pub agent_did: String,
     pub faction: Faction,
     pub role: RolePath,
     pub strategy: StrategyProfile,
@@ -78,7 +78,7 @@ impl CitizenRegistry {
 
     pub fn set_profile(
         &mut self,
-        agent_id: &str,
+        agent_did: &str,
         faction: Faction,
         role: RolePath,
         strategy: StrategyProfile,
@@ -86,7 +86,7 @@ impl CitizenRegistry {
         home_zone_id: Option<String>,
     ) -> CitizenProfile {
         let profile = CitizenProfile {
-            agent_id: agent_id.to_string(),
+            agent_did: agent_did.to_string(),
             faction,
             role,
             strategy,
@@ -94,13 +94,13 @@ impl CitizenRegistry {
             home_zone_id,
             updated_at: Utc::now().timestamp(),
         };
-        self.profiles.insert(agent_id.to_string(), profile.clone());
+        self.profiles.insert(agent_did.to_string(), profile.clone());
         profile
     }
 
     #[must_use]
-    pub fn profile(&self, agent_id: &str) -> Option<CitizenProfile> {
-        self.profiles.get(agent_id).cloned()
+    pub fn profile(&self, agent_did: &str) -> Option<CitizenProfile> {
+        self.profiles.get(agent_did).cloned()
     }
 
     #[must_use]
@@ -149,7 +149,7 @@ mod tests {
             Some("planet-a".to_string()),
             Some("genesis-core".to_string()),
         );
-        assert_eq!(profile.agent_id, "agent-a");
+        assert_eq!(profile.agent_did, "agent-a");
         registry.persist(&path).unwrap();
 
         let loaded = CitizenRegistry::load_or_new(&path).unwrap();

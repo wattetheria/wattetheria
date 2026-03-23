@@ -121,8 +121,8 @@ async fn transition_mission(
     };
     let mut board = state.mission_board.lock().await;
     let mission = match action {
-        "claim" => board.claim(&body.mission_id, &body.agent_id),
-        "complete" => board.complete(&body.mission_id, &body.agent_id),
+        "claim" => board.claim(&body.mission_id, &body.agent_did),
+        "complete" => board.complete(&body.mission_id, &body.agent_did),
         _ => unreachable!("unsupported mission transition"),
     };
     let mission = match mission {
@@ -161,7 +161,7 @@ async fn transition_mission(
         actor: Some(auth),
         subject: Some(body.mission_id),
         capability: Some(format!("mission.{action}")),
-        reason: Some(body.agent_id),
+        reason: Some(body.agent_did),
         duration_ms: None,
         details: Some(payload.clone()),
     });

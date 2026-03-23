@@ -12,7 +12,7 @@ use crate::types::{AgentStats, SignedSummary, TaskStats};
 
 #[derive(Debug, Serialize)]
 struct SummarySignable<'a> {
-    agent_id: &'a str,
+    agent_did: &'a str,
     controller_id: &'a Option<String>,
     public_id: &'a Option<String>,
     timestamp: i64,
@@ -33,7 +33,7 @@ pub fn build_signed_summary(
 ) -> Result<SignedSummary> {
     build_signed_summary_for_public_identity(
         identity,
-        Some(identity.agent_id.clone()),
+        Some(identity.agent_did.clone()),
         subnet_id,
         ledger,
         recent_events,
@@ -49,7 +49,7 @@ pub fn build_signed_summary_for_public_identity(
 ) -> Result<SignedSummary> {
     let events_digest = digest_events(recent_events);
     let timestamp = Utc::now().timestamp();
-    let controller_id = Some(identity.agent_id.clone());
+    let controller_id = Some(identity.agent_did.clone());
 
     let completed = recent_events
         .iter()
@@ -81,7 +81,7 @@ pub fn build_signed_summary_for_public_identity(
     };
 
     let signable = SummarySignable {
-        agent_id: &identity.agent_id,
+        agent_did: &identity.agent_did,
         controller_id: &controller_id,
         public_id: &public_id,
         timestamp,
@@ -96,7 +96,7 @@ pub fn build_signed_summary_for_public_identity(
 
     let signature = sign_payload(&signable, identity)?;
     Ok(SignedSummary {
-        agent_id: identity.agent_id.clone(),
+        agent_did: identity.agent_did.clone(),
         controller_id,
         public_id,
         timestamp,
@@ -132,7 +132,7 @@ mod tests {
         let summary = build_signed_summary(&identity, None, &AgentStats::default(), &[]).unwrap();
 
         let signable = SummarySignable {
-            agent_id: &summary.agent_id,
+            agent_did: &summary.agent_did,
             controller_id: &summary.controller_id,
             public_id: &summary.public_id,
             timestamp: summary.timestamp,
@@ -144,6 +144,6 @@ mod tests {
             task_stats: &summary.task_stats,
             events_digest: &summary.events_digest,
         };
-        assert!(verify_payload(&signable, &summary.signature, &summary.agent_id).unwrap());
+        assert!(verify_payload(&signable, &summary.signature, &summary.agent_did).unwrap());
     }
 }

@@ -18,7 +18,7 @@ pub async fn run_demo_task(
     identity: &Identity,
 ) -> Result<()> {
     let task = swarm_bridge
-        .run_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
+        .run_galaxy_task(&identity.agent_did, GalaxyTaskIntent::demo_market_match())
         .await?;
     let task_id = task.task_id.clone();
     info!(task_id = %task_id, terminal_state = %task.terminal_state, "demo task settled");
@@ -29,7 +29,7 @@ pub async fn run_demo_task(
         action: "TASK_RESULT".to_string(),
         action_id: uuid::Uuid::new_v4().to_string(),
         timestamp: chrono::Utc::now().timestamp(),
-        sender: identity.agent_id.clone(),
+        sender: identity.agent_did.clone(),
         recipient: None,
         payload: serde_json::to_value(&task).context("serialize demo swarm task for gossip")?,
         signature: sign_payload(&json!({"kind":"TASK_RESULT","task_id":task_id}), identity)?,
@@ -41,21 +41,21 @@ pub async fn run_demo_task(
 pub fn ignite_demo_planet(governance: &mut GovernanceEngine, identity: &Identity) -> Result<()> {
     let signer_a = Identity::new_random();
     let signer_b = Identity::new_random();
-    governance.issue_license(&identity.agent_id, &identity.agent_id, "task-proof", 7);
-    governance.lock_bond(&identity.agent_id, 100, 30);
+    governance.issue_license(&identity.agent_did, &identity.agent_did, "task-proof", 7);
+    governance.lock_bond(&identity.agent_did, 100, 30);
     let created_at = chrono::Utc::now().timestamp();
     let approvals = vec![
         GovernanceEngine::sign_genesis(
             "planet-main",
             "Planet Main",
-            &identity.agent_id,
+            &identity.agent_did,
             created_at,
             &signer_a,
         )?,
         GovernanceEngine::sign_genesis(
             "planet-main",
             "Planet Main",
-            &identity.agent_id,
+            &identity.agent_did,
             created_at,
             &signer_b,
         )?,
@@ -63,7 +63,7 @@ pub fn ignite_demo_planet(governance: &mut GovernanceEngine, identity: &Identity
     let request = PlanetCreationRequest {
         subnet_id: "planet-main".to_string(),
         name: "Planet Main".to_string(),
-        creator: identity.agent_id.clone(),
+        creator: identity.agent_did.clone(),
         created_at,
         tax_rate: 0.05,
         constitution_template: PlanetConstitutionTemplate::CorporateCharter,

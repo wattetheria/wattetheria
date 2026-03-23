@@ -103,7 +103,7 @@ fn append_signing_check(checks: &mut Vec<DoctorCheck>, identity_path: PathBuf) {
                     wattetheria_kernel::signing::verify_payload(
                         &probe,
                         &signature,
-                        &identity.agent_id,
+                        &identity.agent_did,
                     )
                 },
             ) {

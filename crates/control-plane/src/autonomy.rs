@@ -14,7 +14,7 @@ use wattetheria_kernel::profiles::strategy_directive;
 pub(crate) async fn run_demo_market_task(state: &ControlPlaneState) -> Result<Value> {
     let task = state
         .swarm_bridge
-        .run_galaxy_task(&state.agent_id, GalaxyTaskIntent::demo_market_match())
+        .run_galaxy_task(&state.agent_did, GalaxyTaskIntent::demo_market_match())
         .await?;
     if task.terminal_state != "finalized" {
         bail!("demo task verification failed");
@@ -32,7 +32,7 @@ pub(crate) fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> 
 pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value> {
     let events = state.event_log.get_all()?;
     let pending_policy_requests = state.policy_engine.lock().await.list_pending().len();
-    let agent_view = state.swarm_bridge.agent_view(&state.agent_id).await?;
+    let agent_view = state.swarm_bridge.agent_view(&state.agent_did).await?;
     let latest_report_digest = events
         .last()
         .map_or_else(|| "no-events".to_string(), |event| event.hash.clone());
@@ -40,13 +40,13 @@ pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
-    let profile = profiles.profile(&state.agent_id);
+    let profile = profiles.profile(&state.agent_did);
     let strategy = profile.as_ref().map_or_else(
         || strategy_directive(&wattetheria_kernel::profiles::StrategyProfile::Balanced),
         |entry| strategy_directive(&entry.strategy),
     );
     let emergencies =
-        evaluate_emergencies(&state.agent_id, &profiles, &missions, &governance, &galaxy);
+        evaluate_emergencies(&state.agent_did, &profiles, &missions, &governance, &galaxy);
 
     Ok(json!({
         "events": events.len(),
@@ -70,7 +70,7 @@ pub(crate) async fn check_action_capabilities(
         let decision = policy.evaluate(CapabilityRequest {
             request_id: String::new(),
             timestamp: 0,
-            subject: format!("autonomy:{}", state.agent_id),
+            subject: format!("autonomy:{}", state.agent_did),
             trust: TrustLevel::Verified,
             capability: capability.clone(),
             reason: Some("autonomy.tick".to_string()),

@@ -97,10 +97,10 @@ fn validate_envelope(
         .unwrap_or_default();
 
     if envelope_type == "HANDSHAKE" {
-        let agent_id = value
-            .get("agent_id")
+        let agent_did = value
+            .get("agent_did")
             .and_then(Value::as_str)
-            .ok_or_else(|| "missing_agent_id".to_string())?;
+            .ok_or_else(|| "missing_agent_did".to_string())?;
         let payload = value
             .get("payload")
             .ok_or_else(|| "missing_payload".to_string())?;
@@ -111,7 +111,7 @@ fn validate_envelope(
         let controller_id = payload
             .get("controller_id")
             .and_then(Value::as_str)
-            .unwrap_or(agent_id);
+            .unwrap_or(agent_did);
 
         if !verify_payload(payload, signature, controller_id)
             .map_err(|error| format!("verify_error:{error}"))?
@@ -156,7 +156,7 @@ fn validate_envelope(
             let resource = hashcash_payload
                 .get("resource")
                 .and_then(Value::as_str)
-                .unwrap_or(agent_id);
+                .unwrap_or(agent_did);
 
             if !hashcash::verify(stamp, resource, config.min_hashcash_bits) {
                 return Ok(AdmissionVerdict::Reject("invalid_hashcash".to_string()));
@@ -198,20 +198,20 @@ mod tests {
 
     fn make_handshake(identity: &Identity, hashcash_enabled: bool, timestamp: i64) -> Value {
         let hashcash_value = if hashcash_enabled {
-            let stamp = hashcash::mint(&identity.agent_id, 12, 300_000).unwrap();
+            let stamp = hashcash::mint(&identity.agent_did, 12, 300_000).unwrap();
             Some(json!({
                 "stamp": stamp,
                 "bits": 12,
-                "resource": identity.agent_id
+                "resource": identity.agent_did
             }))
         } else {
             None
         };
         let payload = json!({
             "version": "0.1",
-            "agent_id": identity.agent_id,
-            "controller_id": identity.agent_id,
-            "public_id": identity.agent_id,
+            "agent_did": identity.agent_did,
+            "controller_id": identity.agent_did,
+            "public_id": identity.agent_did,
             "nonce": "n-1",
             "timestamp": timestamp,
             "capabilities_summary": {},
@@ -222,7 +222,7 @@ mod tests {
         json!({
             "type": "HANDSHAKE",
             "version": "0.1",
-            "agent_id": identity.agent_id,
+            "agent_did": identity.agent_did,
             "payload": payload,
             "signature": signature,
         })
@@ -304,7 +304,7 @@ mod tests {
         let identity = Identity::new_random();
         let payload = json!({
             "version": "0.1",
-            "agent_id": identity.agent_id,
+            "agent_did": identity.agent_did,
             "timestamp": Utc::now().timestamp(),
             "capabilities_summary": {},
             "online_proof": {"lease_id":"a"},
@@ -314,7 +314,7 @@ mod tests {
         let packet = json!({
             "type": "HANDSHAKE",
             "version": "0.1",
-            "agent_id": identity.agent_id,
+            "agent_did": identity.agent_did,
             "payload": payload,
             "signature": signature,
         });

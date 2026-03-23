@@ -23,7 +23,7 @@ pub enum OwnershipScope {
 pub struct PublicIdentity {
     pub public_id: String,
     pub display_name: String,
-    pub legacy_agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -78,7 +78,7 @@ impl PublicIdentityRegistry {
         &mut self,
         public_id: &str,
         display_name: String,
-        legacy_agent_id: Option<String>,
+        agent_did: Option<String>,
         active: bool,
     ) -> PublicIdentity {
         let now = Utc::now().timestamp();
@@ -89,7 +89,7 @@ impl PublicIdentityRegistry {
         let identity = PublicIdentity {
             public_id: public_id.to_string(),
             display_name,
-            legacy_agent_id,
+            agent_did,
             active,
             created_at,
             updated_at: now,
@@ -99,15 +99,23 @@ impl PublicIdentityRegistry {
         identity
     }
 
-    pub fn ensure_local_default(&mut self, agent_id: &str) -> PublicIdentity {
-        if let Some(identity) = self.identities.get(agent_id) {
+    pub fn ensure_local_default(&mut self, agent_did: &str) -> PublicIdentity {
+        self.ensure_local_default_for_agent(agent_did, Some(agent_did))
+    }
+
+    pub fn ensure_local_default_for_agent(
+        &mut self,
+        agent_did: &str,
+        bound_agent_did: Option<&str>,
+    ) -> PublicIdentity {
+        if let Some(identity) = self.identities.get(agent_did) {
             return identity.clone();
         }
-        let short = agent_id.chars().take(12).collect::<String>();
+        let short = agent_did.chars().take(12).collect::<String>();
         self.upsert(
-            agent_id,
+            agent_did,
             format!("Citizen-{short}"),
-            Some(agent_id.to_string()),
+            bound_agent_did.map(ToOwned::to_owned),
             true,
         )
     }
@@ -118,12 +126,10 @@ impl PublicIdentityRegistry {
     }
 
     #[must_use]
-    pub fn active_for_legacy_agent(&self, legacy_agent_id: &str) -> Option<PublicIdentity> {
+    pub fn active_for_agent_did(&self, agent_did: &str) -> Option<PublicIdentity> {
         self.identities
             .values()
-            .find(|identity| {
-                identity.active && identity.legacy_agent_id.as_deref() == Some(legacy_agent_id)
-            })
+            .find(|identity| identity.active && identity.agent_did.as_deref() == Some(agent_did))
             .cloned()
     }
 
@@ -234,14 +240,15 @@ mod tests {
         let path = dir.path().join("public_identities.json");
         let mut registry = PublicIdentityRegistry::default();
 
-        let default_identity = registry.ensure_local_default("agent-a");
+        let default_identity =
+            registry.ensure_local_default_for_agent("agent-a", Some("did:key:test"));
         assert_eq!(default_identity.public_id, "agent-a");
-        assert_eq!(default_identity.legacy_agent_id.as_deref(), Some("agent-a"));
+        assert_eq!(default_identity.agent_did.as_deref(), Some("did:key:test"));
         registry.persist(&path).unwrap();
 
         let loaded = PublicIdentityRegistry::load_or_new(&path).unwrap();
         assert!(loaded.get("agent-a").is_some());
-        assert!(loaded.active_for_legacy_agent("agent-a").is_some());
+        assert!(loaded.active_for_agent_did("did:key:test").is_some());
     }
 
     #[test]

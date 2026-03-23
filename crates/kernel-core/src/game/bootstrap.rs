@@ -306,7 +306,9 @@ fn starter_count(
     missions
         .list(status)
         .into_iter()
-        .filter(|mission| mission.payload["starter_owner_agent_id"].as_str() == Some(controller_id))
+        .filter(|mission| {
+            mission.payload["starter_owner_agent_did"].as_str() == Some(controller_id)
+        })
         .count()
 }
 
@@ -378,7 +380,7 @@ mod tests {
     fn bootstrap_progress_moves_with_identity_and_starter_missions() {
         let mut board = MissionBoard::default();
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,
@@ -395,7 +397,7 @@ mod tests {
             Some(&PublicIdentity {
                 public_id: "captain-aurora".to_string(),
                 display_name: "Captain Aurora".to_string(),
-                legacy_agent_id: Some("agent-a".to_string()),
+                agent_did: Some("agent-a".to_string()),
                 active: true,
                 created_at: 0,
                 updated_at: 0,
@@ -432,7 +434,7 @@ mod tests {
     fn bootstrap_flow_surfaces_first_hour_actions() {
         let mut board = MissionBoard::default();
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,
@@ -480,7 +482,7 @@ mod tests {
         PublicIdentity {
             public_id: "captain-aurora".to_string(),
             display_name: "Captain Aurora".to_string(),
-            legacy_agent_id: Some("agent-a".to_string()),
+            agent_did: Some("agent-a".to_string()),
             active: true,
             created_at: 0,
             updated_at: 0,

@@ -11,7 +11,7 @@ pub struct HeatPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RankingEntry {
-    pub agent_id: String,
+    pub agent_did: String,
     pub subnet_id: String,
     pub metric: String,
     pub value: i64,
@@ -26,7 +26,7 @@ pub struct RankingEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventStreamEntry {
     pub timestamp: i64,
-    pub agent_id: String,
+    pub agent_did: String,
     pub subnet_id: String,
     pub events_digest: String,
     pub watt: i64,

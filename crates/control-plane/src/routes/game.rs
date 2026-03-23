@@ -197,7 +197,7 @@ pub(crate) async fn game_status(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let view = match build_game_view(&state, &context).await {
@@ -248,7 +248,7 @@ pub(crate) async fn game_bootstrap_payload(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let view = match build_game_view(&state, &context).await {
@@ -315,7 +315,7 @@ pub(crate) async fn game_mission_pack(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let view = match build_game_view(&state, &context).await {
@@ -362,7 +362,7 @@ pub(crate) async fn game_starter_missions(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let Some(profile) = context.profile.as_ref() else {
@@ -410,7 +410,8 @@ pub(crate) async fn bootstrap_starter_missions_route(
         Err(response) => return response,
     };
     let context =
-        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_id.as_deref()).await;
+        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_did.as_deref())
+            .await;
     let Some(profile) = context.profile.as_ref() else {
         return Json(json!({"error": "profile not found"})).into_response();
     };
@@ -475,7 +476,8 @@ pub(crate) async fn bootstrap_mission_pack_route(
         Err(response) => return response,
     };
     let context =
-        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_id.as_deref()).await;
+        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_did.as_deref())
+            .await;
     let Some(profile) = context.profile.as_ref() else {
         return Json(json!({"error": "profile not found"})).into_response();
     };

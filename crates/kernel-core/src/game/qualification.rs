@@ -313,7 +313,7 @@ mod tests {
         board.settle(&mission.mission_id).unwrap();
 
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,

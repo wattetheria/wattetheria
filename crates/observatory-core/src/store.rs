@@ -19,7 +19,7 @@ pub struct SummaryStore {
 
 #[derive(Debug, Serialize)]
 struct SummarySignable<'a> {
-    agent_id: &'a str,
+    agent_did: &'a str,
     controller_id: &'a Option<String>,
     public_id: &'a Option<String>,
     timestamp: i64,
@@ -76,20 +76,23 @@ impl SummaryStore {
         Self::verify_summary(&summary)?;
 
         if enforce_rate_limit {
-            self.enforce_agent_rate_limit(&summary.agent_id)?;
+            self.enforce_agent_rate_limit(&summary.agent_did)?;
         }
 
         let key = format!(
             "{}:{}:{}",
-            summary.agent_id, summary.timestamp, summary.events_digest
+            summary.agent_did, summary.timestamp, summary.events_digest
         );
         self.entries.insert(key, summary);
         Ok(())
     }
 
-    fn enforce_agent_rate_limit(&mut self, agent_id: &str) -> Result<()> {
+    fn enforce_agent_rate_limit(&mut self, agent_did: &str) -> Result<()> {
         let now = Utc::now().timestamp();
-        let window = self.ingest_windows.entry(agent_id.to_string()).or_default();
+        let window = self
+            .ingest_windows
+            .entry(agent_did.to_string())
+            .or_default();
         prune_window(window, now, 60);
         if window.len() >= self.config.max_ingest_per_agent_per_minute {
             anyhow::bail!("rate_limit_exceeded_for_agent");
@@ -100,7 +103,7 @@ impl SummaryStore {
 
     fn verify_summary(summary: &SignedSummary) -> Result<()> {
         let signable = SummarySignable {
-            agent_id: &summary.agent_id,
+            agent_did: &summary.agent_did,
             controller_id: &summary.controller_id,
             public_id: &summary.public_id,
             timestamp: summary.timestamp,
@@ -118,7 +121,7 @@ impl SummaryStore {
             summary
                 .controller_id
                 .as_deref()
-                .unwrap_or(&summary.agent_id),
+                .unwrap_or(&summary.agent_did),
         )? {
             anyhow::bail!("invalid signed summary signature");
         }
@@ -254,7 +257,7 @@ impl SummaryStore {
             .map(|summary| {
                 let value = ranking_value(&summary, metric);
                 RankingEntry {
-                    agent_id: summary_identity(&summary),
+                    agent_did: summary_identity(&summary),
                     subnet_id: summary.subnet_id.unwrap_or_else(|| "global".to_string()),
                     metric: metric.to_string(),
                     value,
@@ -280,7 +283,7 @@ impl SummaryStore {
             .values()
             .map(|summary| EventStreamEntry {
                 timestamp: summary.timestamp,
-                agent_id: summary_identity(summary),
+                agent_did: summary_identity(summary),
                 subnet_id: summary
                     .subnet_id
                     .clone()
@@ -352,7 +355,7 @@ fn summary_identity(summary: &SignedSummary) -> String {
     summary
         .public_id
         .clone()
-        .unwrap_or_else(|| summary.agent_id.clone())
+        .unwrap_or_else(|| summary.agent_did.clone())
 }
 
 fn prune_window(entries: &mut Vec<i64>, now: i64, window_sec: i64) {

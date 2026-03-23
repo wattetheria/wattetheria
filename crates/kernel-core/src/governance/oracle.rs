@@ -24,7 +24,7 @@ pub struct OracleFeed {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleSubscription {
-    pub agent_id: String,
+    pub agent_did: String,
     pub feed_id: String,
     pub max_price_watt: i64,
     pub subscribed_at: i64,
@@ -32,7 +32,7 @@ pub struct OracleSubscription {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleSettlement {
-    pub agent_id: String,
+    pub agent_did: String,
     pub feed_id: String,
     pub delivered: usize,
     pub charged_watt: i64,
@@ -85,7 +85,7 @@ impl OracleRegistry {
     ) -> Result<OracleFeed> {
         let signable = SignableFeed {
             feed_id,
-            publisher: &identity.agent_id,
+            publisher: &identity.agent_did,
             timestamp: Utc::now().timestamp(),
             payload: &payload,
             price_watt,
@@ -94,7 +94,7 @@ impl OracleRegistry {
         let signature = sign_payload(&signable, identity)?;
         let feed = OracleFeed {
             feed_id: feed_id.to_string(),
-            publisher: identity.agent_id.clone(),
+            publisher: identity.agent_did.clone(),
             timestamp: signable.timestamp,
             payload,
             price_watt,
@@ -151,30 +151,30 @@ impl OracleRegistry {
         Ok(true)
     }
 
-    pub fn credit(&mut self, agent_id: &str, amount_watt: i64) -> Result<i64> {
+    pub fn credit(&mut self, agent_did: &str, amount_watt: i64) -> Result<i64> {
         if amount_watt <= 0 {
             bail!("credit amount must be positive");
         }
-        let balance = self.balances.entry(agent_id.to_string()).or_insert(0);
+        let balance = self.balances.entry(agent_did.to_string()).or_insert(0);
         *balance += amount_watt;
         Ok(*balance)
     }
 
     #[must_use]
-    pub fn balance_of(&self, agent_id: &str) -> i64 {
-        self.balances.get(agent_id).copied().unwrap_or(0)
+    pub fn balance_of(&self, agent_did: &str) -> i64 {
+        self.balances.get(agent_did).copied().unwrap_or(0)
     }
 
     pub fn subscribe(
         &mut self,
-        agent_id: &str,
+        agent_did: &str,
         feed_id: &str,
         max_price_watt: i64,
         identity: &Identity,
         event_log: Option<&EventLog>,
     ) -> Result<OracleSubscription> {
         let subscription = OracleSubscription {
-            agent_id: agent_id.to_string(),
+            agent_did: agent_did.to_string(),
             feed_id: feed_id.to_string(),
             max_price_watt,
             subscribed_at: Utc::now().timestamp(),
@@ -193,12 +193,12 @@ impl OracleRegistry {
         Ok(subscription)
     }
 
-    pub fn pull_for_subscriber(&self, agent_id: &str, feed_id: &str) -> Result<Vec<OracleFeed>> {
+    pub fn pull_for_subscriber(&self, agent_did: &str, feed_id: &str) -> Result<Vec<OracleFeed>> {
         let subscription = self
             .subscriptions
             .iter()
             .find(|subscription| {
-                subscription.agent_id == agent_id && subscription.feed_id == feed_id
+                subscription.agent_did == agent_did && subscription.feed_id == feed_id
             })
             .context("subscription not found")?;
 
@@ -216,7 +216,7 @@ impl OracleRegistry {
 
     pub fn pull_for_subscriber_settled(
         &mut self,
-        agent_id: &str,
+        agent_did: &str,
         feed_id: &str,
         identity: &Identity,
         event_log: Option<&EventLog>,
@@ -225,14 +225,14 @@ impl OracleRegistry {
             .subscriptions
             .iter()
             .find(|subscription| {
-                subscription.agent_id == agent_id && subscription.feed_id == feed_id
+                subscription.agent_did == agent_did && subscription.feed_id == feed_id
             })
             .cloned()
             .context("subscription not found")?;
         let mut feeds = self.eligible_feeds(feed_id, subscription.max_price_watt);
         feeds.sort_by_key(|feed| feed.timestamp);
 
-        let delivery_key = format!("{agent_id}:{feed_id}");
+        let delivery_key = format!("{agent_did}:{feed_id}");
         let already_delivered = self
             .delivered
             .get(&delivery_key)
@@ -252,7 +252,7 @@ impl OracleRegistry {
             new_items.push(feed.clone());
         }
 
-        let subscriber_balance = self.balance_of(agent_id);
+        let subscriber_balance = self.balance_of(agent_did);
         if total_cost > subscriber_balance {
             bail!(
                 "insufficient watt balance for oracle pull: required={total_cost}, available={subscriber_balance}"
@@ -260,7 +260,7 @@ impl OracleRegistry {
         }
 
         if total_cost > 0 {
-            let balance = self.balances.entry(agent_id.to_string()).or_insert(0);
+            let balance = self.balances.entry(agent_did.to_string()).or_insert(0);
             *balance -= total_cost;
         }
         let delivered_set = self.delivered.entry(delivery_key).or_default();
@@ -271,11 +271,11 @@ impl OracleRegistry {
         }
 
         let settlement = OracleSettlement {
-            agent_id: agent_id.to_string(),
+            agent_did: agent_did.to_string(),
             feed_id: feed_id.to_string(),
             delivered: new_items.len(),
             charged_watt: total_cost,
-            balance_after: self.balance_of(agent_id),
+            balance_after: self.balance_of(agent_did),
         };
 
         if let Some(log) = event_log {
@@ -292,10 +292,10 @@ impl OracleRegistry {
     }
 
     #[must_use]
-    pub fn list_subscriptions(&self, agent_id: &str) -> Vec<OracleSubscription> {
+    pub fn list_subscriptions(&self, agent_did: &str) -> Vec<OracleSubscription> {
         self.subscriptions
             .iter()
-            .filter(|subscription| subscription.agent_id == agent_id)
+            .filter(|subscription| subscription.agent_did == agent_did)
             .cloned()
             .collect()
     }
@@ -355,11 +355,11 @@ mod tests {
         assert_eq!(feed.feed_id, "btc-price");
 
         oracle
-            .subscribe(&subscriber.agent_id, "btc-price", 5, &subscriber, None)
+            .subscribe(&subscriber.agent_did, "btc-price", 5, &subscriber, None)
             .unwrap();
 
         let pulled = oracle
-            .pull_for_subscriber(&subscriber.agent_id, "btc-price")
+            .pull_for_subscriber(&subscriber.agent_did, "btc-price")
             .unwrap();
         assert_eq!(pulled.len(), 1);
     }
@@ -389,25 +389,25 @@ mod tests {
             )
             .unwrap();
         oracle
-            .subscribe(&subscriber.agent_id, "btc-price", 5, &subscriber, None)
+            .subscribe(&subscriber.agent_did, "btc-price", 5, &subscriber, None)
             .unwrap();
-        oracle.credit(&subscriber.agent_id, 20).unwrap();
+        oracle.credit(&subscriber.agent_did, 20).unwrap();
 
         let (_, settlement_a) = oracle
-            .pull_for_subscriber_settled(&subscriber.agent_id, "btc-price", &subscriber, None)
+            .pull_for_subscriber_settled(&subscriber.agent_did, "btc-price", &subscriber, None)
             .unwrap();
         assert_eq!(settlement_a.delivered, 2);
         assert_eq!(settlement_a.charged_watt, 5);
-        assert_eq!(oracle.balance_of(&subscriber.agent_id), 15);
-        assert_eq!(oracle.balance_of(&publisher.agent_id), 5);
+        assert_eq!(oracle.balance_of(&subscriber.agent_did), 15);
+        assert_eq!(oracle.balance_of(&publisher.agent_did), 5);
 
         let (_, settlement_b) = oracle
-            .pull_for_subscriber_settled(&subscriber.agent_id, "btc-price", &subscriber, None)
+            .pull_for_subscriber_settled(&subscriber.agent_did, "btc-price", &subscriber, None)
             .unwrap();
         assert_eq!(settlement_b.delivered, 0);
         assert_eq!(settlement_b.charged_watt, 0);
-        assert_eq!(oracle.balance_of(&subscriber.agent_id), 15);
-        assert_eq!(oracle.balance_of(&publisher.agent_id), 5);
+        assert_eq!(oracle.balance_of(&subscriber.agent_did), 15);
+        assert_eq!(oracle.balance_of(&publisher.agent_did), 5);
     }
 
     #[test]

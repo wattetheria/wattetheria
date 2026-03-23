@@ -42,11 +42,11 @@ fn full_pipeline_runs() {
         .unwrap();
 
     engine
-        .claim_task(&task.task_id, &identity.agent_id)
+        .claim_task(&task.task_id, &identity.agent_did)
         .unwrap();
     let result = engine.execute_task(&task.task_id).unwrap();
     engine
-        .submit_task_result(&task.task_id, &result, &identity.agent_id)
+        .submit_task_result(&task.task_id, &result, &identity.agent_did)
         .unwrap();
     assert!(engine.verify_task(&task.task_id).unwrap());
     let ledger = engine.settle_task(&task.task_id).unwrap();
@@ -63,8 +63,8 @@ fn full_pipeline_runs() {
     assert_eq!(summary.watt, 10);
 
     let mut gov = GovernanceEngine::default();
-    gov.issue_license(&identity.agent_id, &identity.agent_id, "proof", 7);
-    gov.lock_bond(&identity.agent_id, 100, 30);
+    gov.issue_license(&identity.agent_did, &identity.agent_did, "proof", 7);
+    gov.lock_bond(&identity.agent_did, 100, 30);
     let signer1 = Identity::new_random();
     let signer2 = Identity::new_random();
     let created_at = chrono::Utc::now().timestamp();
@@ -72,7 +72,7 @@ fn full_pipeline_runs() {
         GovernanceEngine::sign_genesis(
             "planet-a",
             "Planet A",
-            &identity.agent_id,
+            &identity.agent_did,
             created_at,
             &signer1,
         )
@@ -80,7 +80,7 @@ fn full_pipeline_runs() {
         GovernanceEngine::sign_genesis(
             "planet-a",
             "Planet A",
-            &identity.agent_id,
+            &identity.agent_did,
             created_at,
             &signer2,
         )
@@ -89,7 +89,7 @@ fn full_pipeline_runs() {
     let request = PlanetCreationRequest {
         subnet_id: "planet-a".to_string(),
         name: "Planet A".to_string(),
-        creator: identity.agent_id.clone(),
+        creator: identity.agent_did.clone(),
         created_at,
         tax_rate: 0.05,
         constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
@@ -104,7 +104,7 @@ fn full_pipeline_runs() {
     let msg = mailbox
         .enqueue_signed(
             &identity,
-            &receiver.agent_id,
+            &receiver.agent_did,
             "planet-a",
             "planet-b",
             json!({"kind":"mail"}),

@@ -232,13 +232,13 @@ mod tests {
         let signer_a = Identity::new_random();
         let signer_b = Identity::new_random();
         let now = Utc::now().timestamp();
-        governance.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        governance.lock_bond(&creator.agent_id, 100, 30);
+        governance.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        governance.lock_bond(&creator.agent_did, 100, 30);
         let approvals = vec![
             GovernanceEngine::sign_genesis(
                 "planet-test",
                 "Planet Test",
-                &creator.agent_id,
+                &creator.agent_did,
                 now,
                 &signer_a,
             )
@@ -246,7 +246,7 @@ mod tests {
             GovernanceEngine::sign_genesis(
                 "planet-test",
                 "Planet Test",
-                &creator.agent_id,
+                &creator.agent_did,
                 now,
                 &signer_b,
             )
@@ -257,7 +257,7 @@ mod tests {
                 &PlanetCreationRequest {
                     subnet_id: "planet-test".to_string(),
                     name: "Planet Test".to_string(),
-                    creator: creator.agent_id.clone(),
+                    creator: creator.agent_did.clone(),
                     created_at: now,
                     tax_rate: 0.04,
                     constitution_template: PlanetConstitutionTemplate::CorporateCharter,

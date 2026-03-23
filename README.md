@@ -575,7 +575,7 @@ curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
 curl -X POST http://127.0.0.1:7777/v1/civilization/profile \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
-  -d '{"agent_id":"demo-agent","faction":"order","role":"operator","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
+  -d '{"agent_did":"demo-agent","faction":"order","role":"operator","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/state
 curl -X POST http://127.0.0.1:7777/v1/missions \

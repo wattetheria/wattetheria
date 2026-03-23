@@ -43,7 +43,7 @@ pub async fn run_loop(p2p: &mut P2PNode, ctx: LoopContext<'_>) -> Result<()> {
                 break;
             }
             _ = heartbeat.tick() => {
-                let _ = ctx.online_proof.heartbeat(&ctx.identity.agent_id);
+                let _ = ctx.online_proof.heartbeat(&ctx.identity.agent_did);
                 let _ = ctx.online_proof.persist(ctx.online_proof_path);
             }
             _ = oracle_sync.tick() => {
@@ -76,7 +76,7 @@ pub async fn run_loop(p2p: &mut P2PNode, ctx: LoopContext<'_>) -> Result<()> {
                         }
                         AdmissionVerdict::Reject(reason) => {
                             if let Some(peer) = &packet.source_peer {
-                                let report = ctx.web_of_trust.report_peer(peer, &ctx.identity.agent_id, &reason);
+                                let report = ctx.web_of_trust.report_peer(peer, &ctx.identity.agent_did, &reason);
                                 if ctx.web_of_trust.is_blacklisted(peer) {
                                     warn!(
                                         peer = %peer,

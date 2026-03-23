@@ -132,7 +132,7 @@ impl MissionBoard {
         mission
     }
 
-    pub fn claim(&mut self, mission_id: &str, agent_id: &str) -> Result<CivilMission> {
+    pub fn claim(&mut self, mission_id: &str, agent_did: &str) -> Result<CivilMission> {
         let mission = self
             .missions
             .get_mut(mission_id)
@@ -140,12 +140,12 @@ impl MissionBoard {
         if mission.status != MissionStatus::Open {
             bail!("mission is not open");
         }
-        mission.claimed_by = Some(agent_id.to_string());
+        mission.claimed_by = Some(agent_did.to_string());
         mission.status = MissionStatus::Claimed;
         Ok(mission.clone())
     }
 
-    pub fn complete(&mut self, mission_id: &str, agent_id: &str) -> Result<CivilMission> {
+    pub fn complete(&mut self, mission_id: &str, agent_did: &str) -> Result<CivilMission> {
         let mission = self
             .missions
             .get_mut(mission_id)
@@ -153,10 +153,10 @@ impl MissionBoard {
         if mission.status != MissionStatus::Claimed {
             bail!("mission is not claimed");
         }
-        if mission.claimed_by.as_deref() != Some(agent_id) {
+        if mission.claimed_by.as_deref() != Some(agent_did) {
             bail!("mission claimed by different agent");
         }
-        mission.completed_by = Some(agent_id.to_string());
+        mission.completed_by = Some(agent_did.to_string());
         mission.status = MissionStatus::Completed;
         Ok(mission.clone())
     }

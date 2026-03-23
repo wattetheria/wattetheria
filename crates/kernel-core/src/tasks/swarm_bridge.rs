@@ -38,7 +38,7 @@ pub struct SwarmTaskProjectionView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmAgentView {
-    pub agent_id: String,
+    pub agent_did: String,
     pub stats: AgentStats,
 }
 
@@ -93,7 +93,7 @@ pub trait SwarmBridge: Send + Sync {
         contract: TaskContract,
     ) -> Result<SwarmTaskProjectionView>;
 
-    async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView>;
+    async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView>;
 
     async fn subscribe_topic(
         &self,
@@ -235,8 +235,8 @@ impl SwarmBridge for HybridSwarmBridge {
             .await
     }
 
-    async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView> {
-        self.task_bridge.agent_view(agent_id).await
+    async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView> {
+        self.task_bridge.agent_view(agent_did).await
     }
 
     async fn subscribe_topic(
@@ -382,11 +382,11 @@ impl SwarmBridge for LegacyTaskEngineBridge {
         Ok(map_task_projection(task))
     }
 
-    async fn agent_view(&self, agent_id: &str) -> Result<SwarmAgentView> {
+    async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView> {
         let engine = self.engine.lock().await;
         Ok(SwarmAgentView {
-            agent_id: agent_id.to_string(),
-            stats: engine.get_ledger(agent_id),
+            agent_did: agent_did.to_string(),
+            stats: engine.get_ledger(agent_did),
         })
     }
 }
@@ -693,7 +693,7 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let task = bridge
-            .run_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
+            .run_galaxy_task(&identity.agent_did, GalaxyTaskIntent::demo_market_match())
             .await
             .unwrap();
 
@@ -709,8 +709,8 @@ mod tests {
         let engine = TaskEngine::new(event_log, identity.clone());
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
-        let agent = bridge.agent_view(&identity.agent_id).await.unwrap();
-        assert_eq!(agent.agent_id, identity.agent_id);
+        let agent = bridge.agent_view(&identity.agent_did).await.unwrap();
+        assert_eq!(agent.agent_did, identity.agent_did);
         assert_eq!(agent.stats, AgentStats::default());
     }
 
@@ -723,7 +723,7 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let ack = bridge
-            .submit_galaxy_task(&identity.agent_id, GalaxyTaskIntent::demo_market_match())
+            .submit_galaxy_task(&identity.agent_did, GalaxyTaskIntent::demo_market_match())
             .await
             .unwrap();
 

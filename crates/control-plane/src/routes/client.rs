@@ -262,7 +262,7 @@ fn build_mission_client_view(
 
 fn build_mission_client_buckets(
     missions: &[CivilMission],
-    agent_id: &str,
+    agent_did: &str,
     profile: Option<&wattetheria_kernel::profiles::CitizenProfile>,
     travel_state: Option<&wattetheria_kernel::map::TravelStateRecord>,
     maps: &GalaxyMapRegistry,
@@ -297,7 +297,7 @@ fn build_mission_client_buckets(
                 MissionStatus::Claimed | MissionStatus::Completed
             )
         })
-        .filter(|mission| mission.claimed_by.as_deref() == Some(agent_id))
+        .filter(|mission| mission.claimed_by.as_deref() == Some(agent_did))
         .map(|mission| build_mission_client_view(mission, travel_state, maps, galaxy))
         .collect::<Vec<_>>();
     let history = missions
@@ -309,8 +309,8 @@ fn build_mission_client_buckets(
             )
         })
         .filter(|mission| {
-            mission.claimed_by.as_deref() == Some(agent_id)
-                || mission.completed_by.as_deref() == Some(agent_id)
+            mission.claimed_by.as_deref() == Some(agent_did)
+                || mission.completed_by.as_deref() == Some(agent_did)
         })
         .map(|mission| build_mission_client_view(mission, travel_state, maps, galaxy))
         .collect::<Vec<_>>();
@@ -528,7 +528,7 @@ pub(crate) async fn supervision_home(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let hours = query.hours.unwrap_or(12).max(1);
@@ -604,10 +604,10 @@ pub(crate) async fn my_missions(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
-    let agent_id = context.public_memory_owner.controller.clone();
+    let agent_did = context.public_memory_owner.controller.clone();
     let profile = context.profile.clone();
     let travel_state = if let Some(identity) = context.public_identity.as_ref() {
         state
@@ -623,7 +623,7 @@ pub(crate) async fn my_missions(
     let missions = state.mission_board.lock().await.list(None);
     let buckets = build_mission_client_buckets(
         &missions,
-        &agent_id,
+        &agent_did,
         profile.as_ref(),
         travel_state.as_ref(),
         &maps,
@@ -675,7 +675,7 @@ pub(crate) async fn my_governance(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let game = match build_game_view(&state, &context).await {
@@ -727,13 +727,13 @@ async fn build_governance_client_view(
     context: &IdentityContextView,
     game: &crate::routes::game::GameView,
 ) -> GovernanceClientView {
-    let agent_id = context.public_memory_owner.controller.clone();
+    let agent_did = context.public_memory_owner.controller.clone();
     let profile = context.profile.clone();
     let governance = state.governance_engine.lock().await;
     let planets = governance.list_planets();
     let proposals = governance.list_proposals(None);
-    let has_valid_license = governance.has_valid_license(&agent_id);
-    let has_active_bond = governance.has_active_bond(&agent_id, 1);
+    let has_valid_license = governance.has_valid_license(&agent_did);
+    let has_active_bond = governance.has_active_bond(&agent_did, 1);
     let home_subnet_id = profile
         .as_ref()
         .and_then(|profile| profile.home_subnet_id.clone());
@@ -742,15 +742,15 @@ async fn build_governance_client_view(
         .and_then(|subnet_id| governance.planet(subnet_id).cloned());
     let governed_planets = planets
         .iter()
-        .filter(|planet| planet.creator == agent_id || planet.validators.contains(&agent_id))
+        .filter(|planet| planet.creator == agent_did || planet.validators.contains(&agent_did))
         .cloned()
         .collect::<Vec<_>>();
     let my_proposals = proposals
         .iter()
         .filter(|proposal| {
-            proposal.created_by == agent_id
-                || proposal.votes_for.contains(&agent_id)
-                || proposal.votes_against.contains(&agent_id)
+            proposal.created_by == agent_did
+                || proposal.votes_for.contains(&agent_did)
+                || proposal.votes_against.contains(&agent_did)
         })
         .cloned()
         .collect::<Vec<_>>();

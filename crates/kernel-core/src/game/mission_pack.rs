@@ -98,7 +98,7 @@ pub fn mission_pack_set(
         .list(None)
         .into_iter()
         .filter(|mission| {
-            mission.payload["game_pack_owner_agent_id"].as_str() == Some(controller_id)
+            mission.payload["game_pack_owner_agent_did"].as_str() == Some(controller_id)
                 && mission.payload["game_pack_stage"].as_str() == Some(stage_label(&stage))
                 && mission.payload["game_pack_template_id"].is_string()
         })
@@ -164,7 +164,7 @@ pub fn bootstrap_mission_pack(
             template.reward.clone(),
             json!({
                 "game_pack_template_id": template.template_id,
-                "game_pack_owner_agent_id": controller_id,
+                "game_pack_owner_agent_did": controller_id,
                 "game_pack_role": profile.role,
                 "game_pack_stage": stage_label(stage),
                 "game_pack_phase": template.phase,
@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn mission_pack_bootstrap_creates_stage_aligned_missions() {
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,
@@ -795,7 +795,7 @@ mod tests {
     #[test]
     fn mission_pack_includes_high_severity_home_zone_events() {
         let profile = CitizenProfile {
-            agent_id: "agent-a".to_string(),
+            agent_did: "agent-a".to_string(),
             faction: Faction::Freeport,
             role: RolePath::Broker,
             strategy: StrategyProfile::Balanced,

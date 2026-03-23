@@ -44,7 +44,7 @@ pub struct PublicClientSnapshot {
 pub struct SignedPublicClientSnapshot {
     pub payload: PublicClientSnapshot,
     pub signature: String,
-    pub signer_agent_id: String,
+    pub signer_agent_did: String,
 }
 
 async fn build_client_network_status_payload(state: &ControlPlaneState) -> anyhow::Result<Value> {
@@ -93,9 +93,12 @@ async fn build_client_self_payload(
     state: &ControlPlaneState,
     query: &ClientIdentityQuery,
 ) -> anyhow::Result<Value> {
-    let context =
-        resolve_identity_context(state, query.public_id.as_deref(), query.agent_id.as_deref())
-            .await;
+    let context = resolve_identity_context(
+        state,
+        query.public_id.as_deref(),
+        query.agent_did.as_deref(),
+    )
+    .await;
     let controller_id = context.public_memory_owner.controller.clone();
     let agent_stats = state.swarm_bridge.agent_view(&controller_id).await?.stats;
     let public_id = context.public_identity.as_ref().map_or_else(
@@ -468,7 +471,7 @@ pub async fn build_signed_public_client_snapshot(
     query: &ClientExportQuery,
 ) -> anyhow::Result<SignedPublicClientSnapshot> {
     let public_id_query = ClientIdentityQuery {
-        agent_id: query.agent_id.clone(),
+        agent_did: query.agent_did.clone(),
         public_id: query.public_id.clone(),
     };
     let leaderboard_category = LeaderboardCategory::parse(query.leaderboard_category.as_deref())
@@ -479,7 +482,7 @@ pub async fn build_signed_public_client_snapshot(
     Ok(SignedPublicClientSnapshot {
         payload: snapshot,
         signature,
-        signer_agent_id: state.identity.agent_id.clone(),
+        signer_agent_did: state.identity.agent_did.clone(),
     })
 }
 
@@ -514,7 +517,7 @@ fn controller_id_for_identity(
 ) -> String {
     binding
         .and_then(|binding| binding.controller_node_id.clone())
-        .or_else(|| identity.legacy_agent_id.clone())
+        .or_else(|| identity.agent_did.clone())
         .unwrap_or_else(|| identity.public_id.clone())
 }
 
@@ -549,9 +552,9 @@ async fn leaderboard_identities(
     let public_identities = state.public_identity_registry.lock().await.list();
     let identities = if public_identities.is_empty() {
         vec![PublicIdentity {
-            public_id: state.agent_id.clone(),
-            display_name: state.agent_id.clone(),
-            legacy_agent_id: Some(state.agent_id.clone()),
+            public_id: state.agent_did.clone(),
+            display_name: state.agent_did.clone(),
+            agent_did: Some(state.agent_did.clone()),
             active: true,
             created_at: state.started_at,
             updated_at: state.started_at,
@@ -626,10 +629,10 @@ async fn build_client_leaderboard_payload(
                     .cmp(&left["watt_balance"].as_i64().unwrap_or_default())
             })
             .then_with(|| {
-                left["agent_id"]
+                left["agent_did"]
                     .as_str()
                     .unwrap_or_default()
-                    .cmp(right["agent_id"].as_str().unwrap_or_default())
+                    .cmp(right["agent_did"].as_str().unwrap_or_default())
             })
     });
     for (index, entry) in payload.iter_mut().take(limit).enumerate() {
@@ -674,7 +677,7 @@ fn leaderboard_payload(
                 .filter(|mission| mission.completed_by.as_deref() == Some(controller_id.as_str()))
                 .count();
             json!({
-                "agent_id": identity.public_id,
+                "agent_did": identity.public_id,
                 "display_name": identity.display_name,
                 "score": score_for_category(&scores, view.category),
                 "watt_balance": agent_stats.watt,
@@ -693,7 +696,7 @@ async fn build_public_client_snapshot(
 ) -> anyhow::Result<PublicClientSnapshot> {
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
-        node_id: state.agent_id.clone(),
+        node_id: state.agent_did.clone(),
         public_key: state.identity.public_key.clone(),
         network_status: build_client_network_status_payload(state).await?,
         peers: build_client_peers_payload(state, query.peer_limit.unwrap_or(25).clamp(1, 200))

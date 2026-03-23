@@ -515,9 +515,9 @@ mod tests {
         ));
 
         let mut governance = GovernanceEngine::default();
-        governance.issue_license(&identity.agent_id, &identity.agent_id, "proof", 7);
-        governance.lock_bond(&identity.agent_id, 100, 30);
-        governance.issue_license("agent-challenger", &identity.agent_id, "proof", 7);
+        governance.issue_license(&identity.agent_did, &identity.agent_did, "proof", 7);
+        governance.lock_bond(&identity.agent_did, 100, 30);
+        governance.issue_license("agent-challenger", &identity.agent_did, "proof", 7);
         governance.lock_bond("agent-challenger", 150, 30);
         let signer = Identity::new_random();
         let created_at = Utc::now().timestamp();
@@ -525,7 +525,7 @@ mod tests {
             GovernanceEngine::sign_genesis(
                 "planet-test",
                 "Planet Test",
-                &identity.agent_id,
+                &identity.agent_did,
                 created_at,
                 &identity,
             )
@@ -533,7 +533,7 @@ mod tests {
             GovernanceEngine::sign_genesis(
                 "planet-test",
                 "Planet Test",
-                &identity.agent_id,
+                &identity.agent_did,
                 created_at,
                 &signer,
             )
@@ -542,7 +542,7 @@ mod tests {
         let planet_request = PlanetCreationRequest {
             subnet_id: "planet-test".to_string(),
             name: "Planet Test".to_string(),
-            creator: identity.agent_id.clone(),
+            creator: identity.agent_did.clone(),
             created_at,
             tax_rate: 0.05,
             min_bond: 50,
@@ -562,7 +562,8 @@ mod tests {
         ));
         let mut public_identity_registry =
             PublicIdentityRegistry::load_or_new(&public_identity_registry_state_path).unwrap();
-        public_identity_registry.ensure_local_default(&identity.agent_id);
+        public_identity_registry
+            .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did));
         public_identity_registry
             .persist(&public_identity_registry_state_path)
             .unwrap();
@@ -570,7 +571,8 @@ mod tests {
         let mut controller_binding_registry =
             ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)
                 .unwrap();
-        controller_binding_registry.ensure_local_wattswarm(&identity.agent_id, &identity.agent_id);
+        controller_binding_registry
+            .ensure_local_wattswarm(&identity.agent_did, &identity.agent_did);
         controller_binding_registry
             .persist(&controller_binding_registry_state_path)
             .unwrap();
@@ -605,8 +607,8 @@ mod tests {
             wattetheria_kernel::map::state::resolve_anchor_position(&default_map, None, None)
                 .unwrap();
         let _ = travel_state_registry.ensure_position(
-            &identity.agent_id,
-            &identity.agent_id,
+            &identity.agent_did,
+            &identity.agent_did,
             default_position,
         );
         travel_state_registry
@@ -617,7 +619,7 @@ mod tests {
         let token = "test-token".to_string();
 
         let state = ControlPlaneState {
-            agent_id: identity.agent_id.clone(),
+            agent_did: identity.agent_did.clone(),
             identity,
             started_at: Utc::now().timestamp(),
             auth_token: token.clone(),
@@ -760,10 +762,10 @@ mod tests {
             Err(anyhow::anyhow!("not implemented in mock bridge"))
         }
 
-        async fn agent_view(&self, agent_id: &str) -> anyhow::Result<SwarmAgentView> {
+        async fn agent_view(&self, agent_did: &str) -> anyhow::Result<SwarmAgentView> {
             Ok(SwarmAgentView {
-                agent_id: agent_id.to_string(),
-                stats: self.agent_stats.get(agent_id).cloned().unwrap_or_default(),
+                agent_did: agent_did.to_string(),
+                stats: self.agent_stats.get(agent_did).cloned().unwrap_or_default(),
             })
         }
 
@@ -847,7 +849,7 @@ mod tests {
         }
     }
 
-    async fn bootstrap_broker_identity(app: Router, token: &str, agent_id: &str) {
+    async fn bootstrap_broker_identity(app: Router, token: &str, agent_did: &str) {
         authed_post_json(
             app,
             token,
@@ -855,7 +857,7 @@ mod tests {
             json!({
                 "public_id": "captain-aurora",
                 "display_name": "Captain Aurora",
-                "legacy_agent_id": agent_id,
+                "agent_did": agent_did,
                 "faction": "freeport",
                 "role": "broker",
                 "strategy": "balanced",
@@ -866,8 +868,8 @@ mod tests {
         .await;
     }
 
-    async fn bootstrap_broker_game(app: Router, token: &str, agent_id: &str) -> Value {
-        bootstrap_broker_identity(app.clone(), token, agent_id).await;
+    async fn bootstrap_broker_game(app: Router, token: &str, agent_did: &str) -> Value {
+        bootstrap_broker_identity(app.clone(), token, agent_did).await;
         let starter_bootstrap = authed_post_json(
             app,
             token,
@@ -917,7 +919,7 @@ mod tests {
         .await
     }
 
-    async fn settle_trade_mission_for_agent(app: Router, token: &str, agent_id: &str) -> Value {
+    async fn settle_trade_mission_for_agent(app: Router, token: &str, agent_did: &str) -> Value {
         let mission = publish_trade_mission(
             app.clone(),
             token,
@@ -938,14 +940,14 @@ mod tests {
             app.clone(),
             token,
             "/v1/missions/claim",
-            json!({"mission_id": mission_id, "agent_id": agent_id}),
+            json!({"mission_id": mission_id, "agent_did": agent_did}),
         )
         .await;
         let _ = authed_post_json(
             app.clone(),
             token,
             "/v1/missions/complete",
-            json!({"mission_id": mission_id, "agent_id": agent_id}),
+            json!({"mission_id": mission_id, "agent_did": agent_did}),
         )
         .await;
         let _ = authed_post_json(
@@ -958,7 +960,7 @@ mod tests {
         mission
     }
 
-    async fn seed_client_view_missions(app: Router, token: &str, agent_id: &str) {
+    async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
         let eligible_open = publish_trade_mission(
             app.clone(),
             token,
@@ -1008,7 +1010,7 @@ mod tests {
             },
         )
         .await;
-        claim_mission(app.clone(), token, &active["mission_id"], agent_id).await;
+        claim_mission(app.clone(), token, &active["mission_id"], agent_did).await;
 
         let history = publish_trade_mission(
             app.clone(),
@@ -1025,7 +1027,7 @@ mod tests {
             },
         )
         .await;
-        complete_and_settle_mission(app, token, &history["mission_id"], agent_id).await;
+        complete_and_settle_mission(app, token, &history["mission_id"], agent_did).await;
     }
 
     fn assert_starter_templates_with_anchor(payload: &Value) {
@@ -1337,13 +1339,13 @@ mod tests {
         );
     }
 
-    async fn claim_mission(app: Router, token: &str, mission_id: &Value, agent_id: &str) {
+    async fn claim_mission(app: Router, token: &str, mission_id: &Value, agent_did: &str) {
         assert_eq!(
             authed_post(
                 app,
                 token,
                 "/v1/missions/claim",
-                json!({"mission_id": mission_id, "agent_id": agent_id}),
+                json!({"mission_id": mission_id, "agent_did": agent_did}),
             )
             .await,
             StatusCode::OK
@@ -1354,7 +1356,7 @@ mod tests {
         app: Router,
         token: &str,
         mission_id: &Value,
-        agent_id: &str,
+        agent_did: &str,
     ) {
         for uri in ["/v1/missions/claim", "/v1/missions/complete"] {
             assert_eq!(
@@ -1362,7 +1364,7 @@ mod tests {
                     app.clone(),
                     token,
                     uri,
-                    json!({"mission_id": mission_id, "agent_id": agent_id}),
+                    json!({"mission_id": mission_id, "agent_did": agent_did}),
                 )
                 .await,
                 StatusCode::OK
@@ -1511,13 +1513,13 @@ mod tests {
         let state_json: Value =
             serde_json::from_slice(&state_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        let agent_id = state_json["agent_id"].as_str().unwrap().to_string();
+        let agent_did = state_json["agent_did"].as_str().unwrap().to_string();
 
         let create_body = json!({
             "subnet_id": "planet-test",
             "kind": "update_tax_rate",
             "payload": {"tax_rate": 0.09},
-            "created_by": agent_id,
+            "created_by": agent_did,
         });
         let create_resp = app
             .clone()
@@ -1540,7 +1542,7 @@ mod tests {
 
         let vote_body = json!({
             "proposal_id": proposal_id,
-            "voter": state_json["agent_id"],
+            "voter": state_json["agent_did"],
             "approve": true,
         });
         let vote_resp = app
@@ -1743,12 +1745,12 @@ mod tests {
                 .unwrap();
         assert_eq!(
             state_json["identity"]["public_identity"]["public_id"].as_str(),
-            state_json["agent_id"].as_str()
+            state_json["agent_did"].as_str()
         );
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         let profile_body = json!({
-            "agent_id": agent_id,
+            "agent_did": agent_did,
             "faction": "order",
             "role": "operator",
             "strategy": "balanced"
@@ -1805,7 +1807,7 @@ mod tests {
         );
         assert_eq!(
             metrics_json["public_memory_owner"]["controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
     }
 
@@ -1814,17 +1816,17 @@ mod tests {
         let (dir, app, token, _) = build_test_app(20);
 
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         let default_identity =
             authed_get_json(app.clone(), &token, "/v1/civilization/public-identity").await;
         assert_eq!(
             default_identity["public_identity"]["public_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
         assert_eq!(
             default_identity["public_memory_owner"]["controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
 
         let default_binding =
@@ -1841,7 +1843,7 @@ mod tests {
             json!({
                 "public_id": "citizen-alpha",
                 "display_name": "Citizen Alpha",
-                "legacy_agent_id": agent_id,
+                "agent_did": agent_did,
                 "active": true
             }),
         )
@@ -1907,7 +1909,7 @@ mod tests {
     async fn galaxy_event_publish_and_query_works() {
         let (_dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         let publish_body = json!({
             "category": "economic",
@@ -1968,7 +1970,7 @@ mod tests {
         assert_eq!(events_json["events"][0]["title"], "Power Shortage");
         assert_eq!(
             events_json["public_memory_owner"]["controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
     }
 
@@ -1992,8 +1994,8 @@ mod tests {
     async fn galaxy_travel_endpoints_expose_options_and_plans() {
         let (_dir, app, token, _) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
-        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
+        let agent_did = state_json["agent_did"].as_str().unwrap();
+        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
 
         let _event_json = authed_post_json(
             app.clone(),
@@ -2054,8 +2056,8 @@ mod tests {
     async fn galaxy_travel_state_and_session_flow_work() {
         let (_dir, app, token, _) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
-        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
+        let agent_did = state_json["agent_did"].as_str().unwrap();
+        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
         let _ = publish_trade_mission(
             app.clone(),
             &token,
@@ -2179,7 +2181,7 @@ mod tests {
                 .unwrap();
         let mission_id = publish_json["mission_id"].as_str().unwrap().to_string();
 
-        for (uri, agent_id) in [
+        for (uri, agent_did) in [
             ("/v1/missions/claim", "agent-enforcer"),
             ("/v1/missions/complete", "agent-enforcer"),
         ] {
@@ -2194,7 +2196,7 @@ mod tests {
                         .body(axum::body::Body::from(
                             json!({
                                 "mission_id": mission_id,
-                                "agent_id": agent_id
+                                "agent_did": agent_did
                             })
                             .to_string(),
                         ))
@@ -2250,7 +2252,7 @@ mod tests {
     async fn governance_lifecycle_endpoints_work() {
         let (dir, app, token, _) = build_test_app(40);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         for (uri, body) in [
             (
@@ -2261,7 +2263,7 @@ mod tests {
                 "/v1/governance/recall",
                 json!({
                     "subnet_id":"planet-test",
-                    "initiated_by": agent_id,
+                    "initiated_by": agent_did,
                     "reason":"stability collapse",
                     "threshold":25
                 }),
@@ -2308,13 +2310,13 @@ mod tests {
     async fn civilization_briefing_and_generated_galaxy_events_work() {
         let (_dir, app, token, _) = build_test_app(40);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         for (uri, body, expected) in [
             (
                 "/v1/civilization/profile",
                 json!({
-                    "agent_id": agent_id,
+                    "agent_did": agent_did,
                     "faction": "order",
                     "role": "operator",
                     "strategy": "conservative",
@@ -2372,7 +2374,7 @@ mod tests {
         );
         assert_eq!(
             briefing_json["public_memory_owner"]["controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
 
         let supervision_briefing_json =
@@ -2398,7 +2400,7 @@ mod tests {
     async fn bootstrap_identity_returns_unified_identity_bundle_and_public_memory_owner() {
         let (dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
         let bootstrap_json = authed_post_json(
             app.clone(),
@@ -2425,8 +2427,8 @@ mod tests {
             Some("local_wattswarm")
         );
         assert_eq!(
-            bootstrap_json["profile"]["agent_id"].as_str(),
-            Some(agent_id)
+            bootstrap_json["profile"]["agent_did"].as_str(),
+            Some(agent_did)
         );
         assert_eq!(
             bootstrap_json["public_memory_owner"]["public_id"].as_str(),
@@ -2474,7 +2476,7 @@ mod tests {
         );
         assert_eq!(
             bootstrap_event.payload["public_memory"]["controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
     }
 
@@ -2569,10 +2571,10 @@ mod tests {
     async fn game_catalog_and_status_endpoints_work() {
         let (_dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        let _ = bootstrap_broker_game(app.clone(), &token, agent_id).await;
-        let _ = settle_trade_mission_for_agent(app.clone(), &token, agent_id).await;
+        let _ = bootstrap_broker_game(app.clone(), &token, agent_did).await;
+        let _ = settle_trade_mission_for_agent(app.clone(), &token, agent_did).await;
 
         let catalog_json = authed_get_json(app.clone(), &token, "/v1/game/catalog").await;
         assert_eq!(catalog_json["roles"].as_array().unwrap().len(), 4);
@@ -2641,10 +2643,10 @@ mod tests {
     async fn supervision_home_and_my_views_work() {
         let (_dir, app, token, _) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
-        seed_client_view_missions(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        seed_client_view_missions(app.clone(), &token, agent_did).await;
         let supervision_json = authed_get_json(
             app.clone(),
             &token,
@@ -2727,7 +2729,7 @@ mod tests {
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
-            local_node_id: identity.agent_id.clone(),
+            local_node_id: identity.agent_did.clone(),
             agent_stats: BTreeMap::new(),
             network_status: SwarmNetworkStatusView {
                 running: true,
@@ -2767,7 +2769,7 @@ mod tests {
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let bridge = Arc::new(MockSwarmBridge {
-            local_node_id: identity.agent_id.clone(),
+            local_node_id: identity.agent_did.clone(),
             agent_stats: BTreeMap::new(),
             network_status: SwarmNetworkStatusView {
                 running: true,
@@ -2832,7 +2834,7 @@ mod tests {
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let mut agent_stats = BTreeMap::new();
         agent_stats.insert(
-            identity.agent_id.clone(),
+            identity.agent_did.clone(),
             AgentStats {
                 power: 4,
                 watt: 77,
@@ -2841,7 +2843,7 @@ mod tests {
             },
         );
         let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
-            local_node_id: identity.agent_id.clone(),
+            local_node_id: identity.agent_did.clone(),
             agent_stats,
             network_status: SwarmNetworkStatusView {
                 running: true,
@@ -2857,7 +2859,7 @@ mod tests {
         let (_dir, app, token, _) =
             build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
 
-        bootstrap_broker_identity(app.clone(), &token, &identity.agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
         let _published = publish_trade_mission(
             app.clone(),
             &token,
@@ -2959,7 +2961,7 @@ mod tests {
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let mut agent_stats = BTreeMap::new();
         agent_stats.insert(
-            identity.agent_id.clone(),
+            identity.agent_did.clone(),
             AgentStats {
                 power: 3,
                 watt: 42,
@@ -2968,7 +2970,7 @@ mod tests {
             },
         );
         let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
-            local_node_id: identity.agent_id.clone(),
+            local_node_id: identity.agent_did.clone(),
             agent_stats,
             network_status: SwarmNetworkStatusView {
                 running: true,
@@ -2983,7 +2985,7 @@ mod tests {
         });
         let (_dir, app, token, _) =
             build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
-        bootstrap_broker_identity(app.clone(), &token, &identity.agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
 
         let export_json = public_get_json(
             app,
@@ -3014,8 +3016,8 @@ mod tests {
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
         let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
-            local_node_id: identity.agent_id.clone(),
-            agent_stats: [(identity.agent_id.clone(), AgentStats::default())]
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
                 .into_iter()
                 .collect(),
             network_status: SwarmNetworkStatusView {
@@ -3032,7 +3034,7 @@ mod tests {
         let (_dir, state, token, _) =
             build_test_state_with_bridge(20, dir, identity.clone(), event_log, bridge);
         let app = app(state.clone());
-        bootstrap_broker_identity(app, &token, &identity.agent_id).await;
+        bootstrap_broker_identity(app, &token, &identity.agent_did).await;
 
         let received = Arc::new(Mutex::new(Vec::<Value>::new()));
         let ingest_app = axum::Router::new().route(
@@ -3091,9 +3093,9 @@ mod tests {
     async fn organization_endpoints_and_views_work() {
         let (_dir, app, token, _) = build_test_app(80);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
-        let agent_id = state_json["agent_id"].as_str().unwrap();
+        let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        bootstrap_broker_identity(app.clone(), &token, agent_id).await;
+        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
         let _ = authed_post_json(
             app.clone(),
             &token,
@@ -3101,7 +3103,7 @@ mod tests {
             json!({
                 "public_id": "quartermaster-echo",
                 "display_name": "Quartermaster Echo",
-                "legacy_agent_id": "agent-echo",
+                "agent_did": "agent-echo",
                 "faction": "freeport",
                 "role": "operator",
                 "strategy": "balanced",
@@ -3121,7 +3123,7 @@ mod tests {
             json!({
                 "public_id": "scout-voss",
                 "display_name": "Scout Voss",
-                "legacy_agent_id": "agent-voss",
+                "agent_did": "agent-voss",
                 "faction": "freeport",
                 "role": "enforcer",
                 "strategy": "balanced",
@@ -3282,7 +3284,7 @@ mod tests {
             app.clone(),
             &token,
             &published_mission["mission"]["mission_id"],
-            agent_id,
+            agent_did,
         )
         .await;
 
@@ -3317,7 +3319,7 @@ mod tests {
             app.clone(),
             &token,
             &second_org_mission["mission"]["mission_id"],
-            agent_id,
+            agent_did,
         )
         .await;
 
@@ -3410,7 +3412,7 @@ mod tests {
         );
         assert_eq!(
             charter_json["charter_application"]["sponsor_controller_id"].as_str(),
-            Some(agent_id)
+            Some(agent_did)
         );
 
         let organizations_json = authed_get_json(

@@ -17,7 +17,7 @@ pub struct CivilizationScores {
 
 #[must_use]
 pub fn compute_scores(
-    agent_id: &str,
+    agent_did: &str,
     stats: &AgentStats,
     missions: &MissionBoard,
     profiles: &CitizenRegistry,
@@ -28,7 +28,7 @@ pub fn compute_scores(
     let settled = missions.list(Some(&settled_status));
     let by_agent: Vec<_> = settled
         .into_iter()
-        .filter(|mission| mission.completed_by.as_deref() == Some(agent_id))
+        .filter(|mission| mission.completed_by.as_deref() == Some(agent_did))
         .collect();
 
     let domain_score = |domain: MissionDomain| -> i64 {
@@ -43,19 +43,19 @@ pub fn compute_scores(
     let created_planets = i64::try_from(
         planets
             .iter()
-            .filter(|planet| planet.creator == agent_id)
+            .filter(|planet| planet.creator == agent_did)
             .count(),
     )
     .unwrap_or(i64::MAX);
     let validator_planets = i64::try_from(
         planets
             .iter()
-            .filter(|planet| planet.validators.contains(agent_id))
+            .filter(|planet| planet.validators.contains(agent_did))
             .count(),
     )
     .unwrap_or(i64::MAX);
 
-    let profile = profiles.profile(agent_id);
+    let profile = profiles.profile(agent_did);
     let role_bonus = match profile.as_ref().map(|profile| &profile.role) {
         Some(RolePath::Operator | RolePath::Broker) => 10,
         Some(RolePath::Enforcer) => 12,

@@ -71,7 +71,7 @@ pub struct StreamEvent {
 
 #[derive(Clone)]
 pub struct ControlPlaneState {
-    pub agent_id: String,
+    pub agent_did: String,
     pub identity: Identity,
     pub started_at: i64,
     pub auth_token: String,
@@ -309,7 +309,7 @@ pub struct NetworkPeersQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ClientIdentityQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -331,7 +331,7 @@ pub struct ClientLeaderboardQuery {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientExportQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
     pub peer_limit: Option<usize>,
     pub task_limit: Option<usize>,
@@ -369,7 +369,7 @@ pub struct MissionPublishBody {
 #[derive(Debug, Deserialize)]
 pub struct MissionClaimBody {
     pub mission_id: String,
-    pub agent_id: String,
+    pub agent_did: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -379,7 +379,7 @@ pub struct MissionSettleBody {
 
 #[derive(Debug, Deserialize)]
 pub struct CitizenProfileQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -397,7 +397,7 @@ pub struct ControllerBindingQuery {
 pub struct PublicIdentityBody {
     pub public_id: String,
     pub display_name: String,
-    pub legacy_agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub active: Option<bool>,
 }
 
@@ -413,7 +413,7 @@ pub struct ControllerBindingBody {
 
 #[derive(Debug, Deserialize)]
 pub struct CitizenProfileBody {
-    pub agent_id: String,
+    pub agent_did: String,
     pub faction: Faction,
     pub role: RolePath,
     pub strategy: StrategyProfile,
@@ -423,7 +423,7 @@ pub struct CitizenProfileBody {
 
 #[derive(Debug, Deserialize)]
 pub struct MetricsQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -443,7 +443,7 @@ pub struct GalaxyTravelOptionsQuery {
     pub map: Option<String>,
     #[serde(rename = "public_id")]
     pub public_identity: Option<String>,
-    #[serde(rename = "agent_id")]
+    #[serde(rename = "agent_did")]
     pub controller: Option<String>,
     #[serde(rename = "from_system_id")]
     pub from_system: Option<String>,
@@ -455,7 +455,7 @@ pub struct GalaxyTravelPlanQuery {
     pub map: Option<String>,
     #[serde(rename = "public_id")]
     pub public_identity: Option<String>,
-    #[serde(rename = "agent_id")]
+    #[serde(rename = "agent_did")]
     pub controller: Option<String>,
     #[serde(rename = "from_system_id")]
     pub from_system: Option<String>,
@@ -467,7 +467,7 @@ pub struct GalaxyTravelPlanQuery {
 pub struct GalaxyTravelStateQuery {
     #[serde(rename = "public_id")]
     pub public_identity: Option<String>,
-    #[serde(rename = "agent_id")]
+    #[serde(rename = "agent_did")]
     pub controller: Option<String>,
 }
 
@@ -477,7 +477,7 @@ pub struct GalaxyTravelDepartBody {
     pub map: Option<String>,
     #[serde(rename = "public_id")]
     pub public_identity: Option<String>,
-    #[serde(rename = "agent_id")]
+    #[serde(rename = "agent_did")]
     pub controller: Option<String>,
     #[serde(rename = "to_system_id")]
     pub destination: String,
@@ -487,13 +487,13 @@ pub struct GalaxyTravelDepartBody {
 pub struct GalaxyTravelArriveBody {
     #[serde(rename = "public_id")]
     pub public_identity: Option<String>,
-    #[serde(rename = "agent_id")]
+    #[serde(rename = "agent_did")]
     pub controller: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct EmergencyQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -501,7 +501,7 @@ pub struct EmergencyQuery {
 pub struct BootstrapIdentityBody {
     pub public_id: String,
     pub display_name: String,
-    pub legacy_agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub faction: Faction,
     pub role: RolePath,
     pub strategy: StrategyProfile,
@@ -516,7 +516,7 @@ pub struct BootstrapIdentityBody {
 
 #[derive(Debug, Deserialize)]
 pub struct OrganizationsQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -621,26 +621,26 @@ pub struct GalaxyGenerateBody {
 
 #[derive(Debug, Deserialize)]
 pub struct DashboardHomeQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
     pub hours: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MyMissionsQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MyGovernanceQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MyOrganizationsQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
@@ -649,13 +649,13 @@ pub struct BootstrapCatalogQuery {}
 
 #[derive(Debug, Deserialize)]
 pub struct GameStatusQuery {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct GameActionBody {
-    pub agent_id: Option<String>,
+    pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }
 

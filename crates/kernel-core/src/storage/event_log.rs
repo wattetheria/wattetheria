@@ -21,7 +21,7 @@ pub struct EventRecord {
     pub event_type: String,
     pub payload: Value,
     pub timestamp: i64,
-    pub agent_id: String,
+    pub agent_did: String,
     pub prev_hash: Option<String>,
     pub signature: String,
     pub hash: String,
@@ -34,7 +34,7 @@ struct UnsignedEventRecord {
     event_type: String,
     payload: Value,
     timestamp: i64,
-    agent_id: String,
+    agent_did: String,
     prev_hash: Option<String>,
 }
 
@@ -116,7 +116,7 @@ impl EventLog {
             event_type: event_type.into(),
             payload,
             timestamp: Utc::now().timestamp(),
-            agent_id: identity.agent_id.clone(),
+            agent_did: identity.agent_did.clone(),
             prev_hash,
         };
         let signature = sign_payload(&unsigned, identity)?;
@@ -127,7 +127,7 @@ impl EventLog {
             event_type: unsigned.event_type,
             payload: unsigned.payload,
             timestamp: unsigned.timestamp,
-            agent_id: unsigned.agent_id,
+            agent_did: unsigned.agent_did,
             prev_hash: unsigned.prev_hash,
             signature,
             hash,
@@ -220,14 +220,14 @@ impl EventRecord {
             event_type: self.event_type.clone(),
             payload: self.payload.clone(),
             timestamp: self.timestamp,
-            agent_id: self.agent_id.clone(),
+            agent_did: self.agent_did.clone(),
             prev_hash: self.prev_hash.clone(),
         }
     }
 }
 
 fn verify_event_signature(event: &EventRecord) -> Result<bool> {
-    verify_payload(&event.to_unsigned(), &event.signature, &event.agent_id)
+    verify_payload(&event.to_unsigned(), &event.signature, &event.agent_did)
 }
 
 fn hash_record(unsigned: &UnsignedEventRecord, signature: &str) -> Result<String> {

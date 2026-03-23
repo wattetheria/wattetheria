@@ -147,7 +147,7 @@ pub(crate) async fn list_organizations(
     let context = resolve_identity_context(
         &state,
         query.public_id.as_deref(),
-        query.agent_id.as_deref(),
+        query.agent_did.as_deref(),
     )
     .await;
     let Some(public_id) = context.public_memory_owner.public.clone() else {
@@ -192,7 +192,7 @@ pub(crate) async fn my_organizations(
         State(state),
         headers,
         Query(OrganizationsQuery {
-            agent_id: query.agent_id,
+            agent_did: query.agent_did,
             public_id: query.public_id,
         }),
     )

@@ -11,8 +11,8 @@ pub(crate) struct PublicMemoryOwnerView {
     pub(crate) public: Option<String>,
     #[serde(rename = "controller_id")]
     pub(crate) controller: String,
-    #[serde(rename = "legacy_agent_id")]
-    pub(crate) legacy_agent: Option<String>,
+    #[serde(rename = "agent_did")]
+    pub(crate) agent_did: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,34 +33,34 @@ struct PublicMemoryEnvelope {
 pub(crate) async fn identity_context_value(
     state: &ControlPlaneState,
     public_id: Option<&str>,
-    agent_id: Option<&str>,
+    agent_did: Option<&str>,
 ) -> Value {
-    serde_json::to_value(resolve_identity_context(state, public_id, agent_id).await)
+    serde_json::to_value(resolve_identity_context(state, public_id, agent_did).await)
         .unwrap_or(Value::Null)
 }
 
 pub(crate) async fn resolve_identity_context(
     state: &ControlPlaneState,
     public_id: Option<&str>,
-    agent_id: Option<&str>,
+    agent_did: Option<&str>,
 ) -> IdentityContextView {
     let current_public_id = {
         let registry = state.controller_binding_registry.lock().await;
         registry
-            .active_for_controller(&state.agent_id)
+            .active_for_controller(&state.agent_did)
             .map(|binding| binding.public_id)
     };
     let public_identity = {
         let registry = state.public_identity_registry.lock().await;
         if let Some(public_id) = public_id {
             registry.get(public_id)
-        } else if let Some(agent_id) = agent_id {
-            registry.active_for_legacy_agent(agent_id)
+        } else if let Some(agent_did) = agent_did {
+            registry.active_for_agent_did(agent_did)
         } else {
             current_public_id
                 .as_deref()
                 .and_then(|current_public_id| registry.get(current_public_id))
-                .or_else(|| registry.active_for_legacy_agent(&state.agent_id))
+                .or_else(|| registry.active_for_agent_did(&state.agent_did))
         }
     };
     let controller_binding = {
@@ -70,25 +70,25 @@ pub(crate) async fn resolve_identity_context(
             .and_then(|identity| registry.get(&identity.public_id))
             .or_else(|| public_id.and_then(|public_id| registry.get(public_id)))
             .or_else(|| {
-                agent_id.and_then(|controller_id| registry.active_for_controller(controller_id))
+                agent_did.and_then(|controller_id| registry.active_for_controller(controller_id))
             })
-            .or_else(|| registry.active_for_controller(&state.agent_id))
+            .or_else(|| registry.active_for_controller(&state.agent_did))
     };
-    let profile_agent_id = public_identity
+    let profile_agent_did = public_identity
         .as_ref()
-        .and_then(|identity| identity.legacy_agent_id.clone())
-        .or_else(|| agent_id.map(ToOwned::to_owned))
+        .and_then(|identity| identity.agent_did.clone())
+        .or_else(|| agent_did.map(ToOwned::to_owned))
         .or_else(|| {
             controller_binding
                 .as_ref()
                 .and_then(|binding| binding.controller_node_id.clone())
         })
-        .unwrap_or_else(|| state.agent_id.clone());
+        .unwrap_or_else(|| state.agent_did.clone());
     let profile = state
         .citizen_registry
         .lock()
         .await
-        .profile(&profile_agent_id);
+        .profile(&profile_agent_did);
     let public_memory_owner = PublicMemoryOwnerView {
         public: public_identity
             .as_ref()
@@ -101,11 +101,11 @@ pub(crate) async fn resolve_identity_context(
         controller: controller_binding
             .as_ref()
             .and_then(|binding| binding.controller_node_id.clone())
-            .unwrap_or(profile_agent_id.clone()),
-        legacy_agent: public_identity
+            .unwrap_or(profile_agent_did.clone()),
+        agent_did: public_identity
             .as_ref()
-            .and_then(|identity| identity.legacy_agent_id.clone())
-            .or_else(|| profile.as_ref().map(|profile| profile.agent_id.clone())),
+            .and_then(|identity| identity.agent_did.clone())
+            .or_else(|| profile.as_ref().map(|profile| profile.agent_did.clone())),
     };
 
     IdentityContextView {

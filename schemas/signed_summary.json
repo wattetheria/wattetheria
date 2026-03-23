@@ -3,9 +3,16 @@
   "$id": "signed_summary.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agent_id", "timestamp", "power", "watt", "reputation", "capacity", "task_stats", "events_digest", "signature"],
+  "required": ["timestamp", "power", "watt", "reputation", "capacity", "task_stats", "events_digest", "signature"],
+  "allOf": [
+    {
+      "anyOf": [
+        {"required": ["agent_did"]}
+      ]
+    }
+  ],
   "properties": {
-    "agent_id": {"type": "string"},
+    "agent_did": {"type": "string"},
     "controller_id": {"type": "string"},
     "public_id": {"type": "string"},
     "timestamp": {"type": "integer"},

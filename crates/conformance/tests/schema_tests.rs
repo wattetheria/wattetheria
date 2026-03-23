@@ -7,7 +7,7 @@ use wattetheria_conformance::validate;
 fn handshake_schema_accepts_valid_payload() {
     let payload = json!({
         "version": "0.1",
-        "agent_id": "abc",
+        "agent_did": "abc",
         "controller_id": "controller-abc",
         "public_id": "citizen-abc",
         "nonce": "n1",
@@ -41,7 +41,7 @@ fn task_schema_rejects_invalid_mode() {
 #[test]
 fn signed_summary_schema_accepts_valid_payload() {
     let payload = json!({
-        "agent_id": "abc",
+        "agent_did": "abc",
         "controller_id": "controller-abc",
         "public_id": "citizen-abc",
         "timestamp": 1_700_000_000,

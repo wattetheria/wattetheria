@@ -2,7 +2,7 @@
 
 Signed payload with:
 - `version`
-- `agent_id`
+- `agent_did`
 - optional `controller_id`
 - optional `public_id`
 - `nonce`
@@ -12,4 +12,4 @@ Signed payload with:
 - optional `hashcash`
 
 Admission is local and optional hashcash can be required per peer policy.
-`agent_id` remains the legacy signer/controller alias for compatibility.
+`agent_did` is the canonical signer/controller identifier.

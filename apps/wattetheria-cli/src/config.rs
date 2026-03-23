@@ -115,7 +115,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
 
     let response = serde_json::json!({
         "status": "ok",
-        "agent_id": identity.agent_id,
+        "agent_did": identity.agent_did,
         "data_dir": data_dir,
         "control_plane_endpoint": read_config(data_dir)?.control_plane_endpoint,
         "token_file": data_dir.join("control.token"),
@@ -167,7 +167,7 @@ pub(crate) async fn run_up(
 
     fs::write(data_dir.join("daemon.pid"), child.id().to_string()).context("write daemon pid")?;
 
-    wait_for_control_plane(&config.control_plane_endpoint, &token, 60).await?;
+    wait_for_control_plane(&config.control_plane_endpoint, &token, 300).await?;
 
     let response = serde_json::json!({
         "status": "ok",

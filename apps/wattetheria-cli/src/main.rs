@@ -555,7 +555,7 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
             let payload: Value = serde_json::from_str(&payload).context("parse --payload JSON")?;
             ensure_capabilities_allowed(
                 data_dir,
-                &format!("oracle:publisher:{}", identity.agent_id),
+                &format!("oracle:publisher:{}", identity.agent_did),
                 TrustLevel::Trusted,
                 &[String::from("oracle.publish")],
                 Some("oracle.publish"),
@@ -572,14 +572,14 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
         } => {
             ensure_capabilities_allowed(
                 data_dir,
-                &format!("oracle:subscriber:{}", identity.agent_id),
+                &format!("oracle:subscriber:{}", identity.agent_did),
                 TrustLevel::Verified,
                 &[String::from("oracle.subscribe")],
                 Some("oracle.subscribe"),
                 None,
             )?;
             let subscription = oracle.subscribe(
-                &identity.agent_id,
+                &identity.agent_did,
                 &feed_id,
                 max_price_watt,
                 &identity,
@@ -589,30 +589,30 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&subscription)?);
         }
         OracleCommand::Credit { agent, watt } => {
-            let target = agent.unwrap_or_else(|| identity.agent_id.clone());
+            let target = agent.unwrap_or_else(|| identity.agent_did.clone());
             let balance = oracle.credit(&target, watt)?;
             oracle.persist(data_dir.join("oracle/state.json"))?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "agent_id": target,
+                    "agent_did": target,
                     "balance": balance,
                 }))?
             );
         }
         OracleCommand::Balance { agent } => {
-            let target = agent.unwrap_or_else(|| identity.agent_id.clone());
+            let target = agent.unwrap_or_else(|| identity.agent_did.clone());
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "agent_id": target,
+                    "agent_did": target,
                     "balance": oracle.balance_of(&target),
                 }))?
             );
         }
         OracleCommand::Pull { feed_id } => {
             let (feeds, settlement) = oracle.pull_for_subscriber_settled(
-                &identity.agent_id,
+                &identity.agent_did,
                 &feed_id,
                 &identity,
                 Some(&event_log),
@@ -843,7 +843,7 @@ async fn post_summary(
 
 fn resolve_public_identity_id(identity_path: &Path, identity: &Identity) -> Option<String> {
     let Some(data_dir) = identity_path.parent() else {
-        return Some(identity.agent_id.clone());
+        return Some(identity.agent_did.clone());
     };
     let public_registry_path = data_dir.join("civilization/public_identities.json");
     let binding_registry_path = data_dir.join("civilization/controller_bindings.json");
@@ -852,12 +852,12 @@ fn resolve_public_identity_id(identity_path: &Path, identity: &Identity) -> Opti
     let binding_registry = ControllerBindingRegistry::load_or_new(&binding_registry_path).ok()?;
 
     binding_registry
-        .active_for_controller(&identity.agent_id)
+        .active_for_controller(&identity.agent_did)
         .and_then(|binding| public_registry.get(&binding.public_id))
         .filter(|public_identity| public_identity.active)
-        .or_else(|| public_registry.active_for_legacy_agent(&identity.agent_id))
+        .or_else(|| public_registry.active_for_agent_did(&identity.agent_did))
         .map(|public_identity| public_identity.public_id)
-        .or_else(|| Some(identity.agent_id.clone()))
+        .or_else(|| Some(identity.agent_did.clone()))
 }
 
 fn read_events(path: &PathBuf) -> Result<Vec<EventRecord>> {

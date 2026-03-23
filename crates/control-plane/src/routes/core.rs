@@ -22,7 +22,7 @@ pub(crate) async fn health(State(state): State<ControlPlaneState>) -> impl IntoR
     Json(json!({
         "ok": true,
         "timestamp": Utc::now().timestamp(),
-        "agent_id": state.agent_id,
+        "agent_did": state.agent_did,
         "uptime_sec": Utc::now().timestamp() - state.started_at,
     }))
 }
@@ -41,7 +41,7 @@ pub(crate) async fn state_view(
         Err(error) => return internal_error(&error),
     };
     let pending_count = state.policy_engine.lock().await.list_pending().len();
-    let identity = identity_context_value(&state, None, Some(&state.agent_id)).await;
+    let identity = identity_context_value(&state, None, Some(&state.agent_did)).await;
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -50,7 +50,7 @@ pub(crate) async fn state_view(
         action: "state.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: None,
         reason: None,
         duration_ms: None,
@@ -58,7 +58,7 @@ pub(crate) async fn state_view(
     });
 
     Json(json!({
-        "agent_id": state.agent_id,
+        "agent_did": state.agent_did,
         "events": events.len(),
         "pending_policy_requests": pending_count,
         "uptime_sec": Utc::now().timestamp() - state.started_at,
@@ -174,7 +174,7 @@ pub(crate) async fn night_shift(
         action: "night_shift.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: None,
         reason: None,
         duration_ms: None,
@@ -224,7 +224,7 @@ pub(crate) async fn night_shift_narrative_payload(
         action: "night_shift.narrative".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: Some("model.invoke".to_string()),
         reason: None,
         duration_ms: None,
@@ -283,7 +283,7 @@ pub(crate) async fn brain_propose_actions(
         action: "brain.propose_actions".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: Some("model.invoke".to_string()),
         reason: None,
         duration_ms: None,
@@ -316,7 +316,7 @@ pub(crate) async fn autonomy_tick(
         action: "autonomy.tick".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: Some("model.invoke".to_string()),
         reason: None,
         duration_ms: None,
@@ -366,7 +366,7 @@ pub(crate) async fn actions(
         action: "action.exec".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_id.clone()),
+        subject: Some(state.agent_did.clone()),
         capability: Some("task.run_demo_market".to_string()),
         reason: None,
         duration_ms: None,
@@ -428,7 +428,7 @@ async fn handle_ws(mut socket: WebSocket, state: ControlPlaneState) {
     let hello = json!({
         "kind": "hello",
         "timestamp": Utc::now().timestamp(),
-        "agent_id": state.agent_id,
+        "agent_did": state.agent_did,
     });
 
     if !send_stream_text(&mut socket, hello.to_string()).await {

@@ -248,7 +248,7 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let rows: Vec<RankingEntry> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows[0].agent_id, "citizen-alpha");
+        assert_eq!(rows[0].agent_did, "citizen-alpha");
 
         let req = Request::builder()
             .uri("/api/events?limit=1")
@@ -257,6 +257,6 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let rows: Vec<EventStreamEntry> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows[0].agent_id, "citizen-alpha");
+        assert_eq!(rows[0].agent_did, "citizen-alpha");
     }
 }

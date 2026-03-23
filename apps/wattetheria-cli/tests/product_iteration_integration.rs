@@ -123,7 +123,7 @@ fn oracle_credit_publish_subscribe_pull_roundtrip() {
     assert!(init.status.success());
 
     let identity_raw = fs::read_to_string(data_dir.join("identity.json")).unwrap();
-    let agent_id = serde_json::from_str::<serde_json::Value>(&identity_raw).unwrap()["agent_id"]
+    let agent_did = serde_json::from_str::<serde_json::Value>(&identity_raw).unwrap()["agent_did"]
         .as_str()
         .unwrap()
         .to_string();
@@ -134,7 +134,7 @@ fn oracle_credit_publish_subscribe_pull_roundtrip() {
         "grant_id": "integration-oracle-publish",
         "created_at": 0,
         "approved_by": "integration-test",
-        "subject_pattern": format!("oracle:publisher:{agent_id}"),
+        "subject_pattern": format!("oracle:publisher:{agent_did}"),
         "capability_pattern": "oracle.publish",
         "scope": "permanent",
         "session_id": null

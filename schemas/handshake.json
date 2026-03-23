@@ -3,10 +3,17 @@
   "$id": "handshake.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "agent_id", "nonce", "timestamp", "capabilities_summary", "online_proof"],
+  "required": ["version", "nonce", "timestamp", "capabilities_summary", "online_proof"],
+  "allOf": [
+    {
+      "anyOf": [
+        {"required": ["agent_did"]}
+      ]
+    }
+  ],
   "properties": {
     "version": {"type": "string"},
-    "agent_id": {"type": "string"},
+    "agent_did": {"type": "string"},
     "controller_id": {"type": "string"},
     "public_id": {"type": "string"},
     "nonce": {"type": "string"},

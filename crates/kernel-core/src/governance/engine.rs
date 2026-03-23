@@ -13,7 +13,7 @@ use crate::signing::{canonical_bytes, sign_payload, verify_payload};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CivicLicense {
-    pub agent_id: String,
+    pub agent_did: String,
     pub issued_at: i64,
     pub expires_at: i64,
     pub issued_by: String,
@@ -22,7 +22,7 @@ pub struct CivicLicense {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SovereigntyBond {
-    pub agent_id: String,
+    pub agent_did: String,
     pub amount_watt: i64,
     pub locked_until: i64,
     pub active: bool,
@@ -30,7 +30,7 @@ pub struct SovereigntyBond {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisApproval {
-    pub signer_agent_id: String,
+    pub signer_agent_did: String,
     pub signature: String,
 }
 
@@ -151,50 +151,50 @@ impl GovernanceEngine {
 
     pub fn issue_license(
         &mut self,
-        agent_id: &str,
+        agent_did: &str,
         issuer: &str,
         proof_event_hash: &str,
         ttl_days: i64,
     ) -> CivicLicense {
         let now = Utc::now().timestamp();
         let license = CivicLicense {
-            agent_id: agent_id.to_string(),
+            agent_did: agent_did.to_string(),
             issued_at: now,
             expires_at: now + ttl_days * 24 * 3600,
             issued_by: issuer.to_string(),
             proof_event_hash: proof_event_hash.to_string(),
         };
-        self.licenses.insert(agent_id.to_string(), license.clone());
+        self.licenses.insert(agent_did.to_string(), license.clone());
         license
     }
 
     pub fn lock_bond(
         &mut self,
-        agent_id: &str,
+        agent_did: &str,
         amount_watt: i64,
         lock_days: i64,
     ) -> SovereigntyBond {
         let now = Utc::now().timestamp();
         let bond = SovereigntyBond {
-            agent_id: agent_id.to_string(),
+            agent_did: agent_did.to_string(),
             amount_watt,
             locked_until: now + lock_days * 24 * 3600,
             active: true,
         };
-        self.bonds.insert(agent_id.to_string(), bond.clone());
+        self.bonds.insert(agent_did.to_string(), bond.clone());
         bond
     }
 
     #[must_use]
-    pub fn has_valid_license(&self, agent_id: &str) -> bool {
+    pub fn has_valid_license(&self, agent_did: &str) -> bool {
         self.licenses
-            .get(agent_id)
+            .get(agent_did)
             .is_some_and(|license| license.expires_at >= Utc::now().timestamp())
     }
 
     #[must_use]
-    pub fn has_active_bond(&self, agent_id: &str, min_amount: i64) -> bool {
-        self.bonds.get(agent_id).is_some_and(|bond| {
+    pub fn has_active_bond(&self, agent_did: &str, min_amount: i64) -> bool {
+        self.bonds.get(agent_did).is_some_and(|bond| {
             bond.active
                 && bond.amount_watt >= min_amount
                 && bond.locked_until >= Utc::now().timestamp()
@@ -215,7 +215,7 @@ impl GovernanceEngine {
             created_at,
         };
         Ok(GenesisApproval {
-            signer_agent_id: identity.agent_id.clone(),
+            signer_agent_did: identity.agent_did.clone(),
             signature: sign_payload(&payload, identity)?,
         })
     }
@@ -247,7 +247,7 @@ impl GovernanceEngine {
 
         let unique_signers: BTreeSet<_> = approvals
             .iter()
-            .map(|a| a.signer_agent_id.clone())
+            .map(|a| a.signer_agent_did.clone())
             .collect();
         if unique_signers.len() < request.min_approvals {
             bail!("not enough unique genesis approvals");
@@ -255,7 +255,7 @@ impl GovernanceEngine {
 
         // Every approval must sign the same genesis payload.
         for approval in approvals {
-            if !verify_payload(&payload, &approval.signature, &approval.signer_agent_id)
+            if !verify_payload(&payload, &approval.signature, &approval.signer_agent_did)
                 .context("verify genesis approval")?
             {
                 bail!("invalid genesis signature");
@@ -611,11 +611,11 @@ impl GovernanceEngine {
         successor: Option<&str>,
         min_bond: i64,
     ) -> Result<SubnetPlanet> {
-        if let Some(agent_id) = successor {
-            if !self.has_valid_license(agent_id) {
+        if let Some(agent_did) = successor {
+            if !self.has_valid_license(agent_did) {
                 bail!("successor missing valid civic license");
             }
-            if !self.has_active_bond(agent_id, min_bond) {
+            if !self.has_active_bond(agent_did, min_bond) {
                 bail!("successor missing active sovereignty bond");
             }
         }
@@ -626,10 +626,10 @@ impl GovernanceEngine {
         if planet.government_status != GovernmentStatus::Custody {
             bail!("planet is not in custody");
         }
-        if let Some(agent_id) = successor {
-            planet.creator = agent_id.to_string();
-            planet.validators.insert(agent_id.to_string());
-            planet.relays.insert(agent_id.to_string());
+        if let Some(agent_did) = successor {
+            planet.creator = agent_did.to_string();
+            planet.validators.insert(agent_did.to_string());
+            planet.relays.insert(agent_did.to_string());
         }
         planet.government_status = GovernmentStatus::Active;
         planet.custody = None;
@@ -686,20 +686,20 @@ mod tests {
         let s1 = Identity::new_random();
         let s2 = Identity::new_random();
 
-        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        gov.lock_bond(&creator.agent_id, 100, 30);
+        gov.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        gov.lock_bond(&creator.agent_did, 100, 30);
 
         let ts = Utc::now().timestamp();
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-p", "Planet P", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-p", "Planet P", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-p", "Planet P", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-p", "Planet P", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         let request = PlanetCreationRequest {
             subnet_id: "planet-p".to_string(),
             name: "Planet P".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.05,
             constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
@@ -711,8 +711,8 @@ mod tests {
 
         let loaded = GovernanceEngine::load_or_new(&path).unwrap();
         assert!(loaded.planet("planet-p").is_some());
-        assert!(loaded.has_valid_license(&creator.agent_id));
-        assert!(loaded.has_active_bond(&creator.agent_id, 50));
+        assert!(loaded.has_valid_license(&creator.agent_did));
+        assert!(loaded.has_active_bond(&creator.agent_did, 50));
     }
 
     #[test]
@@ -722,21 +722,21 @@ mod tests {
         let s1 = Identity::new_random();
         let s2 = Identity::new_random();
 
-        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        gov.lock_bond(&creator.agent_id, 100, 30);
+        gov.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        gov.lock_bond(&creator.agent_did, 100, 30);
 
         let ts = Utc::now().timestamp();
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
 
         let request = PlanetCreationRequest {
             subnet_id: "planet-a".to_string(),
             name: "Planet A".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.05,
             constitution_template: PlanetConstitutionTemplate::CorporateCharter,
@@ -754,18 +754,18 @@ mod tests {
         let mut gov = GovernanceEngine::default();
         let creator = Identity::new_random();
         let signer = Identity::new_random();
-        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        gov.lock_bond(&creator.agent_id, 100, 30);
+        gov.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        gov.lock_bond(&creator.agent_did, 100, 30);
         let ts = Utc::now().timestamp();
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-b", "Planet B", &creator.agent_id, ts, &signer)
+            GovernanceEngine::sign_genesis("planet-b", "Planet B", &creator.agent_did, ts, &signer)
                 .unwrap(),
         ];
 
         let request = PlanetCreationRequest {
             subnet_id: "planet-b".to_string(),
             name: "Planet B".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.05,
             constitution_template: PlanetConstitutionTemplate::FrontierCompact,
@@ -787,20 +787,20 @@ mod tests {
         let s1 = Identity::new_random();
         let s2 = Identity::new_random();
 
-        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        gov.lock_bond(&creator.agent_id, 100, 30);
+        gov.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        gov.lock_bond(&creator.agent_did, 100, 30);
         let ts = Utc::now().timestamp();
 
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-x", "Planet X", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-x", "Planet X", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-x", "Planet X", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-x", "Planet X", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         let request = PlanetCreationRequest {
             subnet_id: "planet-x".to_string(),
             name: "Planet X".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.05,
             constitution_template: PlanetConstitutionTemplate::CorporateCharter,
@@ -814,13 +814,13 @@ mod tests {
                 &planet.subnet_id,
                 "update_tax_rate",
                 serde_json::json!({"tax_rate": 0.08}),
-                &creator.agent_id,
+                &creator.agent_did,
             )
             .unwrap();
 
-        gov.vote_proposal(&proposal.proposal_id, &s1.agent_id, true)
+        gov.vote_proposal(&proposal.proposal_id, &s1.agent_did, true)
             .unwrap();
-        gov.vote_proposal(&proposal.proposal_id, &s2.agent_id, true)
+        gov.vote_proposal(&proposal.proposal_id, &s2.agent_did, true)
             .unwrap();
         let all_proposals = gov.list_proposals(None);
         assert_eq!(all_proposals.len(), 1);
@@ -831,16 +831,16 @@ mod tests {
         assert_eq!(finalized.status, ProposalStatus::Accepted);
         assert!((gov.planet("planet-x").unwrap().tax_rate - 0.08).abs() < f64::EPSILON);
 
-        gov.record_validator_heartbeat("planet-x", &s1.agent_id, Utc::now().timestamp());
-        gov.record_validator_heartbeat("planet-x", &s2.agent_id, Utc::now().timestamp() - 10_000);
+        gov.record_validator_heartbeat("planet-x", &s1.agent_did, Utc::now().timestamp());
+        gov.record_validator_heartbeat("planet-x", &s2.agent_did, Utc::now().timestamp() - 10_000);
         let rotated = gov
             .rotate_validators(
                 "planet-x",
                 3600,
-                &[creator.agent_id.clone(), s2.agent_id.clone()],
+                &[creator.agent_did.clone(), s2.agent_did.clone()],
             )
             .unwrap();
-        assert!(rotated.contains(&s1.agent_id));
+        assert!(rotated.contains(&s1.agent_did));
     }
 
     #[test]
@@ -851,18 +851,18 @@ mod tests {
         let s2 = Identity::new_random();
         let ts = Utc::now().timestamp();
 
-        gov.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        gov.lock_bond(&creator.agent_id, 100, 30);
+        gov.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        gov.lock_bond(&creator.agent_did, 100, 30);
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-z", "Planet Z", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         let request = PlanetCreationRequest {
             subnet_id: "planet-z".to_string(),
             name: "Planet Z".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.03,
             constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
@@ -890,20 +890,20 @@ mod tests {
         let ts = Utc::now().timestamp();
 
         for identity in [&creator, &challenger] {
-            gov.issue_license(&identity.agent_id, &identity.agent_id, "proof", 7);
-            gov.lock_bond(&identity.agent_id, 200, 30);
+            gov.issue_license(&identity.agent_did, &identity.agent_did, "proof", 7);
+            gov.lock_bond(&identity.agent_did, 200, 30);
         }
 
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-r", "Planet R", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         let request = PlanetCreationRequest {
             subnet_id: "planet-r".to_string(),
             name: "Planet R".to_string(),
-            creator: creator.agent_id.clone(),
+            creator: creator.agent_did.clone(),
             created_at: ts,
             tax_rate: 0.04,
             constitution_template: PlanetConstitutionTemplate::FrontierCompact,
@@ -914,15 +914,15 @@ mod tests {
         gov.adjust_stability("planet-r", -70).unwrap();
 
         let recall = gov
-            .start_recall("planet-r", &creator.agent_id, "grid collapse", 25)
+            .start_recall("planet-r", &creator.agent_did, "grid collapse", 25)
             .unwrap();
         assert_eq!(recall.government_status, GovernmentStatus::Recall);
         assert!(recall.active_recall.is_some());
 
         let resolved = gov
-            .resolve_recall("planet-r", &challenger.agent_id, 100)
+            .resolve_recall("planet-r", &challenger.agent_did, 100)
             .unwrap();
-        assert_eq!(resolved.creator, challenger.agent_id);
+        assert_eq!(resolved.creator, challenger.agent_did);
         assert_eq!(resolved.government_status, GovernmentStatus::Active);
 
         let custody = gov
@@ -936,9 +936,9 @@ mod tests {
         assert!(custody.custody.is_some());
 
         let taken = gov
-            .hostile_takeover("planet-r", &creator.agent_id, 100, "retook orbit")
+            .hostile_takeover("planet-r", &creator.agent_did, 100, "retook orbit")
             .unwrap();
-        assert_eq!(taken.creator, creator.agent_id);
+        assert_eq!(taken.creator, creator.agent_did);
         assert_eq!(taken.government_status, GovernmentStatus::Active);
         assert!(taken.last_takeover_by.is_some());
     }

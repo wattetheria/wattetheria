@@ -23,7 +23,7 @@ pub struct EmergencyState {
     pub severity: u8,
     pub title: String,
     pub description: String,
-    pub agent_id: String,
+    pub agent_did: String,
     pub subnet_id: Option<String>,
     pub zone_id: Option<String>,
     pub requires_human: bool,
@@ -32,13 +32,13 @@ pub struct EmergencyState {
 
 #[must_use]
 pub fn evaluate_emergencies(
-    agent_id: &str,
+    agent_did: &str,
     profiles: &CitizenRegistry,
     missions: &MissionBoard,
     governance: &GovernanceEngine,
     galaxy: &GalaxyState,
 ) -> Vec<EmergencyState> {
-    let Some(profile) = profiles.profile(agent_id) else {
+    let Some(profile) = profiles.profile(agent_did) else {
         return Vec::new();
     };
     let directive = strategy_directive(&profile.strategy);
@@ -49,7 +49,7 @@ pub fn evaluate_emergencies(
     {
         if planet.government_status == GovernmentStatus::Custody {
             emergencies.push(build_emergency(EmergencySpec {
-                agent_id: agent_id.to_string(),
+                agent_did: agent_did.to_string(),
                 kind: EmergencyKind::Custody,
                 severity: 5,
                 title: "Planet placed into custody".to_string(),
@@ -61,7 +61,7 @@ pub fn evaluate_emergencies(
             }));
         } else if planet.government_status == GovernmentStatus::Recall {
             emergencies.push(build_emergency(EmergencySpec {
-                agent_id: agent_id.to_string(),
+                agent_did: agent_did.to_string(),
                 kind: EmergencyKind::RecallElection,
                 severity: 4,
                 title: "Recall triggered".to_string(),
@@ -74,7 +74,7 @@ pub fn evaluate_emergencies(
             }));
         } else if planet.stability <= 30 {
             emergencies.push(build_emergency(EmergencySpec {
-                agent_id: agent_id.to_string(),
+                agent_did: agent_did.to_string(),
                 kind: EmergencyKind::GovernanceInstability,
                 severity: 4,
                 title: "Planet stability critical".to_string(),
@@ -93,7 +93,7 @@ pub fn evaluate_emergencies(
                 continue;
             }
             emergencies.push(build_emergency(EmergencySpec {
-                agent_id: agent_id.to_string(),
+                agent_did: agent_did.to_string(),
                 kind: EmergencyKind::GalaxyEvent,
                 severity: event.severity,
                 title: event.title,
@@ -114,7 +114,7 @@ pub fn evaluate_emergencies(
         );
         if urgent_domain && (relevant_subnet || relevant_zone) {
             emergencies.push(build_emergency(EmergencySpec {
-                agent_id: agent_id.to_string(),
+                agent_did: agent_did.to_string(),
                 kind: EmergencyKind::SecurityMission,
                 severity: 3,
                 title: mission.title,
@@ -192,7 +192,7 @@ fn build_emergency(spec: EmergencySpec) -> EmergencyState {
         severity: spec.severity,
         title: spec.title,
         description: spec.description,
-        agent_id: spec.agent_id,
+        agent_did: spec.agent_did,
         subnet_id: spec.subnet_id,
         zone_id: spec.zone_id,
         requires_human: spec.requires_human,
@@ -201,7 +201,7 @@ fn build_emergency(spec: EmergencySpec) -> EmergencyState {
 }
 
 struct EmergencySpec {
-    agent_id: String,
+    agent_did: String,
     kind: EmergencyKind,
     severity: u8,
     title: String,
@@ -236,12 +236,12 @@ mod tests {
         let s2 = Identity::new_random();
         let ts = Utc::now().timestamp();
         let mut governance = GovernanceEngine::default();
-        governance.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        governance.lock_bond(&creator.agent_id, 100, 30);
+        governance.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        governance.lock_bond(&creator.agent_did, 100, 30);
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         governance
@@ -249,7 +249,7 @@ mod tests {
                 &PlanetCreationRequest {
                     subnet_id: "planet-a".to_string(),
                     name: "Planet A".to_string(),
-                    creator: creator.agent_id.clone(),
+                    creator: creator.agent_did.clone(),
                     created_at: ts,
                     tax_rate: 0.04,
                     constitution_template: PlanetConstitutionTemplate::MigrantCouncil,
@@ -316,12 +316,12 @@ mod tests {
         let s2 = Identity::new_random();
         let ts = Utc::now().timestamp();
         let mut governance = GovernanceEngine::default();
-        governance.issue_license(&creator.agent_id, &creator.agent_id, "proof", 7);
-        governance.lock_bond(&creator.agent_id, 100, 30);
+        governance.issue_license(&creator.agent_did, &creator.agent_did, "proof", 7);
+        governance.lock_bond(&creator.agent_did, 100, 30);
         let approvals = vec![
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s1)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s1)
                 .unwrap(),
-            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_id, ts, &s2)
+            GovernanceEngine::sign_genesis("planet-a", "Planet A", &creator.agent_did, ts, &s2)
                 .unwrap(),
         ];
         governance
@@ -329,7 +329,7 @@ mod tests {
                 &PlanetCreationRequest {
                     subnet_id: "planet-a".to_string(),
                     name: "Planet A".to_string(),
-                    creator: creator.agent_id.clone(),
+                    creator: creator.agent_did.clone(),
                     created_at: ts,
                     tax_rate: 0.04,
                     constitution_template: PlanetConstitutionTemplate::MigrantCouncil,

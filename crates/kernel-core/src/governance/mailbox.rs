@@ -75,7 +75,7 @@ impl CrossSubnetMailbox {
         let message_id_for_signature = message_id.clone();
         let signable = MessageSignable {
             message_id: &message_id_for_signature,
-            from_agent: &from_identity.agent_id,
+            from_agent: &from_identity.agent_did,
             to_agent,
             from_subnet,
             to_subnet,
@@ -85,7 +85,7 @@ impl CrossSubnetMailbox {
 
         let message = CrossSubnetMessage {
             message_id,
-            from_agent: from_identity.agent_id.clone(),
+            from_agent: from_identity.agent_did.clone(),
             to_agent: to_agent.to_string(),
             from_subnet: from_subnet.to_string(),
             to_subnet: to_subnet.to_string(),
@@ -146,7 +146,7 @@ mod tests {
         mailbox
             .enqueue_signed(
                 &sender,
-                &receiver.agent_id,
+                &receiver.agent_did,
                 "planet-a",
                 "planet-b",
                 json!({"text": "persist-test"}),
@@ -157,7 +157,7 @@ mod tests {
         let loaded = CrossSubnetMailbox::load_or_new(&path).unwrap();
         let pending = loaded.fetch_for_subnet("planet-b");
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].from_agent, sender.agent_id);
+        assert_eq!(pending[0].from_agent, sender.agent_did);
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
         let message = mailbox
             .enqueue_signed(
                 &sender,
-                &receiver.agent_id,
+                &receiver.agent_did,
                 "planet-a",
                 "planet-b",
                 json!({"text":"hello"}),
