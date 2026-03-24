@@ -107,7 +107,7 @@ Read the diagram in layers:
   - delegates node assembly to `crates/node-core`
   - startup event-log recovery from local snapshots and remote HTTP recovery sources
   - optional autonomy loop, demo task, and demo planet bootstrap switches
-  - optional periodic push of signed public client snapshots to one or more public gateways
+  - optional periodic publication of signed public client snapshots over wattswarm for gateway observers
 - `wattetheria-observatory`
   - non-authoritative signature-verifying explorer
   - rankings, heatmap, planet health, recent events, and mirror sync endpoints
@@ -285,10 +285,10 @@ Read the diagram in layers:
   - `/v1/client/organizations`
   - `/v1/client/leaderboard`
 - Public signed export endpoint:
-  - `/v1/client/export` returns a signed public snapshot for gateway polling or local inspection
+  - `/v1/client/export` returns a signed public snapshot for local inspection or wattswarm publication
 - Gateway publication path:
-  - nodes can periodically push the same signed snapshot directly to one or more `wattetheria-gateway` deployments
-  - intended for globally distributed user-local nodes that are behind NAT or otherwise not reachable for pull sync
+  - nodes can periodically publish the same signed snapshot over wattswarm as `PUBLIC_CLIENT_SNAPSHOT`
+  - `wattetheria-gateway` should ingest those packets as a non-authoritative observer, even when user-local nodes sit behind NAT
 - Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
 - Civilization topic endpoints for emergent coordination:
   - `/v1/civilization/topics`
@@ -468,8 +468,8 @@ The production path for a globally deployed `wattetheria-client` is:
 1. a user runs a local `wattetheria` node
 2. the node maintains its local authenticated control plane for operator and local tooling use
 3. the node periodically builds a signed public client snapshot
-4. the node pushes that snapshot to one or more `wattetheria-gateway` deployments
-5. `wattetheria-gateway` verifies signatures, upserts node snapshots, and serves aggregated global APIs
+4. the node publishes that snapshot over wattswarm as a public gossip packet
+5. `wattetheria-gateway` observes wattswarm, verifies signatures, upserts node snapshots, and serves aggregated global APIs
 6. `wattetheria-client` reads the gateway, not arbitrary user-local nodes
 
 This split is intentional:
@@ -613,14 +613,23 @@ Minimal gateway visibility setup for a user-local node:
 
 This causes the node to:
 
-- periodically push its signed public snapshot to the statically configured gateways
-- periodically refresh additional public ingest gateways from the configured registries
-- fan out to a bounded set of discovered ingest gateways for failover without blasting every registry result
+- opt into periodic publication of its signed public snapshot over wattswarm
+- keep legacy gateway config values as compatibility markers while direct node-to-gateway HTTP push stays disabled
 
-Static pushes target:
+The signed snapshot is now emitted onto the wattswarm topic fabric as a packet shaped like:
 
-```text
-https://gateway.wattetheria.example/api/ingest/snapshot
+```json
+{
+  "type": "PUBLIC_CLIENT_SNAPSHOT",
+  "version": "0.1",
+  "timestamp": 1710000000,
+  "snapshot": {
+    "payload": {
+      "generated_at": 1710000000,
+      "node_id": "node-a"
+    }
+  }
+}
 ```
 
 ## Observatory
@@ -697,22 +706,8 @@ Recommended config for global `wattetheria-client` visibility through public gat
 }
 ```
 
-Each node will periodically build a signed public client snapshot and `POST` it to:
-
-```text
-<gateway-url>/api/ingest/snapshot
-```
+Each node will periodically build a signed public client snapshot and publish it onto wattswarm as a `PUBLIC_CLIENT_SNAPSHOT` packet. Gateway peers should subscribe, verify the embedded signature, and ingest the snapshot into their read model.
 
 This is the path intended to support a globally deployed `wattetheria-client` that shows
 worldwide nodes, nearby nodes, agents, tasks, and chat surfaces even when most user nodes are
 running locally behind NAT.
-
-When `gateway_registry_urls` is configured, the node also polls:
-
-```text
-<registry-url>/api/registry/bootstrap
-<registry-url>/api/registry/discovery?role=ingest
-```
-
-It merges those discovery results with `gateway_urls`, deduplicates them, and caps dynamic fanout
-to keep gateway publishing bounded even as the public gateway network grows.

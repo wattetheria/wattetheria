@@ -166,7 +166,12 @@ fn validate_envelope(
         return Ok(AdmissionVerdict::Accept);
     }
 
-    if config.require_hashcash_for_broadcast && matches!(envelope_type, "ACTION" | "ORACLE_FEED") {
+    if config.require_hashcash_for_broadcast
+        && matches!(
+            envelope_type,
+            "ACTION" | "ORACLE_FEED" | "PUBLIC_CLIENT_SNAPSHOT"
+        )
+    {
         let hashcash_payload = value
             .get("hashcash")
             .filter(|payload| !payload.is_null())
@@ -331,8 +336,9 @@ mod tests {
     #[test]
     fn broadcast_requires_hashcash_when_enabled() {
         let packet = json!({
-            "type": "ORACLE_FEED",
-            "feed": {"feed_id":"btc-price"}
+            "type": "PUBLIC_CLIENT_SNAPSHOT",
+            "timestamp": Utc::now().timestamp(),
+            "snapshot": {"payload": {"node_id": "node-a"}}
         });
         let bytes = serde_json::to_vec(&packet).unwrap();
         let verdict = validate_gossip_packet(

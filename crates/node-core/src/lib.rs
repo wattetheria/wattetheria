@@ -1,12 +1,11 @@
 mod bootstrap;
 pub mod cli;
 mod demo;
-mod gateway_registry;
-mod gateway_sync;
 mod handshake;
 mod oracle_sync;
 mod recovery;
 mod runtime_loop;
+mod snapshot_broadcast;
 
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
@@ -22,10 +21,12 @@ use bootstrap::{
 };
 pub use cli::Cli;
 use demo::{ignite_demo_planet, run_demo_task};
-use gateway_sync::spawn_gateway_publish_task;
 use handshake::build_signed_handshake_for_public_identity;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, log_listeners, run_loop};
+use snapshot_broadcast::{
+    gateway_push_interval_sec, gateway_startup_jitter_secs, gateway_sync_enabled,
+};
 use wattetheria_control_plane::{
     ControlPlaneState, RateLimiter, StreamEvent, run_autonomy_tick_once, serve_control_plane,
 };
@@ -108,7 +109,15 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
-    let gateway_publish_task = spawn_gateway_publish_task(&cli, runtime.control_state.clone());
+    let gateway_publish_enabled = gateway_sync_enabled(&cli);
+    let gateway_push_interval_sec = gateway_push_interval_sec(&cli);
+    let gateway_startup_jitter_sec =
+        gateway_startup_jitter_secs(&runtime.identity.agent_did, gateway_push_interval_sec);
+    if gateway_publish_enabled {
+        warn!(
+            "gateway snapshot publication now rides wattswarm gossip; direct HTTP gateway push is disabled"
+        );
+    }
     let admission_config = build_admission_config(&cli);
     let mut nonce_tracker = NonceTracker::new(admission_config.max_time_drift_sec * 2);
     let run_result = run_loop(
@@ -117,21 +126,22 @@ pub async fn run(cli: Cli) -> Result<()> {
             online_proof: &mut runtime.online_proof,
             online_proof_path: &runtime.online_proof_path,
             identity: &runtime.identity,
+            control_state: &runtime.control_state,
             admission_config: &admission_config,
             nonce_tracker: &mut nonce_tracker,
             web_of_trust: &mut runtime.web_of_trust,
             event_log: &runtime.event_log,
             oracle_registry: &mut runtime.oracle_registry,
             oracle_state_path: &runtime.oracle_state_path,
+            gateway_publish_enabled,
+            gateway_push_interval_sec,
+            gateway_startup_jitter_sec,
             enable_hashcash_broadcast: cli.enable_hashcash,
         },
     )
     .await;
     control_task.abort();
     if let Some(task) = autonomy_task {
-        task.abort();
-    }
-    if let Some(task) = gateway_publish_task {
         task.abort();
     }
     run_result
