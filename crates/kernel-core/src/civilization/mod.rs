@@ -5,4 +5,5 @@ pub mod metrics;
 pub mod missions;
 pub mod organizations;
 pub mod profiles;
+pub mod relationships;
 pub mod topics;

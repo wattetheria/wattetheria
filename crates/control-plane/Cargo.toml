@@ -2,8 +2,6 @@
 name = "wattetheria-control-plane"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-authors.workspace = true
 
 [lints]
 workspace = true
@@ -16,12 +14,20 @@ path = "src/lib.rs"
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
+prost = "0.13"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tonic = { version = "0.12", features = ["transport"] }
+tracing.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+
+[build-dependencies]
+prost-build = "0.13"
+protoc-bin-vendored = "3"
+tonic-build = "0.12"
 
 [dev-dependencies]
 async-trait.workspace = true

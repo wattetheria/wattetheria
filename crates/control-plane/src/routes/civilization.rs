@@ -15,7 +15,7 @@ use crate::state::{
     BootstrapIdentityBody, CitizenProfileBody, CitizenProfileQuery, ControlPlaneState,
     ControllerBindingBody, ControllerBindingQuery, EmergencyQuery, GalaxyEventBody,
     GalaxyEventsQuery, GalaxyGenerateBody, MetricsQuery, NightShiftQuery, PublicIdentityBody,
-    PublicIdentityQuery, StreamEvent,
+    PublicIdentityQuery, RelationshipBody, RelationshipQuery, StreamEvent,
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::emergency::{evaluate_emergencies, generate_system_galaxy_events};
@@ -24,6 +24,7 @@ use wattetheria_kernel::identities::{
 };
 use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::metrics::compute_scores;
+use wattetheria_kernel::relationships::RelationshipEdge;
 
 #[derive(Debug, Clone)]
 struct BootstrapIdentityPlan {
@@ -190,6 +191,98 @@ pub(crate) async fn citizen_profile(
     });
 
     Json(identity_context_response(&context)).into_response()
+}
+
+pub(crate) async fn list_relationships(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<RelationshipQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let context = resolve_identity_context(&state, query.public_id.as_deref(), None).await;
+    let public_id = context.public_identity.as_ref().map_or_else(
+        || context.public_memory_owner.controller.clone(),
+        |identity| identity.public_id.clone(),
+    );
+    let registry = state.relationship_registry.lock().await;
+    let mut items = registry.list_for_public(&public_id);
+    if let Some(counterpart) = query.counterpart_public_id.as_deref() {
+        items.retain(|edge| edge.counterpart_public_id == counterpart);
+    }
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.relationships.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(public_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": items.len()})),
+    });
+
+    Json(items).into_response()
+}
+
+pub(crate) async fn upsert_relationship(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<RelationshipBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
+    let public_id = context.public_identity.as_ref().map_or_else(
+        || context.public_memory_owner.controller.clone(),
+        |identity| identity.public_id.clone(),
+    );
+    let edge: RelationshipEdge = {
+        let mut registry = state.relationship_registry.lock().await;
+        let edge = registry.upsert(
+            &public_id,
+            &body.counterpart_public_id,
+            body.kind.clone(),
+            body.active,
+        );
+        if let Err(error) = registry.persist(&state.relationship_registry_state_path) {
+            return internal_error(&error);
+        }
+        edge
+    };
+
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "civilization.relationship.updated".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!(edge),
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.relationships.upsert".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(public_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "counterpart_public_id": body.counterpart_public_id,
+            "kind": body.kind,
+            "active": body.active,
+        })),
+    });
+
+    (StatusCode::ACCEPTED, Json(json!(edge))).into_response()
 }
 
 pub(crate) async fn public_identity(

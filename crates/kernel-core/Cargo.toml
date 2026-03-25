@@ -2,8 +2,6 @@
 name = "wattetheria-kernel-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-authors.workspace = true
 
 [lints]
 workspace = true
@@ -41,6 +39,7 @@ walkdir.workspace = true
 jsonschema.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", rev = "9965eea30b88b4ebb16a4e6a855f4d37ecb70284", package = "wattswarm-protocol" }
 
 [dev-dependencies]

@@ -27,6 +27,8 @@ pub(crate) struct LocalConfig {
     #[serde(default)]
     pub(crate) wattswarm_ui_base_url: Option<String>,
     #[serde(default)]
+    pub(crate) wattswarm_sync_grpc_endpoint: Option<String>,
+    #[serde(default)]
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
@@ -74,6 +76,7 @@ impl Default for LocalConfig {
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
             wattswarm_ui_base_url: None,
+            wattswarm_sync_grpc_endpoint: None,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
             gateway_urls: Vec::new(),
@@ -202,6 +205,9 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
         .arg(config.gateway_discovery_interval_sec.max(30).to_string());
     if let Some(base_url) = &config.wattswarm_ui_base_url {
         command.arg("--wattswarm-ui-base-url").arg(base_url);
+    }
+    if let Some(endpoint) = &config.wattswarm_sync_grpc_endpoint {
+        command.arg("--wattswarm-sync-grpc-endpoint").arg(endpoint);
     }
     for gateway_url in &config.gateway_urls {
         command.arg("--gateway-url").arg(gateway_url);

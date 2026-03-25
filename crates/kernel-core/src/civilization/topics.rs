@@ -13,6 +13,7 @@ pub enum TopicProjectionKind {
     Guild,
     Organization,
     MissionThread,
+    DirectConversation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +26,8 @@ pub struct TopicProfile {
     pub projection_kind: TopicProjectionKind,
     pub organization_id: Option<String>,
     pub mission_id: Option<String>,
+    #[serde(default)]
+    pub participant_public_ids: Vec<String>,
     pub created_by_public_id: String,
     pub why_this_exists: Option<String>,
     pub active: bool,
@@ -41,6 +44,7 @@ pub struct TopicCreateSpec {
     pub projection_kind: TopicProjectionKind,
     pub organization_id: Option<String>,
     pub mission_id: Option<String>,
+    pub participant_public_ids: Vec<String>,
     pub created_by_public_id: String,
     pub why_this_exists: Option<String>,
     pub active: bool,
@@ -90,6 +94,7 @@ impl TopicRegistry {
             projection_kind: spec.projection_kind,
             organization_id: spec.organization_id,
             mission_id: spec.mission_id,
+            participant_public_ids: spec.participant_public_ids,
             created_by_public_id: spec.created_by_public_id,
             why_this_exists: spec.why_this_exists,
             active: spec.active,
@@ -155,6 +160,7 @@ mod tests {
             projection_kind: TopicProjectionKind::WorkingGroup,
             organization_id: Some("org-7".to_string()),
             mission_id: None,
+            participant_public_ids: vec!["captain-aurora".to_string()],
             created_by_public_id: "captain-aurora".to_string(),
             why_this_exists: Some("Shared mission pressure".to_string()),
             active: true,
@@ -165,6 +171,10 @@ mod tests {
         assert_eq!(
             loaded.get(&topic.topic_id).unwrap().display_name,
             "Crew Seven"
+        );
+        assert_eq!(
+            loaded.get(&topic.topic_id).unwrap().participant_public_ids,
+            vec!["captain-aurora".to_string()]
         );
         assert_eq!(
             loaded

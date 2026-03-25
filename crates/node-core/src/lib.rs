@@ -28,7 +28,8 @@ use snapshot_broadcast::{
     gateway_push_interval_sec, gateway_startup_jitter_secs, gateway_sync_enabled,
 };
 use wattetheria_control_plane::{
-    ControlPlaneState, RateLimiter, StreamEvent, run_autonomy_tick_once, serve_control_plane,
+    ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, RateLimiter, StreamEvent,
+    run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::admission::{AdmissionConfig, NonceTracker};
 use wattetheria_kernel::audit::AuditLog;
@@ -41,10 +42,12 @@ use wattetheria_kernel::civilization::identities::{
 use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
+use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
 use wattetheria_kernel::civilization::topics::TopicRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
@@ -77,6 +80,8 @@ struct CivilizationRuntimeState {
     controller_binding_registry_state_path: PathBuf,
     citizen_registry: CitizenRegistry,
     citizen_registry_state_path: PathBuf,
+    relationship_registry: RelationshipRegistry,
+    relationship_registry_state_path: PathBuf,
     organization_registry: OrganizationRegistry,
     organization_registry_state_path: PathBuf,
     topic_registry: TopicRegistry,
@@ -109,6 +114,10 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
+    let wattswarm_sync_task = spawn_wattswarm_sync_bridge(
+        runtime.control_state.clone(),
+        resolve_wattswarm_sync_grpc_endpoint(&cli),
+    );
     let gateway_publish_enabled = gateway_sync_enabled(&cli);
     let gateway_push_interval_sec = gateway_push_interval_sec(&cli);
     let gateway_startup_jitter_sec =
@@ -141,6 +150,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     )
     .await;
     control_task.abort();
+    if let Some(task) = wattswarm_sync_task {
+        task.abort();
+    }
     if let Some(task) = autonomy_task {
         task.abort();
     }
@@ -156,6 +168,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 
     startup_recover_events(&events_path, &snapshots_path, &cli.recovery_sources).await?;
 
+    let local_db = Arc::new(LocalDb::open(cli.data_dir.join("state.db"))?);
     let identity = Identity::load_or_create(identity_path)?;
     let event_log = EventLog::new(events_path)?;
     let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;
@@ -240,6 +253,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         civilization_state,
         brain_engine,
         audit_log,
+        local_db,
         stream_tx,
     );
 
@@ -296,6 +310,7 @@ fn build_control_state(
     civilization_state: CivilizationRuntimeState,
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
+    local_db: Arc<LocalDb>,
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
     ControlPlaneState {
@@ -321,6 +336,8 @@ fn build_control_state(
             .controller_binding_registry_state_path,
         citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
         citizen_registry_state_path: civilization_state.citizen_registry_state_path,
+        relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
+        relationship_registry_state_path: civilization_state.relationship_registry_state_path,
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
         organization_registry_state_path: civilization_state.organization_registry_state_path,
         topic_registry: Arc::new(Mutex::new(civilization_state.topic_registry)),
@@ -333,6 +350,7 @@ fn build_control_state(
         travel_state_registry_state_path: civilization_state.travel_state_registry_state_path,
         brain_engine,
         audit_log,
+        local_db,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
     }
@@ -355,6 +373,9 @@ fn load_civilization_runtime_state(
         ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)?;
     let citizen_registry_state_path = cli.data_dir.join("civilization/profiles.json");
     let citizen_registry = CitizenRegistry::load_or_new(&citizen_registry_state_path)?;
+    let relationship_registry_state_path = cli.data_dir.join("civilization/relationships.json");
+    let relationship_registry =
+        RelationshipRegistry::load_or_new(&relationship_registry_state_path)?;
     let organization_registry_state_path = cli.data_dir.join("civilization/organizations.json");
     let organization_registry =
         OrganizationRegistry::load_or_new(&organization_registry_state_path)?;
@@ -407,6 +428,8 @@ fn load_civilization_runtime_state(
         controller_binding_registry_state_path,
         citizen_registry,
         citizen_registry_state_path,
+        relationship_registry,
+        relationship_registry_state_path,
         organization_registry,
         organization_registry_state_path,
         topic_registry,
@@ -418,6 +441,35 @@ fn load_civilization_runtime_state(
         travel_state_registry,
         travel_state_registry_state_path,
     })
+}
+
+fn resolve_wattswarm_sync_grpc_endpoint(cli: &Cli) -> Option<String> {
+    if let Some(endpoint) = &cli.wattswarm_sync_grpc_endpoint {
+        let endpoint = endpoint.trim();
+        if !endpoint.is_empty() {
+            return Some(endpoint.to_string());
+        }
+    }
+    cli.wattswarm_ui_base_url
+        .as_deref()
+        .and_then(derive_grpc_endpoint_from_ui_base)
+}
+
+fn derive_grpc_endpoint_from_ui_base(base_url: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(base_url).ok()?;
+    let host = url.host_str()?.to_string();
+    let scheme = if url.scheme() == "https" {
+        "https"
+    } else {
+        "http"
+    };
+    url.set_scheme(scheme).ok()?;
+    url.set_host(Some(&host)).ok()?;
+    url.set_port(Some(DEFAULT_WATTSWARM_SYNC_GRPC_PORT)).ok()?;
+    url.set_path("");
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn build_admission_config(cli: &Cli) -> AdmissionConfig {
@@ -459,4 +511,21 @@ fn spawn_autonomy_task(
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_grpc_endpoint_from_ui_base;
+
+    #[test]
+    fn derive_grpc_endpoint_from_ui_base_rewrites_port() {
+        assert_eq!(
+            derive_grpc_endpoint_from_ui_base("http://127.0.0.1:7788").as_deref(),
+            Some("http://127.0.0.1:7791")
+        );
+        assert_eq!(
+            derive_grpc_endpoint_from_ui_base("https://wattswarm.internal/ui").as_deref(),
+            Some("https://wattswarm.internal:7791")
+        );
+    }
 }

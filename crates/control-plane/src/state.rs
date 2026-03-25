@@ -21,10 +21,12 @@ use wattetheria_kernel::civilization::organizations::{
 use wattetheria_kernel::civilization::profiles::{
     CitizenRegistry, Faction, RolePath, StrategyProfile,
 };
+use wattetheria_kernel::civilization::relationships::{RelationshipKind, RelationshipRegistry};
 use wattetheria_kernel::civilization::topics::{TopicProjectionKind, TopicRegistry};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::TravelStateRegistry;
@@ -90,6 +92,8 @@ pub struct ControlPlaneState {
     pub controller_binding_registry_state_path: PathBuf,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
     pub citizen_registry_state_path: PathBuf,
+    pub relationship_registry: Arc<Mutex<RelationshipRegistry>>,
+    pub relationship_registry_state_path: PathBuf,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
     pub organization_registry_state_path: PathBuf,
     pub topic_registry: Arc<Mutex<TopicRegistry>>,
@@ -102,6 +106,7 @@ pub struct ControlPlaneState {
     pub travel_state_registry_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub audit_log: AuditLog,
+    pub local_db: Arc<LocalDb>,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
 }
@@ -271,6 +276,8 @@ pub struct TopicCreateBody {
     pub projection_kind: TopicProjectionKind,
     pub organization_id: Option<String>,
     pub mission_id: Option<String>,
+    #[serde(default)]
+    pub participant_public_ids: Vec<String>,
     pub why_this_exists: Option<String>,
     pub initial_message: Option<Value>,
 }
@@ -419,6 +426,20 @@ pub struct CitizenProfileBody {
     pub strategy: StrategyProfile,
     pub home_subnet_id: Option<String>,
     pub home_zone_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelationshipQuery {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RelationshipBody {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: String,
+    pub kind: RelationshipKind,
+    pub active: bool,
 }
 
 #[derive(Debug, Deserialize)]

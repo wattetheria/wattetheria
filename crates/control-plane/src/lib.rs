@@ -1,9 +1,11 @@
 mod auth;
 mod autonomy;
+mod swarm_sync;
 pub mod routes {
     pub(crate) mod civilization;
     pub(crate) mod client;
     pub(crate) mod client_api;
+    pub(crate) mod client_swarm;
     pub(crate) mod console;
     pub(crate) mod core;
     pub(crate) mod game;
@@ -31,6 +33,7 @@ pub use routes::client_api::{
     push_signed_public_client_snapshot,
 };
 pub use state::{ClientExportQuery, ControlPlaneState, RateLimiter, StreamEvent};
+pub use swarm_sync::{DEFAULT_WATTSWARM_SYNC_GRPC_PORT, spawn_wattswarm_sync_bridge};
 
 pub fn app(state: ControlPlaneState) -> Router {
     Router::new()
@@ -108,8 +111,33 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         )
         .route("/v1/client/tasks", get(routes::client_api::client_tasks))
         .route(
+            "/v1/client/task-activity",
+            get(routes::client_swarm::client_task_activity),
+        )
+        .route(
             "/v1/client/organizations",
             get(routes::client_api::client_organizations),
+        )
+        .route("/v1/client/hives", get(routes::client_swarm::client_hives))
+        .route(
+            "/v1/client/hives/messages",
+            get(routes::client_swarm::client_topic_messages),
+        )
+        .route(
+            "/v1/client/conversations",
+            get(routes::client_swarm::client_conversations),
+        )
+        .route(
+            "/v1/client/conversations/messages",
+            get(routes::client_swarm::client_topic_messages),
+        )
+        .route(
+            "/v1/client/friends",
+            get(routes::client_swarm::client_friends),
+        )
+        .route(
+            "/v1/client/friends/messages",
+            get(routes::client_swarm::client_topic_messages),
         )
         .route(
             "/v1/client/leaderboard",
@@ -217,6 +245,11 @@ fn civilization_router() -> Router<ControlPlaneState> {
             "/v1/civilization/profile",
             get(routes::civilization::citizen_profile)
                 .post(routes::civilization::citizen_profile_upsert),
+        )
+        .route(
+            "/v1/civilization/friends",
+            get(routes::civilization::list_relationships)
+                .post(routes::civilization::upsert_relationship),
         )
         .merge(organization_civilization_router())
         .merge(topic_civilization_router())
@@ -499,6 +532,7 @@ mod tests {
         let controller_binding_registry_state_path =
             dir.path().join("civilization/controller_bindings.json");
         let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
+        let relationship_registry_state_path = dir.path().join("civilization/relationships.json");
         let organization_registry_state_path = dir.path().join("civilization/organizations.json");
         let topic_registry_state_path = dir.path().join("civilization/topics.json");
         let galaxy_state_path = dir.path().join("galaxy/state.json");
@@ -580,6 +614,12 @@ mod tests {
         let citizen_registry = Arc::new(Mutex::new(
             CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
         ));
+        let relationship_registry = Arc::new(Mutex::new(
+            wattetheria_kernel::relationships::RelationshipRegistry::load_or_new(
+                &relationship_registry_state_path,
+            )
+            .unwrap(),
+        ));
         let organization_registry = Arc::new(Mutex::new(
             OrganizationRegistry::load_or_new(&organization_registry_state_path).unwrap(),
         ));
@@ -638,6 +678,8 @@ mod tests {
             controller_binding_registry_state_path,
             citizen_registry,
             citizen_registry_state_path,
+            relationship_registry,
+            relationship_registry_state_path,
             organization_registry,
             organization_registry_state_path,
             topic_registry,
@@ -650,6 +692,9 @@ mod tests {
             travel_state_registry_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             audit_log,
+            local_db: Arc::new(
+                wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"),
+            ),
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
         };

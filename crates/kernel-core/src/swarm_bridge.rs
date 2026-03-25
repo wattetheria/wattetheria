@@ -16,6 +16,10 @@ use wattswarm_protocol::types::{
 };
 
 use crate::galaxy_task::GalaxyTaskIntent;
+use crate::swarm_sync::{
+    SwarmKnowledgeExportSnapshot, SwarmRunEventsSnapshot, SwarmRunResultSnapshot,
+    SwarmTaskDecisionSnapshot, SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot,
+};
 use crate::task_engine::TaskEngine;
 use crate::types::{AgentStats, Reward, Sla, Task, VerificationMode, VerificationSpec};
 
@@ -140,6 +144,52 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         Err(anyhow!("wattswarm peers are not configured"))
+    }
+
+    async fn task_run_projection(
+        &self,
+        _task_limit: usize,
+        _run_limit: usize,
+    ) -> Result<SwarmTaskRunProjectionSnapshot> {
+        Err(anyhow!("wattswarm task/run projection is not configured"))
+    }
+
+    async fn task_decision_snapshot(&self, _task_id: &str) -> Result<SwarmTaskDecisionSnapshot> {
+        Err(anyhow!(
+            "wattswarm task decision snapshot is not configured"
+        ))
+    }
+
+    async fn run_result_snapshot(&self, _run_id: &str) -> Result<SwarmRunResultSnapshot> {
+        Err(anyhow!("wattswarm run result snapshot is not configured"))
+    }
+
+    async fn run_events_snapshot(
+        &self,
+        _run_id: &str,
+        _limit: usize,
+    ) -> Result<SwarmRunEventsSnapshot> {
+        Err(anyhow!("wattswarm run events snapshot is not configured"))
+    }
+
+    async fn topic_activity_snapshot(
+        &self,
+        _feed_key: &str,
+        _scope_hint: &str,
+        _limit: usize,
+        _subscriber_node_id: Option<&str>,
+    ) -> Result<SwarmTopicActivitySnapshot> {
+        Err(anyhow!(
+            "wattswarm topic activity snapshot is not configured"
+        ))
+    }
+
+    async fn knowledge_export_snapshot(
+        &self,
+        _task_type: Option<&str>,
+        _task_id: Option<&str>,
+    ) -> Result<SwarmKnowledgeExportSnapshot> {
+        Err(anyhow!("wattswarm knowledge export is not configured"))
     }
 
     async fn submit_galaxy_task(
@@ -298,6 +348,54 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         self.topic_api()?.peers().await
+    }
+
+    async fn task_run_projection(
+        &self,
+        task_limit: usize,
+        run_limit: usize,
+    ) -> Result<SwarmTaskRunProjectionSnapshot> {
+        self.topic_api()?
+            .task_run_projection(task_limit, run_limit)
+            .await
+    }
+
+    async fn task_decision_snapshot(&self, task_id: &str) -> Result<SwarmTaskDecisionSnapshot> {
+        self.topic_api()?.task_decision_snapshot(task_id).await
+    }
+
+    async fn run_result_snapshot(&self, run_id: &str) -> Result<SwarmRunResultSnapshot> {
+        self.topic_api()?.run_result_snapshot(run_id).await
+    }
+
+    async fn run_events_snapshot(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<SwarmRunEventsSnapshot> {
+        self.topic_api()?.run_events_snapshot(run_id, limit).await
+    }
+
+    async fn topic_activity_snapshot(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        limit: usize,
+        subscriber_node_id: Option<&str>,
+    ) -> Result<SwarmTopicActivitySnapshot> {
+        self.topic_api()?
+            .topic_activity_snapshot(feed_key, scope_hint, limit, subscriber_node_id)
+            .await
+    }
+
+    async fn knowledge_export_snapshot(
+        &self,
+        task_type: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<SwarmKnowledgeExportSnapshot> {
+        self.topic_api()?
+            .knowledge_export_snapshot(task_type, task_id)
+            .await
     }
 }
 
@@ -523,6 +621,122 @@ impl HttpWattswarmApi {
             .map(|node_id| SwarmPeerView { node_id })
             .collect())
     }
+
+    async fn task_run_projection(
+        &self,
+        task_limit: usize,
+        run_limit: usize,
+    ) -> Result<SwarmTaskRunProjectionSnapshot> {
+        self.client
+            .get(format!(
+                "{}/api/wattetheria/task-run/snapshot",
+                self.base_url
+            ))
+            .query(&TaskRunSnapshotQuery {
+                task_limit,
+                run_limit,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmTaskRunProjectionSnapshot>()
+            .await
+            .context("decode wattswarm task/run projection")
+    }
+
+    async fn task_decision_snapshot(&self, task_id: &str) -> Result<SwarmTaskDecisionSnapshot> {
+        self.client
+            .get(format!(
+                "{}/api/wattetheria/task/decision/{}",
+                self.base_url, task_id
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmTaskDecisionSnapshot>()
+            .await
+            .context("decode wattswarm task decision snapshot")
+    }
+
+    async fn run_result_snapshot(&self, run_id: &str) -> Result<SwarmRunResultSnapshot> {
+        self.client
+            .get(format!(
+                "{}/api/wattetheria/run/result/{}",
+                self.base_url, run_id
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmRunResultSnapshot>()
+            .await
+            .context("decode wattswarm run result snapshot")
+    }
+
+    async fn run_events_snapshot(
+        &self,
+        run_id: &str,
+        limit: usize,
+    ) -> Result<SwarmRunEventsSnapshot> {
+        self.client
+            .get(format!(
+                "{}/api/wattetheria/run/events/{}",
+                self.base_url, run_id
+            ))
+            .query(&RunEventsSnapshotQuery {
+                limit: i64::try_from(limit).unwrap_or(i64::MAX),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmRunEventsSnapshot>()
+            .await
+            .context("decode wattswarm run events snapshot")
+    }
+
+    async fn topic_activity_snapshot(
+        &self,
+        feed_key: &str,
+        scope_hint: &str,
+        limit: usize,
+        subscriber_node_id: Option<&str>,
+    ) -> Result<SwarmTopicActivitySnapshot> {
+        self.client
+            .get(format!("{}/api/wattetheria/topic/activity", self.base_url))
+            .query(&TopicActivitySnapshotQuery {
+                feed_key: feed_key.to_owned(),
+                scope_hint: scope_hint.to_owned(),
+                limit,
+                subscriber_node_id: subscriber_node_id.map(ToOwned::to_owned),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmTopicActivitySnapshot>()
+            .await
+            .context("decode wattswarm topic activity snapshot")
+    }
+
+    async fn knowledge_export_snapshot(
+        &self,
+        task_type: Option<&str>,
+        task_id: Option<&str>,
+    ) -> Result<SwarmKnowledgeExportSnapshot> {
+        self.client
+            .post(format!(
+                "{}/api/wattetheria/knowledge/export",
+                self.base_url
+            ))
+            .json(&KnowledgeExportRequest {
+                task_type: task_type.map(ToOwned::to_owned),
+                task_id: task_id.map(ToOwned::to_owned),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmKnowledgeExportSnapshot>()
+            .await
+            .context("decode wattswarm knowledge export snapshot")
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -538,6 +752,31 @@ struct TopicMessagesQuery {
 struct TopicCursorQuery {
     feed_key: String,
     subscriber_node_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskRunSnapshotQuery {
+    task_limit: usize,
+    run_limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct RunEventsSnapshotQuery {
+    limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct TopicActivitySnapshotQuery {
+    feed_key: String,
+    scope_hint: String,
+    limit: usize,
+    subscriber_node_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct KnowledgeExportRequest {
+    task_type: Option<String>,
+    task_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -43,6 +43,8 @@ pub struct Cli {
     pub control_plane_bind: String,
     #[arg(long)]
     pub wattswarm_ui_base_url: Option<String>,
+    #[arg(long)]
+    pub wattswarm_sync_grpc_endpoint: Option<String>,
     #[arg(long, default_value_t = 60)]
     pub control_plane_rate_limit: usize,
     #[arg(long, default_value = "rules")]

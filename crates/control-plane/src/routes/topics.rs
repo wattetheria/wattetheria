@@ -115,6 +115,7 @@ pub(crate) async fn create_topic(
             projection_kind: body.projection_kind,
             organization_id: body.organization_id,
             mission_id: body.mission_id,
+            participant_public_ids: body.participant_public_ids,
             created_by_public_id: public_id.clone(),
             why_this_exists: body.why_this_exists,
             active: true,
