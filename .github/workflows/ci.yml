@@ -18,34 +18,24 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CROSS_REPO_READ_TOKEN: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
 
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify cross-repo token
-        run: |
-          if [ -z "${CROSS_REPO_READ_TOKEN}" ]; then
-            echo "Missing secret WATTETHERIA_CI_REPO_TOKEN for private sibling repository checkout." >&2
-            exit 1
-          fi
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
@@ -59,27 +49,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify cross-repo token
-        run: |
-          if [ -z "${CROSS_REPO_READ_TOKEN}" ]; then
-            echo "Missing secret WATTETHERIA_CI_REPO_TOKEN for private sibling repository checkout." >&2
-            exit 1
-          fi
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
@@ -94,27 +75,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify cross-repo token
-        run: |
-          if [ -z "${CROSS_REPO_READ_TOKEN}" ]; then
-            echo "Missing secret WATTETHERIA_CI_REPO_TOKEN for private sibling repository checkout." >&2
-            exit 1
-          fi
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
-          token: ${{ secrets.WATTETHERIA_CI_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
