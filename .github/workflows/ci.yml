@@ -24,15 +24,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          path: deps/watt-did
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          path: deps/watt-wallet
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattswarm
+          path: deps/wattswarm
+      - run: |
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+      - run: cargo fmt --all -- --check
 
   clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          path: deps/watt-did
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          path: deps/watt-wallet
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattswarm
+          path: deps/wattswarm
+      - run: |
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -43,6 +75,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          path: deps/watt-did
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          path: deps/watt-wallet
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattswarm
+          path: deps/wattswarm
+      - run: |
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
