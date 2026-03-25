@@ -142,13 +142,7 @@ impl BrainProvider for RulesBrain {
 
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>> {
         let pending_policy = state["pending_policy_requests"].as_i64().unwrap_or(0);
-        let mut out = vec![ActionProposal {
-            action: "task.run_demo_market".to_string(),
-            required_caps: vec!["p2p.publish".to_string()],
-            estimated_cost: 1,
-            risk_level: RiskLevel::Low,
-            rationale: "Maintains deterministic throughput and updates ledger stats".to_string(),
-        }];
+        let mut out = Vec::new();
 
         if pending_policy > 0 {
             out.push(ActionProposal {

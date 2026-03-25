@@ -6,8 +6,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::event_log::EventRecord;
-use crate::identity::Identity;
-use crate::signing::sign_payload;
+use crate::identity::{Identity, IdentityCompatView};
+use crate::signing::{PayloadSigner, sign_payload_with};
 use crate::types::{AgentStats, SignedSummary, TaskStats};
 
 #[derive(Debug, Serialize)]
@@ -42,6 +42,24 @@ pub fn build_signed_summary(
 
 pub fn build_signed_summary_for_public_identity(
     identity: &Identity,
+    public_id: Option<String>,
+    subnet_id: Option<String>,
+    ledger: &AgentStats,
+    recent_events: &[EventRecord],
+) -> Result<SignedSummary> {
+    build_signed_summary_for_identity_and_signer(
+        &identity.compat_view(),
+        identity,
+        public_id,
+        subnet_id,
+        ledger,
+        recent_events,
+    )
+}
+
+pub fn build_signed_summary_for_identity_and_signer(
+    identity: &IdentityCompatView,
+    signer: &(impl PayloadSigner + ?Sized),
     public_id: Option<String>,
     subnet_id: Option<String>,
     ledger: &AgentStats,
@@ -94,7 +112,7 @@ pub fn build_signed_summary_for_public_identity(
         events_digest: &events_digest,
     };
 
-    let signature = sign_payload(&signable, identity)?;
+    let signature = sign_payload_with(&signable, signer)?;
     Ok(SignedSummary {
         agent_did: identity.agent_did.clone(),
         controller_id,

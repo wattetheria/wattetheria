@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::{Value, json};
 
@@ -6,21 +6,9 @@ use crate::state::{ControlPlaneState, StreamEvent};
 use wattetheria_kernel::brain::ActionProposal;
 use wattetheria_kernel::capabilities::TrustLevel;
 use wattetheria_kernel::emergency::evaluate_emergencies;
-use wattetheria_kernel::galaxy_task::GalaxyTaskIntent;
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind};
 use wattetheria_kernel::profiles::strategy_directive;
-
-pub(crate) async fn run_demo_market_task(state: &ControlPlaneState) -> Result<Value> {
-    let task = state
-        .swarm_bridge
-        .run_galaxy_task(&state.agent_did, GalaxyTaskIntent::demo_market_match())
-        .await?;
-    if task.terminal_state != "finalized" {
-        bail!("demo task verification failed");
-    }
-    serde_json::to_value(task).context("serialize bridge demo task result")
-}
 
 pub(crate) fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> Result<Value> {
     let now = Utc::now().timestamp();
@@ -134,19 +122,11 @@ pub async fn run_autonomy_tick_once(state: &ControlPlaneState, hours: i64) -> Re
             continue;
         }
 
-        let execution = match proposal.action.as_str() {
-            "task.run_demo_market" => json!({
-                "action": proposal.action,
-                "status": "ok",
-                "result": run_demo_market_task(state).await?,
-                "capability_checks": capability_checks,
-            }),
-            _ => json!({
-                "action": proposal.action,
-                "status": "skipped_unsupported",
-                "capability_checks": capability_checks,
-            }),
-        };
+        let execution = json!({
+            "action": proposal.action,
+            "status": "skipped_unsupported",
+            "capability_checks": capability_checks,
+        });
         executed.push(execution);
     }
 
@@ -160,9 +140,7 @@ pub async fn run_autonomy_tick_once(state: &ControlPlaneState, hours: i64) -> Re
         "executed_actions": executed,
     });
 
-    state
-        .event_log
-        .append_signed("AUTONOMY_TICK", payload.clone(), &state.identity)?;
+    state.append_signed_event("AUTONOMY_TICK", payload.clone())?;
 
     let _ = state.stream_tx.send(StreamEvent {
         kind: "autonomy.tick".to_string(),

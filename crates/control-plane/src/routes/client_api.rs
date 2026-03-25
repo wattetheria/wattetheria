@@ -14,7 +14,6 @@ use wattetheria_kernel::civilization::missions::{
     MissionDomain, MissionPublisherKind, MissionStatus,
 };
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
-use wattetheria_kernel::signing::sign_payload;
 use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::types::AgentStats;
 
@@ -478,7 +477,7 @@ pub async fn build_signed_public_client_snapshot(
         .map_err(anyhow::Error::msg)?;
     let snapshot =
         build_public_client_snapshot(state, query, &public_id_query, leaderboard_category).await?;
-    let signature = sign_payload(&snapshot, &state.identity)?;
+    let signature = state.sign_payload(&snapshot)?;
     Ok(SignedPublicClientSnapshot {
         payload: snapshot,
         signature,

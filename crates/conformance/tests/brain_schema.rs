@@ -19,11 +19,11 @@ fn human_report_schema_accepts_valid_payload() {
 #[test]
 fn action_proposal_schema_accepts_valid_payload() {
     let payload = json!({
-        "action": "task.run_demo_market",
-        "required_caps": ["p2p.publish"],
+        "action": "policy.review_pending",
+        "required_caps": ["mcp.call:policy"],
         "estimated_cost": 1,
         "risk_level": "medium",
-        "rationale": "Maintain throughput"
+        "rationale": "Review pending high-risk requests"
     });
 
     validate("action_proposal.json", &payload).unwrap();

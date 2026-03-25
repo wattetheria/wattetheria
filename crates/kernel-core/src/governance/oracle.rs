@@ -9,8 +9,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::event_log::EventLog;
-use crate::identity::Identity;
-use crate::signing::{sign_payload, verify_payload};
+use crate::identity::{Identity, IdentityCompatView};
+use crate::signing::{PayloadSigner, sign_payload_with, verify_payload};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleFeed {
@@ -83,6 +83,25 @@ impl OracleRegistry {
         identity: &Identity,
         event_log: Option<&EventLog>,
     ) -> Result<OracleFeed> {
+        self.publish_with_signer(
+            feed_id,
+            payload,
+            price_watt,
+            &identity.compat_view(),
+            identity,
+            event_log,
+        )
+    }
+
+    pub fn publish_with_signer(
+        &mut self,
+        feed_id: &str,
+        payload: Value,
+        price_watt: i64,
+        identity: &IdentityCompatView,
+        signer: &(impl PayloadSigner + ?Sized),
+        event_log: Option<&EventLog>,
+    ) -> Result<OracleFeed> {
         let signable = SignableFeed {
             feed_id,
             publisher: &identity.agent_did,
@@ -91,7 +110,7 @@ impl OracleRegistry {
             price_watt,
         };
 
-        let signature = sign_payload(&signable, identity)?;
+        let signature = sign_payload_with(&signable, signer)?;
         let feed = OracleFeed {
             feed_id: feed_id.to_string(),
             publisher: identity.agent_did.clone(),
@@ -107,10 +126,10 @@ impl OracleRegistry {
             .push(feed.clone());
 
         if let Some(log) = event_log {
-            log.append_signed(
+            log.append_signed_with_signer(
                 "ORACLE_FEED_PUBLISHED",
                 serde_json::to_value(&feed).context("serialize oracle feed")?,
-                identity,
+                signer,
             )?;
         }
 
@@ -121,6 +140,17 @@ impl OracleRegistry {
         &mut self,
         feed: &OracleFeed,
         local_identity: Option<&Identity>,
+        event_log: Option<&EventLog>,
+    ) -> Result<bool> {
+        let compat = local_identity.map(Identity::compat_view);
+        self.ingest_feed_with_signer(feed, compat.as_ref(), local_identity, event_log)
+    }
+
+    pub fn ingest_feed_with_signer(
+        &mut self,
+        feed: &OracleFeed,
+        local_identity: Option<&IdentityCompatView>,
+        signer: Option<&(impl PayloadSigner + ?Sized)>,
         event_log: Option<&EventLog>,
     ) -> Result<bool> {
         if !verify_feed_signature(feed)? {
@@ -140,11 +170,11 @@ impl OracleRegistry {
             .or_default()
             .push(feed.clone());
 
-        if let (Some(identity), Some(log)) = (local_identity, event_log) {
-            log.append_signed(
+        if let (Some(_identity), Some(signer), Some(log)) = (local_identity, signer, event_log) {
+            log.append_signed_with_signer(
                 "ORACLE_FEED_INGESTED",
                 serde_json::to_value(feed).context("serialize ingested oracle feed")?,
-                identity,
+                signer,
             )?;
         }
 
@@ -173,6 +203,25 @@ impl OracleRegistry {
         identity: &Identity,
         event_log: Option<&EventLog>,
     ) -> Result<OracleSubscription> {
+        self.subscribe_with_signer(
+            agent_did,
+            feed_id,
+            max_price_watt,
+            &identity.compat_view(),
+            identity,
+            event_log,
+        )
+    }
+
+    pub fn subscribe_with_signer(
+        &mut self,
+        agent_did: &str,
+        feed_id: &str,
+        max_price_watt: i64,
+        _identity: &IdentityCompatView,
+        signer: &(impl PayloadSigner + ?Sized),
+        event_log: Option<&EventLog>,
+    ) -> Result<OracleSubscription> {
         let subscription = OracleSubscription {
             agent_did: agent_did.to_string(),
             feed_id: feed_id.to_string(),
@@ -183,10 +232,10 @@ impl OracleRegistry {
         self.subscriptions.push(subscription.clone());
 
         if let Some(log) = event_log {
-            log.append_signed(
+            log.append_signed_with_signer(
                 "ORACLE_SUBSCRIBE",
                 serde_json::to_value(&subscription).context("serialize oracle subscription")?,
-                identity,
+                signer,
             )?;
         }
 
@@ -219,6 +268,23 @@ impl OracleRegistry {
         agent_did: &str,
         feed_id: &str,
         identity: &Identity,
+        event_log: Option<&EventLog>,
+    ) -> Result<(Vec<OracleFeed>, OracleSettlement)> {
+        self.pull_for_subscriber_settled_with_signer(
+            agent_did,
+            feed_id,
+            &identity.compat_view(),
+            identity,
+            event_log,
+        )
+    }
+
+    pub fn pull_for_subscriber_settled_with_signer(
+        &mut self,
+        agent_did: &str,
+        feed_id: &str,
+        _identity: &IdentityCompatView,
+        signer: &(impl PayloadSigner + ?Sized),
         event_log: Option<&EventLog>,
     ) -> Result<(Vec<OracleFeed>, OracleSettlement)> {
         let subscription = self
@@ -279,10 +345,10 @@ impl OracleRegistry {
         };
 
         if let Some(log) = event_log {
-            log.append_signed(
+            log.append_signed_with_signer(
                 "ORACLE_SETTLEMENT",
                 serde_json::to_value(&settlement).context("serialize oracle settlement")?,
-                identity,
+                signer,
             )?;
         }
 

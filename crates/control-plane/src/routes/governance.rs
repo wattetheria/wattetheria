@@ -424,11 +424,7 @@ where
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        action.to_uppercase().replace('.', "_"),
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event(action.to_uppercase().replace('.', "_"), payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

@@ -37,6 +37,9 @@ use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind, PolicyEngine};
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
+use wattetheria_kernel::wallet_identity::{
+    WalletSigner, load_or_create_wallet_backed_identity, load_wallet_backed_identity,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -341,7 +344,7 @@ async fn run_brain(data_dir: &Path, command: BrainCommand) -> Result<()> {
 
 struct BrainAuditContext {
     event_log: EventLog,
-    identity: Identity,
+    signer: WalletSigner,
     provider: Value,
 }
 
@@ -355,21 +358,21 @@ impl BrainAuditContext {
     fn new(data_dir: &Path, provider: Value) -> Result<Self> {
         Ok(Self {
             event_log: EventLog::new(data_dir.join("events.jsonl"))?,
-            identity: Identity::load_or_create(data_dir.join("identity.json"))?,
+            signer: WalletSigner::from_data_dir(data_dir)?,
             provider,
         })
     }
 
     fn request(&self, operation: &str, input: &Value) -> Result<BrainInvocationAudit> {
         let input_digest = digest_value(input)?;
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "BRAIN_INVOKE_REQUEST",
             serde_json::json!({
                 "operation": operation,
                 "provider": self.provider,
                 "input_digest": input_digest,
             }),
-            &self.identity,
+            &self.signer,
         )?;
 
         Ok(BrainInvocationAudit {
@@ -388,7 +391,7 @@ impl BrainAuditContext {
         let duration_ms =
             u64::try_from(invocation.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let output_digest = output.map(digest_value).transpose()?;
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "BRAIN_INVOKE_RESULT",
             serde_json::json!({
                 "operation": invocation.operation,
@@ -399,7 +402,7 @@ impl BrainAuditContext {
                 "status": if error.is_some() { "error" } else { "ok" },
                 "error": error,
             }),
-            &self.identity,
+            &self.signer,
         )?;
         Ok(())
     }
@@ -543,7 +546,9 @@ fn run_data(data_dir: &Path, command: DataCommand) -> Result<()> {
 fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
     run_init(data_dir)?;
     let mut oracle = OracleRegistry::load_or_new(data_dir.join("oracle/state.json"))?;
-    let identity = Identity::load_or_create(data_dir.join("identity.json"))?;
+    let identity = load_or_create_wallet_backed_identity(data_dir)?;
+    let signer = WalletSigner::from_data_dir(data_dir)?;
+    let identity_view = identity.compat_view();
     let event_log = EventLog::new(data_dir.join("events.jsonl"))?;
 
     match command {
@@ -561,8 +566,14 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
                 Some("oracle.publish"),
                 Some(&payload),
             )?;
-            let feed =
-                oracle.publish(&feed_id, payload, price_watt, &identity, Some(&event_log))?;
+            let feed = oracle.publish_with_signer(
+                &feed_id,
+                payload,
+                price_watt,
+                &identity_view,
+                &signer,
+                Some(&event_log),
+            )?;
             oracle.persist(data_dir.join("oracle/state.json"))?;
             println!("{}", serde_json::to_string_pretty(&feed)?);
         }
@@ -578,11 +589,12 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
                 Some("oracle.subscribe"),
                 None,
             )?;
-            let subscription = oracle.subscribe(
+            let subscription = oracle.subscribe_with_signer(
                 &identity.agent_did,
                 &feed_id,
                 max_price_watt,
-                &identity,
+                &identity_view,
+                &signer,
                 Some(&event_log),
             )?;
             oracle.persist(data_dir.join("oracle/state.json"))?;
@@ -611,10 +623,11 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
             );
         }
         OracleCommand::Pull { feed_id } => {
-            let (feeds, settlement) = oracle.pull_for_subscriber_settled(
+            let (feeds, settlement) = oracle.pull_for_subscriber_settled_with_signer(
                 &identity.agent_did,
                 &feed_id,
-                &identity,
+                &identity_view,
+                &signer,
                 Some(&event_log),
             )?;
             oracle.persist(data_dir.join("oracle/state.json"))?;
@@ -677,23 +690,23 @@ async fn run_mcp_test(
         Some(&input),
     )?;
 
-    let identity = Identity::load_or_create(data_dir.join("identity.json"))?;
+    let signer = load_wallet_signer(data_dir)?;
     let event_log = EventLog::new(data_dir.join("events.jsonl"))?;
     let input_digest = digest_value(&input)?;
 
-    event_log.append_signed(
+    event_log.append_signed_with_signer(
         "MCP_CALL_REQUEST",
         serde_json::json!({
             "server": server.name,
             "tool": tool,
             "input_digest": input_digest,
         }),
-        &identity,
+        &signer,
     )?;
 
     let output = call_tool(server, data_dir.join("mcp/usage.json"), tool, input).await?;
 
-    event_log.append_signed(
+    event_log.append_signed_with_signer(
         "MCP_CALL_RESULT",
         serde_json::json!({
             "server": server.name,
@@ -701,7 +714,7 @@ async fn run_mcp_test(
             "ok": true,
             "output_digest": digest_value(&output)?,
         }),
-        &identity,
+        &signer,
     )?;
 
     println!(
@@ -714,6 +727,10 @@ async fn run_mcp_test(
         }))?
     );
     Ok(())
+}
+
+fn load_wallet_signer(data_dir: &Path) -> Result<WalletSigner> {
+    WalletSigner::from_data_dir(data_dir)
 }
 
 fn ensure_capabilities_allowed(
@@ -816,7 +833,14 @@ async fn post_summary(
     endpoint: &str,
     dry_run: bool,
 ) -> Result<()> {
-    let identity = Identity::load(identity_path)?;
+    let identity = if let Some(data_dir) = identity_path
+        .parent()
+        .filter(|dir| dir.join(".watt-wallet").exists())
+    {
+        load_wallet_backed_identity(data_dir)?
+    } else {
+        Identity::load(identity_path)?
+    };
     let events = read_events(events_path)?;
 
     let ledger = latest_stats(&events).unwrap_or_default();

@@ -23,14 +23,15 @@ use wattetheria_kernel::civilization::profiles::{
 };
 use wattetheria_kernel::civilization::relationships::{RelationshipKind, RelationshipRegistry};
 use wattetheria_kernel::civilization::topics::{TopicProjectionKind, TopicRegistry};
-use wattetheria_kernel::event_log::EventLog;
+use wattetheria_kernel::event_log::{EventLog, EventRecord};
 use wattetheria_kernel::governance::GovernanceEngine;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::TravelStateRegistry;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
+use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
 use wattetheria_kernel::swarm_bridge::SwarmBridge;
 
 #[derive(Debug)]
@@ -74,7 +75,8 @@ pub struct StreamEvent {
 #[derive(Clone)]
 pub struct ControlPlaneState {
     pub agent_did: String,
-    pub identity: Identity,
+    pub identity: IdentityCompatView,
+    pub signer: Arc<dyn PayloadSigner>,
     pub started_at: i64,
     pub auth_token: String,
     pub event_log: EventLog,
@@ -109,6 +111,21 @@ pub struct ControlPlaneState {
     pub local_db: Arc<LocalDb>,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
+}
+
+impl ControlPlaneState {
+    pub fn sign_payload(&self, payload: &impl Serialize) -> anyhow::Result<String> {
+        sign_payload_with(payload, self.signer.as_ref())
+    }
+
+    pub fn append_signed_event(
+        &self,
+        event_type: impl Into<String>,
+        payload: Value,
+    ) -> anyhow::Result<EventRecord> {
+        self.event_log
+            .append_signed_with_signer(event_type, payload, self.signer.as_ref())
+    }
 }
 
 #[derive(Debug, Deserialize)]

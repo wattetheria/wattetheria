@@ -4,3 +4,4 @@ pub mod hashcash;
 pub mod identity;
 pub mod signing;
 pub mod trust;
+pub mod wallet_identity;

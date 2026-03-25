@@ -132,11 +132,7 @@ pub(crate) async fn create_topic(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "CIVILIZATION_TOPIC_CREATED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("CIVILIZATION_TOPIC_CREATED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

@@ -498,7 +498,7 @@ mod tests {
         build_test_app_with_bridge(rate_limit, dir, identity, event_log, bridge)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
     fn build_test_app_with_bridge(
         rate_limit: usize,
         dir: tempfile::TempDir,
@@ -511,7 +511,7 @@ mod tests {
         (dir, app(state), token, policy_engine)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
     fn build_test_state_with_bridge(
         rate_limit: usize,
         dir: tempfile::TempDir,
@@ -660,7 +660,8 @@ mod tests {
 
         let state = ControlPlaneState {
             agent_did: identity.agent_did.clone(),
-            identity,
+            identity: identity.compat_view(),
+            signer: Arc::new(identity.clone()),
             started_at: Utc::now().timestamp(),
             auth_token: token.clone(),
             event_log,
@@ -1655,8 +1656,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn demo_action_persists_ledger_to_disk() {
-        let (dir, app, token, _) = build_test_app(20);
+    async fn unsupported_action_is_rejected() {
+        let (_dir, app, token, _) = build_test_app(20);
 
         let response = app
             .oneshot(
@@ -1666,20 +1667,13 @@ mod tests {
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(axum::body::Body::from(
-                        json!({"action": "task.run_demo_market"}).to_string(),
+                        json!({"action": "task.unsupported"}).to_string(),
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let ledger = wattetheria_kernel::swarm_bridge::LegacyTaskEngineBridge::load_ledger(
-            dir.path().join("ledger.json"),
-        )
-        .unwrap();
-        assert!(!ledger.is_empty());
-        assert!(ledger.values().any(|stats| stats.watt > 0));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

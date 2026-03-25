@@ -5,13 +5,40 @@ use serde::Serialize;
 
 use crate::identity::{Identity, verify_with_public_key};
 
+pub trait PayloadSigner: Send + Sync {
+    fn agent_did(&self) -> &str;
+    fn public_key(&self) -> &str;
+    fn sign_bytes(&self, payload: &[u8]) -> Result<String>;
+}
+
+impl PayloadSigner for Identity {
+    fn agent_did(&self) -> &str {
+        &self.agent_did
+    }
+
+    fn public_key(&self) -> &str {
+        &self.public_key
+    }
+
+    fn sign_bytes(&self, payload: &[u8]) -> Result<String> {
+        self.sign(payload)
+    }
+}
+
 pub fn canonical_bytes(payload: &impl Serialize) -> Result<Vec<u8>> {
     let json = serde_jcs::to_string(payload).context("canonicalize payload")?;
     Ok(json.into_bytes())
 }
 
 pub fn sign_payload(payload: &impl Serialize, identity: &Identity) -> Result<String> {
-    identity.sign(&canonical_bytes(payload)?)
+    sign_payload_with(payload, identity)
+}
+
+pub fn sign_payload_with(
+    payload: &impl Serialize,
+    signer: &(impl PayloadSigner + ?Sized),
+) -> Result<String> {
+    signer.sign_bytes(&canonical_bytes(payload)?)
 }
 
 pub fn verify_payload(

@@ -16,10 +16,6 @@ pub struct Cli {
     #[arg(long = "recovery-source")]
     pub recovery_sources: Vec<String>,
     #[arg(long, default_value_t = false)]
-    pub run_demo_task: bool,
-    #[arg(long, default_value_t = false)]
-    pub ignite_demo_planet: bool,
-    #[arg(long, default_value_t = false)]
     pub enable_hashcash: bool,
     #[arg(long, default_value_t = false)]
     pub require_hashcash_inbound: bool,

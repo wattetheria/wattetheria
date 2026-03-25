@@ -7,8 +7,10 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::event_log::EventLog;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::mcp::McpRegistry;
+use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with, verify_payload};
+use wattetheria_kernel::wallet_identity::WalletSigner;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DoctorCheck {
@@ -40,11 +42,25 @@ pub(crate) async fn run_doctor(
     push_check(
         &mut checks,
         "identity",
-        Identity::load(data_dir.join("identity.json")).is_ok(),
-        "identity file and keypair are valid",
+        IdentityCompatView::load(data_dir.join("identity.json")).is_ok(),
+        "compatibility identity view is valid",
         "identity file missing or invalid",
     );
-    append_signing_check(&mut checks, data_dir.join("identity.json"));
+    push_check(
+        &mut checks,
+        "wallet_metadata",
+        data_dir.join(".watt-wallet/metadata.json").exists(),
+        "wallet metadata exists",
+        "wallet metadata missing",
+    );
+    push_check(
+        &mut checks,
+        "wallet_keystore",
+        data_dir.join(".watt-wallet/keystore.json").exists(),
+        "wallet keystore exists",
+        "wallet keystore missing",
+    );
+    append_signing_check(&mut checks, data_dir);
     append_network_config_check(&mut checks, &config);
     append_event_log_check(&mut checks, data_dir.join("events.jsonl"));
 
@@ -94,19 +110,13 @@ fn append_mcp_registry_check(checks: &mut Vec<DoctorCheck>, data_dir: &Path) {
     }
 }
 
-fn append_signing_check(checks: &mut Vec<DoctorCheck>, identity_path: PathBuf) {
-    match Identity::load(identity_path) {
-        Ok(identity) => {
+fn append_signing_check(checks: &mut Vec<DoctorCheck>, data_dir: &Path) {
+    match WalletSigner::from_data_dir(data_dir) {
+        Ok(signer) => {
             let probe = serde_json::json!({"probe":"doctor_signing"});
-            match wattetheria_kernel::signing::sign_payload(&probe, &identity).and_then(
-                |signature| {
-                    wattetheria_kernel::signing::verify_payload(
-                        &probe,
-                        &signature,
-                        &identity.agent_did,
-                    )
-                },
-            ) {
+            match sign_payload_with(&probe, &signer)
+                .and_then(|signature| verify_payload(&probe, &signature, signer.agent_did()))
+            {
                 Ok(true) => checks.push(DoctorCheck {
                     name: "signing".to_string(),
                     status: "ok".to_string(),

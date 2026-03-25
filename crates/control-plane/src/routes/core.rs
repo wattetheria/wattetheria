@@ -7,9 +7,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 use crate::auth::{authorize, internal_error, unauthorized};
-use crate::autonomy::{
-    build_brain_state, load_night_shift_report, run_autonomy_tick_once, run_demo_market_task,
-};
+use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::routes::identity::identity_context_value;
 use crate::state::{
     ActionRequest, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery,
@@ -334,46 +332,16 @@ pub(crate) async fn actions(
     headers: HeaderMap,
     Json(request): Json<ActionRequest>,
 ) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
+    match authorize(&state, &headers).await {
+        Ok(_token) => {}
         Err(response) => return response,
-    };
+    }
 
-    let result = match request.action.as_str() {
-        "task.run_demo_market" => match run_demo_market_task(&state).await {
-            Ok(payload) => payload,
-            Err(error) => return internal_error(&error),
-        },
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("unsupported action: {}", request.action)})),
-            )
-                .into_response();
-        }
-    };
-
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "action.result".to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: result.clone(),
-    });
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "control".to_string(),
-        action: "action.exec".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(state.agent_did.clone()),
-        capability: Some("task.run_demo_market".to_string()),
-        reason: None,
-        duration_ms: None,
-        details: Some(result.clone()),
-    });
-
-    Json(result).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": format!("unsupported action: {}", request.action)})),
+    )
+        .into_response()
 }
 
 pub(crate) async fn audit_recent(

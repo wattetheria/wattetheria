@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::governance::constitution::{PlanetConstitution, PlanetConstitutionTemplate};
-use crate::identity::Identity;
-use crate::signing::{canonical_bytes, sign_payload, verify_payload};
+use crate::identity::{Identity, IdentityCompatView};
+use crate::signing::{PayloadSigner, canonical_bytes, sign_payload_with, verify_payload};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CivicLicense {
@@ -208,6 +208,24 @@ impl GovernanceEngine {
         created_at: i64,
         identity: &Identity,
     ) -> Result<GenesisApproval> {
+        Self::sign_genesis_with_signer(
+            subnet_id,
+            name,
+            creator,
+            created_at,
+            &identity.compat_view(),
+            identity,
+        )
+    }
+
+    pub fn sign_genesis_with_signer(
+        subnet_id: &str,
+        name: &str,
+        creator: &str,
+        created_at: i64,
+        identity: &IdentityCompatView,
+        signer: &(impl PayloadSigner + ?Sized),
+    ) -> Result<GenesisApproval> {
         let payload = GenesisPayload {
             subnet_id,
             name,
@@ -216,7 +234,7 @@ impl GovernanceEngine {
         };
         Ok(GenesisApproval {
             signer_agent_did: identity.agent_did.clone(),
-            signature: sign_payload(&payload, identity)?,
+            signature: sign_payload_with(&payload, signer)?,
         })
     }
 

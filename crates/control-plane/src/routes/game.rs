@@ -440,11 +440,7 @@ pub(crate) async fn bootstrap_starter_missions_route(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "GAME_STARTER_MISSIONS_BOOTSTRAPPED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("GAME_STARTER_MISSIONS_BOOTSTRAPPED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -520,11 +516,7 @@ pub(crate) async fn bootstrap_mission_pack_route(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "GAME_MISSION_PACK_BOOTSTRAPPED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("GAME_MISSION_PACK_BOOTSTRAPPED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

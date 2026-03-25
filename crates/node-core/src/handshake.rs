@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::hashcash;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::online_proof::OnlineProofManager;
-use wattetheria_kernel::signing::sign_payload;
+use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SignedEnvelope<T: Serialize> {
@@ -15,7 +15,7 @@ pub struct SignedEnvelope<T: Serialize> {
     pub signature: String,
 }
 
-fn build_handshake_payload(identity: &Identity, enable_hashcash: bool) -> Option<Value> {
+fn build_handshake_payload(identity: &IdentityCompatView, enable_hashcash: bool) -> Option<Value> {
     if !enable_hashcash {
         return None;
     }
@@ -23,8 +23,9 @@ fn build_handshake_payload(identity: &Identity, enable_hashcash: bool) -> Option
         .map(|stamp| json!({"stamp": stamp, "bits": 12, "resource": identity.agent_did}))
 }
 
-pub fn build_signed_handshake_for_public_identity(
-    identity: &Identity,
+pub fn build_signed_handshake_for_identity_and_signer(
+    identity: &IdentityCompatView,
+    signer: &(impl PayloadSigner + ?Sized),
     public_id: Option<&str>,
     online_proof: &OnlineProofManager,
     enable_hashcash: bool,
@@ -56,7 +57,7 @@ pub fn build_signed_handshake_for_public_identity(
         r#type: "HANDSHAKE".to_string(),
         version: "0.1".to_string(),
         agent_did: identity.agent_did.clone(),
-        signature: sign_payload(&payload, identity)?,
+        signature: sign_payload_with(&payload, signer)?,
         payload,
     })
 }

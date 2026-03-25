@@ -190,8 +190,9 @@ impl GalaxyTaskIntent {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
-    pub fn demo_market_match() -> Self {
+    pub(crate) fn test_market_match_fixture() -> Self {
         Self {
             protocol_version: "v0.1".to_owned(),
             task_id: uuid::Uuid::new_v4().to_string(),
@@ -295,8 +296,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn demo_market_intent_maps_to_wattswarm_contract() {
-        let intent = GalaxyTaskIntent::demo_market_match();
+    fn test_market_intent_maps_to_wattswarm_contract() {
+        let intent = GalaxyTaskIntent::test_market_match_fixture();
         let contract = intent.to_task_contract();
 
         assert_eq!(contract.task_id, intent.task_id);

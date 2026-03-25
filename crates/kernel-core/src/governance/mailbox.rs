@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::identity::Identity;
-use crate::signing::{sign_payload, verify_payload};
+use crate::identity::{Identity, IdentityCompatView};
+use crate::signing::{PayloadSigner, sign_payload_with, verify_payload};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossSubnetMessage {
@@ -69,6 +69,25 @@ impl CrossSubnetMailbox {
         to_subnet: &str,
         payload: Value,
     ) -> Result<CrossSubnetMessage> {
+        self.enqueue_signed_with_signer(
+            &from_identity.compat_view(),
+            from_identity,
+            to_agent,
+            from_subnet,
+            to_subnet,
+            payload,
+        )
+    }
+
+    pub fn enqueue_signed_with_signer(
+        &mut self,
+        from_identity: &IdentityCompatView,
+        signer: &(impl PayloadSigner + ?Sized),
+        to_agent: &str,
+        from_subnet: &str,
+        to_subnet: &str,
+        payload: Value,
+    ) -> Result<CrossSubnetMessage> {
         let message_id = uuid::Uuid::new_v4().to_string();
         let timestamp = Utc::now().timestamp();
         let payload_for_signature = payload.clone();
@@ -91,7 +110,7 @@ impl CrossSubnetMailbox {
             to_subnet: to_subnet.to_string(),
             timestamp,
             payload,
-            signature: sign_payload(&signable, from_identity)?,
+            signature: sign_payload_with(&signable, signer)?,
         };
 
         self.inbox

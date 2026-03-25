@@ -6,10 +6,11 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::event_log::EventLog;
-use crate::identity::Identity;
-use crate::signing::{canonical_equal, sign_payload};
+use crate::identity::{Identity, IdentityCompatView};
+use crate::signing::{PayloadSigner, canonical_equal, sign_payload_with};
 use crate::types::{AgentStats, Reward, Sla, Task, VerificationMode, VerificationSpec};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,10 +54,10 @@ struct TaskSignable<'a> {
     created_by: &'a str,
 }
 
-#[derive(Debug)]
 pub struct TaskEngine {
     event_log: EventLog,
-    identity: Identity,
+    identity: IdentityCompatView,
+    signer: Arc<dyn PayloadSigner>,
     tasks: HashMap<String, Task>,
     ledger: HashMap<String, AgentStats>,
 }
@@ -64,9 +65,21 @@ pub struct TaskEngine {
 impl TaskEngine {
     #[must_use]
     pub fn new(event_log: EventLog, identity: Identity) -> Self {
+        let compat = identity.compat_view();
+        let signer: Arc<dyn PayloadSigner> = Arc::new(identity);
+        Self::new_with_signer(event_log, compat, signer)
+    }
+
+    #[must_use]
+    pub fn new_with_signer(
+        event_log: EventLog,
+        identity: IdentityCompatView,
+        signer: Arc<dyn PayloadSigner>,
+    ) -> Self {
         Self {
             event_log,
             identity,
+            signer,
             tasks: HashMap::new(),
             ledger: HashMap::new(),
         }
@@ -88,10 +101,22 @@ impl TaskEngine {
         identity: Identity,
         ledger_path: impl AsRef<Path>,
     ) -> Result<Self> {
+        let compat = identity.compat_view();
+        let signer: Arc<dyn PayloadSigner> = Arc::new(identity);
+        Self::new_with_ledger_and_signer(event_log, compat, signer, ledger_path)
+    }
+
+    pub fn new_with_ledger_and_signer(
+        event_log: EventLog,
+        identity: IdentityCompatView,
+        signer: Arc<dyn PayloadSigner>,
+        ledger_path: impl AsRef<Path>,
+    ) -> Result<Self> {
         let ledger = Self::load_ledger(ledger_path)?;
         Ok(Self {
             event_log,
             identity,
+            signer,
             tasks: HashMap::new(),
             ledger,
         })
@@ -128,7 +153,7 @@ impl TaskEngine {
             created_by: &created_by,
         };
 
-        let signature = sign_payload(&signable, &self.identity)?;
+        let signature = sign_payload_with(&signable, self.signer.as_ref())?;
 
         let task = Task {
             task_id: task_id.clone(),
@@ -146,8 +171,11 @@ impl TaskEngine {
         };
 
         self.tasks.insert(task_id.clone(), task.clone());
-        self.event_log
-            .append_signed("TASK_PUBLISHED", json!(task), &self.identity)?;
+        self.event_log.append_signed_with_signer(
+            "TASK_PUBLISHED",
+            json!(task),
+            self.signer.as_ref(),
+        )?;
         Ok(task)
     }
 
@@ -158,10 +186,10 @@ impl TaskEngine {
         }
         task.claimed_by = Some(worker_id.to_string());
         task.status = Some("CLAIMED".to_string());
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "TASK_CLAIMED",
             json!({"task_id": task_id, "worker_id": worker_id}),
-            &self.identity,
+            self.signer.as_ref(),
         )?;
         Ok(())
     }
@@ -186,10 +214,10 @@ impl TaskEngine {
         }
         task.result = Some(result.clone());
         task.status = Some("RESULT_SUBMITTED".to_string());
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "TASK_RESULT",
             json!({"task_id": task_id, "worker_id": worker_id, "result": result}),
-            &self.identity,
+            self.signer.as_ref(),
         )?;
         Ok(())
     }
@@ -218,7 +246,7 @@ impl TaskEngine {
 
         task.status = Some(if accepted { "VERIFIED" } else { "REJECTED" }.to_string());
 
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "TASK_VERIFIED",
             json!({
                 "task_id": task_id,
@@ -227,7 +255,7 @@ impl TaskEngine {
                 "required_witnesses": required_witnesses,
                 "accepted_witnesses": accepted_witnesses,
             }),
-            &self.identity,
+            self.signer.as_ref(),
         )?;
         Ok(accepted)
     }
@@ -246,7 +274,7 @@ impl TaskEngine {
         entry.power = (1 + (entry.capacity / 10)).max(1);
 
         task.status = Some("SETTLED".to_string());
-        self.event_log.append_signed(
+        self.event_log.append_signed_with_signer(
             "TASK_SETTLED",
             json!({
                 "task_id": task_id,
@@ -254,7 +282,7 @@ impl TaskEngine {
                 "reward": task.reward,
                 "new_stats": entry,
             }),
-            &self.identity,
+            self.signer.as_ref(),
         )?;
 
         Ok(entry.clone())

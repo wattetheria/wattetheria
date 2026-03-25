@@ -647,9 +647,7 @@ fn emit_travel_activity(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed(event_type, payload.clone(), &state.identity);
+    let _ = state.append_signed_event(event_type, payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

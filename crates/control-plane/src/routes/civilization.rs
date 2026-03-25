@@ -435,11 +435,7 @@ pub(crate) async fn citizen_profile_upsert(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "CIVILIZATION_PROFILE_UPDATED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("CIVILIZATION_PROFILE_UPDATED", payload.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -483,11 +479,7 @@ pub(crate) async fn bootstrap_identity(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "CIVILIZATION_IDENTITY_BOOTSTRAPPED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("CIVILIZATION_IDENTITY_BOOTSTRAPPED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -521,11 +513,7 @@ async fn public_identity_updated(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "CIVILIZATION_PUBLIC_IDENTITY_UPDATED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("CIVILIZATION_PUBLIC_IDENTITY_UPDATED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -558,11 +546,7 @@ async fn controller_binding_updated(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "CIVILIZATION_CONTROLLER_BINDING_UPDATED",
-        payload.clone(),
-        &state.identity,
-    );
+    let _ = state.append_signed_event("CIVILIZATION_CONTROLLER_BINDING_UPDATED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -750,10 +734,7 @@ pub(crate) async fn galaxy_event_publish(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ =
-        state
-            .event_log
-            .append_signed("GALAXY_EVENT_PUBLISHED", payload.clone(), &state.identity);
+    let _ = state.append_signed_event("GALAXY_EVENT_PUBLISHED", payload.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -815,10 +796,7 @@ pub(crate) async fn galaxy_event_generate(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ =
-        state
-            .event_log
-            .append_signed("GALAXY_EVENTS_GENERATED", payload.clone(), &state.identity);
+    let _ = state.append_signed_event("GALAXY_EVENTS_GENERATED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

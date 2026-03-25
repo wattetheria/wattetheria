@@ -22,8 +22,9 @@ pub(crate) async fn mailbox_send(
     };
 
     let mut mailbox = state.mailbox.lock().await;
-    let message = match mailbox.enqueue_signed(
+    let message = match mailbox.enqueue_signed_with_signer(
         &state.identity,
+        state.signer.as_ref(),
         &body.to_agent,
         &body.from_subnet,
         &body.to_subnet,
@@ -43,11 +44,7 @@ pub(crate) async fn mailbox_send(
         "to_subnet": message.to_subnet,
         "to_agent": message.to_agent,
     });
-    if let Err(error) =
-        state
-            .event_log
-            .append_signed("MAILBOX_MESSAGE_ENQUEUED", payload.clone(), &state.identity)
-    {
+    if let Err(error) = state.append_signed_event("MAILBOX_MESSAGE_ENQUEUED", payload.clone()) {
         return internal_error(&error);
     }
 
@@ -131,11 +128,7 @@ pub(crate) async fn mailbox_ack(
     drop(mailbox);
 
     let payload = json!({"subnet_id": body.subnet_id, "message_id": body.message_id});
-    if let Err(error) =
-        state
-            .event_log
-            .append_signed("MAILBOX_MESSAGE_ACKED", payload.clone(), &state.identity)
-    {
+    if let Err(error) = state.append_signed_event("MAILBOX_MESSAGE_ACKED", payload.clone()) {
         return internal_error(&error);
     }
 

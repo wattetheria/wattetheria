@@ -932,7 +932,10 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let task = bridge
-            .run_galaxy_task(&identity.agent_did, GalaxyTaskIntent::demo_market_match())
+            .run_galaxy_task(
+                &identity.agent_did,
+                GalaxyTaskIntent::test_market_match_fixture(),
+            )
             .await
             .unwrap();
 
@@ -962,7 +965,10 @@ mod tests {
         let bridge = LegacyTaskEngineBridge::new(engine, dir.path().join("ledger.json"));
 
         let ack = bridge
-            .submit_galaxy_task(&identity.agent_did, GalaxyTaskIntent::demo_market_match())
+            .submit_galaxy_task(
+                &identity.agent_did,
+                GalaxyTaskIntent::test_market_match_fixture(),
+            )
             .await
             .unwrap();
 

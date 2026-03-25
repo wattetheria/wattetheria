@@ -4403,6 +4403,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "watt-did"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bs58",
+ "ed25519-dalek",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "watt-wallet"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bs58",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+ "watt-did",
+]
+
+[[package]]
 name = "wattetheria-client-cli"
 version = "0.1.0"
 dependencies = [
@@ -4505,6 +4534,8 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "watt-did",
+ "watt-wallet",
  "wattswarm-protocol",
 ]
 

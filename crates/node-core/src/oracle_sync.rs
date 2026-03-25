@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::hashcash;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::oracle::{OracleFeed, OracleRegistry};
+use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_p2p_runtime::P2PNode;
 
 fn build_oracle_feed_packet(feed: &OracleFeed, include_hashcash: bool) -> Value {
@@ -61,14 +62,20 @@ pub fn handle_oracle_feed_packet(
     oracle_registry: &mut OracleRegistry,
     oracle_state_path: &Path,
     event_log: &EventLog,
-    identity: &Identity,
+    identity: &IdentityCompatView,
+    signer: &(impl PayloadSigner + ?Sized),
     known_oracle_signatures: &mut BTreeSet<String>,
 ) -> Result<()> {
     let Some(feed) = parse_oracle_feed_packet(bytes)? else {
         return Ok(());
     };
 
-    let inserted = oracle_registry.ingest_feed(&feed, Some(identity), Some(event_log))?;
+    let inserted = oracle_registry.ingest_feed_with_signer(
+        &feed,
+        Some(identity),
+        Some(signer),
+        Some(event_log),
+    )?;
     if inserted {
         known_oracle_signatures.insert(feed.signature);
         oracle_registry.persist(oracle_state_path)?;

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::identity::Identity;
-use crate::signing::{canonical_bytes, sign_payload, verify_payload};
+use crate::signing::{PayloadSigner, canonical_bytes, sign_payload_with, verify_payload};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventRecord {
@@ -99,6 +99,15 @@ impl EventLog {
         payload: Value,
         identity: &Identity,
     ) -> Result<EventRecord> {
+        self.append_signed_with_signer(event_type, payload, identity)
+    }
+
+    pub fn append_signed_with_signer(
+        &self,
+        event_type: impl Into<String>,
+        payload: Value,
+        signer: &(impl PayloadSigner + ?Sized),
+    ) -> Result<EventRecord> {
         // Acquire an exclusive lock on the event log file to prevent TOCTOU races
         // between reading the last hash and appending the new event.
         let lock_file = OpenOptions::new()
@@ -116,10 +125,10 @@ impl EventLog {
             event_type: event_type.into(),
             payload,
             timestamp: Utc::now().timestamp(),
-            agent_did: identity.agent_did.clone(),
+            agent_did: signer.agent_did().to_string(),
             prev_hash,
         };
-        let signature = sign_payload(&unsigned, identity)?;
+        let signature = sign_payload_with(&unsigned, signer)?;
         let hash = hash_record(&unsigned, &signature)?;
 
         let event = EventRecord {

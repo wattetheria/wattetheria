@@ -40,6 +40,7 @@ pub use security::hashcash;
 pub use security::identity;
 pub use security::signing;
 pub use security::trust;
+pub use security::wallet_identity;
 pub use storage::audit;
 pub use storage::data_ops;
 pub use storage::event_log;

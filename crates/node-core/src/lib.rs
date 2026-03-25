@@ -1,6 +1,5 @@
 mod bootstrap;
 pub mod cli;
-mod demo;
 mod handshake;
 mod oracle_sync;
 mod recovery;
@@ -20,8 +19,7 @@ use bootstrap::{
     load_or_create_control_token, parse_control_bind, parse_multiaddrs, resolve_brain_config,
 };
 pub use cli::Cli;
-use demo::{ignite_demo_planet, run_demo_task};
-use handshake::build_signed_handshake_for_public_identity;
+use handshake::build_signed_handshake_for_identity_and_signer;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, log_listeners, run_loop};
 use snapshot_broadcast::{
@@ -46,7 +44,7 @@ use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
 use wattetheria_kernel::civilization::topics::TopicRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
@@ -54,13 +52,15 @@ use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_positio
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::PolicyEngine;
+use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
 use wattetheria_kernel::trust::{TrustConfig, WebOfTrust};
+use wattetheria_kernel::wallet_identity::WalletSigner;
 use wattetheria_p2p_runtime::{P2PConfig, P2PNode};
 
 struct RuntimeState {
     control_bind: SocketAddr,
-    identity: Identity,
+    identity: IdentityCompatView,
     event_log: EventLog,
     online_proof: OnlineProofManager,
     online_proof_path: PathBuf,
@@ -96,21 +96,6 @@ struct CivilizationRuntimeState {
 
 pub async fn run(cli: Cli) -> Result<()> {
     let mut runtime = setup_runtime(&cli).await?;
-
-    if cli.run_demo_task {
-        run_demo_task(
-            &runtime.control_state.swarm_bridge,
-            &mut runtime.p2p,
-            &runtime.identity,
-        )
-        .await?;
-    }
-
-    if cli.ignite_demo_planet {
-        let mut governance = runtime.control_state.governance_engine.lock().await;
-        ignite_demo_planet(&mut governance, &runtime.identity)?;
-        governance.persist(&runtime.control_state.governance_state_path)?;
-    }
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
@@ -159,9 +144,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     run_result
 }
 
+#[allow(clippy::too_many_lines)]
 async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     std::fs::create_dir_all(&cli.data_dir).context("create data dir")?;
-    let identity_path = cli.data_dir.join("identity.json");
     let events_path = cli.data_dir.join("events.jsonl");
     let snapshots_path = cli.data_dir.join("snapshots");
     std::fs::create_dir_all(&snapshots_path).context("create snapshots dir")?;
@@ -169,7 +154,13 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     startup_recover_events(&events_path, &snapshots_path, &cli.recovery_sources).await?;
 
     let local_db = Arc::new(LocalDb::open(cli.data_dir.join("state.db"))?);
-    let identity = Identity::load_or_create(identity_path)?;
+    let runtime_identity =
+        wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity(&cli.data_dir)?;
+    let signer: Arc<dyn PayloadSigner> = Arc::new(WalletSigner::new(
+        &cli.data_dir,
+        runtime_identity.compat_view(),
+    ));
+    let identity = runtime_identity.compat_view();
     let event_log = EventLog::new(events_path)?;
     let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;
     let control_token = load_or_create_control_token(cli.data_dir.join("control.token"))?;
@@ -195,11 +186,13 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let oracle_state_path = cli.data_dir.join("oracle/state.json");
 
     let ledger_path = cli.data_dir.join("ledger.json");
-    let legacy_task_engine = wattetheria_kernel::task_engine::TaskEngine::new_with_ledger(
-        event_log.clone(),
-        identity.clone(),
-        &ledger_path,
-    )?;
+    let legacy_task_engine =
+        wattetheria_kernel::task_engine::TaskEngine::new_with_ledger_and_signer(
+            event_log.clone(),
+            identity.clone(),
+            signer.clone(),
+            &ledger_path,
+        )?;
     let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(HybridSwarmBridge::new(
         legacy_task_engine,
         ledger_path.clone(),
@@ -227,8 +220,9 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let mut p2p = P2PNode::new_with_config(&cli.topic, listen_addr, &bootstrap_addrs, p2p_config)?;
 
     let public_id = resolve_public_identity_id(&civilization_state, &identity);
-    let handshake = build_signed_handshake_for_public_identity(
+    let handshake = build_signed_handshake_for_identity_and_signer(
         &identity,
+        signer.as_ref(),
         Some(public_id.as_str()),
         &online_proof,
         cli.enable_hashcash,
@@ -242,6 +236,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let control_state = build_control_state(
         cli,
         &identity,
+        signer.clone(),
         &event_log,
         control_token,
         swarm_bridge,
@@ -273,7 +268,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 
 fn resolve_public_identity_id(
     civilization_state: &CivilizationRuntimeState,
-    identity: &Identity,
+    identity: &IdentityCompatView,
 ) -> String {
     civilization_state
         .controller_binding_registry
@@ -298,7 +293,8 @@ fn resolve_public_identity_id(
 #[allow(clippy::too_many_arguments)]
 fn build_control_state(
     cli: &Cli,
-    identity: &Identity,
+    identity: &IdentityCompatView,
+    signer: Arc<dyn PayloadSigner>,
     event_log: &EventLog,
     control_token: String,
     swarm_bridge: Arc<dyn SwarmBridge>,
@@ -316,6 +312,7 @@ fn build_control_state(
     ControlPlaneState {
         agent_did: identity.agent_did.clone(),
         identity: identity.clone(),
+        signer,
         started_at: chrono::Utc::now().timestamp(),
         auth_token: control_token,
         event_log: event_log.clone(),
@@ -358,7 +355,7 @@ fn build_control_state(
 
 fn load_civilization_runtime_state(
     cli: &Cli,
-    identity: &Identity,
+    identity: &IdentityCompatView,
 ) -> Result<CivilizationRuntimeState> {
     let agent_did = &identity.agent_did;
     let mission_board_state_path = cli.data_dir.join("missions/state.json");

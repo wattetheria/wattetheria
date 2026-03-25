@@ -72,9 +72,7 @@ pub(crate) async fn mission_publish(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed("MISSION_PUBLISHED", payload.clone(), &state.identity);
+    let _ = state.append_signed_event("MISSION_PUBLISHED", payload.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -146,10 +144,9 @@ async fn transition_mission(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.event_log.append_signed(
+    let _ = state.append_signed_event(
         format!("MISSION_{}", action.to_uppercase()),
         payload.clone(),
-        &state.identity,
     );
 
     let _ = state.audit_log.append(AuditEntry {
@@ -216,9 +213,7 @@ pub(crate) async fn mission_settle(
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed("MISSION_SETTLED", payload.clone(), &state.identity);
+    let _ = state.append_signed_event("MISSION_SETTLED", payload.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),

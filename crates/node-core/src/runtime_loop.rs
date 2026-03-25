@@ -10,7 +10,7 @@ use wattetheria_kernel::admission::{
     AdmissionConfig, AdmissionVerdict, NonceTracker, validate_gossip_packet_with_nonce,
 };
 use wattetheria_kernel::event_log::EventLog;
-use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::trust::WebOfTrust;
@@ -19,7 +19,7 @@ use wattetheria_p2p_runtime::P2PNode;
 pub struct LoopContext<'a> {
     pub online_proof: &'a mut OnlineProofManager,
     pub online_proof_path: &'a Path,
-    pub identity: &'a Identity,
+    pub identity: &'a IdentityCompatView,
     pub control_state: &'a ControlPlaneState,
     pub admission_config: &'a AdmissionConfig,
     pub nonce_tracker: &'a mut NonceTracker,
@@ -93,7 +93,8 @@ pub async fn run_loop(p2p: &mut P2PNode, ctx: LoopContext<'_>) -> Result<()> {
                                 ctx.oracle_registry,
                                 ctx.oracle_state_path,
                                 ctx.event_log,
-                                ctx.identity,
+                                &ctx.control_state.identity,
+                                ctx.control_state.signer.as_ref(),
                                 &mut known_oracle_signatures,
                             )?;
                         }

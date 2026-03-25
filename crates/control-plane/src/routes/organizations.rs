@@ -273,9 +273,7 @@ pub(crate) async fn create_organization(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed("ORGANIZATION_CREATED", payload, &state.identity);
+    let _ = state.append_signed_event("ORGANIZATION_CREATED", payload);
 
     (
         StatusCode::CREATED,
@@ -387,9 +385,7 @@ pub(crate) async fn upsert_organization_member(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed("ORGANIZATION_MEMBER_UPDATED", payload, &state.identity);
+    let _ = state.append_signed_event("ORGANIZATION_MEMBER_UPDATED", payload);
 
     Json(json!({
         "membership": membership,
@@ -531,11 +527,7 @@ pub(crate) async fn publish_organization_mission(
         timestamp: chrono::Utc::now().timestamp(),
         payload: event_payload.clone(),
     });
-    let _ = state.event_log.append_signed(
-        "ORGANIZATION_MISSION_PUBLISHED",
-        event_payload,
-        &state.identity,
-    );
+    let _ = state.append_signed_event("ORGANIZATION_MISSION_PUBLISHED", event_payload);
 
     (
         StatusCode::CREATED,
@@ -1050,9 +1042,7 @@ async fn mutate_organization_treasury(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed(event_type, payload, &state.identity);
+    let _ = state.append_signed_event(event_type, payload);
 
     Json(json!({
         "organization": organization,
@@ -1087,9 +1077,7 @@ fn emit_organization_event(
         timestamp: chrono::Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state
-        .event_log
-        .append_signed(event_type, payload, &state.identity);
+    let _ = state.append_signed_event(event_type, payload);
 }
 
 pub(crate) fn require_founder_or_officer(

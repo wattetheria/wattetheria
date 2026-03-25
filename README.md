@@ -106,7 +106,7 @@ Read the diagram in layers:
   - thin binary entrypoint for the local node runtime
   - delegates node assembly to `crates/node-core`
   - startup event-log recovery from local snapshots and remote HTTP recovery sources
-  - optional autonomy loop, demo task, and demo planet bootstrap switches
+  - optional autonomy loop
   - optional periodic publication of signed public client snapshots over wattswarm for gateway observers
 - `wattetheria-observatory`
   - non-authoritative signature-verifying explorer
@@ -115,6 +115,9 @@ Read the diagram in layers:
 ### Security, Identity, And Admission
 
 - Ed25519 identity creation, loading, and signing
+- runtime local identity bootstrap now uses `.watt-wallet/` as the local key-custody source and
+  materializes `identity.json` as a compatibility view containing only `agent_did` and
+  `public_key` for existing runtime paths
 - Canonical JSON signing and verification for protocol payloads
 - Hashcash minting and verification
 - Capability model by trust level: `trusted`, `verified`, `untrusted`
