@@ -101,7 +101,10 @@ pub(crate) async fn governance_create_proposal(
                 .into_response();
         }
     };
-    if let Err(error) = engine.persist(&state.governance_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GOVERNANCE, &*engine)
+    {
         return internal_error(&error);
     }
     drop(engine);
@@ -160,7 +163,10 @@ pub(crate) async fn governance_vote_proposal(
         )
             .into_response();
     };
-    if let Err(error) = engine.persist(&state.governance_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GOVERNANCE, &*engine)
+    {
         return internal_error(&error);
     }
     drop(engine);
@@ -210,7 +216,10 @@ pub(crate) async fn governance_finalize_proposal(
                 .into_response();
         }
     };
-    if let Err(error) = engine.persist(&state.governance_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GOVERNANCE, &*engine)
+    {
         return internal_error(&error);
     }
     drop(engine);
@@ -413,7 +422,10 @@ where
                 .into_response();
         }
     };
-    if let Err(error) = engine.persist(&state.governance_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GOVERNANCE, &*engine)
+    {
         return internal_error(&error);
     }
     drop(engine);

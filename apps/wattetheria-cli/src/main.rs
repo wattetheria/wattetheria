@@ -29,12 +29,15 @@ use wattetheria_kernel::data_ops::{
 };
 use wattetheria_kernel::event_log::{EventLog, EventRecord};
 use wattetheria_kernel::identity::Identity;
+use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mcp::{
     McpRegistry, McpServerConfig as KernelMcpServerConfig, call_tool, list_tools,
 };
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::oracle::OracleRegistry;
-use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind, PolicyEngine};
+use wattetheria_kernel::policy_engine::{
+    CapabilityRequest, DecisionKind, PolicyEngine, PolicyState,
+};
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::{
@@ -543,9 +546,14 @@ fn run_data(data_dir: &Path, command: DataCommand) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
     run_init(data_dir)?;
-    let mut oracle = OracleRegistry::load_or_new(data_dir.join("oracle/state.json"))?;
+    let db = LocalDb::open(data_dir.join("state.db"))?;
+    let mut oracle: OracleRegistry = db.load_or_migrate(
+        wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
+        &data_dir.join("oracle/state.json"),
+    )?;
     let identity = load_or_create_wallet_backed_identity(data_dir)?;
     let signer = WalletSigner::from_data_dir(data_dir)?;
     let identity_view = identity.compat_view();
@@ -574,7 +582,10 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
                 &signer,
                 Some(&event_log),
             )?;
-            oracle.persist(data_dir.join("oracle/state.json"))?;
+            db.save_domain(
+                wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
+                &oracle,
+            )?;
             println!("{}", serde_json::to_string_pretty(&feed)?);
         }
         OracleCommand::Subscribe {
@@ -597,13 +608,19 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
                 &signer,
                 Some(&event_log),
             )?;
-            oracle.persist(data_dir.join("oracle/state.json"))?;
+            db.save_domain(
+                wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
+                &oracle,
+            )?;
             println!("{}", serde_json::to_string_pretty(&subscription)?);
         }
         OracleCommand::Credit { agent, watt } => {
             let target = agent.unwrap_or_else(|| identity.agent_did.clone());
             let balance = oracle.credit(&target, watt)?;
-            oracle.persist(data_dir.join("oracle/state.json"))?;
+            db.save_domain(
+                wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
+                &oracle,
+            )?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -630,7 +647,10 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
                 &signer,
                 Some(&event_log),
             )?;
-            oracle.persist(data_dir.join("oracle/state.json"))?;
+            db.save_domain(
+                wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
+                &oracle,
+            )?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -741,7 +761,7 @@ fn ensure_capabilities_allowed(
     reason: Option<&str>,
     payload: Option<&Value>,
 ) -> Result<()> {
-    let mut engine = open_policy_engine(data_dir)?;
+    let (mut engine, db) = open_policy_engine(data_dir)?;
     for capability in capabilities {
         let decision = engine.evaluate(CapabilityRequest {
             request_id: String::new(),
@@ -751,24 +771,28 @@ fn ensure_capabilities_allowed(
             capability: capability.clone(),
             reason: reason.map(ToString::to_string),
             input_digest: payload.map(digest_value).transpose()?,
-        })?;
+        });
 
         if decision.decision != DecisionKind::Allowed {
+            db.save_domain(wattetheria_kernel::local_db::domain::POLICY, engine.state())?;
             bail!(
                 "capability approval required for {capability}; request_id={}",
                 decision.request_id.unwrap_or_else(|| "unknown".to_string())
             );
         }
     }
+    db.save_domain(wattetheria_kernel::local_db::domain::POLICY, engine.state())?;
     Ok(())
 }
 
-fn open_policy_engine(data_dir: &Path) -> Result<PolicyEngine> {
-    PolicyEngine::load_or_new(
-        data_dir.join("policy/state.json"),
-        "cli-session",
-        CapabilityPolicy::default(),
-    )
+fn open_policy_engine(data_dir: &Path) -> Result<(PolicyEngine, LocalDb)> {
+    let db = LocalDb::open(data_dir.join("state.db"))?;
+    let state: PolicyState = db.load_or_migrate(
+        wattetheria_kernel::local_db::domain::POLICY,
+        &data_dir.join("policy/state.json"),
+    )?;
+    let engine = PolicyEngine::new("cli-session", CapabilityPolicy::default(), state);
+    Ok((engine, db))
 }
 
 fn digest_value(value: &Value) -> Result<String> {
@@ -788,7 +812,7 @@ fn build_night_shift_value(data_dir: &Path, hours: i64) -> Result<Value> {
 fn build_local_state_value(data_dir: &Path) -> Result<Value> {
     let log = EventLog::new(data_dir.join("events.jsonl"))?;
     let events = log.get_all()?;
-    let pending = open_policy_engine(data_dir)?.list_pending().len();
+    let pending = open_policy_engine(data_dir)?.0.list_pending().len();
     Ok(serde_json::json!({
         "events": events.len(),
         "pending_policy_requests": pending,
@@ -844,7 +868,8 @@ async fn post_summary(
     let events = read_events(events_path)?;
 
     let ledger = latest_stats(&events).unwrap_or_default();
-    let public_id = resolve_public_identity_id(identity_path, &identity);
+    let data_dir = identity_path.parent().unwrap_or(identity_path.as_path());
+    let public_id = resolve_public_identity_id(data_dir, &identity);
     let summary =
         build_signed_summary_for_public_identity(&identity, public_id, subnet, &ledger, &events)?;
 
@@ -865,15 +890,34 @@ async fn post_summary(
     Ok(())
 }
 
-fn resolve_public_identity_id(identity_path: &Path, identity: &Identity) -> Option<String> {
-    let Some(data_dir) = identity_path.parent() else {
-        return Some(identity.agent_did.clone());
+fn resolve_public_identity_id(data_dir: &Path, identity: &Identity) -> Option<String> {
+    let db = match LocalDb::open(data_dir.join("state.db")) {
+        Ok(db) => db,
+        Err(error) => {
+            eprintln!("open local db for public identity: {error:#}");
+            return Some(identity.agent_did.clone());
+        }
     };
-    let public_registry_path = data_dir.join("civilization/public_identities.json");
-    let binding_registry_path = data_dir.join("civilization/controller_bindings.json");
-
-    let public_registry = PublicIdentityRegistry::load_or_new(&public_registry_path).ok()?;
-    let binding_registry = ControllerBindingRegistry::load_or_new(&binding_registry_path).ok()?;
+    let public_registry: PublicIdentityRegistry = match db.load_or_migrate(
+        wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+        &data_dir.join("civilization/public_identities.json"),
+    ) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("load public identity registry: {error:#}");
+            return Some(identity.agent_did.clone());
+        }
+    };
+    let binding_registry: ControllerBindingRegistry = match db.load_or_migrate(
+        wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY,
+        &data_dir.join("civilization/controller_bindings.json"),
+    ) {
+        Ok(registry) => registry,
+        Err(error) => {
+            eprintln!("load controller binding registry: {error:#}");
+            return Some(identity.agent_did.clone());
+        }
+    };
 
     binding_registry
         .active_for_controller(&identity.agent_did)

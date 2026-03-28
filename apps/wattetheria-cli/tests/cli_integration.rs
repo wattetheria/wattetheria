@@ -19,11 +19,7 @@ fn night_shift_command_outputs_report() {
     )
     .unwrap();
 
-    let output = Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg("wattetheria-client-cli")
-        .arg("--")
+    let output = Command::new(env!("CARGO_BIN_EXE_wattetheria-client-cli"))
         .arg("night-shift")
         .arg("--event-log")
         .arg(data.join("events.jsonl"))
@@ -43,11 +39,7 @@ fn post_summary_dry_run_outputs_signed_summary() {
     identity.save(data.join("identity.json")).unwrap();
     fs::write(data.join("events.jsonl"), "").unwrap();
 
-    let output = Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg("wattetheria-client-cli")
-        .arg("--")
+    let output = Command::new(env!("CARGO_BIN_EXE_wattetheria-client-cli"))
         .arg("post-summary")
         .arg("--identity")
         .arg(data.join("identity.json"))

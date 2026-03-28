@@ -469,10 +469,12 @@ mod tests {
     use wattetheria_kernel::governance::{
         GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
     };
-    use wattetheria_kernel::identity::Identity;
+    use wattetheria_kernel::identity::{
+        Identity, build_scoped_public_id, extract_public_id_fingerprint, fingerprint_from_did_key,
+    };
     use wattetheria_kernel::mailbox::CrossSubnetMailbox;
     use wattetheria_kernel::map::registry::GalaxyMapRegistry;
-    use wattetheria_kernel::policy_engine::PolicyEngine;
+    use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
     use wattetheria_kernel::signing::verify_payload;
     use wattetheria_kernel::swarm_bridge::{
         LegacyTaskEngineBridge, SwarmAgentView, SwarmBridge, SwarmNetworkStatusView, SwarmPeerView,
@@ -484,7 +486,13 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn build_test_app(
         rate_limit: usize,
-    ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
+    ) -> (
+        tempfile::TempDir,
+        Router,
+        String,
+        Arc<Mutex<PolicyEngine>>,
+        ControlPlaneState,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
@@ -505,10 +513,17 @@ mod tests {
         identity: Identity,
         event_log: EventLog,
         swarm_bridge: Arc<dyn SwarmBridge>,
-    ) -> (tempfile::TempDir, Router, String, Arc<Mutex<PolicyEngine>>) {
+    ) -> (
+        tempfile::TempDir,
+        Router,
+        String,
+        Arc<Mutex<PolicyEngine>>,
+        ControlPlaneState,
+    ) {
         let (dir, state, token, policy_engine) =
             build_test_state_with_bridge(rate_limit, dir, identity, event_log, swarm_bridge);
-        (dir, app(state), token, policy_engine)
+        let router = app(state.clone());
+        (dir, router, token, policy_engine, state)
     }
 
     #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
@@ -524,29 +539,15 @@ mod tests {
         String,
         Arc<Mutex<PolicyEngine>>,
     ) {
-        let governance_state_path = dir.path().join("governance/state.json");
-        let mailbox_state_path = dir.path().join("mailbox/state.json");
-        let mission_board_state_path = dir.path().join("missions/state.json");
-        let public_identity_registry_state_path =
-            dir.path().join("civilization/public_identities.json");
-        let controller_binding_registry_state_path =
-            dir.path().join("civilization/controller_bindings.json");
-        let citizen_registry_state_path = dir.path().join("civilization/profiles.json");
-        let relationship_registry_state_path = dir.path().join("civilization/relationships.json");
-        let organization_registry_state_path = dir.path().join("civilization/organizations.json");
-        let topic_registry_state_path = dir.path().join("civilization/topics.json");
-        let galaxy_state_path = dir.path().join("galaxy/state.json");
-        let galaxy_map_registry_state_path = dir.path().join("galaxy/maps.json");
-        let travel_state_registry_state_path = dir.path().join("galaxy/travel_state.json");
+        let local_db = Arc::new(
+            wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"),
+        );
 
-        let policy_engine = Arc::new(Mutex::new(
-            PolicyEngine::load_or_new(
-                dir.path().join("policy.json"),
-                "test-session",
-                CapabilityPolicy::default(),
-            )
-            .unwrap(),
-        ));
+        let policy_engine = Arc::new(Mutex::new(PolicyEngine::new(
+            "test-session",
+            CapabilityPolicy::default(),
+            PolicyState::default(),
+        )));
 
         let mut governance = GovernanceEngine::default();
         governance.issue_license(&identity.agent_did, &identity.agent_did, "proof", 7);
@@ -586,73 +587,73 @@ mod tests {
         governance
             .create_planet(&planet_request, &approvals)
             .unwrap();
-        governance.persist(&governance_state_path).unwrap();
+        local_db
+            .save_domain(
+                wattetheria_kernel::local_db::domain::GOVERNANCE,
+                &governance,
+            )
+            .unwrap();
         let governance_engine = Arc::new(Mutex::new(governance));
 
         let audit_log = AuditLog::new(dir.path().join("audit/control_plane.jsonl")).unwrap();
         let mailbox = Arc::new(Mutex::new(CrossSubnetMailbox::default()));
-        let mission_board = Arc::new(Mutex::new(
-            MissionBoard::load_or_new(&mission_board_state_path).unwrap(),
-        ));
-        let mut public_identity_registry =
-            PublicIdentityRegistry::load_or_new(&public_identity_registry_state_path).unwrap();
-        public_identity_registry
-            .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did));
-        public_identity_registry
-            .persist(&public_identity_registry_state_path)
+        let mission_board = Arc::new(Mutex::new(MissionBoard::default()));
+        let mut public_identity_registry = PublicIdentityRegistry::default();
+        let default_identity = public_identity_registry
+            .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did))
+            .unwrap();
+        local_db
+            .save_domain(
+                wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+                &public_identity_registry,
+            )
             .unwrap();
         let public_identity_registry = Arc::new(Mutex::new(public_identity_registry));
-        let mut controller_binding_registry =
-            ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)
-                .unwrap();
+        let mut controller_binding_registry = ControllerBindingRegistry::default();
         controller_binding_registry
-            .ensure_local_wattswarm(&identity.agent_did, &identity.agent_did);
-        controller_binding_registry
-            .persist(&controller_binding_registry_state_path)
+            .ensure_local_wattswarm(&default_identity.public_id, &identity.agent_did);
+        local_db
+            .save_domain(
+                wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY,
+                &controller_binding_registry,
+            )
             .unwrap();
         let controller_binding_registry = Arc::new(Mutex::new(controller_binding_registry));
-        let citizen_registry = Arc::new(Mutex::new(
-            CitizenRegistry::load_or_new(&citizen_registry_state_path).unwrap(),
-        ));
+        let citizen_registry = Arc::new(Mutex::new(CitizenRegistry::default()));
         let relationship_registry = Arc::new(Mutex::new(
-            wattetheria_kernel::relationships::RelationshipRegistry::load_or_new(
-                &relationship_registry_state_path,
-            )
-            .unwrap(),
+            wattetheria_kernel::relationships::RelationshipRegistry::default(),
         ));
-        let organization_registry = Arc::new(Mutex::new(
-            OrganizationRegistry::load_or_new(&organization_registry_state_path).unwrap(),
-        ));
-        let topic_registry = Arc::new(Mutex::new(
-            TopicRegistry::load_or_new(&topic_registry_state_path).unwrap(),
-        ));
-        let galaxy_state_loaded = GalaxyState::load_or_new(&galaxy_state_path).unwrap();
-        let mut galaxy_map_registry_loaded =
-            GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path).unwrap();
+        let organization_registry = Arc::new(Mutex::new(OrganizationRegistry::default()));
+        let topic_registry = Arc::new(Mutex::new(TopicRegistry::default()));
+        let galaxy_state_loaded = GalaxyState::default_with_core_zones();
+        let mut galaxy_map_registry_loaded = GalaxyMapRegistry::default();
         galaxy_map_registry_loaded
             .ensure_default_genesis_map(&galaxy_state_loaded.zones())
             .unwrap();
-        galaxy_map_registry_loaded
-            .persist(&galaxy_map_registry_state_path)
+        local_db
+            .save_domain(
+                wattetheria_kernel::local_db::domain::GALAXY_MAP_REGISTRY,
+                &galaxy_map_registry_loaded,
+            )
             .unwrap();
         let default_map = galaxy_map_registry_loaded.get("genesis-base").unwrap();
         let galaxy_state = Arc::new(Mutex::new(galaxy_state_loaded));
         let galaxy_map_registry = Arc::new(Mutex::new(galaxy_map_registry_loaded));
         let mut travel_state_registry =
-            wattetheria_kernel::map::state::TravelStateRegistry::load_or_new(
-                &travel_state_registry_state_path,
-            )
-            .unwrap();
+            wattetheria_kernel::map::state::TravelStateRegistry::default();
         let default_position =
             wattetheria_kernel::map::state::resolve_anchor_position(&default_map, None, None)
                 .unwrap();
         let _ = travel_state_registry.ensure_position(
-            &identity.agent_did,
+            &default_identity.public_id,
             &identity.agent_did,
             default_position,
         );
-        travel_state_registry
-            .persist(&travel_state_registry_state_path)
+        local_db
+            .save_domain(
+                wattetheria_kernel::local_db::domain::TRAVEL_STATE_REGISTRY,
+                &travel_state_registry,
+            )
             .unwrap();
         let travel_state_registry = Arc::new(Mutex::new(travel_state_registry));
         let (stream_tx, _) = broadcast::channel(32);
@@ -667,35 +668,21 @@ mod tests {
             event_log,
             swarm_bridge,
             governance_engine,
-            governance_state_path,
             policy_engine: policy_engine.clone(),
             mailbox,
-            mailbox_state_path,
             mission_board,
-            mission_board_state_path,
             public_identity_registry,
-            public_identity_registry_state_path,
             controller_binding_registry,
-            controller_binding_registry_state_path,
             citizen_registry,
-            citizen_registry_state_path,
             relationship_registry,
-            relationship_registry_state_path,
             organization_registry,
-            organization_registry_state_path,
             topic_registry,
-            topic_registry_state_path,
             galaxy_state,
-            galaxy_state_path,
             galaxy_map_registry,
-            galaxy_map_registry_state_path,
             travel_state_registry,
-            travel_state_registry_state_path,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
             audit_log,
-            local_db: Arc::new(
-                wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"),
-            ),
+            local_db,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
         };
@@ -768,6 +755,12 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    /// Build a fingerprinted `public_id` from a human slug and an agent's `did:key`.
+    fn scoped_id(slug: &str, agent_did: &str) -> String {
+        let fp = fingerprint_from_did_key(agent_did).unwrap();
+        build_scoped_public_id(slug, &fp)
     }
 
     struct MockSwarmBridge {
@@ -895,13 +888,14 @@ mod tests {
         }
     }
 
-    async fn bootstrap_broker_identity(app: Router, token: &str, agent_did: &str) {
+    async fn bootstrap_broker_identity(app: Router, token: &str, agent_did: &str) -> String {
+        let public_id = scoped_id("captain-aurora", agent_did);
         authed_post_json(
             app,
             token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "captain-aurora",
+                "public_id": public_id,
                 "display_name": "Captain Aurora",
                 "agent_did": agent_did,
                 "faction": "freeport",
@@ -912,19 +906,20 @@ mod tests {
             }),
         )
         .await;
+        public_id
     }
 
-    async fn bootstrap_broker_game(app: Router, token: &str, agent_did: &str) -> Value {
-        bootstrap_broker_identity(app.clone(), token, agent_did).await;
+    async fn bootstrap_broker_game(app: Router, token: &str, agent_did: &str) -> (Value, String) {
+        let public_id = bootstrap_broker_identity(app.clone(), token, agent_did).await;
         let starter_bootstrap = authed_post_json(
             app,
             token,
             "/v1/game/starter-missions/bootstrap",
-            json!({"public_id": "captain-aurora"}),
+            json!({"public_id": public_id}),
         )
         .await;
         assert_eq!(starter_bootstrap["created"].as_array().unwrap().len(), 2);
-        starter_bootstrap
+        (starter_bootstrap, public_id)
     }
 
     struct TradeMissionSpec<'a> {
@@ -1098,10 +1093,10 @@ mod tests {
         );
     }
 
-    fn assert_game_status_payload(status_json: &Value) {
+    fn assert_game_status_payload(status_json: &Value, expected_public_id: &str) {
         assert_eq!(
             status_json["identity"]["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(expected_public_id)
         );
         assert!(status_json["bootstrap"]["progress_pct"].as_u64().unwrap() > 0);
         assert_eq!(
@@ -1179,10 +1174,10 @@ mod tests {
         );
     }
 
-    fn assert_game_mission_pack_payload(payload: &Value) {
+    fn assert_game_mission_pack_payload(payload: &Value, expected_public_id: &str) {
         assert_eq!(
             payload["identity"]["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(expected_public_id)
         );
         assert_eq!(
             payload["mission_pack"]["templates"]
@@ -1234,10 +1229,10 @@ mod tests {
         );
     }
 
-    fn assert_supervision_home_game_block(supervision_home_json: &Value) {
+    fn assert_supervision_home_game_block(supervision_home_json: &Value, expected_public_id: &str) {
         assert_eq!(
             supervision_home_json["identity"]["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(expected_public_id)
         );
         assert!(supervision_home_json["mission_summary"]["eligible_open_count"].is_number());
         assert!(supervision_home_json["mission_summary"]["local_open_count"].is_number());
@@ -1359,10 +1354,10 @@ mod tests {
         );
     }
 
-    fn assert_game_bootstrap_payload(payload: &Value) {
+    fn assert_game_bootstrap_payload(payload: &Value, expected_public_id: &str) {
         assert_eq!(
             payload["identity"]["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(expected_public_id)
         );
         assert!(
             payload["bootstrap_flow"]["action_cards"]
@@ -1430,7 +1425,7 @@ mod tests {
 
     #[tokio::test]
     async fn state_requires_auth() {
-        let (_dir, app, _token, _) = build_test_app(10);
+        let (_dir, app, _token, _, _state) = build_test_app(10);
         let response = app
             .oneshot(
                 axum::http::Request::builder()
@@ -1446,7 +1441,7 @@ mod tests {
 
     #[tokio::test]
     async fn night_shift_alias_endpoints_match_primary_routes() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
         let summary_json = authed_get_json(app.clone(), &token, "/v1/night-shift?hours=12").await;
         let summary_alias_json =
             authed_get_json(app.clone(), &token, "/v1/night-shift/summary?hours=12").await;
@@ -1460,7 +1455,7 @@ mod tests {
 
     #[tokio::test]
     async fn policy_flow_pending_then_approve_once() {
-        let (_dir, app, token, _policy) = build_test_app(20);
+        let (_dir, app, token, _policy, _state) = build_test_app(20);
 
         let check_body = json!({
             "subject": "controller:test",
@@ -1542,7 +1537,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn governance_proposal_flow_works() {
-        let (dir, app, token, _) = build_test_app(30);
+        let (_dir, app, token, _, state) = build_test_app(30);
 
         let state_resp = app
             .clone()
@@ -1650,14 +1645,17 @@ mod tests {
             serde_json::from_slice(&list_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(list_json.as_array().unwrap().len(), 1);
-        let persisted =
-            GovernanceEngine::load_or_new(dir.path().join("governance/state.json")).unwrap();
+        let persisted = state
+            .local_db
+            .load_domain::<GovernanceEngine>(wattetheria_kernel::local_db::domain::GOVERNANCE)
+            .unwrap()
+            .unwrap();
         assert_eq!(persisted.list_proposals(Some("planet-test")).len(), 1);
     }
 
     #[tokio::test]
     async fn unsupported_action_is_rejected() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
 
         let response = app
             .oneshot(
@@ -1678,7 +1676,7 @@ mod tests {
 
     #[tokio::test]
     async fn mailbox_send_fetch_ack_persists() {
-        let (dir, app, token, _) = build_test_app(30);
+        let (_dir, app, token, _, state) = build_test_app(30);
 
         let send_resp = app
             .clone()
@@ -1741,14 +1739,17 @@ mod tests {
             .unwrap();
         assert_eq!(ack_resp.status(), StatusCode::OK);
 
-        let persisted =
-            CrossSubnetMailbox::load_or_new(dir.path().join("mailbox/state.json")).unwrap();
+        let persisted = state
+            .local_db
+            .load_domain::<CrossSubnetMailbox>(wattetheria_kernel::local_db::domain::MAILBOX)
+            .unwrap()
+            .unwrap();
         assert!(persisted.fetch_for_subnet("planet-b").is_empty());
     }
 
     #[tokio::test]
     async fn events_export_is_public_for_recovery() {
-        let (_dir, app, _token, _) = build_test_app(10);
+        let (_dir, app, _token, _, _state) = build_test_app(10);
 
         let response = app
             .oneshot(
@@ -1765,7 +1766,7 @@ mod tests {
 
     #[tokio::test]
     async fn civilization_profile_and_metrics_flow_works() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
 
         let state_resp = app
             .clone()
@@ -1782,9 +1783,12 @@ mod tests {
         let state_json: Value =
             serde_json::from_slice(&state_resp.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(
-            state_json["identity"]["public_identity"]["public_id"].as_str(),
-            state_json["agent_did"].as_str()
+        let default_public_id = state_json["identity"]["public_identity"]["public_id"]
+            .as_str()
+            .unwrap();
+        assert!(
+            extract_public_id_fingerprint(default_public_id).is_some(),
+            "default public_id should be fingerprinted: {default_public_id}"
         );
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
@@ -1852,16 +1856,19 @@ mod tests {
 
     #[tokio::test]
     async fn public_identity_and_controller_binding_flow_works() {
-        let (dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, state) = build_test_app(20);
 
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
         let default_identity =
             authed_get_json(app.clone(), &token, "/v1/civilization/public-identity").await;
-        assert_eq!(
-            default_identity["public_identity"]["public_id"].as_str(),
-            Some(agent_did)
+        let default_public_id = default_identity["public_identity"]["public_id"]
+            .as_str()
+            .unwrap();
+        assert!(
+            extract_public_id_fingerprint(default_public_id).is_some(),
+            "default public_id should be fingerprinted: {default_public_id}"
         );
         assert_eq!(
             default_identity["public_memory_owner"]["controller_id"].as_str(),
@@ -1875,12 +1882,13 @@ mod tests {
             Some("local_wattswarm")
         );
 
+        let citizen_alpha = scoped_id("citizen-alpha", agent_did);
         let public_identity_status = authed_post(
             app.clone(),
             &token,
             "/v1/civilization/public-identity",
             json!({
-                "public_id": "citizen-alpha",
+                "public_id": citizen_alpha,
                 "display_name": "Citizen Alpha",
                 "agent_did": agent_did,
                 "active": true
@@ -1894,7 +1902,7 @@ mod tests {
             &token,
             "/v1/civilization/controller-binding",
             json!({
-                "public_id": "citizen-alpha",
+                "public_id": citizen_alpha,
                 "controller_kind": "external_runtime",
                 "controller_ref": "openclaw://alpha",
                 "controller_node_id": null,
@@ -1908,7 +1916,7 @@ mod tests {
         let fetched_identity = authed_get_json(
             app.clone(),
             &token,
-            "/v1/civilization/public-identity?public_id=citizen-alpha",
+            &format!("/v1/civilization/public-identity?public_id={citizen_alpha}"),
         )
         .await;
         assert_eq!(
@@ -1919,7 +1927,7 @@ mod tests {
         let fetched_binding = authed_get_json(
             app,
             &token,
-            "/v1/civilization/controller-binding?public_id=citizen-alpha",
+            &format!("/v1/civilization/controller-binding?public_id={citizen_alpha}"),
         )
         .await;
         assert_eq!(
@@ -1928,25 +1936,27 @@ mod tests {
         );
         assert_eq!(
             fetched_binding["public_memory_owner"]["public_id"].as_str(),
-            Some("citizen-alpha")
+            Some(citizen_alpha.as_str())
         );
 
-        let persisted_identities = PublicIdentityRegistry::load_or_new(
-            dir.path().join("civilization/public_identities.json"),
-        )
-        .unwrap();
-        assert!(persisted_identities.get("citizen-alpha").is_some());
+        let persisted_identities: PublicIdentityRegistry = state
+            .local_db
+            .load_domain(wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY)
+            .unwrap()
+            .unwrap();
+        assert!(persisted_identities.get(&citizen_alpha).is_some());
 
-        let persisted_bindings = ControllerBindingRegistry::load_or_new(
-            dir.path().join("civilization/controller_bindings.json"),
-        )
-        .unwrap();
-        assert!(persisted_bindings.get("citizen-alpha").is_some());
+        let persisted_bindings: ControllerBindingRegistry = state
+            .local_db
+            .load_domain(wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY)
+            .unwrap()
+            .unwrap();
+        assert!(persisted_bindings.get(&citizen_alpha).is_some());
     }
 
     #[tokio::test]
     async fn galaxy_event_publish_and_query_works() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
@@ -2015,7 +2025,7 @@ mod tests {
 
     #[tokio::test]
     async fn galaxy_map_endpoints_expose_official_genesis_map() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
 
         let map_list_json = authed_get_json(app.clone(), &token, "/v1/galaxy/maps").await;
         let maps = map_list_json["maps"].as_array().unwrap();
@@ -2031,10 +2041,10 @@ mod tests {
 
     #[tokio::test]
     async fn galaxy_travel_endpoints_expose_options_and_plans() {
-        let (_dir, app, token, _) = build_test_app(21);
+        let (_dir, app, token, _, _state) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
-        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
 
         let _event_json = authed_post_json(
             app.clone(),
@@ -2054,7 +2064,7 @@ mod tests {
         let options_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/galaxy/travel/options?public_id=captain-aurora",
+            &format!("/v1/galaxy/travel/options?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -2079,7 +2089,7 @@ mod tests {
         let plan_json = authed_get_json(
             app,
             &token,
-            "/v1/galaxy/travel/plan?public_id=captain-aurora&to_system_id=abyss-watch",
+            &format!("/v1/galaxy/travel/plan?public_id={captain}&to_system_id=abyss-watch"),
         )
         .await;
         assert_eq!(plan_json["map_id"].as_str(), Some("genesis-base"));
@@ -2093,10 +2103,10 @@ mod tests {
 
     #[tokio::test]
     async fn galaxy_travel_state_and_session_flow_work() {
-        let (_dir, app, token, _) = build_test_app(21);
+        let (_dir, app, token, _, _state) = build_test_app(21);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
-        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
         let _ = publish_trade_mission(
             app.clone(),
             &token,
@@ -2116,7 +2126,7 @@ mod tests {
         let initial_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/galaxy/travel/state?public_id=captain-aurora",
+            &format!("/v1/galaxy/travel/state?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -2130,7 +2140,7 @@ mod tests {
             &token,
             "/v1/galaxy/travel/depart",
             json!({
-                "public_id": "captain-aurora",
+                "public_id": captain,
                 "to_system_id": "abyss-watch"
             }),
         )
@@ -2149,7 +2159,7 @@ mod tests {
             &token,
             "/v1/galaxy/travel/arrive",
             json!({
-                "public_id": "captain-aurora"
+                "public_id": captain
             }),
         )
         .await;
@@ -2179,9 +2189,10 @@ mod tests {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn mission_lifecycle_settles_and_funds_treasury() {
-        let (dir, app, token, _) = build_test_app(30);
+        let (_dir, app, token, _, state) = build_test_app(30);
 
         let publish_body = json!({
             "title": "Stabilize the relay",
@@ -2281,15 +2292,18 @@ mod tests {
         assert_eq!(list_json.as_array().unwrap().len(), 1);
         assert_eq!(list_json[0]["status"], "settled");
 
-        let persisted =
-            GovernanceEngine::load_or_new(dir.path().join("governance/state.json")).unwrap();
+        let persisted = state
+            .local_db
+            .load_domain::<GovernanceEngine>(wattetheria_kernel::local_db::domain::GOVERNANCE)
+            .unwrap()
+            .unwrap();
         let planet = persisted.list_planets().remove(0);
         assert_eq!(planet.treasury_watt, 30);
     }
 
     #[tokio::test]
     async fn governance_lifecycle_endpoints_work() {
-        let (dir, app, token, _) = build_test_app(40);
+        let (_dir, app, token, _, state) = build_test_app(40);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
@@ -2339,15 +2353,18 @@ mod tests {
             );
         }
 
-        let persisted =
-            GovernanceEngine::load_or_new(dir.path().join("governance/state.json")).unwrap();
+        let persisted = state
+            .local_db
+            .load_domain::<GovernanceEngine>(wattetheria_kernel::local_db::domain::GOVERNANCE)
+            .unwrap()
+            .unwrap();
         let planet = persisted.planet("planet-test").unwrap();
         assert_eq!(planet.creator, "agent-challenger");
     }
 
     #[tokio::test]
     async fn civilization_briefing_and_generated_galaxy_events_work() {
-        let (_dir, app, token, _) = build_test_app(40);
+        let (_dir, app, token, _, _state) = build_test_app(40);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
@@ -2437,7 +2454,7 @@ mod tests {
 
     #[tokio::test]
     async fn bootstrap_identity_returns_unified_identity_bundle_and_public_memory_owner() {
-        let (dir, app, token, _) = build_test_app(20);
+        let (dir, app, token, _, _state) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
@@ -2446,20 +2463,20 @@ mod tests {
             &token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "captain-aurora",
-                "display_name": "Captain Aurora",
-                "faction": "freeport",
-                "role": "broker",
-                "strategy": "balanced",
-                "home_subnet_id": "planet-test",
-                "home_zone_id": "genesis-core"
+                "display_name": "Captain Aurora"
             }),
         )
         .await;
 
-        assert_eq!(
-            bootstrap_json["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+        // When no public_id is provided, the endpoint reuses the agent's
+        // existing active identity (created during test setup) or generates a
+        // new fingerprinted public_id from the display name.
+        let returned_public_id = bootstrap_json["public_identity"]["public_id"]
+            .as_str()
+            .unwrap();
+        assert!(
+            extract_public_id_fingerprint(returned_public_id).is_some(),
+            "auto-generated public_id should be fingerprinted: {returned_public_id}"
         );
         assert_eq!(
             bootstrap_json["controller_binding"]["controller_kind"].as_str(),
@@ -2470,16 +2487,26 @@ mod tests {
             Some(agent_did)
         );
         assert_eq!(
+            bootstrap_json["profile"]["faction"].as_str(),
+            Some("freeport")
+        );
+        assert_eq!(bootstrap_json["profile"]["role"].as_str(), Some("broker"));
+        assert_eq!(
+            bootstrap_json["profile"]["strategy"].as_str(),
+            Some("balanced")
+        );
+        assert_eq!(
             bootstrap_json["public_memory_owner"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(returned_public_id)
         );
 
+        let captain_alt = scoped_id("captain-aurora-alt", agent_did);
         let bootstrap_identity_json = authed_post_json(
             app.clone(),
             &token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "captain-aurora-alt",
+                "public_id": captain_alt,
                 "display_name": "Captain Aurora Alt",
                 "faction": "freeport",
                 "role": "broker",
@@ -2491,7 +2518,7 @@ mod tests {
         .await;
         assert_eq!(
             bootstrap_identity_json["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora-alt")
+            Some(captain_alt.as_str())
         );
 
         let events = EventLog::new(dir.path().join("events.jsonl"))
@@ -2506,12 +2533,12 @@ mod tests {
         let bootstrap_event = bootstrap_events
             .iter()
             .find(|event| {
-                event.payload["public_memory"]["public_id"].as_str() == Some("captain-aurora")
+                event.payload["public_memory"]["public_id"].as_str() == Some(returned_public_id)
             })
             .unwrap();
         assert_eq!(
             bootstrap_event.payload["public_memory"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(returned_public_id)
         );
         assert_eq!(
             bootstrap_event.payload["public_memory"]["controller_id"].as_str(),
@@ -2520,15 +2547,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_identities_and_catalog_endpoints_work() {
-        let (_dir, app, token, _) = build_test_app(20);
+    async fn bootstrap_identity_reuses_existing_public_id_for_same_agent_when_public_id_is_omitted()
+    {
+        let (_dir, app, token, _, _state) = build_test_app(20);
 
+        let first_bootstrap = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/civilization/bootstrap-identity",
+            json!({
+                "display_name": "Node Agent"
+            }),
+        )
+        .await;
+        let first_public_id = first_bootstrap["public_identity"]["public_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let second_bootstrap = authed_post_json(
+            app,
+            &token,
+            "/v1/civilization/bootstrap-identity",
+            json!({
+                "display_name": "Node Agent Updated"
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            second_bootstrap["public_identity"]["public_id"].as_str(),
+            Some(first_public_id.as_str())
+        );
+        assert_eq!(
+            second_bootstrap["public_identity"]["display_name"].as_str(),
+            Some("Node Agent Updated")
+        );
+    }
+
+    #[tokio::test]
+    async fn public_identities_and_catalog_endpoints_work() {
+        let (_dir, app, token, _, _state) = build_test_app(20);
+        let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+        let agent_did = state_json["agent_did"].as_str().unwrap();
+
+        let captain = scoped_id("captain-aurora", agent_did);
         let bootstrap_json = authed_post_json(
             app.clone(),
             &token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "captain-aurora",
+                "public_id": captain,
                 "display_name": "Captain Aurora",
                 "faction": "freeport",
                 "role": "broker",
@@ -2540,7 +2609,7 @@ mod tests {
         .await;
         assert_eq!(
             bootstrap_json["public_identity"]["public_id"].as_str(),
-            Some("captain-aurora")
+            Some(captain.as_str())
         );
 
         let identities_json =
@@ -2548,7 +2617,7 @@ mod tests {
         let public_identities = identities_json["public_identities"].as_array().unwrap();
         assert!(public_identities.len() >= 2);
         assert!(public_identities.iter().any(|item| {
-            item["identity"]["public_identity"]["public_id"].as_str() == Some("captain-aurora")
+            item["identity"]["public_identity"]["public_id"].as_str() == Some(captain.as_str())
                 && item["identity"]["profile"]["role"].as_str() == Some("broker")
                 && item["travel_state"]["current_position"]["system_id"].as_str()
                     == Some("frontier-gate")
@@ -2608,11 +2677,11 @@ mod tests {
 
     #[tokio::test]
     async fn game_catalog_and_status_endpoints_work() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        let _ = bootstrap_broker_game(app.clone(), &token, agent_did).await;
+        let (_, captain) = bootstrap_broker_game(app.clone(), &token, agent_did).await;
         let _ = settle_trade_mission_for_agent(app.clone(), &token, agent_did).await;
 
         let catalog_json = authed_get_json(app.clone(), &token, "/v1/game/catalog").await;
@@ -2621,7 +2690,7 @@ mod tests {
         let starter_list = authed_get_json(
             app.clone(),
             &token,
-            "/v1/game/starter-missions?public_id=captain-aurora",
+            &format!("/v1/game/starter-missions?public_id={captain}"),
         )
         .await;
         assert_starter_templates_with_anchor(&starter_list);
@@ -2629,28 +2698,28 @@ mod tests {
             app.clone(),
             &token,
             "/v1/game/mission-pack/bootstrap",
-            json!({"public_id": "captain-aurora"}),
+            json!({"public_id": captain}),
         )
         .await;
         assert_eq!(pack_bootstrap["created"].as_array().unwrap().len(), 2);
         let mission_pack_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/game/mission-pack?public_id=captain-aurora",
+            &format!("/v1/game/mission-pack?public_id={captain}"),
         )
         .await;
-        assert_game_mission_pack_payload(&mission_pack_json);
+        assert_game_mission_pack_payload(&mission_pack_json, &captain);
         let bootstrap_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/game/bootstrap?public_id=captain-aurora",
+            &format!("/v1/game/bootstrap?public_id={captain}"),
         )
         .await;
-        assert_game_bootstrap_payload(&bootstrap_json);
+        assert_game_bootstrap_payload(&bootstrap_json, &captain);
         let supervision_bootstrap_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/supervision/bootstrap?public_id=captain-aurora",
+            &format!("/v1/supervision/bootstrap?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -2661,14 +2730,14 @@ mod tests {
         let status_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/game/status?public_id=captain-aurora",
+            &format!("/v1/game/status?public_id={captain}"),
         )
         .await;
-        assert_game_status_payload(&status_json);
+        assert_game_status_payload(&status_json, &captain);
         let supervision_status_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/supervision/status?public_id=captain-aurora",
+            &format!("/v1/supervision/status?public_id={captain}"),
         )
         .await;
         assert_eq!(supervision_status_json["status"], status_json["status"]);
@@ -2680,31 +2749,31 @@ mod tests {
 
     #[tokio::test]
     async fn supervision_home_and_my_views_work() {
-        let (_dir, app, token, _) = build_test_app(20);
+        let (_dir, app, token, _, _state) = build_test_app(20);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
         seed_client_view_missions(app.clone(), &token, agent_did).await;
         let supervision_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/supervision/home?public_id=captain-aurora",
+            &format!("/v1/supervision/home?public_id={captain}"),
         )
         .await;
-        assert_supervision_home_game_block(&supervision_json);
+        assert_supervision_home_game_block(&supervision_json, &captain);
 
         let my_missions_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/missions/my?public_id=captain-aurora",
+            &format!("/v1/missions/my?public_id={captain}"),
         )
         .await;
         assert_client_mission_travel_views(&supervision_json, &my_missions_json);
         let supervision_missions_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/supervision/missions?public_id=captain-aurora",
+            &format!("/v1/supervision/missions?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -2715,13 +2784,13 @@ mod tests {
         let my_governance_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/governance/my?public_id=captain-aurora",
+            &format!("/v1/governance/my?public_id={captain}"),
         )
         .await;
         let supervision_governance_json = authed_get_json(
             app,
             &token,
-            "/v1/supervision/governance?public_id=captain-aurora",
+            &format!("/v1/supervision/governance?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -2786,7 +2855,7 @@ mod tests {
             subscriptions: Mutex::new(Vec::new()),
             messages: Mutex::new(Vec::new()),
         });
-        let (_dir, app, token, _) =
+        let (_dir, app, token, _, _state) =
             build_test_app_with_bridge(20, dir, identity, event_log, bridge);
 
         let status_json = authed_get_json(app.clone(), &token, "/v1/network/status").await;
@@ -2820,7 +2889,7 @@ mod tests {
             messages: Mutex::new(Vec::new()),
         });
         let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
-        let (_dir, app, token, _) =
+        let (_dir, app, token, _, _state) =
             build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
 
         let created = authed_post_json(
@@ -2895,10 +2964,10 @@ mod tests {
             subscriptions: Mutex::new(Vec::new()),
             messages: Mutex::new(Vec::new()),
         });
-        let (_dir, app, token, _) =
+        let (_dir, app, token, _, _state) =
             build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
 
-        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
         let _published = publish_trade_mission(
             app.clone(),
             &token,
@@ -2919,7 +2988,7 @@ mod tests {
             &token,
             "/v1/civilization/organizations",
             json!({
-                "public_id": "captain-aurora",
+                "public_id": captain,
                 "organization_id": "aurora-guild",
                 "name": "Aurora Guild",
                 "kind": "guild",
@@ -2935,7 +3004,7 @@ mod tests {
             "/v1/civilization/organizations/treasury/fund",
             json!({
                 "organization_id": "aurora-guild",
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "amount_watt": 55,
                 "reason": "seed treasury"
             }),
@@ -2954,10 +3023,10 @@ mod tests {
         let self_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/client/self?public_id=captain-aurora",
+            &format!("/v1/client/self?public_id={captain}"),
         )
         .await;
-        assert_eq!(self_json["id"].as_str(), Some("captain-aurora"));
+        assert_eq!(self_json["id"].as_str(), Some(captain.as_str()));
         assert_eq!(self_json["display_name"].as_str(), Some("Captain Aurora"));
         assert_eq!(self_json["watt_balance"].as_i64(), Some(77));
 
@@ -3022,13 +3091,13 @@ mod tests {
             subscriptions: Mutex::new(Vec::new()),
             messages: Mutex::new(Vec::new()),
         });
-        let (_dir, app, token, _) =
+        let (_dir, app, token, _, _state) =
             build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
-        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
 
         let export_json = public_get_json(
             app,
-            "/v1/client/export?public_id=captain-aurora&peer_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5",
+            &format!("/v1/client/export?public_id={captain}&peer_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
         )
         .await;
         assert_eq!(
@@ -3073,7 +3142,7 @@ mod tests {
         let (_dir, state, token, _) =
             build_test_state_with_bridge(20, dir, identity.clone(), event_log, bridge);
         let app = app(state.clone());
-        bootstrap_broker_identity(app, &token, &identity.agent_did).await;
+        let captain = bootstrap_broker_identity(app, &token, &identity.agent_did).await;
 
         let received = Arc::new(Mutex::new(Vec::<Value>::new()));
         let ingest_app = axum::Router::new().route(
@@ -3101,7 +3170,7 @@ mod tests {
             &format!("http://{addr}"),
             &state,
             &ClientExportQuery {
-                public_id: Some("captain-aurora".to_string()),
+                public_id: Some(captain),
                 peer_limit: Some(1),
                 task_limit: Some(5),
                 organization_limit: Some(5),
@@ -3130,19 +3199,22 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn organization_endpoints_and_views_work() {
-        let (_dir, app, token, _) = build_test_app(80);
+        let (_dir, app, token, _, _state) = build_test_app(80);
         let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
         let agent_did = state_json["agent_did"].as_str().unwrap();
 
-        bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        let captain = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+        let echo_identity = Identity::new_random();
+        let echo_did = echo_identity.agent_did.clone();
+        let echo = scoped_id("quartermaster-echo", &echo_did);
         let _ = authed_post_json(
             app.clone(),
             &token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "quartermaster-echo",
+                "public_id": echo,
                 "display_name": "Quartermaster Echo",
-                "agent_did": "agent-echo",
+                "agent_did": echo_did,
                 "faction": "freeport",
                 "role": "operator",
                 "strategy": "balanced",
@@ -3150,19 +3222,22 @@ mod tests {
                 "home_zone_id": "frontier-belt",
                 "controller_kind": "external_runtime",
                 "controller_ref": "external-echo",
-                "controller_node_id": "agent-echo",
+                "controller_node_id": echo_did,
                 "ownership_scope": "external"
             }),
         )
         .await;
+        let voss_identity = Identity::new_random();
+        let voss_did = voss_identity.agent_did.clone();
+        let voss = scoped_id("scout-voss", &voss_did);
         let _ = authed_post_json(
             app.clone(),
             &token,
             "/v1/civilization/bootstrap-identity",
             json!({
-                "public_id": "scout-voss",
+                "public_id": voss,
                 "display_name": "Scout Voss",
-                "agent_did": "agent-voss",
+                "agent_did": voss_did,
                 "faction": "freeport",
                 "role": "enforcer",
                 "strategy": "balanced",
@@ -3170,7 +3245,7 @@ mod tests {
                 "home_zone_id": "frontier-belt",
                 "controller_kind": "external_runtime",
                 "controller_ref": "external-voss",
-                "controller_node_id": "agent-voss",
+                "controller_node_id": voss_did,
                 "ownership_scope": "external"
             }),
         )
@@ -3180,7 +3255,7 @@ mod tests {
             &token,
             "/v1/civilization/organizations",
             json!({
-                "public_id": "captain-aurora",
+                "public_id": captain,
                 "organization_id": "aurora-consortium",
                 "name": "Aurora Consortium",
                 "kind": "consortium",
@@ -3202,8 +3277,8 @@ mod tests {
             "/v1/civilization/organizations/members",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
-                "public_id": "quartermaster-echo",
+                "actor_public_id": captain,
+                "public_id": echo,
                 "role": "officer",
                 "title": "Quartermaster"
             }),
@@ -3211,7 +3286,7 @@ mod tests {
         .await;
         assert_eq!(
             member_json["membership"]["public_id"].as_str(),
-            Some("quartermaster-echo")
+            Some(echo.as_str())
         );
 
         let funded_json = authed_post_json(
@@ -3220,7 +3295,7 @@ mod tests {
             "/v1/civilization/organizations/treasury/fund",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "amount_watt": 60,
                 "reason": "seed frontier treasury"
             }),
@@ -3237,7 +3312,7 @@ mod tests {
             "/v1/civilization/organizations/treasury/spend",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "amount_watt": 15,
                 "reason": "fund escort contract"
             }),
@@ -3254,8 +3329,8 @@ mod tests {
             "/v1/civilization/organizations/members",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "quartermaster-echo",
-                "public_id": "scout-voss",
+                "actor_public_id": echo,
+                "public_id": voss,
                 "role": "member",
                 "title": "Scout"
             }),
@@ -3272,8 +3347,8 @@ mod tests {
             "/v1/civilization/organizations/members",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
-                "public_id": "scout-voss",
+                "actor_public_id": captain,
+                "public_id": voss,
                 "role": "member",
                 "title": "Scout"
             }),
@@ -3281,7 +3356,7 @@ mod tests {
         .await;
         assert_eq!(
             scout_member_json["membership"]["public_id"].as_str(),
-            Some("scout-voss")
+            Some(voss.as_str())
         );
 
         let published_mission = authed_post_json(
@@ -3290,7 +3365,7 @@ mod tests {
             "/v1/civilization/organizations/missions",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "quartermaster-echo",
+                "actor_public_id": echo,
                 "title": "Staff the frontier exchange",
                 "description": "Coordinate organization members around the exchange lane.",
                 "domain": "trade",
@@ -3333,7 +3408,7 @@ mod tests {
             "/v1/civilization/organizations/missions",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "title": "Audit the frontier exchange",
                 "description": "Verify the route books before expansion.",
                 "domain": "power",
@@ -3368,7 +3443,7 @@ mod tests {
             "/v1/civilization/organizations/proposals",
             json!({
                 "organization_id": "aurora-consortium",
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "kind": "subnet_charter",
                 "title": "Charter Aurora Reach",
                 "summary": "Request a dedicated subnet for consortium traffic and governance.",
@@ -3388,7 +3463,7 @@ mod tests {
             "/v1/civilization/organizations/proposals/vote",
             json!({
                 "proposal_id": proposal_id.clone(),
-                "actor_public_id": "captain-aurora",
+                "actor_public_id": captain,
                 "approve": true
             }),
         )
@@ -3406,7 +3481,7 @@ mod tests {
             "/v1/civilization/organizations/proposals/vote",
             json!({
                 "proposal_id": proposal_id.clone(),
-                "actor_public_id": "scout-voss",
+                "actor_public_id": voss,
                 "approve": true
             }),
         )
@@ -3425,7 +3500,7 @@ mod tests {
             "/v1/civilization/organizations/proposals/finalize",
             json!({
                 "proposal_id": proposal_id.clone(),
-                "actor_public_id": "quartermaster-echo",
+                "actor_public_id": echo,
                 "min_votes_for": 2
             }),
         )
@@ -3441,7 +3516,7 @@ mod tests {
             "/v1/civilization/organizations/charters",
             json!({
                 "proposal_id": proposal_json["proposal"]["proposal_id"],
-                "actor_public_id": "captain-aurora"
+                "actor_public_id": captain
             }),
         )
         .await;
@@ -3457,7 +3532,7 @@ mod tests {
         let organizations_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/civilization/organizations?public_id=captain-aurora",
+            &format!("/v1/civilization/organizations?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -3534,7 +3609,7 @@ mod tests {
         let governance_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/civilization/organizations/proposals?organization_id=aurora-consortium&public_id=captain-aurora",
+            &format!("/v1/civilization/organizations/proposals?organization_id=aurora-consortium&public_id={captain}"),
         )
         .await;
         assert_eq!(governance_json["proposals"].as_array().unwrap().len(), 1);
@@ -3549,7 +3624,7 @@ mod tests {
         let my_organizations_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/organizations/my?public_id=captain-aurora",
+            &format!("/v1/organizations/my?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -3562,7 +3637,7 @@ mod tests {
         let officer_orgs_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/organizations/my?public_id=quartermaster-echo",
+            &format!("/v1/organizations/my?public_id={echo}"),
         )
         .await;
         assert_eq!(
@@ -3590,7 +3665,7 @@ mod tests {
         let governance_my_json = authed_get_json(
             app.clone(),
             &token,
-            "/v1/governance/my?public_id=captain-aurora",
+            &format!("/v1/governance/my?public_id={captain}"),
         )
         .await;
         assert_eq!(
@@ -3608,8 +3683,12 @@ mod tests {
             1
         );
 
-        let supervision_home_json =
-            authed_get_json(app, &token, "/v1/supervision/home?public_id=captain-aurora").await;
+        let supervision_home_json = authed_get_json(
+            app,
+            &token,
+            &format!("/v1/supervision/home?public_id={captain}"),
+        )
+        .await;
         assert_eq!(
             supervision_home_json["organizations"]
                 .as_array()
@@ -3631,7 +3710,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervision_console_page_serves_canonical_surface() {
-        let (_dir, app, _token, _) = build_test_app(20);
+        let (_dir, app, _token, _, _state) = build_test_app(20);
         let (status, body) = request_text(
             app,
             axum::http::Request::builder()

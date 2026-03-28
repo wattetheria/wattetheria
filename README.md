@@ -1,6 +1,6 @@
 # wattetheria
 
-Rust-first implementation of an agent-native, pure P2P, compute-powered galaxy society runtime.
+Rust-first implementation of an agent-native, pure P2P, compute-powered world society runtime.
 
 ## Product Direction
 
@@ -13,7 +13,7 @@ Wattetheria is now explicitly agent-native:
 
 Current boundary, in short:
 
-- `wattetheria` owns the galaxy-facing public memory and product semantics layer
+- `wattetheria` owns the world-facing public memory and product semantics layer
 - `wattswarm` owns swarm coordination, task/topic substrate, and local execution surfaces
 - public web and desktop clients should read aggregated data through `wattetheria-gateway`, not directly from arbitrary user-local nodes
 
@@ -24,7 +24,7 @@ The network is designed around collective intelligence and emergent coordination
 - `wattswarm` is the swarm substrate where distributed task execution, topic propagation, peer knowledge, and collective coordination emerge
 - `wattetheria` turns those distributed signals into public memory, identity, missions, organizations, governance, and client-facing world semantics
 - `wattetheria-gateway` is a non-authoritative federated index and query layer for global clients
-- a decentralized service registry and decentralized API gateway are the next network layer for discovering and safely invoking external APIs, tools, and CLI capabilities without pre-installing rigid skills on every agent
+- a decentralized service registry and decentralized gateway are the next network layer for discovering and safely invoking external agents capabilities without pre-installing rigid skills on every agent
 
 ```mermaid
 flowchart TB
@@ -38,7 +38,7 @@ flowchart TB
         N3["Agent Node N\nwattetheria + wattswarm\nlocal runtime"]
     end
 
-    subgraph PublicMemory["Galaxy-Facing Product Layer"]
+    subgraph PublicMemory["World-Facing Product Layer"]
         WE["wattetheria\nPublic memory, identity,\nmissions, orgs, governance,\nworld semantics"]
     end
 
@@ -49,8 +49,8 @@ flowchart TB
     end
 
     subgraph Discovery["Decentralized Capability Discovery Layer"]
-        REG["Decentralized Service Registry\nAPI / CLI / tool manifests\ncapabilities, policy, reputation"]
-        APIGW["Decentralized API / CLI Gateway\nrouting, auth brokering,\nverification, execution receipts"]
+        REG["Decentralized Service Registry\n Agents manifests\ncapabilities, policy, reputation"]
+        APIGW["Decentralized Agents Agents Gateway\nrouting, auth brokering,\nverification, execution receipts"]
     end
 
     subgraph Clients["Clients and Operators"]
@@ -83,16 +83,16 @@ flowchart TB
     WE <--> APIGW
     REG <--> APIGW
 
-    APIGW --> EXT["External APIs / Tools / CLI Surfaces\nUber, DiDi, travel, commerce,\nlocal apps, SaaS, private services"]
+    APIGW --> EXT["External Agents Surfaces\nCommerce,\nlocal apps, SaaS, private services"]
 ```
 
 Read the diagram in layers:
 
 - the bottom substrate is not a classic centralized backend; it is swarm coordination and collective emergence
 - the edge of the network is many user-local or organization-local nodes running their own agents
-- `wattetheria` provides the shared galaxy-facing semantic layer on top of the swarm substrate
+- `wattetheria` provides the shared world-facing semantic layer on top of the swarm substrate
 - `wattetheria-gateway` federates public signed node views into global read APIs for clients
-- the decentralized service registry plus decentralized API gateway are the future discovery-and-execution layer that lets agents find and safely use external APIs and CLI tools across the network
+- the decentralized service registry plus decentralized API gateway are the future discovery-and-execution layer that lets agents find and safely use external Agents across the network
 
 ## What Is Implemented Today
 
@@ -187,7 +187,7 @@ Read the diagram in layers:
 
 ### Civilization Layer
 
-- Public identity registry for galaxy-facing runtime records
+- Public identity registry for world-facing runtime records
 - Controller binding registry for mapping public identities to local or external controllers
 - Citizen identity registry
   - `faction`: `order`, `freeport`, `raider`
@@ -198,7 +198,7 @@ Read the diagram in layers:
   - max auto actions
   - high-risk allowance
   - emergency recall threshold
-- Galaxy zones:
+- World zones:
   - `Genesis`
   - `Frontier`
   - `Deep Space`
@@ -206,12 +206,12 @@ Read the diagram in layers:
   - `genesis-base`
   - 3 starter systems
   - 2 canonical routes
-  - system and planet nodes aligned to galaxy zones
+  - system and planet nodes aligned to world zones
 - Zone security modes:
   - `peace`
   - `limited_pvp`
   - `open_pvp`
-- Dynamic galaxy events:
+- Dynamic world events:
   - `economic`
   - `spatial`
   - `political`
@@ -240,7 +240,7 @@ Read the diagram in layers:
   - starter mission map anchors bound to official genesis systems, planets, and routes
   - stage-aware mission pack generation and bootstrap flow for the current role and progression stage
   - mission-pack summaries, next-stage previews, and template payload schemas for agent and console planning
-  - high-severity galaxy events converted into additional event-driven mission templates for the current home zone
+  - high-severity world events converted into additional event-driven mission templates for the current home zone
 - Organization layer:
   - organization registry with `guild`, `consortium`, `fleet`, and `civic_union`
   - founder/officer/member roles
@@ -253,12 +253,12 @@ Read the diagram in layers:
   - projection kinds: `chat_room`, `working_group`, `guild`, `organization`, `mission_thread`
   - control-plane proxying into `wattswarm` topic transport for emergent chat surfaces
 - Emergency evaluation:
-  - galaxy event pressure
+  - world event pressure
   - governance instability
   - recall
   - custody
   - urgent security/power missions
-- System-generated galaxy events driven by governance instability and unresolved frontier pressure
+- System-generated world events driven by governance instability and unresolved frontier pressure
 
 ### Brain, MCP, And Operator Assistance
 
@@ -292,7 +292,7 @@ Read the diagram in layers:
 - Gateway publication path:
   - nodes can periodically publish the same signed snapshot over wattswarm as `PUBLIC_CLIENT_SNAPSHOT`
   - `wattetheria-gateway` should ingest those packets as a non-authoritative observer, even when user-local nodes sit behind NAT
-- Civilization endpoints for profile, metrics, emergencies, briefing, galaxy zones/events, and mission lifecycle
+- Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization topic endpoints for emergent coordination:
   - `/v1/civilization/topics`
   - `/v1/civilization/topics/messages`
@@ -300,7 +300,7 @@ Read the diagram in layers:
 - Map endpoints for the official base map, map catalog, route-travel planning, and persisted travel-state session flow
 - Travel arrival consequences that summarize destination-local missions, route risk, and governed subnet context
 - Public identity bootstrap endpoint for lightweight supervision consoles and automation to create a public identity, controller binding, and starter profile in one call
-- Public identity endpoints for querying and upserting galaxy-facing identity records
+- Public identity endpoints for querying and upserting world-facing identity records
 - Controller binding endpoints for querying and upserting public-identity controller bindings
 - Governance endpoints for planets, proposals, vote/finalize, treasury, stability, recall, custody, and takeover
 - Policy endpoints for check, pending, approve, revoke, and grants
@@ -335,16 +335,16 @@ In short, the current model is:
 - local authoritative public event history
 - remote export and recovery for consistency
 - signed summaries and mirror sync for visibility
-- public-memory ownership metadata attached to identity and galaxy-event writes through the control plane
+- public-memory ownership metadata attached to identity and world-event writes through the control plane
 
 It is not yet:
 
-- a single globally ordered galaxy ledger
+- a single globally ordered world ledger
 - a strong-consensus replicated state machine
 
 ## Identity And Controller Boundary
 
-- `wattetheria` owns the galaxy-facing public identity and public memory layer.
+- `wattetheria` owns the world-facing public identity and public memory layer.
 - `wattswarm` owns the local control, swarm coordination, collective decision memory, and execution layer.
 - user-provided runtimes own private memory, self-evolution, and custom internal agent logic.
 
@@ -359,7 +359,7 @@ Applied to the current client architecture:
 
 - On-chain settlement bridge
 - Advanced market mechanisms such as auction, orderbook, and arbitration
-- Strong global consensus over one shared galaxy-wide authoritative ledger
+- Strong global consensus over one shared world-wide authoritative ledger
 
 ### Control Plane API
 
@@ -428,14 +428,14 @@ These control-plane endpoints are the current agent-native and supervision-conso
 - `GET /supervision` serves a lightweight local supervision console that reads the canonical APIs below.
 - `GET /v1/civilization/identities` returns the canonical public-identity listing.
 - `GET /v1/supervision/identities` exposes the same public-identity listing through the supervision namespace.
-- `POST /v1/civilization/bootstrap-identity` creates `public_identity + controller_binding + profile`.
-- `GET /v1/supervision/home` returns top-level supervision aggregates: identity, metrics, emergencies, briefing, map-aware mission counts (`eligible_open`, `local_open`, `travel_required_open`, `active`), home galaxy context, current `travel_state`, and a supervision read model.
+- `POST /v1/civilization/bootstrap-identity` creates `public_identity + controller_binding + profile`. Only `display_name` is required; `public_id`, `faction`, `role`, `strategy`, and home location fields can be omitted and will be defaulted or generated server-side.
+- `GET /v1/supervision/home` returns top-level supervision aggregates: identity, metrics, emergencies, briefing, map-aware mission counts (`eligible_open`, `local_open`, `travel_required_open`, `active`), home world context, current `travel_state`, and a supervision read model.
 - `GET /v1/missions/my` returns enriched mission buckets for the selected public identity: `eligible_open`, `local_open`, `travel_required_open`, `active`, and `history`, with per-mission `map_anchor` and `travel` summaries.
 - `GET /v1/supervision/missions` returns the same mission buckets through the supervision namespace.
 - `GET /v1/governance/my` returns governance eligibility, home planet, governed planets, proposal activity, linked organization governance state, charter applications, and active risks.
 - `GET /v1/governance/my` now also returns governance journey, civic/expansion qualification tracks, and next governance actions.
 - `GET /v1/supervision/governance` returns the same governance payload through the supervision namespace.
-- `GET /v1/catalog/bootstrap` returns bootstrap catalogs for factions, roles, strategies, organization permissions, organization proposal kinds, controller kinds, ownership scopes, mission domains, travel risk levels, and galaxy zones.
+- `GET /v1/catalog/bootstrap` returns bootstrap catalogs for factions, roles, strategies, organization permissions, organization proposal kinds, controller kinds, ownership scopes, mission domains, travel risk levels, and world zones.
 - `GET /v1/game/catalog` returns the current operation catalog for stages, roles, and factions.
 - `GET /v1/game/status` returns the current public identity's operation stage, progression tier, objectives, qualifications, governance journey, bootstrap state, bootstrap flow, starter mission view, and a `supervision` read model with `next_actions`, `alerts`, and `priority_cards`.
 - `GET /v1/supervision/status` returns the same payload through the supervision namespace.
@@ -455,7 +455,7 @@ These control-plane endpoints are the current agent-native and supervision-conso
 - `GET /v1/supervision/briefing` returns the current briefing payload for supervision surfaces.
 - `GET /v1/night-shift/summary` mirrors the raw night-shift report.
 - `GET /v1/night-shift/narrative` mirrors the narrative-form night-shift payload.
-- `GET|POST /v1/civilization/organizations` lists or creates galaxy organizations for a public identity.
+- `GET|POST /v1/civilization/organizations` lists or creates world organizations for a public identity.
 - `POST /v1/civilization/organizations/members` adds or updates organization membership for an existing public identity.
 - `GET|POST /v1/civilization/organizations/proposals` lists or creates organization-internal governance proposals, including subnet charter proposals.
 - `POST /v1/civilization/organizations/proposals/vote` lets active members vote on organization proposals.
@@ -472,7 +472,7 @@ The production path for a globally deployed `wattetheria-client` is:
 2. the node maintains its local authenticated control plane for operator and local tooling use
 3. the node periodically builds a signed public client snapshot
 4. the node publishes that snapshot over wattswarm as a public gossip packet
-5. `wattetheria-gateway` observes wattswarm, verifies signatures, upserts node snapshots, and serves aggregated global APIs
+5. `wattetheria-gateway` observes wattswarm, verifies signatures, upserts node snapshots, and serves aggregated global data
 6. `wattetheria-client` reads the gateway, not arbitrary user-local nodes
 
 This split is intentional:
@@ -506,8 +506,8 @@ This split is intentional:
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
 - `crates/kernel-core/src/game` - agent-operation orchestration layer that turns missions, governance, map state, and influence metrics into runtime progression and supervision state
-- `crates/kernel-core/src/map` - independent galaxy map domain for official base-map models, validation, and persistence
-- `crates/kernel-core/src/civilization` - application-layer civilization models for missions, galaxy state, profiles, and influence metrics
+- `crates/kernel-core/src/map` - independent world map domain for official base-map models, validation, and persistence
+- `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
 - `crates/observatory-core` - observatory HTTP/store library behind the observatory app
 - `crates/p2p-runtime` - isolated libp2p transport runtime and gossip guards
@@ -529,9 +529,15 @@ cargo run -p wattetheria-client-cli -- doctor --data-dir .wattetheria --brain
 ## Common Commands
 
 ```bash
-# quality gates
+# local fast checks
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+
+# targeted tests for touched areas
+# cargo test -p wattetheria-client-cli --test bootstrap_integration -- --nocapture
+# cargo test -p wattetheria-client-cli --test cli_integration -- --nocapture
+
+# full workspace test sweep (normally left to GitHub CI)
 cargo test --workspace
 
 # mcp
@@ -556,11 +562,11 @@ cargo run -p wattetheria-client-cli -- oracle --data-dir .wattetheria pull btc-p
 curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-identity \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
-  -d '{"public_id":"captain-aurora","display_name":"Captain Aurora","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
+  -d '{"display_name":"Captain Aurora"}'
 curl -X POST http://127.0.0.1:7777/v1/civilization/bootstrap-identity \
   -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   -H "content-type: application/json" \
-  -d '{"public_id":"captain-aurora-alt","display_name":"Captain Aurora Alt","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
+  -d '{"public_id":"captain-aurora","display_name":"Captain Aurora","faction":"freeport","role":"broker","strategy":"balanced","home_subnet_id":"planet-a","home_zone_id":"genesis-core"}'
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/civilization/identities
 curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \

@@ -2,7 +2,6 @@ use crate::oracle_sync::{handle_oracle_feed_packet, sync_and_publish_local_oracl
 use crate::snapshot_broadcast::publish_public_snapshot_packet;
 use anyhow::Result;
 use std::collections::BTreeSet;
-use std::path::Path;
 use tokio::time::{Duration, Instant, interval, interval_at};
 use tracing::{info, warn};
 use wattetheria_control_plane::ControlPlaneState;
@@ -18,7 +17,6 @@ use wattetheria_p2p_runtime::P2PNode;
 
 pub struct LoopContext<'a> {
     pub online_proof: &'a mut OnlineProofManager,
-    pub online_proof_path: &'a Path,
     pub identity: &'a IdentityCompatView,
     pub control_state: &'a ControlPlaneState,
     pub admission_config: &'a AdmissionConfig,
@@ -26,7 +24,6 @@ pub struct LoopContext<'a> {
     pub web_of_trust: &'a mut WebOfTrust,
     pub event_log: &'a EventLog,
     pub oracle_registry: &'a mut OracleRegistry,
-    pub oracle_state_path: &'a Path,
     pub gateway_publish_enabled: bool,
     pub gateway_push_interval_sec: u64,
     pub gateway_startup_jitter_sec: u64,
@@ -55,13 +52,16 @@ pub async fn run_loop(p2p: &mut P2PNode, ctx: LoopContext<'_>) -> Result<()> {
             }
             _ = heartbeat.tick() => {
                 let _ = ctx.online_proof.heartbeat(&ctx.identity.agent_did);
-                let _ = ctx.online_proof.persist(ctx.online_proof_path);
+                let _ = ctx.control_state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ONLINE_PROOF,
+                    ctx.online_proof,
+                );
             }
             _ = oracle_sync.tick() => {
                 sync_and_publish_local_oracle_feeds(
                     p2p,
                     ctx.oracle_registry,
-                    ctx.oracle_state_path,
+                    &ctx.control_state.local_db,
                     ctx.enable_hashcash_broadcast,
                     &mut known_oracle_signatures,
                 )?;
@@ -91,7 +91,7 @@ pub async fn run_loop(p2p: &mut P2PNode, ctx: LoopContext<'_>) -> Result<()> {
                             handle_oracle_feed_packet(
                                 &packet.data,
                                 ctx.oracle_registry,
-                                ctx.oracle_state_path,
+                                &ctx.control_state.local_db,
                                 ctx.event_log,
                                 &ctx.control_state.identity,
                                 ctx.control_state.signer.as_ref(),

@@ -24,22 +24,126 @@ use wattetheria_kernel::identities::{
 };
 use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::metrics::compute_scores;
+use wattetheria_kernel::profiles::{Faction, RolePath, StrategyProfile};
 use wattetheria_kernel::relationships::RelationshipEdge;
 
 #[derive(Debug, Clone)]
 struct BootstrapIdentityPlan {
+    public_id: String,
     controller_kind: ControllerKind,
     controller_ref: String,
     controller_node_id: Option<String>,
     ownership_scope: OwnershipScope,
     agent_did: Option<String>,
     active: bool,
+    faction: Faction,
+    role: RolePath,
+    strategy: StrategyProfile,
+}
+
+fn normalize_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn slugify_public_id(seed: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_was_separator = false;
+    for ch in seed.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            slug.push('-');
+            previous_was_separator = true;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+async fn resolve_bootstrap_public_id(
+    state: &ControlPlaneState,
+    body: &BootstrapIdentityBody,
+    agent_did: Option<&str>,
+) -> Result<String, String> {
+    let fingerprint = agent_did
+        .map(wattetheria_kernel::identity::fingerprint_from_did_key)
+        .transpose()
+        .map_err(|error| format!("fingerprint derivation failed: {error:#}"))?;
+
+    // If client provides an explicit public_id, verify its fingerprint.
+    if let Some(public_id) = normalize_optional_text(body.public_id.as_deref()) {
+        if let Some(ref fp) = fingerprint {
+            let embedded = wattetheria_kernel::identity::extract_public_id_fingerprint(&public_id);
+            let is_did = wattetheria_kernel::identity::is_did_key_public_id(&public_id);
+            if !is_did && (embedded != Some(fp.as_str())) {
+                return Err(format!(
+                    "provided public_id '{public_id}' must end with '.{fp}' for this agent"
+                ));
+            }
+        }
+        return Ok(public_id);
+    }
+
+    // Re-use an existing active identity for this agent.
+    {
+        let registry = state.public_identity_registry.lock().await;
+        if let Some(agent_did) = agent_did
+            && let Some(identity) = registry
+                .list()
+                .into_iter()
+                .filter(|identity| {
+                    identity.active
+                        && identity.agent_did.as_deref() == Some(agent_did)
+                        && identity.public_id != agent_did
+                })
+                .max_by_key(|identity| (identity.updated_at, identity.created_at))
+        {
+            return Ok(identity.public_id);
+        }
+    }
+
+    // Generate a new scoped public_id from display_name + fingerprint.
+    let slug = slugify_public_id(&body.display_name);
+    let fallback = agent_did
+        .map(slugify_public_id)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "agent".to_string());
+    let slug = if slug.is_empty() { fallback } else { slug };
+
+    let Some(fp) = fingerprint else {
+        return Ok(slug);
+    };
+
+    let scoped = wattetheria_kernel::identity::build_scoped_public_id(&slug, &fp);
+
+    let registry = state.public_identity_registry.lock().await;
+    if registry.get(&scoped).is_none() {
+        return Ok(scoped);
+    }
+
+    // Local collision (same agent re-bootstrapping with same name): add numeric suffix to slug.
+    let mut suffix = 2_u32;
+    loop {
+        let candidate =
+            wattetheria_kernel::identity::build_scoped_public_id(&format!("{slug}-{suffix}"), &fp);
+        if registry.get(&candidate).is_none() {
+            return Ok(candidate);
+        }
+        suffix += 1;
+    }
 }
 
 fn plan_bootstrap_identity(
     body: &BootstrapIdentityBody,
     state_agent_did: &str,
 ) -> Result<BootstrapIdentityPlan, String> {
+    let display_name = body.display_name.trim();
+    if display_name.is_empty() {
+        return Err("display_name is required".to_string());
+    }
     let controller_kind = body
         .controller_kind
         .clone()
@@ -75,12 +179,16 @@ fn plan_bootstrap_identity(
     });
 
     Ok(BootstrapIdentityPlan {
+        public_id: String::new(),
         controller_kind,
         controller_ref,
         controller_node_id,
         ownership_scope,
         agent_did,
         active: body.active.unwrap_or(true),
+        faction: body.faction.clone().unwrap_or(Faction::Freeport),
+        role: body.role.clone().unwrap_or(RolePath::Broker),
+        strategy: body.strategy.clone().unwrap_or(StrategyProfile::Balanced),
     })
 }
 
@@ -92,24 +200,30 @@ async fn persist_bootstrap_identity(
     {
         let mut registry = state.public_identity_registry.lock().await;
         registry.upsert(
-            &body.public_id,
-            body.display_name.clone(),
+            &plan.public_id,
+            body.display_name.trim().to_string(),
             plan.agent_did.clone(),
             plan.active,
-        );
-        registry.persist(&state.public_identity_registry_state_path)?;
+        )?;
+        state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+            &*registry,
+        )?;
     }
     {
         let mut registry = state.controller_binding_registry.lock().await;
         registry.upsert(
-            &body.public_id,
+            &plan.public_id,
             plan.controller_kind.clone(),
             plan.controller_ref.clone(),
             plan.controller_node_id.clone(),
             plan.ownership_scope.clone(),
             plan.active,
         );
-        registry.persist(&state.controller_binding_registry_state_path)?;
+        state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY,
+            &*registry,
+        )?;
     }
     {
         let profile_agent_did = plan
@@ -119,13 +233,16 @@ async fn persist_bootstrap_identity(
         let mut registry = state.citizen_registry.lock().await;
         registry.set_profile(
             &profile_agent_did,
-            body.faction.clone(),
-            body.role.clone(),
-            body.strategy.clone(),
+            plan.faction.clone(),
+            plan.role.clone(),
+            plan.strategy.clone(),
             body.home_subnet_id.clone(),
             body.home_zone_id.clone(),
         );
-        registry.persist(&state.citizen_registry_state_path)?;
+        state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::CITIZEN_REGISTRY,
+            &*registry,
+        )?;
     }
     {
         let map = state
@@ -143,13 +260,16 @@ async fn persist_bootstrap_identity(
         };
         let mut registry = state.travel_state_registry.lock().await;
         registry.set_position(
-            &body.public_id,
+            &plan.public_id,
             plan.controller_node_id
                 .as_deref()
                 .unwrap_or(&state.agent_did),
             position,
         );
-        registry.persist(&state.travel_state_registry_state_path)?;
+        state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::TRAVEL_STATE_REGISTRY,
+            &*registry,
+        )?;
     }
 
     Ok(())
@@ -252,7 +372,10 @@ pub(crate) async fn upsert_relationship(
             body.kind.clone(),
             body.active,
         );
-        if let Err(error) = registry.persist(&state.relationship_registry_state_path) {
+        if let Err(error) = state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::RELATIONSHIP_REGISTRY,
+            &*registry,
+        ) {
             return internal_error(&error);
         }
         edge
@@ -328,13 +451,25 @@ pub(crate) async fn public_identity_upsert(
         Err(response) => return response,
     };
     let mut registry = state.public_identity_registry.lock().await;
-    let identity = registry.upsert(
+    let identity = match registry.upsert(
         &body.public_id,
         body.display_name,
         body.agent_did,
         body.active.unwrap_or(true),
-    );
-    if let Err(error) = registry.persist(&state.public_identity_registry_state_path) {
+    ) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("{error:#}")})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+        &*registry,
+    ) {
         return internal_error(&error);
     }
     drop(registry);
@@ -393,7 +528,10 @@ pub(crate) async fn controller_binding_upsert(
         body.ownership_scope,
         body.active.unwrap_or(true),
     );
-    if let Err(error) = registry.persist(&state.controller_binding_registry_state_path) {
+    if let Err(error) = state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY,
+        &*registry,
+    ) {
         return internal_error(&error);
     }
     drop(registry);
@@ -419,7 +557,10 @@ pub(crate) async fn citizen_profile_upsert(
         body.home_subnet_id,
         body.home_zone_id,
     );
-    if let Err(error) = registry.persist(&state.citizen_registry_state_path) {
+    if let Err(error) = state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::CITIZEN_REGISTRY,
+        &*registry,
+    ) {
         return internal_error(&error);
     }
     drop(registry);
@@ -463,16 +604,23 @@ pub(crate) async fn bootstrap_identity(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let plan = match plan_bootstrap_identity(&body, &state.agent_did) {
+    let mut plan = match plan_bootstrap_identity(&body, &state.agent_did) {
         Ok(plan) => plan,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
         }
     };
+    plan.public_id =
+        match resolve_bootstrap_public_id(&state, &body, plan.agent_did.as_deref()).await {
+            Ok(id) => id,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
     if let Err(error) = persist_bootstrap_identity(&state, &body, &plan).await {
         return internal_error(&error);
     }
-    let context = resolve_identity_context(&state, Some(&body.public_id), None).await;
+    let context = resolve_identity_context(&state, Some(&plan.public_id), None).await;
     let payload = public_memory_payload(&context, "identity", identity_context_response(&context));
     let _ = state.stream_tx.send(StreamEvent {
         kind: "civilization.identity.bootstrapped".to_string(),
@@ -487,7 +635,7 @@ pub(crate) async fn bootstrap_identity(
         action: "civilization.identity.bootstrap".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(body.public_id),
+        subject: Some(plan.public_id),
         capability: Some("civilization.identity.bootstrap".to_string()),
         reason: None,
         duration_ms: None,
@@ -718,7 +866,10 @@ pub(crate) async fn galaxy_event_publish(
                 .into_response();
         }
     };
-    if let Err(error) = galaxy.persist(&state.galaxy_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GALAXY_STATE, &*galaxy)
+    {
         return internal_error(&error);
     }
     drop(galaxy);
@@ -778,7 +929,10 @@ pub(crate) async fn galaxy_event_generate(
         Ok(events) => events,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = galaxy.persist(&state.galaxy_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::GALAXY_STATE, &*galaxy)
+    {
         return internal_error(&error);
     }
     drop(galaxy);

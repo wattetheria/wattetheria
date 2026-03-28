@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde_json::{Value, json};
 
-use crate::auth::{authorize, internal_error};
+use crate::auth::authorize;
 use crate::state::{
     ControlPlaneState, PolicyApproveBody, PolicyCheckBody, PolicyRevokeBody, StreamEvent,
 };
@@ -23,7 +23,7 @@ pub(crate) async fn policy_check(
     };
 
     let mut engine = state.policy_engine.lock().await;
-    let decision = match engine.evaluate(CapabilityRequest {
+    let decision = engine.evaluate(CapabilityRequest {
         request_id: String::new(),
         timestamp: 0,
         subject: body.subject.clone(),
@@ -31,10 +31,13 @@ pub(crate) async fn policy_check(
         capability: body.capability.clone(),
         reason: body.reason.clone(),
         input_digest: body.input_digest.clone(),
-    }) {
-        Ok(decision) => decision,
-        Err(error) => return internal_error(&error),
-    };
+    });
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::POLICY, engine.state())
+    {
+        tracing::warn!("persist policy state: {error:#}");
+    }
     drop(engine);
 
     let status = if decision.decision == DecisionKind::Allowed {
@@ -118,6 +121,12 @@ pub(crate) async fn policy_approve(
                 .into_response();
         }
     };
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::POLICY, engine.state())
+    {
+        tracing::warn!("persist policy state: {error:#}");
+    }
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -181,6 +190,12 @@ pub(crate) async fn policy_revoke(
             Json(json!({"error": error.to_string()})),
         )
             .into_response();
+    }
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::POLICY, engine.state())
+    {
+        tracing::warn!("persist policy state: {error:#}");
     }
 
     let _ = state.audit_log.append(AuditEntry {

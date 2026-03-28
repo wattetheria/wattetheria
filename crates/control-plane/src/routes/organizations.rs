@@ -230,7 +230,10 @@ pub(crate) async fn create_organization(
             founder_public_id: founder_public_id.clone(),
         }) {
             Ok(organization) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 organization
@@ -338,7 +341,10 @@ pub(crate) async fn upsert_organization_member(
             body.active.unwrap_or(true),
         ) {
             Ok(membership) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 membership
@@ -467,7 +473,10 @@ pub(crate) async fn publish_organization_mission(
                 }
             }
         };
-        if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+        if let Err(error) = state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+            &*organizations,
+        ) {
             return internal_error(&error);
         }
         organization
@@ -494,7 +503,10 @@ pub(crate) async fn publish_organization_mission(
                 "payload": body.payload,
             }),
         );
-        if let Err(error) = board.persist(&state.mission_board_state_path) {
+        if let Err(error) = state
+            .local_db
+            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        {
             return internal_error(&error);
         }
         mission
@@ -637,7 +649,10 @@ pub(crate) async fn create_organization_proposal(
             created_by_public_id: actor_public_id.clone(),
         }) {
             Ok(proposal) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 proposal
@@ -695,7 +710,10 @@ pub(crate) async fn vote_organization_proposal(
         let mut organizations = state.organization_registry.lock().await;
         match organizations.vote_proposal(&body.proposal_id, &actor_public_id, body.approve) {
             Ok(proposal) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 proposal
@@ -777,7 +795,10 @@ pub(crate) async fn finalize_organization_proposal(
         }
         match organizations.finalize_proposal(&body.proposal_id, body.min_votes_for.unwrap_or(2)) {
             Ok(proposal) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 proposal
@@ -906,7 +927,10 @@ pub(crate) async fn submit_subnet_charter_application(
             readiness,
         ) {
             Ok(application) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 application
@@ -983,7 +1007,10 @@ async fn mutate_organization_treasury(
         };
         match result {
             Ok(organization) => {
-                if let Err(error) = organizations.persist(&state.organization_registry_state_path) {
+                if let Err(error) = state.local_db.save_domain(
+                    wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                    &*organizations,
+                ) {
                     return internal_error(&error);
                 }
                 organization

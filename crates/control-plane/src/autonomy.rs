@@ -63,7 +63,7 @@ pub(crate) async fn check_action_capabilities(
             capability: capability.clone(),
             reason: Some("autonomy.tick".to_string()),
             input_digest: None,
-        })?;
+        });
 
         let allowed = decision.decision == DecisionKind::Allowed;
         decisions.push(json!({
@@ -73,8 +73,21 @@ pub(crate) async fn check_action_capabilities(
         }));
 
         if !allowed {
+            if let Err(error) = state
+                .local_db
+                .save_domain(wattetheria_kernel::local_db::domain::POLICY, policy.state())
+            {
+                tracing::warn!("persist policy state: {error:#}");
+            }
             return Ok((false, decisions));
         }
+    }
+
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::POLICY, policy.state())
+    {
+        tracing::warn!("persist policy state: {error:#}");
     }
 
     Ok((true, decisions))

@@ -8,11 +8,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn run_cli(args: &[&str]) -> std::process::Output {
-    Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg("wattetheria-client-cli")
-        .arg("--")
+    Command::new(env!("CARGO_BIN_EXE_wattetheria-client-cli"))
         .args(args)
         .output()
         .unwrap()

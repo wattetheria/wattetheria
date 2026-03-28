@@ -1,10 +1,8 @@
-//! Executable policy engine with pending approvals, grants, and persistence.
+//! Executable policy engine with pending approvals and grants.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::capabilities::{CapabilityPolicy, TrustLevel};
@@ -55,52 +53,29 @@ pub struct PolicyDecision {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PolicyState {
-    grants: Vec<CapabilityGrant>,
-    pending: Vec<CapabilityRequest>,
+pub struct PolicyState {
+    pub grants: Vec<CapabilityGrant>,
+    pub pending: Vec<CapabilityRequest>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PolicyEngine {
-    path: PathBuf,
     session_id: String,
     base: CapabilityPolicy,
     state: PolicyState,
 }
 
 impl PolicyEngine {
-    pub fn load_or_new(
-        path: impl AsRef<Path>,
-        session_id: impl Into<String>,
-        base: CapabilityPolicy,
-    ) -> Result<Self> {
-        let path = path.as_ref().to_path_buf();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).context("create policy directory")?;
-        }
-
-        let state = if path.exists() {
-            let raw = fs::read_to_string(&path).context("read policy state")?;
-            if raw.trim().is_empty() {
-                PolicyState::default()
-            } else {
-                serde_json::from_str(&raw).context("parse policy state")?
-            }
-        } else {
-            PolicyState::default()
-        };
-
-        let engine = Self {
-            path,
+    #[must_use]
+    pub fn new(session_id: impl Into<String>, base: CapabilityPolicy, state: PolicyState) -> Self {
+        Self {
             session_id: session_id.into(),
             base,
             state,
-        };
-        engine.persist()?;
-        Ok(engine)
+        }
     }
 
-    pub fn evaluate(&mut self, request: CapabilityRequest) -> Result<PolicyDecision> {
+    pub fn evaluate(&mut self, request: CapabilityRequest) -> PolicyDecision {
         if let Some(grant) = self.find_matching_grant(&request) {
             let grant_id = grant.grant_id.clone();
             let scope = grant.scope;
@@ -112,20 +87,19 @@ impl PolicyEngine {
             };
             if scope == GrantScope::Once {
                 self.state.grants.retain(|g| g.grant_id != grant_id);
-                self.persist()?;
             }
-            return Ok(decision);
+            return decision;
         }
 
         if self.base.is_allowed(request.trust, &request.capability)
             && !is_high_risk(&request.capability)
         {
-            return Ok(PolicyDecision {
+            return PolicyDecision {
                 decision: DecisionKind::Allowed,
                 reason: "allowed_by_baseline_policy".to_string(),
                 request_id: None,
                 grant_id: None,
-            });
+            };
         }
 
         if let Some(existing) = self
@@ -139,12 +113,12 @@ impl PolicyEngine {
             })
             .cloned()
         {
-            return Ok(PolicyDecision {
+            return PolicyDecision {
                 decision: DecisionKind::DeniedPendingApproval,
                 reason: "pending_existing_approval".to_string(),
                 request_id: Some(existing.request_id),
                 grant_id: None,
-            });
+            };
         }
 
         let mut pending = request;
@@ -156,14 +130,13 @@ impl PolicyEngine {
         }
 
         self.state.pending.push(pending.clone());
-        self.persist()?;
 
-        Ok(PolicyDecision {
+        PolicyDecision {
             decision: DecisionKind::DeniedPendingApproval,
             reason: "approval_required".to_string(),
             request_id: Some(pending.request_id),
             grant_id: None,
-        })
+        }
     }
 
     pub fn approve_pending(
@@ -177,7 +150,7 @@ impl PolicyEngine {
             .pending
             .iter()
             .position(|req| req.request_id == request_id)
-            .context("pending request not found")?;
+            .ok_or_else(|| anyhow::anyhow!("pending request not found"))?;
 
         let request = self.state.pending.remove(index);
         let grant = CapabilityGrant {
@@ -195,7 +168,6 @@ impl PolicyEngine {
         };
 
         self.state.grants.push(grant.clone());
-        self.persist()?;
         Ok(grant)
     }
 
@@ -207,7 +179,6 @@ impl PolicyEngine {
         if self.state.pending.len() == before {
             bail!("pending request not found");
         }
-        self.persist()?;
         Ok(())
     }
 
@@ -217,7 +188,6 @@ impl PolicyEngine {
         if self.state.grants.len() == before {
             bail!("grant not found");
         }
-        self.persist()?;
         Ok(())
     }
 
@@ -245,9 +215,9 @@ impl PolicyEngine {
         })
     }
 
-    fn persist(&self) -> Result<()> {
-        let content = serde_json::to_string_pretty(&self.state)?;
-        fs::write(&self.path, content).context("write policy state")
+    #[must_use]
+    pub fn state(&self) -> &PolicyState {
+        &self.state
     }
 }
 
@@ -278,27 +248,24 @@ fn matches_pattern(pattern: &str, value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn high_risk_needs_approval_and_once_grant_is_consumed() {
-        let dir = tempdir().unwrap();
-        let state_path = dir.path().join("policy.json");
-        let mut engine =
-            PolicyEngine::load_or_new(&state_path, "session-a", CapabilityPolicy::default())
-                .unwrap();
+        let mut engine = PolicyEngine::new(
+            "session-a",
+            CapabilityPolicy::default(),
+            PolicyState::default(),
+        );
 
-        let first = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:echo".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "p2p.publish".to_string(),
-                reason: Some("test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let first = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:echo".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "p2p.publish".to_string(),
+            reason: Some("test".to_string()),
+            input_digest: None,
+        });
         assert_eq!(first.decision, DecisionKind::DeniedPendingApproval);
         let pending_id = first.request_id.clone().unwrap();
 
@@ -307,53 +274,47 @@ mod tests {
             .unwrap();
         assert_eq!(grant.scope, GrantScope::Once);
 
-        let second = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:echo".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "p2p.publish".to_string(),
-                reason: Some("test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let second = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:echo".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "p2p.publish".to_string(),
+            reason: Some("test".to_string()),
+            input_digest: None,
+        });
         assert_eq!(second.decision, DecisionKind::Allowed);
 
-        let third = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:echo".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "p2p.publish".to_string(),
-                reason: Some("test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let third = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:echo".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "p2p.publish".to_string(),
+            reason: Some("test".to_string()),
+            input_digest: None,
+        });
         assert_eq!(third.decision, DecisionKind::DeniedPendingApproval);
     }
 
     #[test]
     fn revoke_grant_removes_access() {
-        let dir = tempdir().unwrap();
-        let state_path = dir.path().join("policy.json");
-        let mut engine =
-            PolicyEngine::load_or_new(&state_path, "session-a", CapabilityPolicy::default())
-                .unwrap();
+        let mut engine = PolicyEngine::new(
+            "session-a",
+            CapabilityPolicy::default(),
+            PolicyState::default(),
+        );
 
         // Create a pending request for a high-risk capability.
-        let decision = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:test".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "wallet.sign".to_string(),
-                reason: Some("revoke-test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let decision = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:test".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "wallet.sign".to_string(),
+            reason: Some("revoke-test".to_string()),
+            input_digest: None,
+        });
         let request_id = decision.request_id.unwrap();
 
         // Approve it permanently.
@@ -363,34 +324,30 @@ mod tests {
         let grant_id = grant.grant_id.clone();
 
         // Verify it grants access.
-        let allowed = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:test".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "wallet.sign".to_string(),
-                reason: Some("test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let allowed = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:test".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "wallet.sign".to_string(),
+            reason: Some("test".to_string()),
+            input_digest: None,
+        });
         assert_eq!(allowed.decision, DecisionKind::Allowed);
 
         // Revoke it.
         engine.revoke_grant(&grant_id).unwrap();
 
         // Now access should be denied again.
-        let denied = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:test".to_string(),
-                trust: TrustLevel::Verified,
-                capability: "wallet.sign".to_string(),
-                reason: Some("test".to_string()),
-                input_digest: None,
-            })
-            .unwrap();
+        let denied = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:test".to_string(),
+            trust: TrustLevel::Verified,
+            capability: "wallet.sign".to_string(),
+            reason: Some("test".to_string()),
+            input_digest: None,
+        });
         assert_eq!(denied.decision, DecisionKind::DeniedPendingApproval);
 
         // Revoking a non-existent grant should fail.
@@ -399,23 +356,21 @@ mod tests {
 
     #[test]
     fn low_risk_uses_baseline_policy() {
-        let dir = tempdir().unwrap();
-        let state_path = dir.path().join("policy.json");
-        let mut engine =
-            PolicyEngine::load_or_new(&state_path, "session-a", CapabilityPolicy::default())
-                .unwrap();
+        let mut engine = PolicyEngine::new(
+            "session-a",
+            CapabilityPolicy::default(),
+            PolicyState::default(),
+        );
 
-        let result = engine
-            .evaluate(CapabilityRequest {
-                request_id: String::new(),
-                timestamp: 0,
-                subject: "controller:reader".to_string(),
-                trust: TrustLevel::Untrusted,
-                capability: "fs.read:/galaxy".to_string(),
-                reason: None,
-                input_digest: None,
-            })
-            .unwrap();
+        let result = engine.evaluate(CapabilityRequest {
+            request_id: String::new(),
+            timestamp: 0,
+            subject: "controller:reader".to_string(),
+            trust: TrustLevel::Untrusted,
+            capability: "fs.read:/galaxy".to_string(),
+            reason: None,
+            input_digest: None,
+        });
 
         assert_eq!(result.decision, DecisionKind::Allowed);
         assert!(engine.list_pending().is_empty());

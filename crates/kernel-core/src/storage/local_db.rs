@@ -15,6 +15,24 @@ use std::sync::Mutex;
 
 const SCHEMA_VERSION: i64 = 1;
 
+pub mod domain {
+    pub const GOVERNANCE: &str = "governance";
+    pub const MAILBOX: &str = "mailbox";
+    pub const MISSION_BOARD: &str = "mission_board";
+    pub const PUBLIC_IDENTITY_REGISTRY: &str = "public_identity_registry";
+    pub const CONTROLLER_BINDING_REGISTRY: &str = "controller_binding_registry";
+    pub const CITIZEN_REGISTRY: &str = "citizen_registry";
+    pub const RELATIONSHIP_REGISTRY: &str = "relationship_registry";
+    pub const ORGANIZATION_REGISTRY: &str = "organization_registry";
+    pub const TOPIC_REGISTRY: &str = "topic_registry";
+    pub const GALAXY_STATE: &str = "galaxy_state";
+    pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";
+    pub const TRAVEL_STATE_REGISTRY: &str = "travel_state_registry";
+    pub const ORACLE_REGISTRY: &str = "oracle_registry";
+    pub const ONLINE_PROOF: &str = "online_proof";
+    pub const POLICY: &str = "policy";
+}
+
 pub struct LocalDb {
     conn: Mutex<Connection>,
 }
@@ -141,6 +159,13 @@ impl LocalDb {
         Ok(Some(value))
     }
 
+    pub fn load_domain_or_default<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        domain: &str,
+    ) -> Result<T> {
+        Ok(self.load_domain(domain)?.unwrap_or_default())
+    }
+
     pub fn save_domain<T: serde::Serialize>(&self, domain: &str, value: &T) -> Result<()> {
         let json = serde_json::to_string(value)
             .with_context(|| format!("serialize domain state: {domain}"))?;
@@ -164,6 +189,28 @@ impl LocalDb {
             )
             .with_context(|| format!("delete domain state: {domain}"))?;
         Ok(())
+    }
+
+    pub fn load_or_migrate<T>(&self, domain_key: &str, json_path: &std::path::Path) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize + Default,
+    {
+        if let Some(value) = self.load_domain::<T>(domain_key)? {
+            return Ok(value);
+        }
+        let value = if json_path.exists() {
+            let raw = std::fs::read_to_string(json_path).context("read legacy json")?;
+            if raw.trim().is_empty() {
+                T::default()
+            } else {
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("parse legacy json for {domain_key}"))?
+            }
+        } else {
+            T::default()
+        };
+        self.save_domain(domain_key, &value)?;
+        Ok(value)
     }
 
     pub fn list_domains(&self) -> Result<Vec<String>> {

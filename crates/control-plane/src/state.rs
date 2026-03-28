@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use wattetheria_kernel::audit::AuditLog;
@@ -82,30 +82,18 @@ pub struct ControlPlaneState {
     pub event_log: EventLog,
     pub swarm_bridge: Arc<dyn SwarmBridge>,
     pub governance_engine: Arc<Mutex<GovernanceEngine>>,
-    pub governance_state_path: PathBuf,
     pub policy_engine: Arc<Mutex<PolicyEngine>>,
     pub mailbox: Arc<Mutex<CrossSubnetMailbox>>,
-    pub mailbox_state_path: PathBuf,
     pub mission_board: Arc<Mutex<MissionBoard>>,
-    pub mission_board_state_path: PathBuf,
     pub public_identity_registry: Arc<Mutex<PublicIdentityRegistry>>,
-    pub public_identity_registry_state_path: PathBuf,
     pub controller_binding_registry: Arc<Mutex<ControllerBindingRegistry>>,
-    pub controller_binding_registry_state_path: PathBuf,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
-    pub citizen_registry_state_path: PathBuf,
     pub relationship_registry: Arc<Mutex<RelationshipRegistry>>,
-    pub relationship_registry_state_path: PathBuf,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
-    pub organization_registry_state_path: PathBuf,
     pub topic_registry: Arc<Mutex<TopicRegistry>>,
-    pub topic_registry_state_path: PathBuf,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
-    pub galaxy_state_path: PathBuf,
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
-    pub galaxy_map_registry_state_path: PathBuf,
     pub travel_state_registry: Arc<Mutex<TravelStateRegistry>>,
-    pub travel_state_registry_state_path: PathBuf,
     pub brain_engine: Arc<BrainEngine>,
     pub audit_log: AuditLog,
     pub local_db: Arc<LocalDb>,
@@ -537,12 +525,12 @@ pub struct EmergencyQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct BootstrapIdentityBody {
-    pub public_id: String,
+    pub public_id: Option<String>,
     pub display_name: String,
     pub agent_did: Option<String>,
-    pub faction: Faction,
-    pub role: RolePath,
-    pub strategy: StrategyProfile,
+    pub faction: Option<Faction>,
+    pub role: Option<RolePath>,
+    pub strategy: Option<StrategyProfile>,
     pub home_subnet_id: Option<String>,
     pub home_zone_id: Option<String>,
     pub controller_kind: Option<ControllerKind>,

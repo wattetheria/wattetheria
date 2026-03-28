@@ -3,13 +3,11 @@
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
+use wattetheria_kernel::local_db::{LocalDb, domain};
+use wattetheria_kernel::policy_engine::{CapabilityGrant, GrantScope, PolicyState};
 
 fn run_cli(args: &[&str]) -> std::process::Output {
-    Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg("wattetheria-client-cli")
-        .arg("--")
+    Command::new(env!("CARGO_BIN_EXE_wattetheria-client-cli"))
         .args(args)
         .output()
         .unwrap()
@@ -127,19 +125,20 @@ fn oracle_credit_publish_subscribe_pull_roundtrip() {
         .as_str()
         .unwrap()
         .to_string();
-    let policy_path = data_dir.join("policy/state.json");
-    let mut policy: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&policy_path).unwrap()).unwrap();
-    policy["grants"] = serde_json::json!([{
-        "grant_id": "integration-oracle-publish",
-        "created_at": 0,
-        "approved_by": "integration-test",
-        "subject_pattern": format!("oracle:publisher:{agent_did}"),
-        "capability_pattern": "oracle.publish",
-        "scope": "permanent",
-        "session_id": null
-    }]);
-    fs::write(policy_path, serde_json::to_string_pretty(&policy).unwrap()).unwrap();
+    let db = LocalDb::open(data_dir.join("state.db")).unwrap();
+    let mut policy: PolicyState = db
+        .load_or_migrate(domain::POLICY, &data_dir.join("policy/state.json"))
+        .unwrap();
+    policy.grants = vec![CapabilityGrant {
+        grant_id: "integration-oracle-publish".to_string(),
+        created_at: 0,
+        approved_by: "integration-test".to_string(),
+        subject_pattern: format!("oracle:publisher:{agent_did}"),
+        capability_pattern: "oracle.publish".to_string(),
+        scope: GrantScope::Permanent,
+        session_id: None,
+    }];
+    db.save_domain(domain::POLICY, &policy).unwrap();
 
     let credit = run_cli(&[
         "oracle",

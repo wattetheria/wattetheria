@@ -6,10 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wattetheria_kernel::brain::BrainProviderConfig;
-use wattetheria_kernel::capabilities::CapabilityPolicy;
 use wattetheria_kernel::event_log::EventLog;
+use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mcp::McpRegistry;
-use wattetheria_kernel::policy_engine::PolicyEngine;
 use wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,11 +109,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     }
 
     let _ = McpRegistry::load_or_new(data_dir.join("mcp/servers.json"))?;
-    let _ = PolicyEngine::load_or_new(
-        data_dir.join("policy/state.json"),
-        "cli-bootstrap",
-        CapabilityPolicy::default(),
-    )?;
+    let _ = LocalDb::open(data_dir.join("state.db"))?;
 
     let response = serde_json::json!({
         "status": "ok",
@@ -259,6 +254,12 @@ fn kernel_command(data_dir: &Path, config: &LocalConfig) -> Command {
         return command;
     }
 
+    if let Some(kernel_bin) = discover_kernel_bin() {
+        let mut command = Command::new(kernel_bin);
+        append_kernel_runtime_args(&mut command, data_dir, config);
+        return command;
+    }
+
     let mut command = Command::new("cargo");
     command
         .arg("run")
@@ -267,6 +268,19 @@ fn kernel_command(data_dir: &Path, config: &LocalConfig) -> Command {
         .arg("--");
     append_kernel_runtime_args(&mut command, data_dir, config);
     command
+}
+
+fn discover_kernel_bin() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let dir = current.parent()?;
+    let candidate = dir.join(format!(
+        "wattetheria-kernel{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
 }
 
 pub(crate) fn read_config(data_dir: &Path) -> Result<LocalConfig> {

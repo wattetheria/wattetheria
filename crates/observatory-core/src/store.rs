@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+use wattetheria_kernel::identity::verify_public_id_ownership;
 use wattetheria_kernel::signing::verify_payload;
 use wattetheria_kernel::types::{SignedSummary, TaskStats};
 
@@ -115,15 +116,18 @@ impl SummaryStore {
             task_stats: &summary.task_stats,
             events_digest: &summary.events_digest,
         };
-        if !verify_payload(
-            &signable,
-            &summary.signature,
-            summary
-                .controller_id
-                .as_deref()
-                .unwrap_or(&summary.agent_did),
-        )? {
+        let signer_ref = summary
+            .controller_id
+            .as_deref()
+            .unwrap_or(&summary.agent_did);
+        if !verify_payload(&signable, &summary.signature, signer_ref)? {
             anyhow::bail!("invalid signed summary signature");
+        }
+        // Verify that the claimed public_id is owned by the signing key.
+        if let Some(ref public_id) = summary.public_id
+            && !verify_public_id_ownership(public_id, signer_ref)?
+        {
+            anyhow::bail!("summary public_id '{public_id}' does not match signer '{signer_ref}'");
         }
         Ok(())
     }

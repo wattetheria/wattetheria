@@ -398,7 +398,10 @@ pub(crate) async fn galaxy_travel_arrive(
                     .into_response();
             }
         };
-        if let Err(error) = registry.persist(&state.travel_state_registry_state_path) {
+        if let Err(error) = state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::TRAVEL_STATE_REGISTRY,
+            &*registry,
+        ) {
             return internal_map_error(&error);
         }
         record
@@ -485,7 +488,10 @@ async fn ensure_travel_state_record(
     let mut registry = state.travel_state_registry.lock().await;
     let record =
         registry.ensure_position(public_id, &context.public_memory_owner.controller, position);
-    registry.persist(&state.travel_state_registry_state_path)?;
+    state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::TRAVEL_STATE_REGISTRY,
+        &*registry,
+    )?;
     Ok(record)
 }
 
@@ -565,8 +571,12 @@ async fn persist_departure(
             )
                 .into_response()
         })?;
-    registry
-        .persist(&state.travel_state_registry_state_path)
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::TRAVEL_STATE_REGISTRY,
+            &*registry,
+        )
         .map_err(|error| internal_map_error(&error))?;
     Ok(record)
 }

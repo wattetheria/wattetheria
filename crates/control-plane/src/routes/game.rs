@@ -421,7 +421,10 @@ pub(crate) async fn bootstrap_starter_missions_route(
         let maps = state.galaxy_map_registry.lock().await;
         let created = bootstrap_starter_missions(&controller_id, profile, &maps, &mut board);
         drop(maps);
-        if let Err(error) = board.persist(&state.mission_board_state_path) {
+        if let Err(error) = state
+            .local_db
+            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        {
             return internal_error(&error);
         }
         created
@@ -496,7 +499,10 @@ pub(crate) async fn bootstrap_mission_pack_route(
         );
         drop(galaxy);
         drop(maps);
-        if let Err(error) = board.persist(&state.mission_board_state_path) {
+        if let Err(error) = state
+            .local_db
+            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        {
             return internal_error(&error);
         }
         created

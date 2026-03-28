@@ -8,7 +8,7 @@ mod snapshot_broadcast;
 
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use tokio::time::{Duration, interval};
@@ -45,13 +45,13 @@ use wattetheria_kernel::civilization::topics::TopicRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::IdentityCompatView;
-use wattetheria_kernel::local_db::LocalDb;
+use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::oracle::OracleRegistry;
-use wattetheria_kernel::policy_engine::PolicyEngine;
+use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
 use wattetheria_kernel::trust::{TrustConfig, WebOfTrust};
@@ -63,35 +63,23 @@ struct RuntimeState {
     identity: IdentityCompatView,
     event_log: EventLog,
     online_proof: OnlineProofManager,
-    online_proof_path: PathBuf,
     web_of_trust: WebOfTrust,
     oracle_registry: OracleRegistry,
-    oracle_state_path: PathBuf,
     p2p: P2PNode,
     control_state: ControlPlaneState,
 }
 
 struct CivilizationRuntimeState {
     mission_board: MissionBoard,
-    mission_board_state_path: PathBuf,
     public_identity_registry: PublicIdentityRegistry,
-    public_identity_registry_state_path: PathBuf,
     controller_binding_registry: ControllerBindingRegistry,
-    controller_binding_registry_state_path: PathBuf,
     citizen_registry: CitizenRegistry,
-    citizen_registry_state_path: PathBuf,
     relationship_registry: RelationshipRegistry,
-    relationship_registry_state_path: PathBuf,
     organization_registry: OrganizationRegistry,
-    organization_registry_state_path: PathBuf,
     topic_registry: TopicRegistry,
-    topic_registry_state_path: PathBuf,
     galaxy_state: GalaxyState,
-    galaxy_state_path: PathBuf,
     galaxy_map_registry: GalaxyMapRegistry,
-    galaxy_map_registry_state_path: PathBuf,
     travel_state_registry: TravelStateRegistry,
-    travel_state_registry_state_path: PathBuf,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -118,7 +106,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         &mut runtime.p2p,
         LoopContext {
             online_proof: &mut runtime.online_proof,
-            online_proof_path: &runtime.online_proof_path,
             identity: &runtime.identity,
             control_state: &runtime.control_state,
             admission_config: &admission_config,
@@ -126,7 +113,6 @@ pub async fn run(cli: Cli) -> Result<()> {
             web_of_trust: &mut runtime.web_of_trust,
             event_log: &runtime.event_log,
             oracle_registry: &mut runtime.oracle_registry,
-            oracle_state_path: &runtime.oracle_state_path,
             gateway_publish_enabled,
             gateway_push_interval_sec,
             gateway_startup_jitter_sec,
@@ -165,25 +151,32 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;
     let control_token = load_or_create_control_token(cli.data_dir.join("control.token"))?;
     let control_bind = parse_control_bind(&cli.control_plane_bind)?;
-    let policy_state_path = cli.data_dir.join("policy/state.json");
-    let policy_engine = PolicyEngine::load_or_new(
-        policy_state_path,
+    let policy_state: PolicyState = local_db.load_or_migrate(
+        local_db::domain::POLICY,
+        &cli.data_dir.join("policy/state.json"),
+    )?;
+    let policy_engine = PolicyEngine::new(
         uuid::Uuid::new_v4().to_string(),
         CapabilityPolicy::default(),
-    )?;
+        policy_state,
+    );
 
     let brain_config = resolve_brain_config(cli)?;
     let brain_engine = Arc::new(BrainEngine::from_config(&brain_config));
 
-    let online_proof_path = cli.data_dir.join("online_proof.json");
-    let mut online_proof = OnlineProofManager::load_or_new(&online_proof_path).unwrap_or_default();
+    let mut online_proof: OnlineProofManager = local_db.load_or_migrate(
+        local_db::domain::ONLINE_PROOF,
+        &cli.data_dir.join("online_proof.json"),
+    )?;
     online_proof.create_lease(&identity.agent_did, 300, 20);
     let web_of_trust = WebOfTrust::new(TrustConfig {
         blacklist_weight_threshold: 3,
     });
 
-    let oracle_registry = OracleRegistry::load_or_new(cli.data_dir.join("oracle/state.json"))?;
-    let oracle_state_path = cli.data_dir.join("oracle/state.json");
+    let oracle_registry: OracleRegistry = local_db.load_or_migrate(
+        local_db::domain::ORACLE_REGISTRY,
+        &cli.data_dir.join("oracle/state.json"),
+    )?;
 
     let ledger_path = cli.data_dir.join("ledger.json");
     let legacy_task_engine =
@@ -198,13 +191,16 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         ledger_path.clone(),
         cli.wattswarm_ui_base_url.as_deref(),
     ));
-    let governance_state_path = cli.data_dir.join("governance/state.json");
-    let governance_engine = Arc::new(Mutex::new(GovernanceEngine::load_or_new(
-        &governance_state_path,
-    )?));
-    let mailbox_state_path = cli.data_dir.join("mailbox/state.json");
-    let mailbox = CrossSubnetMailbox::load_or_new(&mailbox_state_path)?;
-    let civilization_state = load_civilization_runtime_state(cli, &identity)?;
+    let governance_engine: GovernanceEngine = local_db.load_or_migrate(
+        local_db::domain::GOVERNANCE,
+        &cli.data_dir.join("governance/state.json"),
+    )?;
+    let governance_engine = Arc::new(Mutex::new(governance_engine));
+    let mailbox: CrossSubnetMailbox = local_db.load_or_migrate(
+        local_db::domain::MAILBOX,
+        &cli.data_dir.join("mailbox/state.json"),
+    )?;
+    let civilization_state = load_civilization_runtime_state(cli, &identity, &local_db)?;
 
     let (listen_addr, bootstrap_addrs) = parse_multiaddrs(cli)?;
     let p2p_config = P2PConfig {
@@ -241,10 +237,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         control_token,
         swarm_bridge,
         governance_engine,
-        governance_state_path,
         policy_engine,
         mailbox,
-        mailbox_state_path,
         civilization_state,
         brain_engine,
         audit_log,
@@ -257,10 +251,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         identity,
         event_log,
         online_proof,
-        online_proof_path,
         web_of_trust,
         oracle_registry,
-        oracle_state_path,
         p2p,
         control_state,
     })
@@ -299,10 +291,8 @@ fn build_control_state(
     control_token: String,
     swarm_bridge: Arc<dyn SwarmBridge>,
     governance_engine: Arc<Mutex<GovernanceEngine>>,
-    governance_state_path: PathBuf,
     policy_engine: PolicyEngine,
     mailbox: CrossSubnetMailbox,
-    mailbox_state_path: PathBuf,
     civilization_state: CivilizationRuntimeState,
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
@@ -318,33 +308,20 @@ fn build_control_state(
         event_log: event_log.clone(),
         swarm_bridge,
         governance_engine,
-        governance_state_path,
         policy_engine: Arc::new(Mutex::new(policy_engine)),
         mailbox: Arc::new(Mutex::new(mailbox)),
-        mailbox_state_path,
         mission_board: Arc::new(Mutex::new(civilization_state.mission_board)),
-        mission_board_state_path: civilization_state.mission_board_state_path,
         public_identity_registry: Arc::new(Mutex::new(civilization_state.public_identity_registry)),
-        public_identity_registry_state_path: civilization_state.public_identity_registry_state_path,
         controller_binding_registry: Arc::new(Mutex::new(
             civilization_state.controller_binding_registry,
         )),
-        controller_binding_registry_state_path: civilization_state
-            .controller_binding_registry_state_path,
         citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
-        citizen_registry_state_path: civilization_state.citizen_registry_state_path,
         relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
-        relationship_registry_state_path: civilization_state.relationship_registry_state_path,
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
-        organization_registry_state_path: civilization_state.organization_registry_state_path,
         topic_registry: Arc::new(Mutex::new(civilization_state.topic_registry)),
-        topic_registry_state_path: civilization_state.topic_registry_state_path,
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
-        galaxy_state_path: civilization_state.galaxy_state_path,
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
-        galaxy_map_registry_state_path: civilization_state.galaxy_map_registry_state_path,
         travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
-        travel_state_registry_state_path: civilization_state.travel_state_registry_state_path,
         brain_engine,
         audit_log,
         local_db,
@@ -356,46 +333,56 @@ fn build_control_state(
 fn load_civilization_runtime_state(
     cli: &Cli,
     identity: &IdentityCompatView,
+    local_db: &LocalDb,
 ) -> Result<CivilizationRuntimeState> {
     let agent_did = &identity.agent_did;
-    let mission_board_state_path = cli.data_dir.join("missions/state.json");
-    let mission_board = MissionBoard::load_or_new(&mission_board_state_path)?;
-    let public_identity_registry_state_path =
-        cli.data_dir.join("civilization/public_identities.json");
-    let mut public_identity_registry =
-        PublicIdentityRegistry::load_or_new(&public_identity_registry_state_path)?;
-    let controller_binding_registry_state_path =
-        cli.data_dir.join("civilization/controller_bindings.json");
-    let mut controller_binding_registry =
-        ControllerBindingRegistry::load_or_new(&controller_binding_registry_state_path)?;
-    let citizen_registry_state_path = cli.data_dir.join("civilization/profiles.json");
-    let citizen_registry = CitizenRegistry::load_or_new(&citizen_registry_state_path)?;
-    let relationship_registry_state_path = cli.data_dir.join("civilization/relationships.json");
-    let relationship_registry =
-        RelationshipRegistry::load_or_new(&relationship_registry_state_path)?;
-    let organization_registry_state_path = cli.data_dir.join("civilization/organizations.json");
-    let organization_registry =
-        OrganizationRegistry::load_or_new(&organization_registry_state_path)?;
-    let topic_registry_state_path = cli.data_dir.join("civilization/topics.json");
-    let topic_registry = TopicRegistry::load_or_new(&topic_registry_state_path)?;
-    let galaxy_state_path = cli.data_dir.join("galaxy/state.json");
-    let legacy_galaxy_state_path = cli.data_dir.join("world/state.json");
-    let galaxy_state = if galaxy_state_path.exists() {
-        GalaxyState::load_or_new(&galaxy_state_path)?
-    } else if legacy_galaxy_state_path.exists() {
-        GalaxyState::load_or_new(&legacy_galaxy_state_path)?
-    } else {
-        GalaxyState::load_or_new(&galaxy_state_path)?
-    };
-    let galaxy_map_registry_state_path = cli.data_dir.join("galaxy/maps.json");
-    let mut galaxy_map_registry = GalaxyMapRegistry::load_or_new(&galaxy_map_registry_state_path)?;
+
+    let mission_board: MissionBoard = local_db.load_or_migrate(
+        local_db::domain::MISSION_BOARD,
+        &cli.data_dir.join("missions/state.json"),
+    )?;
+    let mut public_identity_registry: PublicIdentityRegistry = local_db.load_or_migrate(
+        local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+        &cli.data_dir.join("civilization/public_identities.json"),
+    )?;
+    let mut controller_binding_registry: ControllerBindingRegistry = local_db.load_or_migrate(
+        local_db::domain::CONTROLLER_BINDING_REGISTRY,
+        &cli.data_dir.join("civilization/controller_bindings.json"),
+    )?;
+    let citizen_registry: CitizenRegistry = local_db.load_or_migrate(
+        local_db::domain::CITIZEN_REGISTRY,
+        &cli.data_dir.join("civilization/profiles.json"),
+    )?;
+    let relationship_registry: RelationshipRegistry = local_db.load_or_migrate(
+        local_db::domain::RELATIONSHIP_REGISTRY,
+        &cli.data_dir.join("civilization/relationships.json"),
+    )?;
+    let organization_registry: OrganizationRegistry = local_db.load_or_migrate(
+        local_db::domain::ORGANIZATION_REGISTRY,
+        &cli.data_dir.join("civilization/organizations.json"),
+    )?;
+    let topic_registry: TopicRegistry = local_db.load_or_migrate(
+        local_db::domain::TOPIC_REGISTRY,
+        &cli.data_dir.join("civilization/topics.json"),
+    )?;
+    let galaxy_state: GalaxyState = load_or_migrate_galaxy(
+        local_db,
+        &cli.data_dir.join("galaxy/state.json"),
+        &cli.data_dir.join("world/state.json"),
+    )?;
+    let mut galaxy_map_registry: GalaxyMapRegistry = local_db.load_or_migrate(
+        local_db::domain::GALAXY_MAP_REGISTRY,
+        &cli.data_dir.join("galaxy/maps.json"),
+    )?;
     galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?;
-    galaxy_map_registry.persist(&galaxy_map_registry_state_path)?;
-    let travel_state_registry_state_path = cli.data_dir.join("galaxy/travel_state.json");
-    let mut travel_state_registry =
-        TravelStateRegistry::load_or_new(&travel_state_registry_state_path)?;
+    local_db.save_domain(local_db::domain::GALAXY_MAP_REGISTRY, &galaxy_map_registry)?;
+    let mut travel_state_registry: TravelStateRegistry = local_db.load_or_migrate(
+        local_db::domain::TRAVEL_STATE_REGISTRY,
+        &cli.data_dir.join("galaxy/travel_state.json"),
+    )?;
+
     let public_identity =
-        public_identity_registry.ensure_local_default_for_agent(agent_did, Some(agent_did));
+        public_identity_registry.ensure_local_default_for_agent(agent_did, Some(agent_did))?;
     let controller_binding =
         controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_did);
     if let Some(position) = resolve_anchor_position(
@@ -412,32 +399,63 @@ fn load_civilization_runtime_state(
             position,
         );
     }
-    public_identity_registry.persist(&public_identity_registry_state_path)?;
-    controller_binding_registry.persist(&controller_binding_registry_state_path)?;
-    travel_state_registry.persist(&travel_state_registry_state_path)?;
+    local_db.save_domain(
+        local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+        &public_identity_registry,
+    )?;
+    local_db.save_domain(
+        local_db::domain::CONTROLLER_BINDING_REGISTRY,
+        &controller_binding_registry,
+    )?;
+    local_db.save_domain(
+        local_db::domain::TRAVEL_STATE_REGISTRY,
+        &travel_state_registry,
+    )?;
 
     Ok(CivilizationRuntimeState {
         mission_board,
-        mission_board_state_path,
         public_identity_registry,
-        public_identity_registry_state_path,
         controller_binding_registry,
-        controller_binding_registry_state_path,
         citizen_registry,
-        citizen_registry_state_path,
         relationship_registry,
-        relationship_registry_state_path,
         organization_registry,
-        organization_registry_state_path,
         topic_registry,
-        topic_registry_state_path,
         galaxy_state,
-        galaxy_state_path,
         galaxy_map_registry,
-        galaxy_map_registry_state_path,
         travel_state_registry,
-        travel_state_registry_state_path,
     })
+}
+
+fn load_or_migrate_galaxy(
+    local_db: &LocalDb,
+    primary_path: &Path,
+    legacy_path: &Path,
+) -> Result<GalaxyState> {
+    if let Some(value) = local_db.load_domain::<GalaxyState>(local_db::domain::GALAXY_STATE)? {
+        return Ok(value);
+    }
+    let json_path = if primary_path.exists() {
+        primary_path
+    } else if legacy_path.exists() {
+        legacy_path
+    } else {
+        primary_path
+    };
+    let mut value = if json_path.exists() {
+        let raw = std::fs::read_to_string(json_path).context("read legacy galaxy json")?;
+        if raw.trim().is_empty() {
+            GalaxyState::default_with_core_zones()
+        } else {
+            serde_json::from_str(&raw).context("parse legacy galaxy json")?
+        }
+    } else {
+        GalaxyState::default_with_core_zones()
+    };
+    if value.zones().is_empty() {
+        value = GalaxyState::default_with_core_zones();
+    }
+    local_db.save_domain(local_db::domain::GALAXY_STATE, &value)?;
+    Ok(value)
 }
 
 fn resolve_wattswarm_sync_grpc_endpoint(cli: &Cli) -> Option<String> {

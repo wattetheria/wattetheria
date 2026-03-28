@@ -120,7 +120,10 @@ pub(crate) async fn create_topic(
             why_this_exists: body.why_this_exists,
             active: true,
         });
-        if let Err(error) = topics.persist(&state.topic_registry_state_path) {
+        if let Err(error) = state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::TOPIC_REGISTRY,
+            &*topics,
+        ) {
             return internal_error(&error);
         }
         topic

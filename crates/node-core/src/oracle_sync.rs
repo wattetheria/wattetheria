@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::path::Path;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::hashcash;
 use wattetheria_kernel::identity::IdentityCompatView;
+use wattetheria_kernel::local_db::{LocalDb, domain};
 use wattetheria_kernel::oracle::{OracleFeed, OracleRegistry};
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_p2p_runtime::P2PNode;
@@ -43,11 +43,11 @@ fn parse_oracle_feed_packet(bytes: &[u8]) -> Result<Option<OracleFeed>> {
 pub fn sync_and_publish_local_oracle_feeds(
     p2p: &mut P2PNode,
     oracle_registry: &mut OracleRegistry,
-    oracle_state_path: &Path,
+    local_db: &LocalDb,
     enable_hashcash_broadcast: bool,
     known_oracle_signatures: &mut BTreeSet<String>,
 ) -> Result<()> {
-    *oracle_registry = OracleRegistry::load_or_new(oracle_state_path)?;
+    *oracle_registry = local_db.load_domain_or_default(domain::ORACLE_REGISTRY)?;
     for feed in oracle_registry.all_feeds() {
         if !known_oracle_signatures.insert(feed.signature.clone()) {
             continue;
@@ -60,7 +60,7 @@ pub fn sync_and_publish_local_oracle_feeds(
 pub fn handle_oracle_feed_packet(
     bytes: &[u8],
     oracle_registry: &mut OracleRegistry,
-    oracle_state_path: &Path,
+    local_db: &LocalDb,
     event_log: &EventLog,
     identity: &IdentityCompatView,
     signer: &(impl PayloadSigner + ?Sized),
@@ -78,7 +78,7 @@ pub fn handle_oracle_feed_packet(
     )?;
     if inserted {
         known_oracle_signatures.insert(feed.signature);
-        oracle_registry.persist(oracle_state_path)?;
+        local_db.save_domain(domain::ORACLE_REGISTRY, oracle_registry)?;
     }
 
     Ok(())

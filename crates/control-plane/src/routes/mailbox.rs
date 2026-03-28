@@ -33,7 +33,10 @@ pub(crate) async fn mailbox_send(
         Ok(message) => message,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = mailbox.persist(&state.mailbox_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MAILBOX, &*mailbox)
+    {
         return internal_error(&error);
     }
     drop(mailbox);
@@ -122,7 +125,10 @@ pub(crate) async fn mailbox_ack(
         )
             .into_response();
     }
-    if let Err(error) = mailbox.persist(&state.mailbox_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MAILBOX, &*mailbox)
+    {
         return internal_error(&error);
     }
     drop(mailbox);

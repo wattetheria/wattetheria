@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use crate::hashcash;
+use crate::identity::verify_public_id_ownership;
 use crate::signing::verify_payload;
 
 #[derive(Debug, Clone)]
@@ -117,6 +118,21 @@ fn validate_envelope(
             .map_err(|error| format!("verify_error:{error}"))?
         {
             return Ok(AdmissionVerdict::Reject("invalid_signature".to_string()));
+        }
+
+        // Verify that the claimed public_id is owned by the signing key.
+        if let Some(claimed_public_id) = payload
+            .get("public_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            let owns = verify_public_id_ownership(claimed_public_id, controller_id)
+                .map_err(|error| format!("public_id_verify_error:{error}"))?;
+            if !owns {
+                return Ok(AdmissionVerdict::Reject(
+                    "public_id_ownership_mismatch".to_string(),
+                ));
+            }
         }
 
         let timestamp = payload

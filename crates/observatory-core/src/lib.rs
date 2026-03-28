@@ -220,12 +220,16 @@ mod tests {
 
     #[tokio::test]
     async fn rankings_and_events_prefer_public_identity_display() {
+        use wattetheria_kernel::identity::{build_scoped_public_id, fingerprint_from_did_key};
+
         let store = Arc::new(RwLock::new(SummaryStore::default()));
         let app = app(store);
         let identity = Identity::new_random();
+        let fp = fingerprint_from_did_key(&identity.agent_did).unwrap();
+        let public_id = build_scoped_public_id("citizen-alpha", &fp);
         let summary = build_signed_summary_for_public_identity(
             &identity,
-            Some("citizen-alpha".to_string()),
+            Some(public_id.clone()),
             Some("planet-a".to_string()),
             &AgentStats::default(),
             &[],
@@ -248,7 +252,7 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let rows: Vec<RankingEntry> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows[0].agent_did, "citizen-alpha");
+        assert_eq!(rows[0].agent_did, public_id);
 
         let req = Request::builder()
             .uri("/api/events?limit=1")
@@ -257,6 +261,6 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let rows: Vec<EventStreamEntry> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows[0].agent_did, "citizen-alpha");
+        assert_eq!(rows[0].agent_did, public_id);
     }
 }

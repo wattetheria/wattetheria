@@ -61,7 +61,10 @@ pub(crate) async fn mission_publish(
         body.reward,
         body.payload,
     );
-    if let Err(error) = board.persist(&state.mission_board_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+    {
         return internal_error(&error);
     }
     drop(board);
@@ -133,7 +136,10 @@ async fn transition_mission(
                 .into_response();
         }
     };
-    if let Err(error) = board.persist(&state.mission_board_state_path) {
+    if let Err(error) = state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+    {
         return internal_error(&error);
     }
     drop(board);
@@ -188,7 +194,10 @@ pub(crate) async fn mission_settle(
                     .into_response();
             }
         };
-        if let Err(error) = board.persist(&state.mission_board_state_path) {
+        if let Err(error) = state
+            .local_db
+            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        {
             return internal_error(&error);
         }
         mission
@@ -202,7 +211,10 @@ pub(crate) async fn mission_settle(
         {
             return internal_error(&error);
         }
-        if let Err(error) = governance.persist(&state.governance_state_path) {
+        if let Err(error) = state.local_db.save_domain(
+            wattetheria_kernel::local_db::domain::GOVERNANCE,
+            &*governance,
+        ) {
             return internal_error(&error);
         }
     }
