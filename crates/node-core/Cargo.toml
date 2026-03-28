@@ -10,7 +10,6 @@ workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
-libp2p.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,7 +19,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 wattetheria-control-plane = { path = "../control-plane" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
-wattetheria-p2p-runtime = { path = "../p2p-runtime" }
 
 [dev-dependencies]
 axum.workspace = true

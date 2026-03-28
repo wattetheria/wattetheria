@@ -8,8 +8,6 @@ services:
     environment:
       WATTETHERIA_DATA_DIR: /var/lib/wattetheria
       WATTETHERIA_CONTROL_PLANE_BIND: 0.0.0.0:7777
-      WATTETHERIA_TOPIC: ${WATTETHERIA_TOPIC:-wattetheria.v0.1}
-      WATTETHERIA_LISTEN: ${WATTETHERIA_LISTEN:-/ip4/0.0.0.0/tcp/0}
     volumes:
       - wattetheria_state:/var/lib/wattetheria
     ports:

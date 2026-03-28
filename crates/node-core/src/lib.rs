@@ -1,10 +1,7 @@
 mod bootstrap;
 pub mod cli;
-mod handshake;
-mod oracle_sync;
 mod recovery;
 mod runtime_loop;
-mod snapshot_broadcast;
 
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
@@ -15,21 +12,14 @@ use tokio::time::{Duration, interval};
 use tracing::{error, info, warn};
 
 pub use bootstrap::init_tracing;
-use bootstrap::{
-    load_or_create_control_token, parse_control_bind, parse_multiaddrs, resolve_brain_config,
-};
+use bootstrap::{load_or_create_control_token, parse_control_bind, resolve_brain_config};
 pub use cli::Cli;
-use handshake::build_signed_handshake_for_identity_and_signer;
 use recovery::startup_recover_events;
-use runtime_loop::{LoopContext, log_listeners, run_loop};
-use snapshot_broadcast::{
-    gateway_push_interval_sec, gateway_startup_jitter_secs, gateway_sync_enabled,
-};
+use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, RateLimiter, StreamEvent,
     run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
-use wattetheria_kernel::admission::{AdmissionConfig, NonceTracker};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::capabilities::CapabilityPolicy;
@@ -50,22 +40,15 @@ use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::online_proof::OnlineProofManager;
-use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
-use wattetheria_kernel::trust::{TrustConfig, WebOfTrust};
 use wattetheria_kernel::wallet_identity::WalletSigner;
-use wattetheria_p2p_runtime::{P2PConfig, P2PNode};
 
 struct RuntimeState {
     control_bind: SocketAddr,
     identity: IdentityCompatView,
-    event_log: EventLog,
     online_proof: OnlineProofManager,
-    web_of_trust: WebOfTrust,
-    oracle_registry: OracleRegistry,
-    p2p: P2PNode,
     control_state: ControlPlaneState,
 }
 
@@ -91,34 +74,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         runtime.control_state.clone(),
         resolve_wattswarm_sync_grpc_endpoint(&cli),
     );
-    let gateway_publish_enabled = gateway_sync_enabled(&cli);
-    let gateway_push_interval_sec = gateway_push_interval_sec(&cli);
-    let gateway_startup_jitter_sec =
-        gateway_startup_jitter_secs(&runtime.identity.agent_did, gateway_push_interval_sec);
-    if gateway_publish_enabled {
-        warn!(
-            "gateway snapshot publication now rides wattswarm gossip; direct HTTP gateway push is disabled"
-        );
-    }
-    let admission_config = build_admission_config(&cli);
-    let mut nonce_tracker = NonceTracker::new(admission_config.max_time_drift_sec * 2);
-    let run_result = run_loop(
-        &mut runtime.p2p,
-        LoopContext {
-            online_proof: &mut runtime.online_proof,
-            identity: &runtime.identity,
-            control_state: &runtime.control_state,
-            admission_config: &admission_config,
-            nonce_tracker: &mut nonce_tracker,
-            web_of_trust: &mut runtime.web_of_trust,
-            event_log: &runtime.event_log,
-            oracle_registry: &mut runtime.oracle_registry,
-            gateway_publish_enabled,
-            gateway_push_interval_sec,
-            gateway_startup_jitter_sec,
-            enable_hashcash_broadcast: cli.enable_hashcash,
-        },
-    )
+
+    let run_result = run_loop(LoopContext {
+        online_proof: &mut runtime.online_proof,
+        identity: &runtime.identity,
+        control_state: &runtime.control_state,
+    })
     .await;
     control_task.abort();
     if let Some(task) = wattswarm_sync_task {
@@ -169,15 +130,6 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         &cli.data_dir.join("online_proof.json"),
     )?;
     online_proof.create_lease(&identity.agent_did, 300, 20);
-    let web_of_trust = WebOfTrust::new(TrustConfig {
-        blacklist_weight_threshold: 3,
-    });
-
-    let oracle_registry: OracleRegistry = local_db.load_or_migrate(
-        local_db::domain::ORACLE_REGISTRY,
-        &cli.data_dir.join("oracle/state.json"),
-    )?;
-
     let ledger_path = cli.data_dir.join("ledger.json");
     let legacy_task_engine =
         wattetheria_kernel::task_engine::TaskEngine::new_with_ledger_and_signer(
@@ -202,31 +154,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     )?;
     let civilization_state = load_civilization_runtime_state(cli, &identity, &local_db)?;
 
-    let (listen_addr, bootstrap_addrs) = parse_multiaddrs(cli)?;
-    let p2p_config = P2PConfig {
-        max_connected_peers: cli.p2p_max_peers,
-        per_peer_msgs_per_minute: cli.p2p_peer_rate_limit,
-        per_topic_msgs_per_minute: cli.p2p_topic_rate_limit,
-        per_topic_publish_per_minute: cli.p2p_publish_rate_limit,
-        topic_shards: cli.p2p_topic_shards.max(1),
-        dedupe_ttl_sec: cli.p2p_dedupe_ttl_sec,
-        message_ttl_sec: cli.p2p_message_ttl_sec,
-        ..P2PConfig::default()
-    };
-    let mut p2p = P2PNode::new_with_config(&cli.topic, listen_addr, &bootstrap_addrs, p2p_config)?;
-
-    let public_id = resolve_public_identity_id(&civilization_state, &identity);
-    let handshake = build_signed_handshake_for_identity_and_signer(
-        &identity,
-        signer.as_ref(),
-        Some(public_id.as_str()),
-        &online_proof,
-        cli.enable_hashcash,
-    )?;
-    p2p.publish_json(&handshake)?;
-
     info!(agent_did = %identity.agent_did, "kernel started");
-    log_listeners(&p2p);
 
     let (stream_tx, _) = broadcast::channel(128);
     let control_state = build_control_state(
@@ -249,37 +177,9 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     Ok(RuntimeState {
         control_bind,
         identity,
-        event_log,
         online_proof,
-        web_of_trust,
-        oracle_registry,
-        p2p,
         control_state,
     })
-}
-
-fn resolve_public_identity_id(
-    civilization_state: &CivilizationRuntimeState,
-    identity: &IdentityCompatView,
-) -> String {
-    civilization_state
-        .controller_binding_registry
-        .active_for_controller(&identity.agent_did)
-        .and_then(|binding| {
-            civilization_state
-                .public_identity_registry
-                .get(&binding.public_id)
-                .filter(|public_identity| public_identity.active)
-        })
-        .or_else(|| {
-            civilization_state
-                .public_identity_registry
-                .active_for_agent_did(&identity.agent_did)
-        })
-        .map_or_else(
-            || identity.agent_did.clone(),
-            |public_identity| public_identity.public_id,
-        )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -485,15 +385,6 @@ fn derive_grpc_endpoint_from_ui_base(base_url: &str) -> Option<String> {
     url.set_query(None);
     url.set_fragment(None);
     Some(url.to_string().trim_end_matches('/').to_string())
-}
-
-fn build_admission_config(cli: &Cli) -> AdmissionConfig {
-    AdmissionConfig {
-        max_time_drift_sec: 180,
-        min_hashcash_bits: 12,
-        require_hashcash_for_handshake: cli.require_hashcash_inbound,
-        require_hashcash_for_broadcast: cli.require_hashcash_broadcast,
-    }
 }
 
 fn spawn_control_plane(

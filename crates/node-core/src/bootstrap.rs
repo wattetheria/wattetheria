@@ -1,6 +1,5 @@
 use crate::cli::Cli;
 use anyhow::{Context, Result, bail};
-use libp2p::Multiaddr;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -11,17 +10,6 @@ pub fn init_tracing() {
         .with_env_filter(EnvFilter::from_default_env())
         .without_time()
         .init();
-}
-
-pub fn parse_multiaddrs(cli: &Cli) -> Result<(Multiaddr, Vec<Multiaddr>)> {
-    let listen_addr = cli.listen.parse().context("parse listen multiaddr")?;
-    let bootstrap_addrs = cli
-        .bootstrap
-        .iter()
-        .map(|addr| addr.parse())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("parse bootstrap multiaddr")?;
-    Ok((listen_addr, bootstrap_addrs))
 }
 
 pub fn parse_control_bind(value: &str) -> Result<SocketAddr> {

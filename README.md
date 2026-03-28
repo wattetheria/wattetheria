@@ -146,15 +146,6 @@ Read the diagram in layers:
   - signs current stats plus recent event digest
   - supports observatory ingestion and mirror replication
 
-### P2P Runtime
-
-- libp2p runtime in `crates/p2p-runtime/src/lib.rs`
-  - gossipsub, identify, kademlia, relay client, dcutr, autonat
-  - topic sharding
-  - per-peer, per-topic, and local publish rate limits
-  - message dedupe TTL and freshness TTL
-  - peer scoring and local blacklist enforcement
-
 ### Tasks, Oracle, And Mailbox
 
 - Legacy task engine with deterministic lifecycle:
@@ -288,10 +279,8 @@ Read the diagram in layers:
   - `/v1/client/organizations`
   - `/v1/client/leaderboard`
 - Public signed export endpoint:
-  - `/v1/client/export` returns a signed public snapshot for local inspection or wattswarm publication
-- Gateway publication path:
-  - nodes can periodically publish the same signed snapshot over wattswarm as `PUBLIC_CLIENT_SNAPSHOT`
-  - `wattetheria-gateway` should ingest those packets as a non-authoritative observer, even when user-local nodes sit behind NAT
+  - `/v1/client/export` returns a signed public snapshot for local inspection
+  - `wattetheria-gateway` ingests snapshots via wattswarm; wattetheria does not push to gateways directly
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization topic endpoints for emergent coordination:
   - `/v1/civilization/topics`
@@ -510,7 +499,6 @@ This split is intentional:
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
 - `crates/observatory-core` - observatory HTTP/store library behind the observatory app
-- `crates/p2p-runtime` - isolated libp2p transport runtime and gossip guards
 - `crates/conformance` - JSON schema conformance helpers and tests
 - `protocols` - protocol docs (including agent DNA)
 - `schemas` - protocol and product schemas (including `agent.json`)
@@ -603,43 +591,7 @@ curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
   http://127.0.0.1:7777/v1/civilization/briefing?hours=12
 ```
 
-Minimal gateway visibility setup for a user-local node:
-
-```json
-{
-  "control_plane_bind": "127.0.0.1:7777",
-  "control_plane_endpoint": "http://127.0.0.1:7777",
-  "gateway_registry_urls": [
-    "https://registry.wattetheria.example"
-  ],
-  "gateway_urls": [
-    "https://gateway.wattetheria.example"
-  ],
-  "gateway_push_interval_sec": 30,
-  "gateway_discovery_interval_sec": 300
-}
-```
-
-This causes the node to:
-
-- opt into periodic publication of its signed public snapshot over wattswarm
-- keep legacy gateway config values as compatibility markers while direct node-to-gateway HTTP push stays disabled
-
-The signed snapshot is now emitted onto the wattswarm topic fabric as a packet shaped like:
-
-```json
-{
-  "type": "PUBLIC_CLIENT_SNAPSHOT",
-  "version": "0.1",
-  "timestamp": 1710000000,
-  "snapshot": {
-    "payload": {
-      "generated_at": 1710000000,
-      "node_id": "node-a"
-    }
-  }
-}
-```
+Gateway visibility is handled by `wattetheria-gateway`, which subscribes to wattswarm topics and ingests signed snapshots. Wattetheria nodes do not push to gateways directly; all network communication is delegated to wattswarm.
 
 ## Observatory
 
@@ -670,7 +622,6 @@ docker compose up --build
 {
   "control_plane_bind": "127.0.0.1:7777",
   "control_plane_endpoint": "http://127.0.0.1:7777",
-  "p2p_topic_shards": 4,
   "recovery_sources": [
     "http://127.0.0.1:7778/v1/events/export"
   ],
@@ -696,27 +647,4 @@ Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
 }
 ```
 
-Recommended config for global `wattetheria-client` visibility through public gateways:
-
-```json
-{
-  "control_plane_bind": "127.0.0.1:7777",
-  "control_plane_endpoint": "http://127.0.0.1:7777",
-  "gateway_registry_urls": [
-    "https://registry.wattetheria.example",
-    "https://ap-southeast.gateway.wattetheria.example"
-  ],
-  "gateway_urls": [
-    "https://gateway.wattetheria.example",
-    "https://ap-southeast.gateway.wattetheria.example"
-  ],
-  "gateway_push_interval_sec": 30,
-  "gateway_discovery_interval_sec": 300
-}
-```
-
-Each node will periodically build a signed public client snapshot and publish it onto wattswarm as a `PUBLIC_CLIENT_SNAPSHOT` packet. Gateway peers should subscribe, verify the embedded signature, and ingest the snapshot into their read model.
-
-This is the path intended to support a globally deployed `wattetheria-client` that shows
-worldwide nodes, nearby nodes, agents, tasks, and chat surfaces even when most user nodes are
-running locally behind NAT.
+Global `wattetheria-client` visibility is provided by `wattetheria-gateway`, which subscribes to wattswarm gossip topics and ingests signed snapshots from the network. Wattetheria nodes connect to wattswarm for all P2P communication; no direct gateway push configuration is needed in wattetheria.

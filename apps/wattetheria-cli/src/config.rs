@@ -17,8 +17,6 @@ pub(crate) struct LocalConfig {
     pub(crate) control_plane_bind: String,
     #[serde(default = "default_control_endpoint")]
     pub(crate) control_plane_endpoint: String,
-    #[serde(default = "default_p2p_topic_shards")]
-    pub(crate) p2p_topic_shards: usize,
     #[serde(default)]
     pub(crate) recovery_sources: Vec<String>,
     #[serde(default)]
@@ -31,14 +29,6 @@ pub(crate) struct LocalConfig {
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
-    #[serde(default)]
-    pub(crate) gateway_urls: Vec<String>,
-    #[serde(default)]
-    pub(crate) gateway_registry_urls: Vec<String>,
-    #[serde(default = "default_gateway_push_interval_sec")]
-    pub(crate) gateway_push_interval_sec: u64,
-    #[serde(default = "default_gateway_discovery_interval_sec")]
-    pub(crate) gateway_discovery_interval_sec: u64,
 }
 
 fn default_control_bind() -> String {
@@ -49,20 +39,8 @@ fn default_control_endpoint() -> String {
     format!("http://{}", default_control_bind())
 }
 
-fn default_p2p_topic_shards() -> usize {
-    1
-}
-
 fn default_autonomy_interval_sec() -> u64 {
     30
-}
-
-fn default_gateway_push_interval_sec() -> u64 {
-    30
-}
-
-fn default_gateway_discovery_interval_sec() -> u64 {
-    300
 }
 
 impl Default for LocalConfig {
@@ -71,17 +49,12 @@ impl Default for LocalConfig {
         Self {
             control_plane_endpoint: default_control_endpoint(),
             control_plane_bind: bind,
-            p2p_topic_shards: default_p2p_topic_shards(),
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
-            gateway_urls: Vec::new(),
-            gateway_registry_urls: Vec::new(),
-            gateway_push_interval_sec: default_gateway_push_interval_sec(),
-            gateway_discovery_interval_sec: default_gateway_discovery_interval_sec(),
         }
     }
 }
@@ -182,9 +155,7 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
         .arg("--data-dir")
         .arg(data_dir)
         .arg("--control-plane-bind")
-        .arg(&config.control_plane_bind)
-        .arg("--p2p-topic-shards")
-        .arg(config.p2p_topic_shards.max(1).to_string());
+        .arg(&config.control_plane_bind);
 
     if config.autonomy_enabled {
         command.arg("--autonomy-enabled");
@@ -192,25 +163,12 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     command
         .arg("--autonomy-interval-sec")
         .arg(config.autonomy_interval_sec.max(5).to_string());
-    command
-        .arg("--gateway-push-interval-sec")
-        .arg(config.gateway_push_interval_sec.max(10).to_string());
-    command
-        .arg("--gateway-discovery-interval-sec")
-        .arg(config.gateway_discovery_interval_sec.max(30).to_string());
     if let Some(base_url) = &config.wattswarm_ui_base_url {
         command.arg("--wattswarm-ui-base-url").arg(base_url);
     }
     if let Some(endpoint) = &config.wattswarm_sync_grpc_endpoint {
         command.arg("--wattswarm-sync-grpc-endpoint").arg(endpoint);
     }
-    for gateway_url in &config.gateway_urls {
-        command.arg("--gateway-url").arg(gateway_url);
-    }
-    for registry_url in &config.gateway_registry_urls {
-        command.arg("--gateway-registry-url").arg(registry_url);
-    }
-
     match &config.brain_provider {
         BrainProviderConfig::Rules => {
             command.arg("--brain-provider-kind").arg("rules");
@@ -378,19 +336,9 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn kernel_runtime_args_include_gateway_push_settings() {
+    fn kernel_runtime_args_include_autonomy_settings() {
         let mut command = Command::new("echo");
         let config = LocalConfig {
-            gateway_urls: vec![
-                "https://gw-ap.example".to_string(),
-                "https://gw-us.example".to_string(),
-            ],
-            gateway_registry_urls: vec![
-                "https://registry-a.example".to_string(),
-                "https://registry-b.example/api/registry/discovery".to_string(),
-            ],
-            gateway_push_interval_sec: 3,
-            gateway_discovery_interval_sec: 12,
             autonomy_enabled: true,
             ..LocalConfig::default()
         };
@@ -402,31 +350,10 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
 
+        assert!(args.contains(&"--autonomy-enabled".to_string()));
         assert!(
             args.windows(2)
-                .any(|pair| { pair == ["--gateway-push-interval-sec", "10"] })
+                .any(|pair| { pair[0] == "--autonomy-interval-sec" })
         );
-        assert!(
-            args.windows(2)
-                .any(|pair| { pair == ["--gateway-discovery-interval-sec", "30"] })
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| { pair == ["--gateway-url", "https://gw-ap.example"] })
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| { pair == ["--gateway-url", "https://gw-us.example"] })
-        );
-        assert!(
-            args.windows(2)
-                .any(|pair| { pair == ["--gateway-registry-url", "https://registry-a.example"] })
-        );
-        assert!(args.windows(2).any(|pair| {
-            pair == [
-                "--gateway-registry-url",
-                "https://registry-b.example/api/registry/discovery",
-            ]
-        }));
     }
 }
