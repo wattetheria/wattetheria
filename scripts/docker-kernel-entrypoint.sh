@@ -47,4 +47,12 @@ if [ -n "${WATTETHERIA_BRAIN_API_KEY_ENV:-}" ]; then
   set -- "$@" --brain-api-key-env "${WATTETHERIA_BRAIN_API_KEY_ENV}"
 fi
 
+if [ -n "${WATTETHERIA_WATTSWARM_UI_BASE_URL:-}" ]; then
+  set -- "$@" --wattswarm-ui-base-url "${WATTETHERIA_WATTSWARM_UI_BASE_URL}"
+fi
+
+if [ -n "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT:-}" ]; then
+  set -- "$@" --wattswarm-sync-grpc-endpoint "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT}"
+fi
+
 exec "$@"

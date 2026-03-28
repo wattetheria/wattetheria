@@ -17,8 +17,20 @@ COPY apps/wattetheria-observatory/Cargo.toml apps/wattetheria-observatory/Cargo.
 COPY crates/conformance/Cargo.toml crates/conformance/Cargo.toml
 COPY crates/control-plane/Cargo.toml crates/control-plane/Cargo.toml
 COPY crates/kernel-core/Cargo.toml crates/kernel-core/Cargo.toml
+COPY crates/node-core/Cargo.toml crates/node-core/Cargo.toml
 COPY crates/observatory-core/Cargo.toml crates/observatory-core/Cargo.toml
 COPY crates/p2p-runtime/Cargo.toml crates/p2p-runtime/Cargo.toml
+
+# Replace local path dependencies with git sources for Docker builds.
+# This lets users build the image without cloning watt-did / watt-wallet.
+# 1) kernel-core: swap path deps to git
+RUN sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    crates/kernel-core/Cargo.toml
+# 2) root Cargo.toml: patch watt-wallet's internal path dep on watt-did
+RUN printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
+    >> Cargo.toml
 
 RUN mkdir -p \
     apps/wattetheria-cli/src \
@@ -27,6 +39,7 @@ RUN mkdir -p \
     crates/conformance/src \
     crates/control-plane/src \
     crates/kernel-core/src \
+    crates/node-core/src \
     crates/observatory-core/src \
     crates/p2p-runtime/src \
     && printf "fn main() {}\n" > apps/wattetheria-cli/src/main.rs \
@@ -35,6 +48,7 @@ RUN mkdir -p \
     && printf "pub fn _planner_stub() {}\n" > crates/conformance/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/control-plane/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/kernel-core/src/lib.rs \
+    && printf "pub fn _planner_stub() {}\n" > crates/node-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/observatory-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/p2p-runtime/src/lib.rs
 
@@ -53,6 +67,20 @@ FROM chef AS builder
 COPY . .
 COPY --from=cacher /app/target /app/target
 
+# Replace path deps in builder stage too (COPY . . overwrites the planner's sed).
+RUN sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    crates/kernel-core/Cargo.toml \
+    && printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
+    >> Cargo.toml
+
+# Fetch wattswarm proto file for gRPC codegen (build.rs uses WATTSWARM_SYNC_PROTO).
+ARG WATTSWARM_PROTO_REV=main
+RUN curl -fsSL "https://raw.githubusercontent.com/wattetheria/wattswarm/${WATTSWARM_PROTO_REV}/apps/wattswarm/proto/wattetheria_sync.proto" \
+    -o /tmp/wattetheria_sync.proto
+
+ENV WATTSWARM_SYNC_PROTO=/tmp/wattetheria_sync.proto
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     cargo build --release -p wattetheria-kernel -p wattetheria-observatory
