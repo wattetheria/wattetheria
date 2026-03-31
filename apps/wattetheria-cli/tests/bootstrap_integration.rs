@@ -86,6 +86,72 @@ fn doctor_fails_without_running_control_plane() {
 }
 
 #[test]
+fn doctor_connect_writes_disconnected_status_on_failure() {
+    let tmp = tempdir().unwrap();
+    let data_dir = tmp.path().join("node");
+
+    let init = run_cli(&["init", "--data-dir", data_dir.to_str().unwrap()]);
+    assert!(init.status.success());
+
+    let doctor = run_cli(&[
+        "doctor",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--connect",
+    ]);
+
+    assert!(!doctor.status.success());
+    let status_path = data_dir.join(".agent-participation/status.json");
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path).unwrap()).unwrap();
+    assert_eq!(status["status"].as_str(), Some("disconnected"));
+    assert_eq!(status["brain_connected"].as_bool(), Some(true));
+    assert_eq!(status["control_plane_connected"].as_bool(), Some(false));
+}
+
+#[test]
+fn doctor_connect_writes_connected_status_after_kernel_is_up() {
+    let tmp = tempdir().unwrap();
+    let data_dir = tmp.path().join("node");
+
+    let init = run_cli(&["init", "--data-dir", data_dir.to_str().unwrap()]);
+    assert!(init.status.success());
+
+    let bind = format!("127.0.0.1:{}", pick_free_port());
+    update_config(&data_dir, &bind, &[]);
+
+    let up = run_cli(&["up", "--data-dir", data_dir.to_str().unwrap()]);
+    let daemon_log = fs::read_to_string(data_dir.join("daemon.log")).unwrap_or_default();
+    assert!(
+        up.status.success(),
+        "up failed\nstdout:\n{}\nstderr:\n{}\ndaemon_log:\n{}",
+        String::from_utf8_lossy(&up.stdout),
+        String::from_utf8_lossy(&up.stderr),
+        daemon_log,
+    );
+
+    let doctor = run_cli(&[
+        "doctor",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "--connect",
+    ]);
+    stop_daemon(&data_dir);
+
+    assert!(
+        doctor.status.success(),
+        "doctor failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr),
+    );
+
+    let status_path = data_dir.join(".agent-participation/status.json");
+    let status: Value = serde_json::from_str(&fs::read_to_string(status_path).unwrap()).unwrap();
+    assert_eq!(status["status"].as_str(), Some("connected"));
+    assert_eq!(status["brain_connected"].as_bool(), Some(true));
+    assert_eq!(status["control_plane_connected"].as_bool(), Some(true));
+}
+
+#[test]
 fn up_recovers_corrupt_events_from_peer_export() {
     let tmp = tempdir().unwrap();
     let data_a = tmp.path().join("node-a");

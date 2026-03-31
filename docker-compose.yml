@@ -25,7 +25,7 @@ services:
     environment:
       PORT: 8787
     ports:
-      - "${WATTETHERIA_OBSERVATORY_PORT:-8787}:8787"
+      - "${WATTETHERIA_OBSERVATORY_PORT:-8780}:8787"
     entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
 
 volumes:

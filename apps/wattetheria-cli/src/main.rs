@@ -58,7 +58,8 @@ async fn main() -> Result<()> {
             data_dir,
             control_plane,
             brain,
-        } => run_doctor(&data_dir, control_plane.as_deref(), brain).await?,
+            connect,
+        } => run_doctor(&data_dir, control_plane.as_deref(), brain, connect).await?,
         Commands::Policy {
             data_dir,
             control_plane,

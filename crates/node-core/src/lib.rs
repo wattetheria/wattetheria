@@ -1,3 +1,4 @@
+mod agent_participation;
 mod bootstrap;
 pub mod cli;
 mod recovery;
@@ -143,6 +144,15 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         ledger_path.clone(),
         cli.wattswarm_ui_base_url.as_deref(),
     ));
+    agent_participation::write_agent_participation_artifacts(
+        &cli.data_dir,
+        &identity,
+        &brain_config,
+        &control_bind,
+        cli.wattswarm_ui_base_url.as_deref(),
+        resolve_wattswarm_sync_grpc_endpoint(cli).as_deref(),
+    )
+    .context("write agent participation artifacts")?;
     let governance_engine: GovernanceEngine = local_db.load_or_migrate(
         local_db::domain::GOVERNANCE,
         &cli.data_dir.join("governance/state.json"),

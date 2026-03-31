@@ -29,6 +29,8 @@ pub(crate) enum Commands {
         control_plane: Option<String>,
         #[arg(long, default_value_t = false)]
         brain: bool,
+        #[arg(long, default_value_t = false)]
+        connect: bool,
     },
     Policy {
         #[arg(long, default_value = ".wattetheria")]

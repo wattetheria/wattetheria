@@ -1,0 +1,48 @@
+# Development overlay with hot reload via cargo watch.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+services:
+  kernel:
+    build:
+      target: dev
+    volumes:
+      - .:/app
+      - wattetheria_cargo_target:/app/target
+      - wattetheria_cargo_registry:/usr/local/cargo/registry
+      - wattetheria_state:/var/lib/wattetheria
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        exec cargo watch
+        --poll
+        --watch Cargo.toml
+        --watch Cargo.lock
+        --watch apps
+        --watch crates
+        --ignore target
+        --shell "cargo run -p wattetheria-kernel -- --data-dir /var/lib/wattetheria --control-plane-bind 0.0.0.0:7777"
+
+  observatory:
+    build:
+      target: dev
+    volumes:
+      - .:/app
+      - wattetheria_cargo_target:/app/target
+      - wattetheria_cargo_registry:/usr/local/cargo/registry
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        exec cargo watch
+        --poll
+        --watch Cargo.toml
+        --watch Cargo.lock
+        --watch apps
+        --watch crates
+        --ignore target
+        --shell "cargo run -p wattetheria-observatory"
+
+volumes:
+  wattetheria_cargo_target:
+  wattetheria_cargo_registry:

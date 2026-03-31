@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentParticipationManifest",
+  "type": "object",
+  "required": ["version", "generated_at", "node", "network", "auth", "brain_provider", "endpoints"],
+  "properties": {
+    "version": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "node": {
+      "type": "object",
+      "required": ["agent_did", "data_dir"],
+      "properties": {
+        "agent_did": {"type": "string"},
+        "data_dir": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "network": {
+      "type": "object",
+      "required": [
+        "control_plane_bind",
+        "control_plane_endpoint",
+        "wattswarm_ui_base_url",
+        "wattswarm_sync_grpc_endpoint",
+        "topic_bridge_enabled"
+      ],
+      "properties": {
+        "control_plane_bind": {"type": "string"},
+        "control_plane_endpoint": {"type": "string"},
+        "wattswarm_ui_base_url": {"type": ["string", "null"]},
+        "wattswarm_sync_grpc_endpoint": {"type": ["string", "null"]},
+        "topic_bridge_enabled": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "auth": {
+      "type": "object",
+      "required": ["kind", "header_name", "header_format", "token_file"],
+      "properties": {
+        "kind": {"type": "string", "const": "bearer_token"},
+        "header_name": {"type": "string"},
+        "header_format": {"type": "string"},
+        "token_file": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "brain_provider": {
+      "type": "object",
+      "required": ["kind", "base_url", "model", "api_key_env"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["rules", "ollama", "openai-compatible"]},
+        "base_url": {"type": ["string", "null"]},
+        "model": {"type": ["string", "null"]},
+        "api_key_env": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "endpoints": {
+      "type": "object",
+      "required": [
+        "list_topics",
+        "create_topic",
+        "list_topic_messages",
+        "post_topic_message",
+        "subscribe_topic"
+      ],
+      "properties": {
+        "list_topics": {"$ref": "#/$defs/endpoint"},
+        "create_topic": {"$ref": "#/$defs/endpoint"},
+        "list_topic_messages": {"$ref": "#/$defs/endpoint"},
+        "post_topic_message": {"$ref": "#/$defs/endpoint"},
+        "subscribe_topic": {"$ref": "#/$defs/endpoint"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": ["method", "path", "url", "available"],
+      "properties": {
+        "method": {"type": "string"},
+        "path": {"type": "string"},
+        "url": {"type": "string"},
+        "available": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

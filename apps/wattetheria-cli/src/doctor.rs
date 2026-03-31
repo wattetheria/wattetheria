@@ -2,8 +2,10 @@ use crate::config::{
     LocalConfig, can_write_storage, check_control_plane, fetch_server_timestamp, read_config,
     read_control_token,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use serde::Serialize;
+use std::fs;
 use std::path::{Path, PathBuf};
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::event_log::EventLog;
@@ -20,6 +22,17 @@ pub(crate) struct DoctorCheck {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentConnectStatus {
+    checked_at: String,
+    control_plane_endpoint: String,
+    brain_provider: String,
+    control_plane_connected: bool,
+    brain_connected: bool,
+    status: String,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct DoctorReport {
     data_dir: String,
     overall: String,
@@ -30,12 +43,14 @@ pub(crate) async fn run_doctor(
     data_dir: &Path,
     endpoint_override: Option<&str>,
     brain_check: bool,
+    connect: bool,
 ) -> Result<()> {
     let config = read_config(data_dir).unwrap_or_default();
     let endpoint = endpoint_override.map_or_else(
         || config.control_plane_endpoint.clone(),
         ToString::to_string,
     );
+    let effective_brain_check = brain_check || connect;
 
     let mut checks = Vec::new();
 
@@ -83,7 +98,10 @@ pub(crate) async fn run_doctor(
 
     append_control_plane_checks(&mut checks, &endpoint, token).await;
     append_mcp_registry_check(&mut checks, data_dir);
-    append_provider_checks(&mut checks, &config, brain_check).await;
+    append_provider_checks(&mut checks, &config, effective_brain_check).await;
+    if connect {
+        write_connect_status(data_dir, &endpoint, &config, &checks)?;
+    }
     finalize_doctor_report(data_dir, checks)
 }
 
@@ -257,19 +275,7 @@ async fn append_provider_checks(
     config: &LocalConfig,
     brain_check: bool,
 ) {
-    let provider_name = match &config.brain_provider {
-        wattetheria_kernel::brain::BrainProviderConfig::Rules => "rules".to_string(),
-        wattetheria_kernel::brain::BrainProviderConfig::Ollama { base_url, model } => {
-            format!("ollama model={model} url={base_url}")
-        }
-        wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
-            base_url,
-            model,
-            ..
-        } => {
-            format!("openai-compatible model={model} url={base_url}")
-        }
-    };
+    let provider_name = provider_label(&config.brain_provider);
 
     checks.push(DoctorCheck {
         name: "brain_provider".to_string(),
@@ -290,6 +296,68 @@ async fn append_provider_checks(
                 status: "fail".to_string(),
                 detail: error.to_string(),
             }),
+        }
+    }
+}
+
+fn write_connect_status(
+    data_dir: &Path,
+    endpoint: &str,
+    config: &LocalConfig,
+    checks: &[DoctorCheck],
+) -> Result<()> {
+    let control_plane_connected = check_ok(checks, "control_plane_health");
+    let brain_connected = check_ok(checks, "brain_health");
+    let status = if control_plane_connected && brain_connected {
+        "connected"
+    } else {
+        "disconnected"
+    };
+    let last_error = checks
+        .iter()
+        .find(|check| {
+            matches!(check.name.as_str(), "control_plane_health" | "brain_health")
+                && check.status == "fail"
+        })
+        .map(|check| format!("{}: {}", check.name, check.detail));
+    let payload = AgentConnectStatus {
+        checked_at: Utc::now().to_rfc3339(),
+        control_plane_endpoint: endpoint.to_owned(),
+        brain_provider: provider_label(&config.brain_provider),
+        control_plane_connected,
+        brain_connected,
+        status: status.to_owned(),
+        last_error,
+    };
+    let output_dir = data_dir.join(".agent-participation");
+    fs::create_dir_all(&output_dir).context("create agent participation directory")?;
+    fs::write(
+        output_dir.join("status.json"),
+        serde_json::to_vec_pretty(&payload)?,
+    )
+    .context("write agent connect status")?;
+    Ok(())
+}
+
+fn check_ok(checks: &[DoctorCheck], name: &str) -> bool {
+    checks
+        .iter()
+        .find(|check| check.name == name)
+        .is_some_and(|check| check.status == "ok")
+}
+
+fn provider_label(config: &wattetheria_kernel::brain::BrainProviderConfig) -> String {
+    match config {
+        wattetheria_kernel::brain::BrainProviderConfig::Rules => "rules".to_string(),
+        wattetheria_kernel::brain::BrainProviderConfig::Ollama { base_url, model } => {
+            format!("ollama model={model} url={base_url}")
+        }
+        wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
+            base_url,
+            model,
+            ..
+        } => {
+            format!("openai-compatible model={model} url={base_url}")
         }
     }
 }

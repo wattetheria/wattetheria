@@ -22,3 +22,4 @@ wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-co
 
 [dev-dependencies]
 axum.workspace = true
+tempfile.workspace = true
