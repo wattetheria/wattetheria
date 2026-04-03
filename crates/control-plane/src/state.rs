@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
@@ -74,6 +75,7 @@ pub struct StreamEvent {
 
 #[derive(Clone)]
 pub struct ControlPlaneState {
+    pub data_dir: PathBuf,
     pub agent_did: String,
     pub identity: IdentityCompatView,
     pub signer: Arc<dyn PayloadSigner>,
@@ -95,6 +97,7 @@ pub struct ControlPlaneState {
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
     pub travel_state_registry: Arc<Mutex<TravelStateRegistry>>,
     pub brain_engine: Arc<BrainEngine>,
+    pub brain_provider_label: String,
     pub audit_log: AuditLog,
     pub local_db: Arc<LocalDb>,
     pub rate_limiter: Arc<RateLimiter>,

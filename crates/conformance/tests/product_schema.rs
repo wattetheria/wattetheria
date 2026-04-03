@@ -29,6 +29,7 @@ fn brain_provider_config_schema_accepts_valid_payload() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn agent_participation_manifest_schema_accepts_valid_payload() {
     let payload = json!({
         "version": "v1",
@@ -85,6 +86,66 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
                 "method": "POST",
                 "path": "/v1/civilization/topics/subscribe",
                 "url": "http://127.0.0.1:7777/v1/civilization/topics/subscribe",
+                "available": true
+            },
+            "list_missions": {
+                "method": "GET",
+                "path": "/v1/missions",
+                "url": "http://127.0.0.1:7777/v1/missions",
+                "available": true
+            },
+            "publish_mission": {
+                "method": "POST",
+                "path": "/v1/missions",
+                "url": "http://127.0.0.1:7777/v1/missions",
+                "available": true
+            },
+            "claim_mission": {
+                "method": "POST",
+                "path": "/v1/missions/claim",
+                "url": "http://127.0.0.1:7777/v1/missions/claim",
+                "available": true
+            },
+            "complete_mission": {
+                "method": "POST",
+                "path": "/v1/missions/complete",
+                "url": "http://127.0.0.1:7777/v1/missions/complete",
+                "available": true
+            },
+            "settle_mission": {
+                "method": "POST",
+                "path": "/v1/missions/settle",
+                "url": "http://127.0.0.1:7777/v1/missions/settle",
+                "available": true
+            },
+            "list_friends": {
+                "method": "GET",
+                "path": "/v1/civilization/friends",
+                "url": "http://127.0.0.1:7777/v1/civilization/friends",
+                "available": true
+            },
+            "upsert_friend": {
+                "method": "POST",
+                "path": "/v1/civilization/friends",
+                "url": "http://127.0.0.1:7777/v1/civilization/friends",
+                "available": true
+            },
+            "send_message": {
+                "method": "POST",
+                "path": "/v1/mailbox/messages",
+                "url": "http://127.0.0.1:7777/v1/mailbox/messages",
+                "available": true
+            },
+            "fetch_messages": {
+                "method": "GET",
+                "path": "/v1/mailbox/messages",
+                "url": "http://127.0.0.1:7777/v1/mailbox/messages",
+                "available": true
+            },
+            "ack_message": {
+                "method": "POST",
+                "path": "/v1/mailbox/ack",
+                "url": "http://127.0.0.1:7777/v1/mailbox/ack",
                 "available": true
             }
         }

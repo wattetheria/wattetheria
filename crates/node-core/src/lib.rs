@@ -22,7 +22,7 @@ use wattetheria_control_plane::{
     run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
-use wattetheria_kernel::brain::BrainEngine;
+use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
 use wattetheria_kernel::civilization::galaxy::GalaxyState;
 use wattetheria_kernel::civilization::identities::{
@@ -178,6 +178,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         policy_engine,
         mailbox,
         civilization_state,
+        &brain_config,
         brain_engine,
         audit_log,
         local_db,
@@ -204,12 +205,14 @@ fn build_control_state(
     policy_engine: PolicyEngine,
     mailbox: CrossSubnetMailbox,
     civilization_state: CivilizationRuntimeState,
+    brain_config: &BrainProviderConfig,
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
     local_db: Arc<LocalDb>,
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
     ControlPlaneState {
+        data_dir: cli.data_dir.clone(),
         agent_did: identity.agent_did.clone(),
         identity: identity.clone(),
         signer,
@@ -233,10 +236,25 @@ fn build_control_state(
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
         travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
         brain_engine,
+        brain_provider_label: brain_provider_label(brain_config),
         audit_log,
         local_db,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
+    }
+}
+
+fn brain_provider_label(config: &BrainProviderConfig) -> String {
+    match config {
+        BrainProviderConfig::Rules => "rules".to_string(),
+        BrainProviderConfig::Ollama { base_url, model } => {
+            format!("ollama model={model} url={base_url}")
+        }
+        BrainProviderConfig::OpenaiCompatible {
+            base_url, model, ..
+        } => {
+            format!("openai-compatible model={model} url={base_url}")
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+mod agent_attach;
 mod auth;
 mod autonomy;
 mod swarm_sync;
@@ -190,9 +191,14 @@ fn core_router() -> Router<ControlPlaneState> {
             get(routes::core::night_shift_narrative),
         )
         .route("/v1/actions", post(routes::core::actions))
+        .route("/v1/brain/doctor", post(routes::core::brain_doctor))
         .route(
             "/v1/brain/propose-actions",
             get(routes::core::brain_propose_actions),
+        )
+        .route(
+            "/v1/agent/attach/status",
+            get(routes::core::agent_attach_status),
         )
         .route("/v1/autonomy/tick", post(routes::core::autonomy_tick))
         .route("/v1/audit", get(routes::core::audit_recent))
@@ -451,6 +457,7 @@ mod tests {
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
+    use std::fs;
     use std::sync::Arc;
     use tokio::sync::{Mutex, broadcast};
     use tower::ServiceExt;
@@ -660,6 +667,7 @@ mod tests {
         let token = "test-token".to_string();
 
         let state = ControlPlaneState {
+            data_dir: dir.path().to_path_buf(),
             agent_did: identity.agent_did.clone(),
             identity: identity.compat_view(),
             signer: Arc::new(identity.clone()),
@@ -681,6 +689,7 @@ mod tests {
             galaxy_map_registry,
             travel_state_registry,
             brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
+            brain_provider_label: "rules".to_string(),
             audit_log,
             local_db,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
@@ -1437,6 +1446,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn brain_doctor_updates_attach_status() {
+        let (dir, app, token, _, _state) = build_test_app(10);
+
+        let status_before = authed_get_json(app.clone(), &token, "/v1/agent/attach/status").await;
+        assert_eq!(status_before["status"].as_str(), Some("unknown"));
+        assert_eq!(status_before["brain_provider"].as_str(), Some("rules"));
+
+        let doctor_json =
+            authed_post_json(app.clone(), &token, "/v1/brain/doctor", json!({})).await;
+        assert_eq!(doctor_json["status"].as_str(), Some("connected"));
+        assert_eq!(doctor_json["brain_connected"].as_bool(), Some(true));
+        assert_eq!(doctor_json["control_plane_connected"].as_bool(), Some(true));
+
+        let status_after = authed_get_json(app.clone(), &token, "/v1/agent/attach/status").await;
+        assert_eq!(status_after["status"].as_str(), Some("connected"));
+        assert_eq!(status_after["brain_connected"].as_bool(), Some(true));
+        assert_eq!(
+            status_after["control_plane_connected"].as_bool(),
+            Some(true)
+        );
+
+        let persisted: Value = serde_json::from_str(
+            &fs::read_to_string(dir.path().join(".agent-participation/status.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted["status"].as_str(), Some("connected"));
     }
 
     #[tokio::test]

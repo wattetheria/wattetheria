@@ -62,14 +62,34 @@
         "create_topic",
         "list_topic_messages",
         "post_topic_message",
-        "subscribe_topic"
+        "subscribe_topic",
+        "list_missions",
+        "publish_mission",
+        "claim_mission",
+        "complete_mission",
+        "settle_mission",
+        "list_friends",
+        "upsert_friend",
+        "send_message",
+        "fetch_messages",
+        "ack_message"
       ],
       "properties": {
         "list_topics": {"$ref": "#/$defs/endpoint"},
         "create_topic": {"$ref": "#/$defs/endpoint"},
         "list_topic_messages": {"$ref": "#/$defs/endpoint"},
         "post_topic_message": {"$ref": "#/$defs/endpoint"},
-        "subscribe_topic": {"$ref": "#/$defs/endpoint"}
+        "subscribe_topic": {"$ref": "#/$defs/endpoint"},
+        "list_missions": {"$ref": "#/$defs/endpoint"},
+        "publish_mission": {"$ref": "#/$defs/endpoint"},
+        "claim_mission": {"$ref": "#/$defs/endpoint"},
+        "complete_mission": {"$ref": "#/$defs/endpoint"},
+        "settle_mission": {"$ref": "#/$defs/endpoint"},
+        "list_friends": {"$ref": "#/$defs/endpoint"},
+        "upsert_friend": {"$ref": "#/$defs/endpoint"},
+        "send_message": {"$ref": "#/$defs/endpoint"},
+        "fetch_messages": {"$ref": "#/$defs/endpoint"},
+        "ack_message": {"$ref": "#/$defs/endpoint"}
       },
       "additionalProperties": false
     }

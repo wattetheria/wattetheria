@@ -6,6 +6,7 @@ use axum::{Json, extract::ws::WebSocket};
 use chrono::Utc;
 use serde_json::{Value, json};
 
+use crate::agent_attach::{AgentAttachStatus, read_status, write_status};
 use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::routes::identity::identity_context_value;
@@ -342,6 +343,97 @@ pub(crate) async fn actions(
         Json(json!({"error": format!("unsupported action: {}", request.action)})),
     )
         .into_response()
+}
+
+pub(crate) async fn brain_doctor(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let status = match state.brain_engine.doctor().await {
+        Ok(detail) => {
+            let status = AgentAttachStatus::connected(state.brain_provider_label.clone());
+            if let Err(error) = write_status(&state.data_dir, &status) {
+                return internal_error(&error);
+            }
+            let _ = state.audit_log.append(AuditEntry {
+                id: String::new(),
+                timestamp: 0,
+                category: "brain".to_string(),
+                action: "brain.doctor".to_string(),
+                status: "ok".to_string(),
+                actor: Some(auth),
+                subject: Some(state.agent_did.clone()),
+                capability: Some("model.invoke".to_string()),
+                reason: None,
+                duration_ms: None,
+                details: Some(json!({"detail": detail})),
+            });
+            status
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let status = AgentAttachStatus::disconnected(
+                state.brain_provider_label.clone(),
+                message.clone(),
+            );
+            if let Err(write_error) = write_status(&state.data_dir, &status) {
+                return internal_error(&write_error);
+            }
+            let _ = state.audit_log.append(AuditEntry {
+                id: String::new(),
+                timestamp: 0,
+                category: "brain".to_string(),
+                action: "brain.doctor".to_string(),
+                status: "fail".to_string(),
+                actor: Some(auth),
+                subject: Some(state.agent_did.clone()),
+                capability: Some("model.invoke".to_string()),
+                reason: None,
+                duration_ms: None,
+                details: Some(json!({"error": message})),
+            });
+            status
+        }
+    };
+
+    Json(status).into_response()
+}
+
+pub(crate) async fn agent_attach_status(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+
+    let status = match read_status(&state.data_dir) {
+        Ok(Some(status)) => status,
+        Ok(None) => AgentAttachStatus::unknown(Some(state.brain_provider_label.clone())),
+        Err(error) => return internal_error(&error),
+    };
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "control".to_string(),
+        action: "agent.attach_status".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(state.agent_did.clone()),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"attach_status": status.status})),
+    });
+
+    Json(status).into_response()
 }
 
 pub(crate) async fn audit_recent(
