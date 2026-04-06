@@ -18,6 +18,10 @@ use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::civilization::{
+    build_agent_dm_messages_payload, build_agent_dm_threads_payload,
+    build_agent_relationship_payload,
+};
 use crate::routes::identity::resolve_identity_context;
 use crate::routes::network::{derived_distance_km, derived_geo};
 use crate::state::{
@@ -34,6 +38,14 @@ pub struct PublicClientSnapshot {
     pub peers: Vec<Value>,
     pub operator: Value,
     pub rpc_logs: Vec<Value>,
+    #[serde(default)]
+    pub friend_relationships: Vec<Value>,
+    #[serde(default)]
+    pub pending_friend_requests: Vec<Value>,
+    #[serde(default)]
+    pub dm_threads: Vec<Value>,
+    #[serde(default)]
+    pub dm_messages: Vec<Value>,
     pub tasks: Vec<Value>,
     pub organizations: Vec<Value>,
     pub leaderboard: Vec<Value>,
@@ -693,6 +705,24 @@ async fn build_public_client_snapshot(
     identity_query: &ClientIdentityQuery,
     leaderboard_category: LeaderboardCategory,
 ) -> anyhow::Result<PublicClientSnapshot> {
+    let friend_relationships =
+        build_agent_relationship_payload(state, identity_query.public_id.as_deref(), None).await?;
+    let pending_friend_requests = friend_relationships
+        .iter()
+        .filter(|entry| entry["pending_inbound"].as_bool() == Some(true))
+        .cloned()
+        .collect::<Vec<_>>();
+    let dm_threads =
+        build_agent_dm_threads_payload(state, identity_query.public_id.as_deref()).await?;
+    let dm_messages = build_agent_dm_messages_payload(
+        state,
+        identity_query.public_id.as_deref(),
+        None,
+        None,
+        100,
+    )
+    .await
+    .unwrap_or_default();
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
         node_id: state.agent_did.clone(),
@@ -705,6 +735,10 @@ async fn build_public_client_snapshot(
             state,
             query.rpc_log_limit.unwrap_or(20).clamp(1, 200),
         )?,
+        friend_relationships,
+        pending_friend_requests,
+        dm_threads,
+        dm_messages,
         tasks: build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500))
             .await,
         organizations: build_client_organizations_payload(

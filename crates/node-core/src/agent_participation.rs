@@ -319,6 +319,7 @@ impl EndpointDescriptor {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_readme(manifest: &AgentParticipationManifest) -> String {
     let bridge_status = if manifest.network.topic_bridge_enabled {
         "enabled"

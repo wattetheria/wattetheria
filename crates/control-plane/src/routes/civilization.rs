@@ -1,10 +1,11 @@
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 use crate::auth::{authorize, internal_error};
 use crate::autonomy::build_operator_briefing;
@@ -12,6 +13,7 @@ use crate::routes::identity::{
     identity_context_response, public_memory_payload, resolve_identity_context,
 };
 use crate::state::{
+    AgentDmMessagesQuery, AgentDmSendBody, AgentDmThreadsQuery, AgentRelationshipActionBody,
     BootstrapIdentityBody, CitizenProfileBody, CitizenProfileQuery, ControlPlaneState,
     ControllerBindingBody, ControllerBindingQuery, EmergencyQuery, GalaxyEventBody,
     GalaxyEventsQuery, GalaxyGenerateBody, MetricsQuery, NightShiftQuery, PublicIdentityBody,
@@ -26,6 +28,10 @@ use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::metrics::compute_scores;
 use wattetheria_kernel::profiles::{Faction, RolePath, StrategyProfile};
 use wattetheria_kernel::relationships::RelationshipEdge;
+use wattetheria_kernel::swarm_bridge::{
+    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
+    SwarmPeerRelationshipView, SwarmRelationshipAction, SwarmRelationshipActionCommand,
+};
 
 #[derive(Debug, Clone)]
 struct BootstrapIdentityPlan {
@@ -39,6 +45,249 @@ struct BootstrapIdentityPlan {
     faction: Faction,
     role: RolePath,
     strategy: StrategyProfile,
+}
+
+#[derive(Debug, Clone)]
+struct SocialLocalContext {
+    public_id: String,
+    agent_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct SocialCounterpartTarget {
+    counterpart_public_id: String,
+    remote_node: String,
+    target_agent: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SignedAgentEnvelopePayload<'a> {
+    protocol: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_agent_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<&'a String>,
+    message_json: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extensions_json: Option<&'a String>,
+}
+
+async fn resolve_social_local_context(
+    state: &ControlPlaneState,
+    public_id: Option<&str>,
+) -> SocialLocalContext {
+    let context = resolve_identity_context(state, public_id, None).await;
+    let public_id = context.public_identity.as_ref().map_or_else(
+        || context.public_memory_owner.controller.clone(),
+        |identity| identity.public_id.clone(),
+    );
+    let agent_id = context
+        .public_identity
+        .as_ref()
+        .and_then(|identity| identity.agent_did.clone())
+        .unwrap_or_else(|| state.agent_did.clone());
+    SocialLocalContext {
+        public_id,
+        agent_id,
+    }
+}
+
+async fn load_social_identity_maps(
+    state: &ControlPlaneState,
+) -> (
+    BTreeMap<String, PublicIdentity>,
+    BTreeMap<String, ControllerBinding>,
+) {
+    let identities = state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .map(|identity| (identity.public_id.clone(), identity))
+        .collect::<BTreeMap<_, _>>();
+    let bindings = state
+        .controller_binding_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .map(|binding| (binding.public_id.clone(), binding))
+        .collect::<BTreeMap<_, _>>();
+    (identities, bindings)
+}
+
+async fn resolve_social_counterpart_target(
+    state: &ControlPlaneState,
+    counterpart_public_id: &str,
+) -> Result<SocialCounterpartTarget, String> {
+    let counterpart_public_id = counterpart_public_id.trim();
+    if counterpart_public_id.is_empty() {
+        return Err("counterpart_public_id is required".to_string());
+    }
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let identity = identities.get(counterpart_public_id).cloned();
+    let binding = bindings
+        .get(counterpart_public_id)
+        .cloned()
+        .ok_or_else(|| format!("controller binding missing for {counterpart_public_id}"))?;
+    let remote_node_id = binding
+        .controller_node_id
+        .clone()
+        .ok_or_else(|| format!("controller_node_id missing for {counterpart_public_id}"))?;
+    let target_agent_id = identity
+        .as_ref()
+        .and_then(|entry| entry.agent_did.clone())
+        .unwrap_or_else(|| counterpart_public_id.to_string());
+    Ok(SocialCounterpartTarget {
+        counterpart_public_id: counterpart_public_id.to_string(),
+        remote_node: remote_node_id,
+        target_agent: target_agent_id,
+    })
+}
+
+fn counterpart_public_id_for_remote_node(
+    bindings: &BTreeMap<String, ControllerBinding>,
+    remote_node_id: &str,
+) -> Option<String> {
+    bindings
+        .values()
+        .find(|binding| {
+            binding.active && binding.controller_node_id.as_deref() == Some(remote_node_id)
+        })
+        .map(|binding| binding.public_id.clone())
+}
+
+fn build_signed_agent_envelope(
+    state: &ControlPlaneState,
+    source_agent_id: String,
+    target_agent_id: String,
+    capability: &str,
+    message: Value,
+    extensions: Option<Value>,
+) -> anyhow::Result<SwarmAgentEnvelope> {
+    let protocol = "google_a2a".to_string();
+    let message_json = serde_json::to_string(&message)?;
+    let extensions_json = extensions.as_ref().map(serde_json::to_string).transpose()?;
+    let capability = Some(capability.to_string());
+    let source_agent_id = Some(source_agent_id);
+    let target_agent_id = Some(target_agent_id);
+    let unsigned = SignedAgentEnvelopePayload {
+        protocol: &protocol,
+        source_agent_id: source_agent_id.as_ref(),
+        target_agent_id: target_agent_id.as_ref(),
+        capability: capability.as_ref(),
+        message_json: &message_json,
+        extensions_json: extensions_json.as_ref(),
+    };
+    let signature = state.sign_payload(&unsigned)?;
+    Ok(SwarmAgentEnvelope {
+        protocol,
+        source_agent_id,
+        target_agent_id,
+        capability,
+        message,
+        extensions,
+        signature: Some(signature),
+    })
+}
+
+fn capability_for_relationship_action(action: &SwarmRelationshipAction) -> &'static str {
+    match action {
+        SwarmRelationshipAction::Request => "social.friend.request",
+        SwarmRelationshipAction::Accept => "social.friend.accept",
+        SwarmRelationshipAction::Reject => "social.friend.reject",
+        SwarmRelationshipAction::Cancel => "social.friend.cancel",
+        SwarmRelationshipAction::Remove => "social.friend.remove",
+        SwarmRelationshipAction::Block => "social.friend.block",
+        SwarmRelationshipAction::Unblock => "social.friend.unblock",
+    }
+}
+
+fn relationship_view_to_payload(
+    view: &SwarmPeerRelationshipView,
+    identities: &BTreeMap<String, PublicIdentity>,
+    bindings: &BTreeMap<String, ControllerBinding>,
+) -> Value {
+    let counterpart_public_id =
+        counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
+            .unwrap_or_else(|| view.remote_node_id.clone());
+    let display_name = identities
+        .get(&counterpart_public_id)
+        .map(|identity| identity.display_name.clone());
+    json!({
+        "counterpart_public_id": counterpart_public_id,
+        "counterpart_display_name": display_name,
+        "remote_node_id": view.remote_node_id,
+        "relationship_state": view.relationship_state,
+        "last_action": view.last_action,
+        "initiated_by": view.initiated_by,
+        "agent_envelope": view.agent_envelope,
+        "requested_at": view.requested_at,
+        "responded_at": view.responded_at,
+        "blocked_at": view.blocked_at,
+        "cleared_at": view.cleared_at,
+        "updated_at": view.updated_at,
+        "pending_inbound": view.relationship_state == "requested" && view.initiated_by == "remote",
+        "pending_outbound": view.relationship_state == "requested" && view.initiated_by == "local",
+    })
+}
+
+fn dm_thread_view_to_payload(
+    view: &SwarmPeerDmThreadView,
+    identities: &BTreeMap<String, PublicIdentity>,
+    bindings: &BTreeMap<String, ControllerBinding>,
+) -> Value {
+    let counterpart_public_id =
+        counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
+            .unwrap_or_else(|| view.remote_node_id.clone());
+    let display_name = identities
+        .get(&counterpart_public_id)
+        .map(|identity| identity.display_name.clone());
+    json!({
+        "counterpart_public_id": counterpart_public_id,
+        "counterpart_display_name": display_name,
+        "remote_node_id": view.remote_node_id,
+        "thread_id": view.thread_id,
+        "thread_kind": view.thread_kind,
+        "session_state": view.session_state,
+        "relationship_established_at": view.relationship_established_at,
+        "created_at": view.created_at,
+        "updated_at": view.updated_at,
+        "last_message_at": view.last_message_at,
+    })
+}
+
+fn dm_message_view_to_payload(
+    view: &SwarmPeerDmMessageView,
+    identities: &BTreeMap<String, PublicIdentity>,
+    bindings: &BTreeMap<String, ControllerBinding>,
+) -> Value {
+    let counterpart_public_id =
+        counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
+            .unwrap_or_else(|| view.remote_node_id.clone());
+    let display_name = identities
+        .get(&counterpart_public_id)
+        .map(|identity| identity.display_name.clone());
+    json!({
+        "counterpart_public_id": counterpart_public_id,
+        "counterpart_display_name": display_name,
+        "thread_id": view.thread_id,
+        "message_id": view.message_id,
+        "remote_node_id": view.remote_node_id,
+        "message_kind": view.message_kind,
+        "direction": view.direction,
+        "delivery_state": view.delivery_state,
+        "a2a_protocol": view.a2a_protocol,
+        "agent_envelope": view.agent_envelope,
+        "content": view.content,
+        "encrypted_body": view.encrypted_body,
+        "content_encoding": view.content_encoding,
+        "created_at": view.created_at,
+        "acknowledged_at": view.acknowledged_at,
+    })
 }
 
 fn normalize_optional_text(value: Option<&str>) -> Option<String> {
@@ -406,6 +655,368 @@ pub(crate) async fn upsert_relationship(
     });
 
     (StatusCode::ACCEPTED, Json(json!(edge))).into_response()
+}
+
+pub(crate) async fn build_agent_relationship_payload(
+    state: &ControlPlaneState,
+    public_id: Option<&str>,
+    counterpart_filter: Option<&str>,
+) -> anyhow::Result<Vec<Value>> {
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let mut items = state
+        .swarm_bridge
+        .list_peer_relationships()
+        .await?
+        .into_iter()
+        .map(|view| relationship_view_to_payload(&view, &identities, &bindings))
+        .collect::<Vec<_>>();
+    if let Some(counterpart_public_id) = counterpart_filter {
+        items.retain(|item| item["counterpart_public_id"].as_str() == Some(counterpart_public_id));
+    }
+    items.sort_by(|left, right| {
+        right["updated_at"]
+            .as_u64()
+            .unwrap_or_default()
+            .cmp(&left["updated_at"].as_u64().unwrap_or_default())
+            .then_with(|| {
+                left["counterpart_public_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["counterpart_public_id"].as_str().unwrap_or_default())
+            })
+    });
+    let _ = public_id;
+    Ok(items)
+}
+
+pub(crate) async fn build_agent_dm_threads_payload(
+    state: &ControlPlaneState,
+    public_id: Option<&str>,
+) -> anyhow::Result<Vec<Value>> {
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let mut items = state
+        .swarm_bridge
+        .list_peer_dm_threads()
+        .await?
+        .into_iter()
+        .map(|view| dm_thread_view_to_payload(&view, &identities, &bindings))
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right["updated_at"]
+            .as_u64()
+            .unwrap_or_default()
+            .cmp(&left["updated_at"].as_u64().unwrap_or_default())
+    });
+    let _ = public_id;
+    Ok(items)
+}
+
+pub(crate) async fn build_agent_dm_messages_payload(
+    state: &ControlPlaneState,
+    public_id: Option<&str>,
+    counterpart_public_id: Option<&str>,
+    thread_id: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<Vec<Value>> {
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let thread_ids = if let Some(thread_id) = thread_id {
+        vec![thread_id.to_string()]
+    } else if let Some(counterpart_public_id) = counterpart_public_id {
+        let counterpart = resolve_social_counterpart_target(state, counterpart_public_id)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let thread = state
+            .swarm_bridge
+            .list_peer_dm_threads()
+            .await?
+            .into_iter()
+            .find(|thread| thread.remote_node_id == counterpart.remote_node)
+            .ok_or_else(|| anyhow!("no direct message thread found for {counterpart_public_id}"))?;
+        vec![thread.thread_id]
+    } else {
+        state
+            .swarm_bridge
+            .list_peer_dm_threads()
+            .await?
+            .into_iter()
+            .map(|thread| thread.thread_id)
+            .collect::<Vec<_>>()
+    };
+
+    let mut items = Vec::new();
+    for thread_id in thread_ids {
+        items.extend(
+            state
+                .swarm_bridge
+                .list_peer_dm_messages(&thread_id)
+                .await?
+                .into_iter()
+                .map(|view| dm_message_view_to_payload(&view, &identities, &bindings)),
+        );
+    }
+    items.sort_by(|left, right| {
+        right["created_at"]
+            .as_u64()
+            .unwrap_or_default()
+            .cmp(&left["created_at"].as_u64().unwrap_or_default())
+    });
+    items.dedup_by(|left, right| left["message_id"] == right["message_id"]);
+    items.truncate(limit);
+    let _ = public_id;
+    Ok(items)
+}
+
+pub(crate) async fn list_agent_relationships(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<RelationshipQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let items = match build_agent_relationship_payload(
+        &state,
+        query.public_id.as_deref(),
+        query.counterpart_public_id.as_deref(),
+    )
+    .await
+    {
+        Ok(items) => items,
+        Err(error) => return internal_error(&error),
+    };
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_relationships.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: query.public_id.clone(),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": items.len()})),
+    });
+    Json(Value::Array(items)).into_response()
+}
+
+pub(crate) async fn agent_relationship_action(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<AgentRelationshipActionBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
+    let counterpart =
+        match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+            Ok(counterpart) => counterpart,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
+    let capability = capability_for_relationship_action(&body.action);
+    let message = body.message.unwrap_or_else(|| {
+        json!({
+            "source_public_id": local.public_id,
+            "target_public_id": counterpart.counterpart_public_id,
+            "action": body.action,
+        })
+    });
+    let agent_envelope = match build_signed_agent_envelope(
+        &state,
+        local.agent_id.clone(),
+        counterpart.target_agent.clone(),
+        capability,
+        message,
+        body.extensions.clone(),
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => return internal_error(&error),
+    };
+    let response = match state
+        .swarm_bridge
+        .send_peer_relationship_action(SwarmRelationshipActionCommand {
+            remote_node_id: counterpart.remote_node.clone(),
+            action: body.action.clone(),
+            agent_envelope,
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return internal_error(&error),
+    };
+
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "civilization.agent_relationship.command".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!({
+            "counterpart_public_id": counterpart.counterpart_public_id,
+            "remote_node_id": counterpart.remote_node,
+            "action": body.action,
+            "response": response,
+        }),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_relationships.command".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(local.public_id),
+        capability: Some(capability.to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "counterpart_public_id": counterpart.counterpart_public_id,
+            "remote_node_id": counterpart.remote_node,
+            "action": body.action,
+        })),
+    });
+    (StatusCode::ACCEPTED, Json(response)).into_response()
+}
+
+pub(crate) async fn list_agent_dm_threads(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<AgentDmThreadsQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let items = match build_agent_dm_threads_payload(&state, query.public_id.as_deref()).await {
+        Ok(items) => items,
+        Err(error) => return internal_error(&error),
+    };
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_dm_threads.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: query.public_id.clone(),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": items.len()})),
+    });
+    Json(Value::Array(items)).into_response()
+}
+
+pub(crate) async fn list_agent_dm_messages(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<AgentDmMessagesQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let items = match build_agent_dm_messages_payload(
+        &state,
+        query.public_id.as_deref(),
+        query.counterpart.as_deref(),
+        query.thread.as_deref(),
+        200,
+    )
+    .await
+    {
+        Ok(items) => items,
+        Err(error) => return internal_error(&error),
+    };
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_dm_messages.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: query.public_id.clone(),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": items.len()})),
+    });
+    Json(Value::Array(items)).into_response()
+}
+
+pub(crate) async fn send_agent_dm_message(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<AgentDmSendBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
+    let counterpart =
+        match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+            Ok(counterpart) => counterpart,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
+    let message = json!({
+        "source_public_id": local.public_id,
+        "target_public_id": counterpart.counterpart_public_id,
+        "content": body.content,
+    });
+    let agent_envelope = match build_signed_agent_envelope(
+        &state,
+        local.agent_id.clone(),
+        counterpart.target_agent.clone(),
+        "social.dm.send",
+        message,
+        body.extensions.clone(),
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => return internal_error(&error),
+    };
+    let response = match state
+        .swarm_bridge
+        .send_peer_direct_message(SwarmDirectMessageCommand {
+            remote_node_id: counterpart.remote_node.clone(),
+            agent_envelope,
+            content: body.content,
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return internal_error(&error),
+    };
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "civilization.agent_dm.command".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!({
+            "counterpart_public_id": counterpart.counterpart_public_id,
+            "remote_node_id": counterpart.remote_node,
+            "response": response,
+        }),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_dm.send".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(local.public_id),
+        capability: Some("social.dm.send".to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "counterpart_public_id": counterpart.counterpart_public_id,
+            "remote_node_id": counterpart.remote_node,
+        })),
+    });
+    (StatusCode::ACCEPTED, Json(response)).into_response()
 }
 
 pub(crate) async fn public_identity(

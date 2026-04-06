@@ -79,6 +79,102 @@ pub struct SwarmNetworkStatusView {
     pub peer_protocol_distribution: BTreeMap<String, u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SwarmRelationshipAction {
+    Request,
+    Accept,
+    Reject,
+    Cancel,
+    Remove,
+    Block,
+    Unblock,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmAgentEnvelope {
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    pub message: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmPeerRelationshipView {
+    pub remote_node_id: String,
+    pub relationship_state: String,
+    pub last_action: String,
+    pub initiated_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responded_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleared_at: Option<u64>,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmPeerDmThreadView {
+    pub remote_node_id: String,
+    pub thread_id: String,
+    pub thread_kind: String,
+    pub session_state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship_established_at: Option<u64>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmPeerDmMessageView {
+    pub thread_id: String,
+    pub message_id: String,
+    pub remote_node_id: String,
+    pub message_kind: String,
+    pub direction: String,
+    pub delivery_state: String,
+    pub a2a_protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
+    pub content: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_encoding: Option<String>,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledged_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmRelationshipActionCommand {
+    pub remote_node_id: String,
+    pub action: SwarmRelationshipAction,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmDirectMessageCommand {
+    pub remote_node_id: String,
+    pub agent_envelope: SwarmAgentEnvelope,
+    pub content: Value,
+}
+
 #[async_trait]
 pub trait SwarmBridge: Send + Sync {
     async fn submit_task_contract(
@@ -144,6 +240,31 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         Err(anyhow!("wattswarm peers are not configured"))
+    }
+
+    async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
+        Err(anyhow!("wattswarm peer relationships are not configured"))
+    }
+
+    async fn send_peer_relationship_action(
+        &self,
+        _command: SwarmRelationshipActionCommand,
+    ) -> Result<Value> {
+        Err(anyhow!("wattswarm peer relationships are not configured"))
+    }
+
+    async fn list_peer_dm_threads(&self) -> Result<Vec<SwarmPeerDmThreadView>> {
+        Err(anyhow!(
+            "wattswarm peer direct message threads are not configured"
+        ))
+    }
+
+    async fn list_peer_dm_messages(&self, _thread_id: &str) -> Result<Vec<SwarmPeerDmMessageView>> {
+        Err(anyhow!("wattswarm peer direct messages are not configured"))
+    }
+
+    async fn send_peer_direct_message(&self, _command: SwarmDirectMessageCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm peer direct messages are not configured"))
     }
 
     async fn task_run_projection(
@@ -348,6 +469,31 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         self.topic_api()?.peers().await
+    }
+
+    async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
+        self.topic_api()?.list_peer_relationships().await
+    }
+
+    async fn send_peer_relationship_action(
+        &self,
+        command: SwarmRelationshipActionCommand,
+    ) -> Result<Value> {
+        self.topic_api()?
+            .send_peer_relationship_action(command)
+            .await
+    }
+
+    async fn list_peer_dm_threads(&self) -> Result<Vec<SwarmPeerDmThreadView>> {
+        self.topic_api()?.list_peer_dm_threads().await
+    }
+
+    async fn list_peer_dm_messages(&self, thread_id: &str) -> Result<Vec<SwarmPeerDmMessageView>> {
+        self.topic_api()?.list_peer_dm_messages(thread_id).await
+    }
+
+    async fn send_peer_direct_message(&self, command: SwarmDirectMessageCommand) -> Result<Value> {
+        self.topic_api()?.send_peer_direct_message(command).await
     }
 
     async fn task_run_projection(
@@ -622,6 +768,72 @@ impl HttpWattswarmApi {
             .collect())
     }
 
+    async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
+        Ok(self
+            .client
+            .get(format!("{}/api/peers/relationships", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PeerRelationshipsResponse>()
+            .await?
+            .relationships)
+    }
+
+    async fn send_peer_relationship_action(
+        &self,
+        command: SwarmRelationshipActionCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/peers/relationships", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm peer relationship action response")
+    }
+
+    async fn list_peer_dm_threads(&self) -> Result<Vec<SwarmPeerDmThreadView>> {
+        Ok(self
+            .client
+            .get(format!("{}/api/peers/dm/threads", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PeerDmThreadsResponse>()
+            .await?
+            .threads)
+    }
+
+    async fn list_peer_dm_messages(&self, thread_id: &str) -> Result<Vec<SwarmPeerDmMessageView>> {
+        Ok(self
+            .client
+            .get(format!("{}/api/peers/dm/messages", self.base_url))
+            .query(&PeerDmMessagesQuery {
+                thread_id: thread_id.to_owned(),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<PeerDmMessagesResponse>()
+            .await?
+            .messages)
+    }
+
+    async fn send_peer_direct_message(&self, command: SwarmDirectMessageCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/peers/dm/messages", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm peer direct message response")
+    }
+
     async fn task_run_projection(
         &self,
         task_limit: usize,
@@ -800,6 +1012,26 @@ struct NodeStatusResponse {
 #[derive(Debug, Deserialize)]
 struct PeersListResponse {
     peers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerRelationshipsResponse {
+    relationships: Vec<SwarmPeerRelationshipView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerDmThreadsResponse {
+    threads: Vec<SwarmPeerDmThreadView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PeerDmMessagesResponse {
+    messages: Vec<SwarmPeerDmMessageView>,
+}
+
+#[derive(Debug, Serialize)]
+struct PeerDmMessagesQuery {
+    thread_id: String,
 }
 
 fn map_task_projection(task: Task) -> SwarmTaskProjectionView {

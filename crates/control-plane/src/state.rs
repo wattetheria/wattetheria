@@ -34,7 +34,7 @@ use wattetheria_kernel::map::state::TravelStateRegistry;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
-use wattetheria_kernel::swarm_bridge::SwarmBridge;
+use wattetheria_kernel::swarm_bridge::{SwarmBridge, SwarmRelationshipAction};
 
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -450,6 +450,40 @@ pub struct RelationshipBody {
     pub counterpart_public_id: String,
     pub kind: RelationshipKind,
     pub active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentRelationshipActionBody {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: String,
+    pub action: SwarmRelationshipAction,
+    #[serde(default)]
+    pub message: Option<Value>,
+    #[serde(default)]
+    pub extensions: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentDmThreadsQuery {
+    pub public_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentDmMessagesQuery {
+    pub public_id: Option<String>,
+    #[serde(rename = "counterpart_public_id")]
+    pub counterpart: Option<String>,
+    #[serde(rename = "thread_id")]
+    pub thread: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentDmSendBody {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: String,
+    pub content: Value,
+    #[serde(default)]
+    pub extensions: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
