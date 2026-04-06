@@ -15,6 +15,16 @@ pub struct Cli {
     pub wattswarm_ui_base_url: Option<String>,
     #[arg(long)]
     pub wattswarm_sync_grpc_endpoint: Option<String>,
+    #[arg(long)]
+    pub agent_control_plane_endpoint: Option<String>,
+    #[arg(long)]
+    pub agent_wattswarm_ui_base_url: Option<String>,
+    #[arg(long)]
+    pub agent_wattswarm_sync_grpc_endpoint: Option<String>,
+    #[arg(long)]
+    pub agent_host_data_dir: Option<String>,
+    #[arg(long)]
+    pub servicenet_base_url: Option<String>,
     #[arg(long, default_value_t = 60)]
     pub control_plane_rate_limit: usize,
     #[arg(long, default_value = "rules")]

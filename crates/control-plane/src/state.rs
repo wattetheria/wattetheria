@@ -32,6 +32,7 @@ use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::TravelStateRegistry;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
+use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
 use wattetheria_kernel::swarm_bridge::SwarmBridge;
 
@@ -100,6 +101,7 @@ pub struct ControlPlaneState {
     pub brain_provider_label: String,
     pub audit_log: AuditLog,
     pub local_db: Arc<LocalDb>,
+    pub servicenet_client: Option<Arc<ServiceNetClient>>,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
 }

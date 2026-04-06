@@ -39,4 +39,24 @@ if [ -n "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT:-}" ]; then
   set -- "$@" --wattswarm-sync-grpc-endpoint "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT}"
 fi
 
+if [ -n "${WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT:-}" ]; then
+  set -- "$@" --agent-control-plane-endpoint "${WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT}"
+fi
+
+if [ -n "${WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL:-}" ]; then
+  set -- "$@" --agent-wattswarm-ui-base-url "${WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL}"
+fi
+
+if [ -n "${WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT:-}" ]; then
+  set -- "$@" --agent-wattswarm-sync-grpc-endpoint "${WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT}"
+fi
+
+if [ -n "${WATTETHERIA_AGENT_HOST_DATA_DIR:-}" ]; then
+  set -- "$@" --agent-host-data-dir "${WATTETHERIA_AGENT_HOST_DATA_DIR}"
+fi
+
+if [ -n "${WATTETHERIA_SERVICENET_BASE_URL:-}" ]; then
+  set -- "$@" --servicenet-base-url "${WATTETHERIA_SERVICENET_BASE_URL}"
+fi
+
 exec "$@"

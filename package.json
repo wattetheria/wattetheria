@@ -1,0 +1,32 @@
+{
+  "name": "wattetheria",
+  "version": "0.1.2",
+  "description": "Wattetheria deployment CLI",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "bin": "bin/wattetheria.js",
+  "files": [
+    "bin/",
+    "lib/",
+    "docker-compose.release.yml",
+    ".env.release.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "check": "node --check bin/wattetheria.js && node --check lib/cli.js"
+  },
+  "keywords": [
+    "wattetheria",
+    "wattswarm",
+    "docker",
+    "cli",
+    "deploy"
+  ]
+}

@@ -4,6 +4,7 @@ pub mod cli;
 mod recovery;
 mod runtime_loop;
 
+use agent_participation::AgentParticipationSurface;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -42,6 +43,7 @@ use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
+use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
 use wattetheria_kernel::wallet_identity::WalletSigner;
@@ -125,6 +127,12 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 
     let brain_config = resolve_brain_config(cli)?;
     let brain_engine = Arc::new(BrainEngine::from_config(&brain_config));
+    let servicenet_client = cli
+        .servicenet_base_url
+        .as_deref()
+        .map(ServiceNetClient::new)
+        .transpose()?
+        .map(Arc::new);
 
     let mut online_proof: OnlineProofManager = local_db.load_or_migrate(
         local_db::domain::ONLINE_PROOF,
@@ -144,13 +152,25 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         ledger_path.clone(),
         cli.wattswarm_ui_base_url.as_deref(),
     ));
+    let agent_surface = AgentParticipationSurface {
+        control_plane_endpoint: cli.agent_control_plane_endpoint.clone(),
+        wattswarm_ui_base_url: cli
+            .agent_wattswarm_ui_base_url
+            .clone()
+            .or_else(|| cli.wattswarm_ui_base_url.clone()),
+        wattswarm_sync_grpc_endpoint: cli
+            .agent_wattswarm_sync_grpc_endpoint
+            .clone()
+            .or_else(|| resolve_wattswarm_sync_grpc_endpoint(cli)),
+        host_data_dir: cli.agent_host_data_dir.clone(),
+    };
     agent_participation::write_agent_participation_artifacts(
         &cli.data_dir,
         &identity,
         &brain_config,
         &control_bind,
-        cli.wattswarm_ui_base_url.as_deref(),
-        resolve_wattswarm_sync_grpc_endpoint(cli).as_deref(),
+        cli.servicenet_base_url.as_deref(),
+        &agent_surface,
     )
     .context("write agent participation artifacts")?;
     let governance_engine: GovernanceEngine = local_db.load_or_migrate(
@@ -182,6 +202,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         brain_engine,
         audit_log,
         local_db,
+        servicenet_client,
         stream_tx,
     );
 
@@ -209,6 +230,7 @@ fn build_control_state(
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
     local_db: Arc<LocalDb>,
+    servicenet_client: Option<Arc<ServiceNetClient>>,
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
     ControlPlaneState {
@@ -239,6 +261,7 @@ fn build_control_state(
         brain_provider_label: brain_provider_label(brain_config),
         audit_log,
         local_db,
+        servicenet_client,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
     }

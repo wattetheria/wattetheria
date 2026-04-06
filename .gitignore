@@ -1,5 +1,9 @@
 target/
 /.wattetheria
+.env
+.env.release.local
 *.log
 .DS_Store
 CLAUDE.md
+.wattetheria-docker/
+.wattswarm-docker/

@@ -26,9 +26,15 @@ pub(crate) struct LocalConfig {
     #[serde(default)]
     pub(crate) wattswarm_sync_grpc_endpoint: Option<String>,
     #[serde(default)]
+    pub(crate) servicenet_base_url: Option<String>,
+    #[serde(default)]
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
+    #[serde(default = "default_observatory_port")]
+    pub(crate) observatory_port: u16,
+    #[serde(default)]
+    pub(crate) wattswarm_compose_dir: Option<String>,
 }
 
 fn default_control_bind() -> String {
@@ -43,6 +49,10 @@ fn default_autonomy_interval_sec() -> u64 {
     30
 }
 
+fn default_observatory_port() -> u16 {
+    8787
+}
+
 impl Default for LocalConfig {
     fn default() -> Self {
         let bind = default_control_bind();
@@ -53,8 +63,11 @@ impl Default for LocalConfig {
             brain_provider: BrainProviderConfig::Rules,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
+            servicenet_base_url: None,
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
+            observatory_port: default_observatory_port(),
+            wattswarm_compose_dir: None,
         }
     }
 }
@@ -113,40 +126,161 @@ pub(crate) async fn run_up(
     }
 
     let token = load_or_create_control_token(data_dir.join("control.token"))?;
+
+    // --- wattswarm (Docker) ---
+    let wattswarm_started = start_wattswarm_docker(&config);
+    if let Err(error) = &wattswarm_started {
+        eprintln!("wattswarm docker: {error:#}");
+    }
+
+    // --- kernel ---
     let mut command = kernel_command(data_dir, &config);
 
     if attach {
+        let obs_child = spawn_observatory(data_dir, &config).ok();
         let status = command.status().context("run kernel in attach mode")?;
+        if let Some(mut child) = obs_child {
+            let _ = child.kill();
+        }
         if !status.success() {
             bail!("kernel exited with status: {status}");
         }
         return Ok(());
     }
 
-    let log_file = OpenOptions::new()
+    let kernel_log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(data_dir.join("daemon.log"))
-        .context("open daemon log")?;
-    let log_file_err = log_file.try_clone().context("clone daemon log handle")?;
+        .context("open kernel daemon log")?;
+    let kernel_log_err = kernel_log.try_clone().context("clone kernel log handle")?;
 
-    let child = command
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_err))
+    let kernel_child = command
+        .stdout(Stdio::from(kernel_log))
+        .stderr(Stdio::from(kernel_log_err))
         .spawn()
         .context("spawn kernel daemon")?;
 
-    fs::write(data_dir.join("daemon.pid"), child.id().to_string()).context("write daemon pid")?;
+    fs::write(data_dir.join("daemon.pid"), kernel_child.id().to_string())
+        .context("write kernel daemon pid")?;
+
+    // --- observatory ---
+    let observatory_pid = match spawn_observatory(data_dir, &config) {
+        Ok(child) => {
+            let pid = child.id();
+            fs::write(data_dir.join("observatory.pid"), pid.to_string())
+                .context("write observatory pid")?;
+            Some(pid)
+        }
+        Err(error) => {
+            eprintln!("observatory: {error:#}");
+            None
+        }
+    };
 
     wait_for_control_plane(&config.control_plane_endpoint, &token, 300).await?;
 
     let response = serde_json::json!({
         "status": "ok",
-        "pid": child.id(),
+        "kernel_pid": kernel_child.id(),
+        "observatory_pid": observatory_pid,
+        "observatory_port": config.observatory_port,
+        "wattswarm_docker": wattswarm_started.is_ok(),
         "control_plane_endpoint": config.control_plane_endpoint,
         "log_file": data_dir.join("daemon.log"),
     });
     println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+fn spawn_observatory(data_dir: &Path, config: &LocalConfig) -> Result<std::process::Child> {
+    let mut command = observatory_command(config);
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data_dir.join("observatory.log"))
+        .context("open observatory log")?;
+    let log_file_err = log_file
+        .try_clone()
+        .context("clone observatory log handle")?;
+    command
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err))
+        .spawn()
+        .context("spawn observatory daemon")
+}
+
+fn observatory_command(config: &LocalConfig) -> Command {
+    if let Ok(bin) = std::env::var("WATTETHERIA_OBSERVATORY_BIN") {
+        let mut command = Command::new(bin);
+        command.env("PORT", config.observatory_port.to_string());
+        return command;
+    }
+    if let Some(bin) = discover_observatory_bin() {
+        let mut command = Command::new(bin);
+        command.env("PORT", config.observatory_port.to_string());
+        return command;
+    }
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .arg("-p")
+        .arg("wattetheria-observatory")
+        .arg("--");
+    command.env("PORT", config.observatory_port.to_string());
+    command
+}
+
+fn discover_observatory_bin() -> Option<PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let dir = current.parent()?;
+    let candidate = dir.join(format!(
+        "wattetheria-observatory{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
+}
+
+fn start_wattswarm_docker(config: &LocalConfig) -> Result<()> {
+    let compose_dir = config
+        .wattswarm_compose_dir
+        .as_deref()
+        .context("wattswarm_compose_dir not configured in config.json")?;
+    let dir = Path::new(compose_dir);
+    if !dir.join("docker-compose.yml").exists() {
+        bail!("docker-compose.yml not found in {}", dir.display());
+    }
+
+    let mut args = vec!["compose", "-f", "docker-compose.yml"];
+
+    // Include the wattetheria overlay to expose gRPC sync port.
+    let has_wattetheria_overlay = dir.join("docker-compose.wattetheria.yml").exists();
+    if has_wattetheria_overlay {
+        args.extend(["-f", "docker-compose.wattetheria.yml"]);
+
+        // Ensure watt-net Docker network exists.
+        let _ = Command::new("docker")
+            .args(["network", "create", "watt-net"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    args.extend(["up", "-d"]);
+
+    let status = Command::new("docker")
+        .args(&args)
+        .current_dir(dir)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("run docker compose for wattswarm")?;
+    if !status.success() {
+        bail!("docker compose up failed with status: {status}");
+    }
     Ok(())
 }
 
@@ -168,6 +302,9 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     }
     if let Some(endpoint) = &config.wattswarm_sync_grpc_endpoint {
         command.arg("--wattswarm-sync-grpc-endpoint").arg(endpoint);
+    }
+    if let Some(base_url) = &config.servicenet_base_url {
+        command.arg("--servicenet-base-url").arg(base_url);
     }
     match &config.brain_provider {
         BrainProviderConfig::Rules => {
@@ -340,6 +477,7 @@ mod tests {
         let mut command = Command::new("echo");
         let config = LocalConfig {
             autonomy_enabled: true,
+            servicenet_base_url: Some("http://127.0.0.1:8042".to_string()),
             ..LocalConfig::default()
         };
 
@@ -351,6 +489,11 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(args.contains(&"--autonomy-enabled".to_string()));
+        assert!(
+            args.windows(2).any(
+                |pair| pair[0] == "--servicenet-base-url" && pair[1] == "http://127.0.0.1:8042"
+            )
+        );
         assert!(
             args.windows(2)
                 .any(|pair| { pair[0] == "--autonomy-interval-sec" })

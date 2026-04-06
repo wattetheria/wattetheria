@@ -1,0 +1,190 @@
+# Full local development stack: wattetheria + wattswarm + postgres
+#
+# Usage:
+#   docker compose -f docker-compose.full.yml up -d --build
+#
+# Data:
+#   wattetheria state is bind-mounted to ./.wattetheria-docker/ on the host,
+#   so .agent-participation/manifest.json is directly accessible by tools
+#   like OpenClaw.
+
+services:
+  # --------------- wattetheria ---------------
+
+  kernel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wattetheria-kernel
+    restart: unless-stopped
+    depends_on:
+      wattswarm-kernel:
+        condition: service_started
+    environment:
+      WATTETHERIA_DATA_DIR: /var/lib/wattetheria
+      WATTETHERIA_CONTROL_PLANE_BIND: 0.0.0.0:7777
+      WATTETHERIA_WATTSWARM_UI_BASE_URL: http://wattswarm-kernel:7788
+      WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT: http://wattswarm-kernel:7791
+      WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT: ${WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT:-http://127.0.0.1:7777}
+      WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL: ${WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL:-http://127.0.0.1:7788}
+      WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT: ${WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT:-http://127.0.0.1:7791}
+      WATTETHERIA_AGENT_HOST_DATA_DIR: ${WATTETHERIA_AGENT_HOST_DATA_DIR:-./.wattetheria-docker}
+      WATTETHERIA_BRAIN_PROVIDER_KIND: ${WATTETHERIA_BRAIN_PROVIDER_KIND:-rules}
+      WATTETHERIA_BRAIN_BASE_URL: ${WATTETHERIA_BRAIN_BASE_URL:-}
+      WATTETHERIA_BRAIN_MODEL: ${WATTETHERIA_BRAIN_MODEL:-}
+      WATTETHERIA_BRAIN_API_KEY_ENV: ${WATTETHERIA_BRAIN_API_KEY_ENV:-}
+      WATTETHERIA_SERVICENET_BASE_URL: ${WATTETHERIA_SERVICENET_BASE_URL:-}
+      WATTETHERIA_AUTONOMY_ENABLED: ${WATTETHERIA_AUTONOMY_ENABLED:-false}
+      WATTETHERIA_AUTONOMY_INTERVAL_SEC: ${WATTETHERIA_AUTONOMY_INTERVAL_SEC:-30}
+      OPENCLAW_API_KEY: ${OPENCLAW_API_KEY:-}
+    volumes:
+      - ./.wattetheria-docker:/var/lib/wattetheria
+    ports:
+      - "${WATTETHERIA_CONTROL_PLANE_PORT:-7777}:7777"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - watt-internal
+    entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
+
+  observatory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wattetheria-observatory
+    restart: unless-stopped
+    depends_on:
+      - kernel
+    environment:
+      PORT: 8787
+    ports:
+      - "${WATTETHERIA_OBSERVATORY_PORT:-8780}:8787"
+    networks:
+      - watt-internal
+    entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
+
+  # --------------- wattswarm ---------------
+
+  wattswarm-postgres:
+    image: postgres:16
+    container_name: wattswarm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${WATTSWARM_PG_DB:-wattswarm}
+      POSTGRES_USER: ${WATTSWARM_PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${WATTSWARM_PG_PASSWORD:-postgres}
+    ports:
+      - "${WATTSWARM_PG_HOST_PORT:-55432}:5432"
+    volumes:
+      - wattswarm_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WATTSWARM_PG_USER:-postgres} -d ${WATTSWARM_PG_DB:-wattswarm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - watt-internal
+
+  wattswarm-runtime:
+    build:
+      context: ../wattswarm
+      dockerfile: Dockerfile
+    container_name: wattswarm-runtime
+    restart: unless-stopped
+    entrypoint: ["/app/target/release/wattswarm-runtime"]
+    command: ["--listen", "0.0.0.0:8787"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/health > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "${WATTSWARM_RUNTIME_PORT:-8787}:8787"
+    networks:
+      - watt-internal
+
+  wattswarm-kernel:
+    build:
+      context: ../wattswarm
+      dockerfile: Dockerfile
+    container_name: wattswarm-kernel
+    restart: unless-stopped
+    depends_on:
+      wattswarm-postgres:
+        condition: service_healthy
+      wattswarm-runtime:
+        condition: service_healthy
+    environment:
+      WATTSWARM_PG_URL: postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:-postgres}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}
+      WATTSWARM_STATE_DIR: /var/lib/wattswarm
+      WATTSWARM_STORE_NAME: wattswarm.state
+      WATTSWARM_UI_LISTEN: 0.0.0.0:7788
+      WATTSWARM_WATTETHERIA_SYNC_GRPC_LISTEN: "0.0.0.0:7791"
+      WATTSWARM_P2P_ENABLED: ${WATTSWARM_P2P_ENABLED:-true}
+      WATTSWARM_P2P_MDNS: ${WATTSWARM_P2P_MDNS:-true}
+      WATTSWARM_P2P_PORT: ${WATTSWARM_P2P_PORT:-4001}
+      WATTSWARM_BOOTSTRAP_EXECUTOR_NAME: rt
+      WATTSWARM_BOOTSTRAP_EXECUTOR_URL: http://wattswarm-runtime:8787
+      WATTSWARM_UDP_ANNOUNCE_ENABLED: ${WATTSWARM_UDP_ANNOUNCE_ENABLED:-false}
+      WATTSWARM_UDP_ANNOUNCE_MODE: ${WATTSWARM_UDP_ANNOUNCE_MODE:-multicast}
+      WATTSWARM_UDP_ANNOUNCE_ADDR: ${WATTSWARM_UDP_ANNOUNCE_ADDR:-239.255.42.99}
+      WATTSWARM_UDP_ANNOUNCE_PORT: ${WATTSWARM_UDP_ANNOUNCE_PORT:-37931}
+    volumes:
+      - ./.wattswarm-docker:/var/lib/wattswarm
+    ports:
+      - "${WATTSWARM_UI_PORT:-7788}:7788"
+      - "${WATTSWARM_SYNC_GRPC_PORT:-7791}:7791"
+      - "${WATTSWARM_P2P_HOST_PORT:-4001}:${WATTSWARM_P2P_PORT:-4001}"
+      - "${WATTSWARM_UDP_ANNOUNCE_HOST_PORT:-37931}:${WATTSWARM_UDP_ANNOUNCE_PORT:-37931}/udp"
+    networks:
+      - watt-internal
+    entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
+
+  wattswarm-worker:
+    build:
+      context: ../wattswarm
+      dockerfile: Dockerfile
+    container_name: wattswarm-worker
+    restart: unless-stopped
+    depends_on:
+      wattswarm-postgres:
+        condition: service_healthy
+      wattswarm-runtime:
+        condition: service_healthy
+      wattswarm-kernel:
+        condition: service_started
+    environment:
+      WATTSWARM_PG_URL: postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:-postgres}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}
+      WATTSWARM_STATE_DIR: /var/lib/wattswarm
+      WATTSWARM_STORE_NAME: wattswarm.state
+      WATTSWARM_WORKER_CONCURRENCY: ${WATTSWARM_WORKER_CONCURRENCY:-16}
+      WATTSWARM_WORKER_POLL_MS: ${WATTSWARM_WORKER_POLL_MS:-250}
+      WATTSWARM_WORKER_LEASE_MS: ${WATTSWARM_WORKER_LEASE_MS:-30000}
+    volumes:
+      - ./.wattswarm-docker:/var/lib/wattswarm
+    networks:
+      - watt-internal
+    entrypoint: ["/app/target/release/wattswarm"]
+    command:
+      - --state-dir
+      - /var/lib/wattswarm
+      - --store
+      - wattswarm.state
+      - run
+      - --pg-url
+      - postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:-postgres}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}
+      - worker
+      - --concurrency
+      - "${WATTSWARM_WORKER_CONCURRENCY:-16}"
+      - --poll-ms
+      - "${WATTSWARM_WORKER_POLL_MS:-250}"
+      - --lease-ms
+      - "${WATTSWARM_WORKER_LEASE_MS:-30000}"
+
+volumes:
+  wattswarm_pg_data:
+
+networks:
+  watt-internal:
+    driver: bridge

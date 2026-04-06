@@ -18,6 +18,7 @@ pub mod routes {
     pub(crate) mod network;
     pub(crate) mod organizations;
     pub(crate) mod policy;
+    pub(crate) mod servicenet;
     pub(crate) mod supervision;
     pub(crate) mod topics;
 }
@@ -49,6 +50,7 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(governance_router())
         .merge(mailbox_router())
         .merge(policy_router())
+        .merge(servicenet_router())
         .with_state(state)
 }
 
@@ -203,6 +205,26 @@ fn core_router() -> Router<ControlPlaneState> {
         .route("/v1/autonomy/tick", post(routes::core::autonomy_tick))
         .route("/v1/audit", get(routes::core::audit_recent))
         .route("/v1/stream", get(routes::core::stream))
+}
+
+fn servicenet_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/servicenet/agents",
+            get(routes::servicenet::list_agents),
+        )
+        .route(
+            "/v1/servicenet/agents/{agent_id}",
+            get(routes::servicenet::get_agent),
+        )
+        .route(
+            "/v1/servicenet/agents/{agent_id}/invoke",
+            post(routes::servicenet::invoke_agent),
+        )
+        .route(
+            "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
+            post(routes::servicenet::get_agent_task),
+        )
 }
 
 fn map_router() -> Router<ControlPlaneState> {
@@ -451,8 +473,10 @@ pub async fn serve_control_plane(state: ControlPlaneState, bind: SocketAddr) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Json;
+    use axum::extract::Path;
     use axum::http::StatusCode;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
     use chrono::Utc;
     use http_body_util::BodyExt;
     use serde_json::{Value, json};
@@ -482,6 +506,7 @@ mod tests {
     use wattetheria_kernel::mailbox::CrossSubnetMailbox;
     use wattetheria_kernel::map::registry::GalaxyMapRegistry;
     use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
+    use wattetheria_kernel::servicenet::ServiceNetClient;
     use wattetheria_kernel::signing::verify_payload;
     use wattetheria_kernel::swarm_bridge::{
         LegacyTaskEngineBridge, SwarmAgentView, SwarmBridge, SwarmNetworkStatusView, SwarmPeerView,
@@ -692,6 +717,7 @@ mod tests {
             brain_provider_label: "rules".to_string(),
             audit_log,
             local_db,
+            servicenet_client: None,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
         };
@@ -764,6 +790,96 @@ mod tests {
                 .unwrap(),
         )
         .await
+    }
+
+    async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let app =
+            Router::new()
+                .route(
+                    "/v1/agents",
+                    get(|| async move {
+                        Json(json!({
+                            "items": [
+                                {
+                                    "agent_id": "agent-alpha",
+                                    "provider_id": "provider-one",
+                                    "status": "approved",
+                                    "agent_card": {"name": "Agent Alpha"},
+                                    "deployment": {"endpoint": {"url": "https://example.com/a2a"}},
+                                    "review": {"risk_level": "low"},
+                                },
+                                {
+                                    "agent_id": "agent-beta",
+                                    "provider_id": "provider-two",
+                                    "status": "approved",
+                                    "agent_card": {"name": "Agent Beta"},
+                                    "deployment": {"endpoint": {"url": "https://example.net/a2a"}},
+                                    "review": {"risk_level": "medium"},
+                                }
+                            ]
+                        }))
+                    }),
+                )
+                .route(
+                    "/v1/agents/{agent_id}",
+                    get(|Path(agent_id): Path<String>| async move {
+                        Json(json!({
+                            "agent_id": agent_id,
+                            "provider_id": "provider-one",
+                            "status": "approved",
+                            "agent_card": {"name": "Agent Alpha"},
+                            "deployment": {"endpoint": {"url": "https://example.com/a2a"}},
+                            "review": {"risk_level": "low"},
+                        }))
+                    }),
+                )
+                .route(
+                    "/v1/agents/{agent_id}/invoke",
+                    post(
+                        |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                            Json(json!({
+                                "agent_id": agent_id,
+                                "status": "completed",
+                                "receipt_id": "00000000-0000-0000-0000-000000000001",
+                                "task_id": "task-42",
+                                "context_id": "ctx-1",
+                                "message": "ok",
+                                "output": {
+                                    "echo": body["message"].clone(),
+                                },
+                                "raw": {
+                                    "kind": "invoke",
+                                },
+                            }))
+                        },
+                    ),
+                )
+                .route(
+                    "/v1/agents/{agent_id}/tasks/{task_id}/get",
+                    post(
+                        |Path((agent_id, task_id)): Path<(String, String)>,
+                         Json(body): Json<Value>| async move {
+                            Json(json!({
+                                "agent_id": agent_id,
+                                "status": "completed",
+                                "task_id": task_id,
+                                "output": {
+                                    "history_length": body["history_length"].clone(),
+                                    "result": "done",
+                                },
+                                "raw": {
+                                    "kind": "task",
+                                },
+                            }))
+                        },
+                    ),
+                );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (addr, handle)
     }
 
     /// Build a fingerprinted `public_id` from a human slug and an agent's `did:key`.
@@ -3232,6 +3348,63 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
+        let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+        let (_dir, _router, token, _, state) = build_test_app(20);
+        let state = ControlPlaneState {
+            servicenet_client: Some(Arc::new(
+                ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+            )),
+            ..state
+        };
+        let app = app(state);
+
+        let list_json = authed_get_json(app.clone(), &token, "/v1/servicenet/agents").await;
+        assert_eq!(list_json["count"].as_u64(), Some(2));
+        assert_eq!(
+            list_json["items"][0]["agent_id"].as_str(),
+            Some("agent-alpha")
+        );
+
+        let agent_json =
+            authed_get_json(app.clone(), &token, "/v1/servicenet/agents/agent-alpha").await;
+        assert_eq!(agent_json["provider_id"].as_str(), Some("provider-one"));
+
+        let invoke_json = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/servicenet/agents/agent-alpha/invoke",
+            json!({
+                "message": "hello servicenet",
+                "input": {"amount": 7},
+            }),
+        )
+        .await;
+        assert_eq!(invoke_json["status"].as_str(), Some("completed"));
+        assert_eq!(
+            invoke_json["output"]["echo"].as_str(),
+            Some("hello servicenet")
+        );
+        assert_eq!(invoke_json["task_id"].as_str(), Some("task-42"));
+
+        let task_json = authed_post_json(
+            app,
+            &token,
+            "/v1/servicenet/agents/agent-alpha/tasks/task-42/get",
+            json!({
+                "history_length": 5
+            }),
+        )
+        .await;
+        assert_eq!(task_json["status"].as_str(), Some("completed"));
+        assert_eq!(task_json["task_id"].as_str(), Some("task-42"));
+        assert_eq!(task_json["output"]["result"].as_str(), Some("done"));
+        assert_eq!(task_json["output"]["history_length"].as_u64(), Some(5));
+
+        servicenet_server.abort();
     }
 
     #[tokio::test]

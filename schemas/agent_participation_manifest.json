@@ -72,7 +72,11 @@
         "upsert_friend",
         "send_message",
         "fetch_messages",
-        "ack_message"
+        "ack_message",
+        "list_servicenet_agents",
+        "get_servicenet_agent",
+        "invoke_servicenet_agent",
+        "get_servicenet_agent_task"
       ],
       "properties": {
         "list_topics": {"$ref": "#/$defs/endpoint"},
@@ -89,7 +93,11 @@
         "upsert_friend": {"$ref": "#/$defs/endpoint"},
         "send_message": {"$ref": "#/$defs/endpoint"},
         "fetch_messages": {"$ref": "#/$defs/endpoint"},
-        "ack_message": {"$ref": "#/$defs/endpoint"}
+        "ack_message": {"$ref": "#/$defs/endpoint"},
+        "list_servicenet_agents": {"$ref": "#/$defs/endpoint"},
+        "get_servicenet_agent": {"$ref": "#/$defs/endpoint"},
+        "invoke_servicenet_agent": {"$ref": "#/$defs/endpoint"},
+        "get_servicenet_agent_task": {"$ref": "#/$defs/endpoint"}
       },
       "additionalProperties": false
     }

@@ -11,6 +11,14 @@ const ARTIFACT_DIR: &str = ".agent-participation";
 const MANIFEST_FILE: &str = "manifest.json";
 const README_FILE: &str = "README.md";
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentParticipationSurface {
+    pub control_plane_endpoint: Option<String>,
+    pub wattswarm_ui_base_url: Option<String>,
+    pub wattswarm_sync_grpc_endpoint: Option<String>,
+    pub host_data_dir: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct AgentParticipationManifest {
     version: String,
@@ -74,6 +82,11 @@ struct EndpointSurface {
     send_message: EndpointDescriptor,
     fetch_messages: EndpointDescriptor,
     ack_message: EndpointDescriptor,
+    // Servicenet
+    list_servicenet_agents: EndpointDescriptor,
+    get_servicenet_agent: EndpointDescriptor,
+    invoke_servicenet_agent: EndpointDescriptor,
+    get_servicenet_agent_task: EndpointDescriptor,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,8 +102,8 @@ pub(crate) fn write_agent_participation_artifacts(
     identity: &IdentityCompatView,
     brain_provider: &BrainProviderConfig,
     control_bind: &SocketAddr,
-    wattswarm_ui_base_url: Option<&str>,
-    wattswarm_sync_grpc_endpoint: Option<&str>,
+    servicenet_base_url: Option<&str>,
+    agent_surface: &AgentParticipationSurface,
 ) -> Result<()> {
     let artifact_dir = data_dir.join(ARTIFACT_DIR);
     fs::create_dir_all(&artifact_dir).context("create agent participation directory")?;
@@ -100,8 +113,8 @@ pub(crate) fn write_agent_participation_artifacts(
         identity,
         brain_provider,
         control_bind,
-        wattswarm_ui_base_url,
-        wattswarm_sync_grpc_endpoint,
+        servicenet_base_url,
+        agent_surface,
     );
     fs::write(
         artifact_dir.join(MANIFEST_FILE),
@@ -118,25 +131,32 @@ fn build_manifest(
     identity: &IdentityCompatView,
     brain_provider: &BrainProviderConfig,
     control_bind: &SocketAddr,
-    wattswarm_ui_base_url: Option<&str>,
-    wattswarm_sync_grpc_endpoint: Option<&str>,
+    servicenet_base_url: Option<&str>,
+    agent_surface: &AgentParticipationSurface,
 ) -> AgentParticipationManifest {
-    let control_plane_endpoint = preferred_control_plane_endpoint(control_bind);
-    let topic_bridge_enabled = wattswarm_ui_base_url.is_some_and(|value| !value.trim().is_empty());
-    let token_file = data_dir.join("control.token");
+    let control_plane_endpoint = trim_optional(agent_surface.control_plane_endpoint.as_deref())
+        .unwrap_or_else(|| preferred_control_plane_endpoint(control_bind));
+    let agent_data_dir = trim_optional(agent_surface.host_data_dir.as_deref())
+        .unwrap_or_else(|| data_dir.display().to_string());
+    let token_file = Path::new(&agent_data_dir).join("control.token");
+    let wattswarm_ui_base_url = trim_optional(agent_surface.wattswarm_ui_base_url.as_deref());
+    let wattswarm_sync_grpc_endpoint =
+        trim_optional(agent_surface.wattswarm_sync_grpc_endpoint.as_deref());
+    let topic_bridge_enabled = wattswarm_ui_base_url.is_some();
+    let servicenet_enabled = servicenet_base_url.is_some_and(|value| !value.trim().is_empty());
 
     AgentParticipationManifest {
         version: "v1".to_owned(),
         generated_at: Utc::now().to_rfc3339(),
         node: NodeSurface {
             agent_did: identity.agent_did.clone(),
-            data_dir: data_dir.display().to_string(),
+            data_dir: agent_data_dir,
         },
         network: NetworkSurface {
             control_plane_bind: control_bind.to_string(),
             control_plane_endpoint: control_plane_endpoint.clone(),
-            wattswarm_ui_base_url: trim_optional(wattswarm_ui_base_url),
-            wattswarm_sync_grpc_endpoint: trim_optional(wattswarm_sync_grpc_endpoint),
+            wattswarm_ui_base_url,
+            wattswarm_sync_grpc_endpoint,
             topic_bridge_enabled,
         },
         auth: AuthSurface {
@@ -146,7 +166,11 @@ fn build_manifest(
             token_file: token_file.display().to_string(),
         },
         brain_provider: BrainProviderSurface::from_config(brain_provider),
-        endpoints: EndpointSurface::new(&control_plane_endpoint, topic_bridge_enabled),
+        endpoints: EndpointSurface::new(
+            &control_plane_endpoint,
+            topic_bridge_enabled,
+            servicenet_enabled,
+        ),
     }
 }
 
@@ -199,7 +223,7 @@ impl BrainProviderSurface {
 }
 
 impl EndpointSurface {
-    fn new(base_url: &str, topic_bridge_enabled: bool) -> Self {
+    fn new(base_url: &str, topic_bridge_enabled: bool, servicenet_enabled: bool) -> Self {
         Self {
             // Topics
             list_topics: EndpointDescriptor::new("GET", "/v1/civilization/topics", base_url, true),
@@ -255,6 +279,31 @@ impl EndpointSurface {
             send_message: EndpointDescriptor::new("POST", "/v1/mailbox/messages", base_url, true),
             fetch_messages: EndpointDescriptor::new("GET", "/v1/mailbox/messages", base_url, true),
             ack_message: EndpointDescriptor::new("POST", "/v1/mailbox/ack", base_url, true),
+            // Servicenet
+            list_servicenet_agents: EndpointDescriptor::new(
+                "GET",
+                "/v1/servicenet/agents",
+                base_url,
+                servicenet_enabled,
+            ),
+            get_servicenet_agent: EndpointDescriptor::new(
+                "GET",
+                "/v1/servicenet/agents/{agent_id}",
+                base_url,
+                servicenet_enabled,
+            ),
+            invoke_servicenet_agent: EndpointDescriptor::new(
+                "POST",
+                "/v1/servicenet/agents/{agent_id}/invoke",
+                base_url,
+                servicenet_enabled,
+            ),
+            get_servicenet_agent_task: EndpointDescriptor::new(
+                "POST",
+                "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
+                base_url,
+                servicenet_enabled,
+            ),
         }
     }
 }
@@ -315,7 +364,13 @@ If the topic bridge is disabled, topic read/write calls will not succeed until `
 ### Mailbox\n\n\
 - `POST {send_message}` — send a direct message\n\
 - `GET {fetch_messages}` — fetch received messages\n\
-- `POST {ack_message}` — acknowledge a message\n",
+- `POST {ack_message}` — acknowledge a message\n\n\
+### Servicenet (External Agent Discovery & Invocation)\n\n\
+- `GET {list_servicenet_agents}` — discover registered external agents\n\
+- `GET {get_servicenet_agent}` — get agent details\n\
+- `POST {invoke_servicenet_agent}` — invoke an external agent\n\
+- `POST {get_servicenet_agent_task}` — get task result from an external agent\n\n\
+If servicenet is not configured, these endpoints will not be available.\n",
         agent_did = manifest.node.agent_did,
         data_dir = manifest.node.data_dir,
         control_bind = manifest.network.control_plane_bind,
@@ -365,12 +420,16 @@ If the topic bridge is disabled, topic read/write calls will not succeed until `
         send_message = manifest.endpoints.send_message.url,
         fetch_messages = manifest.endpoints.fetch_messages.url,
         ack_message = manifest.endpoints.ack_message.url,
+        list_servicenet_agents = manifest.endpoints.list_servicenet_agents.url,
+        get_servicenet_agent = manifest.endpoints.get_servicenet_agent.url,
+        invoke_servicenet_agent = manifest.endpoints.invoke_servicenet_agent.url,
+        get_servicenet_agent_task = manifest.endpoints.get_servicenet_agent_task.url,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::write_agent_participation_artifacts;
+    use super::{AgentParticipationSurface, write_agent_participation_artifacts};
     use serde_json::Value;
     use std::net::{Ipv4Addr, SocketAddr};
     use tempfile::tempdir;
@@ -395,8 +454,13 @@ mod tests {
                 api_key_env: Some("OPENCLAW_API_KEY".to_owned()),
             },
             &bind,
-            Some("http://127.0.0.1:7788"),
-            Some("http://127.0.0.1:7791"),
+            Some("http://127.0.0.1:8042"),
+            &AgentParticipationSurface {
+                control_plane_endpoint: Some("http://127.0.0.1:7777".to_owned()),
+                wattswarm_ui_base_url: Some("http://127.0.0.1:7788".to_owned()),
+                wattswarm_sync_grpc_endpoint: Some("http://127.0.0.1:7791".to_owned()),
+                host_data_dir: Some("./data/wattetheria".to_owned()),
+            },
         )
         .unwrap();
 
@@ -410,6 +474,14 @@ mod tests {
         assert_eq!(
             manifest["network"]["control_plane_endpoint"].as_str(),
             Some("http://127.0.0.1:7777")
+        );
+        assert_eq!(
+            manifest["node"]["data_dir"].as_str(),
+            Some("./data/wattetheria")
+        );
+        assert_eq!(
+            manifest["auth"]["token_file"].as_str(),
+            Some("./data/wattetheria/control.token")
         );
         assert_eq!(
             manifest["brain_provider"]["base_url"].as_str(),
@@ -442,6 +514,18 @@ mod tests {
         assert_eq!(
             manifest["endpoints"]["ack_message"]["url"].as_str(),
             Some("http://127.0.0.1:7777/v1/mailbox/ack")
+        );
+        assert_eq!(
+            manifest["endpoints"]["list_servicenet_agents"]["url"].as_str(),
+            Some("http://127.0.0.1:7777/v1/servicenet/agents")
+        );
+        assert_eq!(
+            manifest["endpoints"]["list_servicenet_agents"]["available"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            manifest["endpoints"]["invoke_servicenet_agent"]["url"].as_str(),
+            Some("http://127.0.0.1:7777/v1/servicenet/agents/{agent_id}/invoke")
         );
         assert!(dir.path().join(".agent-participation/README.md").exists());
     }

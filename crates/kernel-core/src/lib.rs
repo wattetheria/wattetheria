@@ -6,6 +6,7 @@ pub mod game;
 pub mod governance;
 pub mod map;
 pub mod security;
+pub mod servicenet;
 pub mod storage;
 pub mod swarm_bridge;
 pub mod swarm_sync;

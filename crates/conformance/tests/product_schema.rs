@@ -147,6 +147,30 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
                 "path": "/v1/mailbox/ack",
                 "url": "http://127.0.0.1:7777/v1/mailbox/ack",
                 "available": true
+            },
+            "list_servicenet_agents": {
+                "method": "GET",
+                "path": "/v1/servicenet/agents",
+                "url": "http://127.0.0.1:7777/v1/servicenet/agents",
+                "available": true
+            },
+            "get_servicenet_agent": {
+                "method": "GET",
+                "path": "/v1/servicenet/agents/{agent_id}",
+                "url": "http://127.0.0.1:7777/v1/servicenet/agents/{agent_id}",
+                "available": true
+            },
+            "invoke_servicenet_agent": {
+                "method": "POST",
+                "path": "/v1/servicenet/agents/{agent_id}/invoke",
+                "url": "http://127.0.0.1:7777/v1/servicenet/agents/{agent_id}/invoke",
+                "available": true
+            },
+            "get_servicenet_agent_task": {
+                "method": "POST",
+                "path": "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
+                "url": "http://127.0.0.1:7777/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
+                "available": true
             }
         }
     });

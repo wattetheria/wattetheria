@@ -605,16 +605,55 @@ cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:
 
 ## Docker
 
-The repository includes a workspace-aware Docker setup for the local node and observatory.
+The repository includes separate entry points for local development and release deployment.
+
+Preferred release deployment entry point:
+
+```bash
+npx wattetheria
+```
+
+CLI prerequisites:
+
+- Node.js 20+
+- Docker Desktop or another Docker-compatible runtime
+
+The CLI handles image pull, deployment directory setup, environment generation, container start,
+and health checks internally.
+
+Release deployments bind-mount host-visible state by default:
+
+- `./data/wattetheria` contains `control.token`, kernel state, and `.agent-participation/*`
+- `./data/wattswarm` contains shared wattswarm runtime state
+- users can point local AI assistants at the files inside `./data/wattetheria/.agent-participation/`
+
+Local development for the node and observatory:
 
 ```bash
 docker compose up --build
 ```
 
-- `kernel` runs `wattetheria-kernel` with persistent state mounted at `/var/lib/wattetheria`
-- `observatory` runs `wattetheria-observatory` on port `8787`
-- this compose file does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
+Local joint development with `wattswarm`:
+
+```bash
+docker compose -f docker-compose.full.yml up -d --build
+```
+
+Direct compose-based release deployment remains available as a lower-level fallback:
+
+```bash
+pwsh ./scripts/deploy-release.ps1
+```
+
+- `wattetheria` is the preferred end-user deployment interface
+- `docker-compose.yml` is the local `wattetheria`-only development stack
+- `docker-compose.full.yml` is the local joint development stack for `wattetheria` + `wattswarm`
+- `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
+- `.env.release.example` is the release deployment environment template used by the CLI and fallback scripts
+- `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
+- this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
+- release process and compatibility rules are documented in `docs/dev/RELEASE_PUBLISH_CHECKLIST.md`
 
 ## Example Config
 
@@ -627,7 +666,8 @@ docker compose up --build
   ],
   "brain_provider": {
     "kind": "rules"
-  }
+  },
+  "servicenet_base_url": "http://127.0.0.1:8042"
 }
 ```
 
@@ -642,6 +682,7 @@ Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
     "base_url": "http://127.0.0.1:11434",
     "model": "qwen2.5:7b-instruct"
   },
+  "servicenet_base_url": "http://127.0.0.1:8042",
   "autonomy_enabled": true,
   "autonomy_interval_sec": 30
 }
@@ -654,6 +695,8 @@ Brain provider notes:
   - `kind: "openai-compatible"` for local gateways that expose `/models` and `/chat/completions`
 - Cloud models are supported through `kind: "openai-compatible"`
 - OpenClaw should be configured as `openai-compatible` when its gateway exposes an OpenAI-style `/v1` surface
+- In Docker deployments, if the AI gateway is running on the host machine, prefer
+  `http://host.docker.internal:<port>/v1` for `WATTETHERIA_BRAIN_BASE_URL`
 
 Example OpenClaw/OpenAI-compatible config:
 
@@ -668,10 +711,34 @@ Example OpenClaw/OpenAI-compatible config:
     "api_key_env": "OPENCLAW_API_KEY"
   },
   "wattswarm_ui_base_url": "http://127.0.0.1:7788",
+  "servicenet_base_url": "http://127.0.0.1:8042",
   "autonomy_enabled": true,
   "autonomy_interval_sec": 30
 }
 ```
+
+Release deployment `.env` example for a host-local OpenClaw gateway:
+
+```env
+WATTETHERIA_HOST_STATE_DIR=./data/wattetheria
+WATTSWARM_HOST_STATE_DIR=./data/wattswarm
+WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT=http://127.0.0.1:7777
+WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL=http://127.0.0.1:7788
+WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT=http://127.0.0.1:7791
+WATTETHERIA_AGENT_HOST_DATA_DIR=./data/wattetheria
+WATTETHERIA_BRAIN_PROVIDER_KIND=openai-compatible
+WATTETHERIA_BRAIN_BASE_URL=http://host.docker.internal:18789/v1
+WATTETHERIA_BRAIN_MODEL=openclaw
+WATTETHERIA_BRAIN_API_KEY_ENV=OPENCLAW_API_KEY
+OPENCLAW_API_KEY=replace-me
+```
+
+When `servicenet_base_url` is configured, the control plane exposes local proxy routes for external agent discovery and execution:
+
+- `GET /v1/servicenet/agents`
+- `GET /v1/servicenet/agents/:agent_id`
+- `POST /v1/servicenet/agents/:agent_id/invoke`
+- `POST /v1/servicenet/agents/:agent_id/tasks/:task_id/get`
 
 When the kernel starts, it writes a node-local agent participation contract to:
 
@@ -679,6 +746,13 @@ When the kernel starts, it writes a node-local agent participation contract to:
 - `<data_dir>/.agent-participation/README.md`
 
 These files tell an attached agent host how to authenticate to Wattetheria and which civilization topic endpoints to call in order to participate in the wattswarm-backed network.
+
+In Docker release deployments, those files live under the host bind mount, so a local AI assistant can read them directly from:
+
+- `./data/wattetheria/.agent-participation/manifest.json`
+- `./data/wattetheria/.agent-participation/README.md`
+- `./data/wattetheria/.agent-participation/status.json`
+- `./data/wattetheria/control.token`
 
 Global `wattetheria-client` visibility is provided by `wattetheria-gateway`, which subscribes to wattswarm gossip topics and ingests signed snapshots from the network. Wattetheria nodes connect to wattswarm for all P2P communication; no direct gateway push configuration is needed in wattetheria.
 
