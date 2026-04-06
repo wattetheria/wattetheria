@@ -92,14 +92,63 @@ async fn network_projection_session(state: ControlPlaneState, grpc_endpoint: &st
         .await
         .context("open wattswarm network projection stream")?
         .into_inner();
+    let mut controller_node_id_synced = false;
     while let Some(frame) = stream
         .message()
         .await
         .context("read wattswarm network projection frame")?
     {
+        if !controller_node_id_synced && let Some(node_id) = extract_wattswarm_node_id(&frame) {
+            sync_controller_node_id(&state, &node_id).await;
+            controller_node_id_synced = true;
+        }
         emit_projection_frame(&state, "wattswarm.sync.network_projection", &frame).await;
     }
     Ok(())
+}
+
+fn extract_wattswarm_node_id(frame: &ProjectionFrame) -> Option<String> {
+    let payload: Value = serde_json::from_str(&frame.json_payload).ok()?;
+    let node_id = payload.get("node_id")?.as_str()?;
+    if node_id.is_empty() {
+        return None;
+    }
+    Some(node_id.to_owned())
+}
+
+async fn sync_controller_node_id(state: &ControlPlaneState, wattswarm_node_id: &str) {
+    let public_id = {
+        let registry = state.public_identity_registry.lock().await;
+        match registry.active_for_agent_did(&state.agent_did) {
+            Some(identity) => identity.public_id,
+            None => return,
+        }
+    };
+    let mut registry = state.controller_binding_registry.lock().await;
+    if let Some(binding) = registry.get(&public_id)
+        && binding.controller_node_id.as_deref() == Some(wattswarm_node_id)
+    {
+        return;
+    }
+    registry.upsert(
+        &public_id,
+        wattetheria_kernel::civilization::identities::ControllerKind::LocalWattswarm,
+        "local-default".to_string(),
+        Some(wattswarm_node_id.to_string()),
+        wattetheria_kernel::civilization::identities::OwnershipScope::Local,
+        true,
+    );
+    if let Err(error) = state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY,
+        &*registry,
+    ) {
+        warn!("persist controller binding after wattswarm node_id sync: {error:#}");
+    }
+    debug!(
+        public_id = %public_id,
+        wattswarm_node_id = %wattswarm_node_id,
+        "synced controller_node_id from wattswarm network projection"
+    );
 }
 
 async fn run_task_run_projection_stream(state: ControlPlaneState, grpc_endpoint: String) {

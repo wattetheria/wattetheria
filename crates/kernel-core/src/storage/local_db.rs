@@ -13,7 +13,7 @@ use rusqlite::{Connection, Error::QueryReturnedNoRows, params};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub mod domain {
     pub const GOVERNANCE: &str = "governance";
@@ -93,10 +93,18 @@ impl LocalDb {
             "CREATE TABLE IF NOT EXISTS domain_state (
                 domain TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at TEXT NOT NULL
             );",
         )
         .context("create domain_state table")?;
+
+        // v1 → v2: convert integer timestamps to UTC strings.
+        if current == Some(1) {
+            conn.execute_batch(
+                "UPDATE domain_state SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', updated_at, 'unixepoch') WHERE typeof(updated_at) = 'integer';",
+            )
+            .context("migrate updated_at to UTC string")?;
+        }
 
         if current.is_none() {
             conn.execute(
@@ -139,7 +147,7 @@ impl LocalDb {
         max_age_sec: i64,
     ) -> Result<Option<T>> {
         let conn = self.conn();
-        let row: (String, i64) = match conn.query_row(
+        let row: (String, String) = match conn.query_row(
             "SELECT payload, updated_at FROM domain_state WHERE domain = ?1",
             params![domain],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -150,7 +158,11 @@ impl LocalDb {
                 return Err(error).with_context(|| format!("query domain state: {domain}"));
             }
         };
-        let age = chrono::Utc::now().timestamp() - row.1;
+        let updated = chrono::NaiveDateTime::parse_from_str(&row.1, "%Y-%m-%dT%H:%M:%SZ")
+            .with_context(|| format!("parse updated_at for {domain}"))?
+            .and_utc()
+            .timestamp();
+        let age = chrono::Utc::now().timestamp() - updated;
         if age > max_age_sec {
             return Ok(None);
         }
@@ -169,7 +181,7 @@ impl LocalDb {
     pub fn save_domain<T: serde::Serialize>(&self, domain: &str, value: &T) -> Result<()> {
         let json = serde_json::to_string(value)
             .with_context(|| format!("serialize domain state: {domain}"))?;
-        let now = chrono::Utc::now().timestamp();
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
         self.conn()
             .execute(
                 "INSERT INTO domain_state (domain, payload, updated_at)
