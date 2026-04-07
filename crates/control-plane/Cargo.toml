@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
 prost = "0.13"
@@ -22,6 +23,7 @@ tonic = { version = "0.12", features = ["transport"] }
 tracing.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
+wattetheria-social = { path = "../social" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 
 [build-dependencies]

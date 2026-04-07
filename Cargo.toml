@@ -8,6 +8,7 @@ members = [
     "crates/kernel-core",
     "crates/node-core",
     "crates/observatory-core",
+    "crates/social",
 ]
 resolver = "2"
 

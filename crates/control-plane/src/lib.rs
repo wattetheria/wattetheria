@@ -1,6 +1,7 @@
 mod agent_attach;
 mod auth;
 mod autonomy;
+pub mod social_host;
 mod swarm_sync;
 pub mod routes {
     pub(crate) mod civilization;
@@ -531,7 +532,15 @@ mod tests {
         SwarmTopicCursorView, SwarmTopicMessageView,
     };
     use wattetheria_kernel::types::AgentStats;
+    use wattetheria_social::application::{
+        block_service, friend_request_service, friendship_service, message_service,
+        receipt_service, thread_service,
+    };
+    use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
+    use wattetheria_social::ports::transport_port::TransportPort;
     use wattswarm_protocol::types::{EventPayload, TaskContract};
+
+    use crate::social_host::{WattetheriaLocalIdentityProvider, WattetheriaTransportAdapter};
 
     #[allow(clippy::too_many_lines)]
     fn build_test_app(
@@ -592,6 +601,8 @@ mod tests {
         let local_db = Arc::new(
             wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"),
         );
+        let social_store =
+            Arc::new(wattetheria_social::SocialStore::open_in_memory().expect("test social store"));
 
         let policy_engine = Arc::new(Mutex::new(PolicyEngine::new(
             "test-session",
@@ -735,6 +746,7 @@ mod tests {
             brain_provider_label: "rules".to_string(),
             audit_log,
             local_db,
+            social_store,
             servicenet_client: None,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
@@ -3308,8 +3320,23 @@ mod tests {
         );
         drop(relationship_commands);
 
+        friendship_service::upsert_friendship(
+            &*state.social_store,
+            &wattetheria_social::domain::friendships::Friendship {
+                friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+                local_public_id: local_public_id.clone(),
+                remote_public_id: remote_public_id.clone(),
+                state: wattetheria_social::domain::friendships::FriendshipState::Active,
+                established_from_request_id: None,
+                thread_id: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .expect("seed active friendship for dm policy");
+
         let dm_response = authed_post_json(
-            app,
+            app.clone(),
             &token,
             "/v1/civilization/agent-dm/messages",
             json!({
@@ -3336,6 +3363,585 @@ mod tests {
             Some("social.dm.send")
         );
         assert_envelope_signature_valid(&dm_command.agent_envelope, &state.identity.public_key);
+
+        let friend_requests =
+            friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+                .expect("list persisted friend requests");
+        assert_eq!(friend_requests.len(), 1);
+        assert_eq!(friend_requests[0].remote_public_id, remote_public_id);
+
+        let threads = thread_service::list_threads(&*state.social_store, &local_public_id)
+            .expect("list persisted dm threads");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].remote_public_id, remote_public_id);
+
+        let messages =
+            message_service::list_thread_messages(&*state.social_store, &threads[0].thread_id)
+                .expect("list persisted dm messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].content_json["text"].as_str(),
+            Some("hello from wattetheria")
+        );
+
+        let receipts =
+            receipt_service::list_message_receipts(&*state.social_store, &messages[0].message_id)
+                .expect("list persisted dm receipts");
+        assert_eq!(receipts.len(), 1);
+
+        let relationship_items = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(relationship_items.as_array().unwrap().len(), 1);
+        assert_eq!(
+            relationship_items[0]["counterpart_public_id"].as_str(),
+            Some(remote_public_id.as_str())
+        );
+
+        let thread_items = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(thread_items.as_array().unwrap().len(), 1);
+        assert_eq!(
+            thread_items[0]["counterpart_public_id"].as_str(),
+            Some(remote_public_id.as_str())
+        );
+
+        let message_items = authed_get_json(
+            app,
+            &token,
+            &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(message_items.as_array().unwrap().len(), 1);
+        assert_eq!(
+            message_items[0]["content"]["text"].as_str(),
+            Some("hello from wattetheria")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let remote_identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: Vec::new(),
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+            relationship_views: Mutex::new(Vec::new()),
+            relationship_commands: Mutex::new(Vec::new()),
+            dm_threads: Mutex::new(Vec::new()),
+            dm_messages: Mutex::new(BTreeMap::new()),
+            dm_commands: Mutex::new(Vec::new()),
+        });
+        let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+        let (_dir, app, token, _, state) =
+            build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+        let local_public_id =
+            bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+        {
+            let mut identities = state.public_identity_registry.lock().await;
+            identities
+                .upsert(
+                    &remote_public_id,
+                    "Broker Borealis".to_string(),
+                    Some(remote_identity.agent_did.clone()),
+                    true,
+                )
+                .unwrap();
+        }
+        {
+            let mut bindings = state.controller_binding_registry.lock().await;
+            bindings.upsert(
+                &remote_public_id,
+                wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+                "remote-runtime".to_string(),
+                Some("12D3KooRemotePeer".to_string()),
+                wattetheria_kernel::civilization::identities::OwnershipScope::External,
+                true,
+            );
+        }
+        block_service::upsert_block(
+            &*state.social_store,
+            &wattetheria_social::domain::blocks::SocialBlock {
+                block_id: "block:alice:borealis".to_string(),
+                owner_public_id: local_public_id.clone(),
+                blocked_public_id: remote_public_id.clone(),
+                blocked_node_id: Some("12D3KooRemotePeer".to_string()),
+                reason: Some("blocked".to_string()),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        let status = authed_post(
+            app,
+            &token,
+            "/v1/civilization/agent-friends",
+            json!({
+                "public_id": local_public_id,
+                "counterpart_public_id": remote_public_id,
+                "action": "request",
+                "message": {
+                    "kind": "friend_request",
+                    "text": "connect with me"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(bridge.relationship_commands.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_dm_is_denied_when_counterpart_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let remote_identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: Vec::new(),
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+            relationship_views: Mutex::new(Vec::new()),
+            relationship_commands: Mutex::new(Vec::new()),
+            dm_threads: Mutex::new(Vec::new()),
+            dm_messages: Mutex::new(BTreeMap::new()),
+            dm_commands: Mutex::new(Vec::new()),
+        });
+        let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+        let (_dir, app, token, _, state) =
+            build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+        let local_public_id =
+            bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+        {
+            let mut identities = state.public_identity_registry.lock().await;
+            identities
+                .upsert(
+                    &remote_public_id,
+                    "Broker Borealis".to_string(),
+                    Some(remote_identity.agent_did.clone()),
+                    true,
+                )
+                .unwrap();
+        }
+        {
+            let mut bindings = state.controller_binding_registry.lock().await;
+            bindings.upsert(
+                &remote_public_id,
+                wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+                "remote-runtime".to_string(),
+                Some("12D3KooRemotePeer".to_string()),
+                wattetheria_kernel::civilization::identities::OwnershipScope::External,
+                true,
+            );
+        }
+        block_service::upsert_block(
+            &*state.social_store,
+            &wattetheria_social::domain::blocks::SocialBlock {
+                block_id: "block:alice:borealis".to_string(),
+                owner_public_id: local_public_id.clone(),
+                blocked_public_id: remote_public_id.clone(),
+                blocked_node_id: Some("12D3KooRemotePeer".to_string()),
+                reason: Some("blocked".to_string()),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+
+        let status = authed_post(
+            app,
+            &token,
+            "/v1/civilization/agent-dm/messages",
+            json!({
+                "public_id": local_public_id,
+                "counterpart_public_id": remote_public_id,
+                "content": {
+                    "type": "text",
+                    "text": "hello from wattetheria"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(bridge.dm_commands.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let remote_identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+        let remote_node_id = "12D3KooRemotePeer".to_string();
+        let transport_thread_id = "transport-thread-42".to_string();
+        let bridge = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: vec![SwarmPeerView {
+                node_id: remote_node_id.clone(),
+            }],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+            relationship_views: Mutex::new(vec![SwarmPeerRelationshipView {
+                remote_node_id: remote_node_id.clone(),
+                relationship_state: "accepted".to_string(),
+                last_action: "accept".to_string(),
+                initiated_by: "remote".to_string(),
+                agent_envelope: Some(SwarmAgentEnvelope {
+                    protocol: "google_a2a".to_string(),
+                    source_agent_id: Some(remote_identity.agent_did.clone()),
+                    target_agent_id: Some(identity.agent_did.clone()),
+                    capability: Some("social.friend.accept".to_string()),
+                    message: json!({
+                        "request_id": "req-inbound-1",
+                        "correlation_id": "corr-inbound-1"
+                    }),
+                    extensions: None,
+                    signature: Some("sig-1".to_string()),
+                }),
+                requested_at: Some(1_710_000_100),
+                responded_at: Some(1_710_000_150),
+                blocked_at: None,
+                cleared_at: None,
+                updated_at: 1_710_000_150,
+            }]),
+            relationship_commands: Mutex::new(Vec::new()),
+            dm_threads: Mutex::new(vec![SwarmPeerDmThreadView {
+                remote_node_id: remote_node_id.clone(),
+                thread_id: transport_thread_id.clone(),
+                thread_kind: "direct".to_string(),
+                session_state: "ready".to_string(),
+                relationship_established_at: Some(1_710_000_150),
+                created_at: 1_710_000_150,
+                updated_at: 1_710_000_180,
+                last_message_at: Some(1_710_000_180),
+            }]),
+            dm_messages: Mutex::new(BTreeMap::from([(
+                transport_thread_id.clone(),
+                vec![SwarmPeerDmMessageView {
+                    thread_id: transport_thread_id.clone(),
+                    message_id: "dm-msg-1".to_string(),
+                    remote_node_id: remote_node_id.clone(),
+                    message_kind: "message".to_string(),
+                    direction: "inbound".to_string(),
+                    delivery_state: "acknowledged".to_string(),
+                    a2a_protocol: "google_a2a".to_string(),
+                    agent_envelope: Some(SwarmAgentEnvelope {
+                        protocol: "google_a2a".to_string(),
+                        source_agent_id: Some(remote_identity.agent_did.clone()),
+                        target_agent_id: Some(identity.agent_did.clone()),
+                        capability: Some("social.dm.send".to_string()),
+                        message: json!({
+                            "thread_id": transport_thread_id,
+                            "message_id": "dm-msg-1"
+                        }),
+                        extensions: None,
+                        signature: Some("sig-2".to_string()),
+                    }),
+                    content: json!({"type":"text","text":"hello inbound"}),
+                    encrypted_body: None,
+                    content_encoding: None,
+                    created_at: 1_710_000_180,
+                    acknowledged_at: Some(1_710_000_181),
+                }],
+            )])),
+            dm_commands: Mutex::new(Vec::new()),
+        });
+        let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+        let (_dir, app, token, _, state) =
+            build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+        let local_public_id =
+            bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        {
+            let mut identities = state.public_identity_registry.lock().await;
+            identities
+                .upsert(
+                    &remote_public_id,
+                    "Broker Borealis".to_string(),
+                    Some(remote_identity.agent_did.clone()),
+                    true,
+                )
+                .unwrap();
+        }
+        {
+            let mut bindings = state.controller_binding_registry.lock().await;
+            bindings.upsert(
+                &remote_public_id,
+                wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+                "remote-runtime".to_string(),
+                Some(remote_node_id.clone()),
+                wattetheria_kernel::civilization::identities::OwnershipScope::External,
+                true,
+            );
+        }
+
+        let relationship_items = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(relationship_items.as_array().unwrap().len(), 1);
+        assert_eq!(
+            relationship_items[0]["relationship_state"].as_str(),
+            Some("accepted")
+        );
+
+        let thread_items = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(thread_items.as_array().unwrap().len(), 1);
+
+        let message_items = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(message_items.as_array().unwrap().len(), 1);
+        assert_eq!(
+            message_items[0]["content"]["text"].as_str(),
+            Some("hello inbound")
+        );
+
+        let friend_requests =
+            friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+                .expect("list reconciled requests");
+        assert_eq!(friend_requests.len(), 1);
+        assert_eq!(friend_requests[0].request_id, "req-inbound-1");
+
+        let friendships =
+            friendship_service::list_friendships(&*state.social_store, &local_public_id)
+                .expect("list reconciled friendships");
+        assert_eq!(friendships.len(), 1);
+        assert_eq!(friendships[0].remote_public_id, remote_public_id);
+
+        let threads = thread_service::list_threads(&*state.social_store, &local_public_id)
+            .expect("list reconciled threads");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].transport_thread_id, "transport-thread-42");
+
+        let messages =
+            message_service::list_thread_messages(&*state.social_store, &threads[0].thread_id)
+                .expect("list reconciled messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].content_json["text"].as_str(),
+            Some("hello inbound")
+        );
+
+        let receipts =
+            receipt_service::list_message_receipts(&*state.social_store, &messages[0].message_id)
+                .expect("list reconciled receipts");
+        assert!(receipts.len() >= 2);
+
+        bridge.relationship_views.lock().await.clear();
+        bridge.dm_threads.lock().await.clear();
+        bridge.dm_messages.lock().await.clear();
+
+        let relationship_items_after_cache = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(relationship_items_after_cache.as_array().unwrap().len(), 1);
+
+        let thread_items_after_cache = authed_get_json(
+            app.clone(),
+            &token,
+            &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(thread_items_after_cache.as_array().unwrap().len(), 1);
+
+        let message_items_after_cache = authed_get_json(
+            app,
+            &token,
+            &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        )
+        .await;
+        assert_eq!(message_items_after_cache.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let remote_identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: BTreeMap::new(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: Vec::new(),
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+            relationship_views: Mutex::new(Vec::new()),
+            relationship_commands: Mutex::new(Vec::new()),
+            dm_threads: Mutex::new(Vec::new()),
+            dm_messages: Mutex::new(BTreeMap::new()),
+            dm_commands: Mutex::new(Vec::new()),
+        });
+        let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+        let (_dir, state, _token, _policy_engine) =
+            build_test_state_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+        let local_public_id = {
+            let registry = state.public_identity_registry.lock().await;
+            registry
+                .active_for_agent_did(&identity.agent_did)
+                .expect("active public identity")
+                .public_id
+        };
+        let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+        {
+            let mut identities = state.public_identity_registry.lock().await;
+            identities
+                .upsert(
+                    &remote_public_id,
+                    "Broker Borealis".to_string(),
+                    Some(remote_identity.agent_did.clone()),
+                    true,
+                )
+                .unwrap();
+        }
+        {
+            let mut bindings = state.controller_binding_registry.lock().await;
+            bindings.upsert(
+                &remote_public_id,
+                wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+                "remote-runtime".to_string(),
+                Some("12D3KooRemotePeer".to_string()),
+                wattetheria_kernel::civilization::identities::OwnershipScope::External,
+                true,
+            );
+        }
+
+        let identity_provider = WattetheriaLocalIdentityProvider::new(state.clone());
+        let active_identity = identity_provider
+            .active_identity()
+            .await
+            .expect("load active identity");
+        assert_eq!(active_identity.public_id, local_public_id);
+        assert_eq!(active_identity.agent_did, identity.agent_did);
+
+        let transport = WattetheriaTransportAdapter::new(state.clone());
+        transport
+            .send_friend_request(
+                "12D3KooRemotePeer",
+                &json!({
+                    "counterpart_public_id": remote_public_id,
+                    "kind": "friend_request",
+                    "text": "connect with me"
+                }),
+            )
+            .await
+            .expect("send friend request");
+        transport
+            .send_friend_decision(
+                "12D3KooRemotePeer",
+                &json!({
+                    "counterpart_public_id": remote_public_id,
+                    "decision": "accept",
+                    "request_id": "request-1"
+                }),
+            )
+            .await
+            .expect("send friend decision");
+        transport
+            .send_direct_message(
+                "12D3KooRemotePeer",
+                &json!({
+                    "counterpart_public_id": remote_public_id,
+                    "content": {
+                        "type": "text",
+                        "text": "hello from adapter"
+                    }
+                }),
+            )
+            .await
+            .expect("send direct message");
+
+        let relationship_commands = bridge.relationship_commands.lock().await;
+        assert_eq!(relationship_commands.len(), 2);
+        assert_eq!(
+            relationship_commands[0].action,
+            wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Request
+        );
+        assert_eq!(
+            relationship_commands[1].action,
+            wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Accept
+        );
+        assert_eq!(
+            relationship_commands[0]
+                .agent_envelope
+                .capability
+                .as_deref(),
+            Some("social.friend.request")
+        );
+        assert_eq!(
+            relationship_commands[1]
+                .agent_envelope
+                .capability
+                .as_deref(),
+            Some("social.friend.accept")
+        );
+        drop(relationship_commands);
+
+        let dm_commands = bridge.dm_commands.lock().await;
+        assert_eq!(dm_commands.len(), 1);
+        assert_eq!(
+            dm_commands[0].agent_envelope.capability.as_deref(),
+            Some("social.dm.send")
+        );
     }
 
     #[tokio::test]
@@ -3584,6 +4190,13 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+        assert_eq!(
+            export_json["payload"]["public_blocks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
         );
         assert_eq!(
             export_json["payload"]["dm_threads"]

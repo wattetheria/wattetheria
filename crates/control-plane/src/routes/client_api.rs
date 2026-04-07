@@ -43,6 +43,8 @@ pub struct PublicClientSnapshot {
     #[serde(default)]
     pub pending_friend_requests: Vec<Value>,
     #[serde(default)]
+    pub public_blocks: Vec<Value>,
+    #[serde(default)]
     pub dm_threads: Vec<Value>,
     #[serde(default)]
     pub dm_messages: Vec<Value>,
@@ -472,6 +474,7 @@ pub(crate) async fn client_export(
             "task_count": snapshot.tasks.len(),
             "organization_count": snapshot.organizations.len(),
             "leaderboard_count": snapshot.leaderboard.len(),
+            "public_blocks_count": snapshot.public_blocks.len(),
         })),
     });
     Json(signed_snapshot).into_response()
@@ -712,6 +715,11 @@ async fn build_public_client_snapshot(
         .filter(|entry| entry["pending_inbound"].as_bool() == Some(true))
         .cloned()
         .collect::<Vec<_>>();
+    let public_blocks = friend_relationships
+        .iter()
+        .filter(|entry| entry["relationship_state"].as_str() == Some("blocked"))
+        .cloned()
+        .collect::<Vec<_>>();
     let dm_threads =
         build_agent_dm_threads_payload(state, identity_query.public_id.as_deref()).await?;
     let dm_messages = build_agent_dm_messages_payload(
@@ -737,6 +745,7 @@ async fn build_public_client_snapshot(
         )?,
         friend_relationships,
         pending_friend_requests,
+        public_blocks,
         dm_threads,
         dm_messages,
         tasks: build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500))

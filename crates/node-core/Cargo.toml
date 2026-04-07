@@ -19,6 +19,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 wattetheria-control-plane = { path = "../control-plane" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+wattetheria-social = { path = "../social" }
 
 [dev-dependencies]
 axum.workspace = true

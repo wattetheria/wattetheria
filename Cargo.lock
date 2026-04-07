@@ -2863,6 +2863,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wattetheria-kernel-core",
+ "wattetheria-social",
  "wattswarm-protocol",
 ]
 
@@ -2935,6 +2936,7 @@ dependencies = [
  "uuid",
  "wattetheria-control-plane",
  "wattetheria-kernel-core",
+ "wattetheria-social",
 ]
 
 [[package]]
@@ -2965,6 +2967,18 @@ dependencies = [
  "tower 0.5.3",
  "tower-http",
  "wattetheria-kernel-core",
+]
+
+[[package]]
+name = "wattetheria-social"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "watt-did",
 ]
 
 [[package]]

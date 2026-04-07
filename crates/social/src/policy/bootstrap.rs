@@ -1,0 +1,67 @@
+use crate::policy::rules::{PolicyRule, PolicyRuleType, PolicyScope};
+use serde_json::json;
+
+pub fn default_policy_rules(owner_public_id: &str, now: i64) -> Vec<PolicyRule> {
+    vec![
+        PolicyRule {
+            rule_id: format!("{owner_public_id}:reject-blocked-agent"),
+            owner_public_id: Some(owner_public_id.to_owned()),
+            rule_type: PolicyRuleType::RejectBlockedAgent,
+            scope: PolicyScope::FriendRequestsOutbound,
+            matcher_json: json!({"requires_blocked": true}),
+            config_json: json!({"reason":"blocked_agent"}),
+            priority: 10,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        },
+        PolicyRule {
+            rule_id: format!("{owner_public_id}:reject-duplicate-pending-request"),
+            owner_public_id: Some(owner_public_id.to_owned()),
+            rule_type: PolicyRuleType::RejectDuplicatePendingRequest,
+            scope: PolicyScope::FriendRequestsOutbound,
+            matcher_json: json!({"requires_pending_request": true}),
+            config_json: json!({"reason":"duplicate_pending_request"}),
+            priority: 20,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        },
+        PolicyRule {
+            rule_id: format!("{owner_public_id}:allow-direct-message-for-friends"),
+            owner_public_id: Some(owner_public_id.to_owned()),
+            rule_type: PolicyRuleType::AllowDirectMessageForFriends,
+            scope: PolicyScope::DirectMessagesOutbound,
+            matcher_json: json!({"requires_active_friendship": true}),
+            config_json: json!({"relationship":"active_friendship"}),
+            priority: 50,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        },
+        PolicyRule {
+            rule_id: format!("{owner_public_id}:deny-direct-message-when-blocked"),
+            owner_public_id: Some(owner_public_id.to_owned()),
+            rule_type: PolicyRuleType::DenyDirectMessageWhenBlocked,
+            scope: PolicyScope::DirectMessagesOutbound,
+            matcher_json: json!({"requires_blocked": true}),
+            config_json: json!({"reason":"blocked"}),
+            priority: 30,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        },
+        PolicyRule {
+            rule_id: format!("{owner_public_id}:deny-direct-message-when-not-friends"),
+            owner_public_id: Some(owner_public_id.to_owned()),
+            rule_type: PolicyRuleType::DenyDirectMessageWhenNotFriends,
+            scope: PolicyScope::DirectMessagesOutbound,
+            matcher_json: json!({"requires_active_friendship": false}),
+            config_json: json!({"reason":"friendship_required"}),
+            priority: 40,
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        },
+    ]
+}

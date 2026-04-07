@@ -47,6 +47,7 @@ use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
 use wattetheria_kernel::wallet_identity::WalletSigner;
+use wattetheria_social::SocialStore;
 
 struct RuntimeState {
     control_bind: SocketAddr,
@@ -104,6 +105,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     startup_recover_events(&events_path, &snapshots_path, &cli.recovery_sources).await?;
 
     let local_db = Arc::new(LocalDb::open(cli.data_dir.join("state.db"))?);
+    let social_store = Arc::new(SocialStore::open(cli.data_dir.join("social.db"))?);
     let runtime_identity =
         wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity(&cli.data_dir)?;
     let signer: Arc<dyn PayloadSigner> = Arc::new(WalletSigner::new(
@@ -202,6 +204,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         brain_engine,
         audit_log,
         local_db,
+        social_store,
         servicenet_client,
         stream_tx,
     );
@@ -230,6 +233,7 @@ fn build_control_state(
     brain_engine: Arc<BrainEngine>,
     audit_log: AuditLog,
     local_db: Arc<LocalDb>,
+    social_store: Arc<SocialStore>,
     servicenet_client: Option<Arc<ServiceNetClient>>,
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
@@ -261,6 +265,7 @@ fn build_control_state(
         brain_provider_label: brain_provider_label(brain_config),
         audit_log,
         local_db,
+        social_store,
         servicenet_client,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
