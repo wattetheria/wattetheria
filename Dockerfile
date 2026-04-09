@@ -19,14 +19,18 @@ COPY crates/control-plane/Cargo.toml crates/control-plane/Cargo.toml
 COPY crates/kernel-core/Cargo.toml crates/kernel-core/Cargo.toml
 COPY crates/node-core/Cargo.toml crates/node-core/Cargo.toml
 COPY crates/observatory-core/Cargo.toml crates/observatory-core/Cargo.toml
+COPY crates/social/Cargo.toml crates/social/Cargo.toml
 
 # Replace local path dependencies with git sources for Docker builds.
 # This lets users build the image without cloning watt-did / watt-wallet.
-# 1) kernel-core: swap path deps to git
+# 1) kernel-core + social: swap path deps to git
 RUN sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
-    crates/kernel-core/Cargo.toml
+    crates/kernel-core/Cargo.toml \
+    && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    crates/social/Cargo.toml
 # 2) root Cargo.toml: patch watt-wallet's internal path dep on watt-did
 RUN printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
@@ -40,6 +44,7 @@ RUN mkdir -p \
     crates/kernel-core/src \
     crates/node-core/src \
     crates/observatory-core/src \
+    crates/social/src \
     && printf "fn main() {}\n" > apps/wattetheria-cli/src/main.rs \
     && printf "fn main() {}\n" > apps/wattetheria-kernel/src/main.rs \
     && printf "fn main() {}\n" > apps/wattetheria-observatory/src/main.rs \
@@ -47,7 +52,8 @@ RUN mkdir -p \
     && printf "pub fn _planner_stub() {}\n" > crates/control-plane/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/kernel-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/node-core/src/lib.rs \
-    && printf "pub fn _planner_stub() {}\n" > crates/observatory-core/src/lib.rs
+    && printf "pub fn _planner_stub() {}\n" > crates/observatory-core/src/lib.rs \
+    && printf "pub fn _planner_stub() {}\n" > crates/social/src/lib.rs
 
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -69,6 +75,9 @@ RUN sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/kernel-core/Cargo.toml \
+    && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    crates/social/Cargo.toml \
     && printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
 
