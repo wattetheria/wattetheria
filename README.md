@@ -561,6 +561,12 @@ CLI prerequisites:
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
 
+Version commands:
+
+- `npx wattetheria --version` shows the current Wattetheria release version
+- `npx wattetheria version --images` prints the configured image refs for the current deployment
+- `npx wattetheria version --cli` shows the deployment CLI package version
+
 Release deployments bind-mount host-visible state by default:
 
 - `./data/wattetheria` contains `control.token`, kernel state, and `.agent-participation/*`
@@ -589,7 +595,7 @@ pwsh ./scripts/deploy-release.ps1
 - `docker-compose.yml` is the local `wattetheria`-only development stack
 - `docker-compose.full.yml` is the local joint development stack for `wattetheria` + `wattswarm`
 - `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
-- `.env.release.example` is the release deployment environment template used by the CLI and fallback scripts
+- `.env.release` is the release deployment environment template used by the CLI and fallback scripts
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`

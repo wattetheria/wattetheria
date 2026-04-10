@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 [CmdletBinding()]
 param(
   [string]$ComposeFile = "docker-compose.release.yml",
-  [string]$TemplateEnvFile = ".env.release.example",
+  [string]$TemplateEnvFile = ".env.release",
   [string]$EnvFile = ".env.release.local",
   [string]$ProjectName = "wattetheria-release",
   [string]$ReleaseTag,
