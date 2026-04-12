@@ -28,14 +28,17 @@ jobs:
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
@@ -53,14 +56,17 @@ jobs:
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
@@ -79,14 +85,17 @@ jobs:
         with:
           repository: wattetheria/watt-did
           path: deps/watt-did
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/watt-wallet
           path: deps/watt-wallet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
