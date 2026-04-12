@@ -24,6 +24,7 @@ tracing.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
 wattetheria-social = { path = "../social" }
+wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 
 [build-dependencies]

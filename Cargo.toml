@@ -5,6 +5,7 @@ members = [
     "apps/wattetheria-observatory",
     "crates/conformance",
     "crates/control-plane",
+    "crates/gateway-contract",
     "crates/kernel-core",
     "crates/node-core",
     "crates/observatory-core",

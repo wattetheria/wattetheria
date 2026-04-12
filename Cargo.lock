@@ -2862,9 +2862,18 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "uuid",
+ "wattetheria-gateway-contract",
  "wattetheria-kernel-core",
  "wattetheria-social",
  "wattswarm-protocol",
+]
+
+[[package]]
+name = "wattetheria-gateway-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

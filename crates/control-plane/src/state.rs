@@ -3,10 +3,12 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
-
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, broadcast};
+use tracing::warn;
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::civilization::galaxy::{DynamicEventCategory, GalaxyState};
@@ -106,6 +108,7 @@ pub struct ControlPlaneState {
     pub servicenet_client: Option<Arc<ServiceNetClient>>,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
+    pub gateway_event_seq: Arc<GatewayEventSequence>,
 }
 
 impl ControlPlaneState {
@@ -121,6 +124,72 @@ impl ControlPlaneState {
         self.event_log
             .append_signed_with_signer(event_type, payload, self.signer.as_ref())
     }
+
+    #[must_use]
+    pub fn next_gateway_event_seq(&self) -> u64 {
+        self.gateway_event_seq.next()
+    }
+}
+
+#[derive(Debug)]
+pub struct GatewayEventSequence {
+    path: PathBuf,
+    next_seq: StdMutex<u64>,
+}
+
+impl GatewayEventSequence {
+    const DEFAULT_STATE_FILE: &str = "last_seq.json";
+
+    #[must_use]
+    pub fn load_or_seed(data_dir: &std::path::Path) -> Arc<Self> {
+        let path = data_dir.join("gateway").join(Self::DEFAULT_STATE_FILE);
+        let seed = read_persisted_gateway_seq(&path)
+            .and_then(|last_seq| last_seq.checked_add(1))
+            .unwrap_or_else(|| Utc::now().timestamp_millis().max(0).cast_unsigned());
+        Arc::new(Self {
+            path,
+            next_seq: StdMutex::new(seed),
+        })
+    }
+
+    #[must_use]
+    pub fn next(&self) -> u64 {
+        let mut guard = self
+            .next_seq
+            .lock()
+            .expect("gateway event sequence mutex poisoned");
+        let current = *guard;
+        *guard = guard.saturating_add(1);
+        if let Err(error) = persist_gateway_seq(&self.path, current) {
+            warn!(
+                path = %self.path.display(),
+                seq = current,
+                "persist gateway event sequence failed: {error:#}"
+            );
+        }
+        current
+    }
+}
+
+fn read_persisted_gateway_seq(path: &std::path::Path) -> Option<u64> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<PersistedGatewayEventSequence>(&raw)
+        .ok()
+        .map(|persisted| persisted.last_seq)
+}
+
+fn persist_gateway_seq(path: &std::path::Path, last_seq: u64) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let payload = serde_json::to_vec_pretty(&PersistedGatewayEventSequence { last_seq })?;
+    fs::write(path, payload)?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedGatewayEventSequence {
+    last_seq: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -731,4 +800,21 @@ pub(crate) async fn send_stream_text(
     payload: String,
 ) -> bool {
     socket.send(Message::Text(payload.into())).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GatewayEventSequence;
+
+    #[test]
+    fn gateway_event_sequence_resumes_from_persisted_last_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let sequence = GatewayEventSequence::load_or_seed(dir.path());
+        let first = sequence.next();
+        let second = sequence.next();
+        assert_eq!(second, first + 1);
+
+        let reloaded = GatewayEventSequence::load_or_seed(dir.path());
+        assert_eq!(reloaded.next(), second + 1);
+    }
 }

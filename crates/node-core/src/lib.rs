@@ -19,8 +19,9 @@ pub use cli::Cli;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
-    ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, RateLimiter, StreamEvent,
-    run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
+    ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
+    RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
+    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
@@ -54,6 +55,7 @@ struct RuntimeState {
     identity: IdentityCompatView,
     online_proof: OnlineProofManager,
     control_state: ControlPlaneState,
+    brain_config: BrainProviderConfig,
 }
 
 struct CivilizationRuntimeState {
@@ -78,6 +80,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         runtime.control_state.clone(),
         resolve_wattswarm_sync_grpc_endpoint(&cli),
     );
+    let executor_registration_task =
+        spawn_wattswarm_executor_registration_task(&cli, &runtime.brain_config);
+    let gateway_dispatch_task = spawn_gateway_dispatch_tasks(&cli, &runtime.control_state);
 
     let run_result = run_loop(LoopContext {
         online_proof: &mut runtime.online_proof,
@@ -87,6 +92,12 @@ pub async fn run(cli: Cli) -> Result<()> {
     .await;
     control_task.abort();
     if let Some(task) = wattswarm_sync_task {
+        task.abort();
+    }
+    if let Some(task) = executor_registration_task {
+        task.abort();
+    }
+    for task in gateway_dispatch_task {
         task.abort();
     }
     if let Some(task) = autonomy_task {
@@ -214,6 +225,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         identity,
         online_proof,
         control_state,
+        brain_config,
     })
 }
 
@@ -269,6 +281,7 @@ fn build_control_state(
         servicenet_client,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
+        gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),
     }
 }
 
@@ -475,9 +488,190 @@ fn spawn_autonomy_task(
     }))
 }
 
+const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WattswarmExecutorRegistration {
+    endpoint_url: String,
+    executor_name: String,
+    executor_base_url: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ExecutorAddRequest<'a> {
+    name: &'a str,
+    base_url: &'a str,
+    remote: bool,
+}
+
+fn spawn_wattswarm_executor_registration_task(
+    cli: &Cli,
+    brain_config: &BrainProviderConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let registration = resolve_wattswarm_executor_registration(cli, brain_config)?;
+    Some(tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut retry = interval(Duration::from_secs(5));
+        loop {
+            retry.tick().await;
+            match register_executor_once(&client, &registration).await {
+                Ok(()) => {
+                    info!(
+                        executor = %registration.executor_name,
+                        endpoint = %registration.endpoint_url,
+                        "registered local executor with wattswarm"
+                    );
+                    break;
+                }
+                Err(error) => {
+                    warn!(
+                        executor = %registration.executor_name,
+                        endpoint = %registration.endpoint_url,
+                        %error,
+                        "register local executor with wattswarm failed; retrying"
+                    );
+                }
+            }
+        }
+    }))
+}
+
+fn resolve_wattswarm_executor_registration(
+    cli: &Cli,
+    brain_config: &BrainProviderConfig,
+) -> Option<WattswarmExecutorRegistration> {
+    let wattswarm_ui_base_url = cli
+        .agent_wattswarm_ui_base_url
+        .as_deref()
+        .or(cli.wattswarm_ui_base_url.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let executor_base_url = resolve_executor_base_url(brain_config)?;
+    Some(WattswarmExecutorRegistration {
+        endpoint_url: format!(
+            "{}/api/executors/add",
+            wattswarm_ui_base_url.trim_end_matches('/')
+        ),
+        executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
+        executor_base_url,
+    })
+}
+
+fn resolve_executor_base_url(brain_config: &BrainProviderConfig) -> Option<String> {
+    match brain_config {
+        BrainProviderConfig::Rules => None,
+        BrainProviderConfig::Ollama { base_url, .. }
+        | BrainProviderConfig::OpenaiCompatible { base_url, .. } => {
+            let base_url = base_url.trim().trim_end_matches('/');
+            (!base_url.is_empty()).then(|| base_url.to_owned())
+        }
+    }
+}
+
+async fn register_executor_once(
+    client: &reqwest::Client,
+    registration: &WattswarmExecutorRegistration,
+) -> Result<()> {
+    client
+        .post(&registration.endpoint_url)
+        .json(&ExecutorAddRequest {
+            name: &registration.executor_name,
+            base_url: &registration.executor_base_url,
+            remote: false,
+        })
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "POST wattswarm executor registration {}",
+                registration.endpoint_url
+            )
+        })?
+        .error_for_status()
+        .context("wattswarm executor registration returned error status")?;
+    Ok(())
+}
+
+fn spawn_gateway_dispatch_tasks(
+    cli: &Cli,
+    control_state: &ControlPlaneState,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let gateway_urls = cli
+        .gateway_urls
+        .iter()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty())
+        .collect::<Vec<_>>();
+    if gateway_urls.is_empty() {
+        return Vec::new();
+    }
+
+    let snapshot_urls = gateway_urls.clone();
+    let snapshot_state = control_state.clone();
+    let snapshot_interval_sec = cli.gateway_snapshot_interval_sec.max(15);
+    let snapshot_task = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut ticker = interval(Duration::from_secs(snapshot_interval_sec));
+        loop {
+            ticker.tick().await;
+            for gateway_url in &snapshot_urls {
+                if let Err(error) = push_signed_snapshot(
+                    &client,
+                    gateway_url,
+                    &snapshot_state,
+                    &ClientExportQuery::default(),
+                )
+                .await
+                {
+                    warn!(gateway_url, %error, "gateway snapshot push failed");
+                }
+            }
+        }
+    });
+
+    let event_urls = gateway_urls;
+    let event_state = control_state.clone();
+    let event_task = tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut receiver = event_state.stream_tx.subscribe();
+        loop {
+            match receiver.recv().await {
+                Ok(event) => match build_signed_node_event(&event_state, &event) {
+                    Ok(Some(signed_event)) => {
+                        for gateway_url in &event_urls {
+                            if let Err(error) =
+                                push_signed_node_event(&client, gateway_url, &signed_event).await
+                            {
+                                warn!(gateway_url, %error, kind = %event.kind, "gateway event push failed");
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        warn!(kind = %event.kind, %error, "build gateway node event failed");
+                    }
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "gateway dispatch stream lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
+    vec![snapshot_task, event_task]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::derive_grpc_endpoint_from_ui_base;
+    use super::{
+        CORE_AGENT_EXECUTOR_NAME, Cli, derive_grpc_endpoint_from_ui_base, register_executor_once,
+        resolve_wattswarm_executor_registration,
+    };
+    use axum::{Json, Router, routing::post};
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+    use wattetheria_kernel::brain::BrainProviderConfig;
 
     #[test]
     fn derive_grpc_endpoint_from_ui_base_rewrites_port() {
@@ -489,5 +683,112 @@ mod tests {
             derive_grpc_endpoint_from_ui_base("https://wattswarm.internal/ui").as_deref(),
             Some("https://wattswarm.internal:7791")
         );
+    }
+
+    #[test]
+    fn resolve_wattswarm_executor_registration_skips_rules_provider() {
+        let cli = Cli {
+            data_dir: ".wattetheria".into(),
+            recovery_sources: Vec::new(),
+            control_plane_bind: "127.0.0.1:7777".to_owned(),
+            wattswarm_ui_base_url: Some("http://127.0.0.1:7788".to_owned()),
+            wattswarm_sync_grpc_endpoint: None,
+            agent_control_plane_endpoint: None,
+            agent_wattswarm_ui_base_url: None,
+            agent_wattswarm_sync_grpc_endpoint: None,
+            agent_host_data_dir: None,
+            servicenet_base_url: None,
+            gateway_urls: Vec::new(),
+            gateway_snapshot_interval_sec: 45,
+            control_plane_rate_limit: 60,
+            brain_provider_kind: "rules".to_owned(),
+            brain_base_url: "http://127.0.0.1:11434".to_owned(),
+            brain_model: "model".to_owned(),
+            brain_api_key_env: None,
+            autonomy_enabled: false,
+            autonomy_interval_sec: 30,
+        };
+        assert!(
+            resolve_wattswarm_executor_registration(&cli, &BrainProviderConfig::Rules).is_none()
+        );
+    }
+
+    #[test]
+    fn resolve_wattswarm_executor_registration_uses_core_agent_and_trimmed_urls() {
+        let cli = Cli {
+            data_dir: ".wattetheria".into(),
+            recovery_sources: Vec::new(),
+            control_plane_bind: "127.0.0.1:7777".to_owned(),
+            wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
+            wattswarm_sync_grpc_endpoint: None,
+            agent_control_plane_endpoint: None,
+            agent_wattswarm_ui_base_url: None,
+            agent_wattswarm_sync_grpc_endpoint: None,
+            agent_host_data_dir: None,
+            servicenet_base_url: None,
+            gateway_urls: Vec::new(),
+            gateway_snapshot_interval_sec: 45,
+            control_plane_rate_limit: 60,
+            brain_provider_kind: "openai-compatible".to_owned(),
+            brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+            brain_model: "model".to_owned(),
+            brain_api_key_env: None,
+            autonomy_enabled: false,
+            autonomy_interval_sec: 30,
+        };
+        let registration = resolve_wattswarm_executor_registration(
+            &cli,
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+                model: "model".to_owned(),
+                api_key_env: None,
+            },
+        )
+        .expect("registration");
+        assert_eq!(registration.executor_name, CORE_AGENT_EXECUTOR_NAME);
+        assert_eq!(
+            registration.endpoint_url,
+            "http://127.0.0.1:7788/api/executors/add"
+        );
+        assert_eq!(registration.executor_base_url, "http://127.0.0.1:8787/v1");
+    }
+
+    #[tokio::test]
+    async fn register_executor_once_posts_executor_add_request() {
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let seen_clone = Arc::clone(&seen);
+        let app = Router::new().route(
+            "/api/executors/add",
+            post(move |Json(payload): Json<Value>| {
+                let seen = Arc::clone(&seen_clone);
+                async move {
+                    seen.lock().expect("lock").push(payload);
+                    Json(json!({"ok": true}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve app");
+        });
+        let registration = super::WattswarmExecutorRegistration {
+            endpoint_url: format!("http://{addr}/api/executors/add"),
+            executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
+            executor_base_url: "http://127.0.0.1:8787".to_owned(),
+        };
+
+        register_executor_once(&reqwest::Client::new(), &registration)
+            .await
+            .expect("register executor");
+
+        let seen = seen.lock().expect("lock");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["name"].as_str(), Some(CORE_AGENT_EXECUTOR_NAME));
+        assert_eq!(seen[0]["base_url"].as_str(), Some("http://127.0.0.1:8787"));
+        assert_eq!(seen[0]["remote"].as_bool(), Some(false));
+        server.abort();
     }
 }

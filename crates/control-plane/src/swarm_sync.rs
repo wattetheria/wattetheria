@@ -372,6 +372,17 @@ pub(crate) async fn load_cached_task_run_projection(
     .unwrap_or(None)
 }
 
+#[cfg(test)]
+pub(crate) async fn save_cached_task_run_projection(
+    local_db: &Arc<LocalDb>,
+    snapshot: SwarmTaskRunProjectionSnapshot,
+) -> anyhow::Result<()> {
+    let db = local_db.clone();
+    tokio::task::spawn_blocking(move || db.save_domain(TASK_RUN_PROJECTION_CACHE_DOMAIN, &snapshot))
+        .await
+        .map_err(|error| anyhow::anyhow!("join task/run projection cache save: {error}"))?
+}
+
 pub(crate) async fn load_cached_topic_activity(
     local_db: &Arc<LocalDb>,
     feed_key: &str,

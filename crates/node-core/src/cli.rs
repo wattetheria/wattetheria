@@ -25,6 +25,10 @@ pub struct Cli {
     pub agent_host_data_dir: Option<String>,
     #[arg(long)]
     pub servicenet_base_url: Option<String>,
+    #[arg(long = "gateway-url")]
+    pub gateway_urls: Vec<String>,
+    #[arg(long, default_value_t = 45)]
+    pub gateway_snapshot_interval_sec: u64,
     #[arg(long, default_value_t = 60)]
     pub control_plane_rate_limit: usize,
     #[arg(long, default_value = "rules")]

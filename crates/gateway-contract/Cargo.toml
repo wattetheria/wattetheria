@@ -1,0 +1,15 @@
+[package]
+name = "wattetheria-gateway-contract"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "wattetheria_gateway_contract"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

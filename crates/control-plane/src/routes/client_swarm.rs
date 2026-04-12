@@ -178,7 +178,7 @@ async fn author_lookup(
         .collect()
 }
 
-async fn build_hives_payload(
+pub(crate) async fn build_hives_payload(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
@@ -246,6 +246,45 @@ async fn build_hives_payload(
                     .cmp(right["topic_id"].as_str().unwrap_or_default())
             })
     });
+    Ok(items)
+}
+
+pub(crate) async fn build_public_topic_messages_snapshot_payload(
+    state: &ControlPlaneState,
+    limit: usize,
+) -> anyhow::Result<Vec<Value>> {
+    let topics = state.topic_registry.lock().await.list();
+    let author_lookup = author_lookup(state).await;
+    let mut items = Vec::new();
+    for topic in topics.into_iter().filter(|topic| topic.active).take(limit) {
+        let Some(activity) = topic_activity_or_empty(state, &topic).await else {
+            continue;
+        };
+        items.extend(
+            activity
+                .messages
+                .into_iter()
+                .take(limit)
+                .map(|message| {
+                    serde_json::to_value(topic_message_view(state, &author_lookup, message))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    items.sort_by(|left, right| {
+        right["created_at"]
+            .as_u64()
+            .unwrap_or_default()
+            .cmp(&left["created_at"].as_u64().unwrap_or_default())
+            .then_with(|| {
+                left["message_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["message_id"].as_str().unwrap_or_default())
+            })
+    });
+    items.dedup_by(|left, right| left["message_id"] == right["message_id"]);
+    items.truncate(limit);
     Ok(items)
 }
 
@@ -441,21 +480,27 @@ async fn build_friends_payload(
     Ok(items)
 }
 
-async fn build_task_activity_payload(
+pub(crate) async fn build_task_activity_payload(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<Value> {
-    let snapshot: SwarmTaskRunProjectionSnapshot =
-        if let Some(snapshot) = load_cached_task_run_projection(&state.local_db).await {
-            snapshot
-        } else {
-            state.swarm_bridge.task_run_projection(limit, limit).await?
-        };
+    let snapshot = load_task_run_projection_snapshot(state, limit).await?;
     Ok(json!({
         "generated_at": snapshot.generated_at,
         "tasks": snapshot.recent_tasks,
         "runs": snapshot.recent_runs,
     }))
+}
+
+async fn load_task_run_projection_snapshot(
+    state: &ControlPlaneState,
+    limit: usize,
+) -> anyhow::Result<SwarmTaskRunProjectionSnapshot> {
+    if let Some(snapshot) = load_cached_task_run_projection(&state.local_db).await {
+        Ok(snapshot)
+    } else {
+        state.swarm_bridge.task_run_projection(limit, limit).await
+    }
 }
 
 pub(crate) async fn client_hives(

@@ -1,6 +1,7 @@
 mod agent_attach;
 mod auth;
 mod autonomy;
+mod gateway_dispatch;
 pub mod social_host;
 mod swarm_sync;
 pub mod routes {
@@ -31,11 +32,16 @@ use axum::routing::{get, post};
 use std::net::SocketAddr;
 
 pub use autonomy::run_autonomy_tick_once;
+pub use gateway_dispatch::{
+    SignedGatewayNodeEvent, build_signed_node_event, push_signed_node_event, push_signed_snapshot,
+};
 pub use routes::client_api::{
     SignedPublicClientSnapshot, build_signed_public_client_snapshot,
     push_signed_public_client_snapshot,
 };
-pub use state::{ClientExportQuery, ControlPlaneState, RateLimiter, StreamEvent};
+pub use state::{
+    ClientExportQuery, ControlPlaneState, GatewayEventSequence, RateLimiter, StreamEvent,
+};
 pub use swarm_sync::{DEFAULT_WATTSWARM_SYNC_GRPC_PORT, spawn_wattswarm_sync_bridge};
 
 pub fn app(state: ControlPlaneState) -> Router {
@@ -750,6 +756,7 @@ mod tests {
             servicenet_client: None,
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
+            gateway_event_seq: GatewayEventSequence::load_or_seed(dir.path()),
         };
 
         (dir, state, token, policy_engine)
@@ -4149,6 +4156,43 @@ mod tests {
             build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
         let local_public_id =
             bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+        crate::swarm_sync::save_cached_task_run_projection(
+            &state.local_db,
+            wattetheria_kernel::swarm_sync::SwarmTaskRunProjectionSnapshot {
+                generated_at: 1_710_000_120,
+                recent_tasks: vec![wattetheria_kernel::swarm_sync::SwarmTaskProjectionSummary {
+                    task_id: "task-swarm-1".to_string(),
+                    task_type: "topic_consensus".to_string(),
+                    epoch: 1,
+                    terminal_state: "open".to_string(),
+                    committed_candidate_id: None,
+                    finalized_candidate_id: None,
+                    retry_attempt: 0,
+                }],
+                recent_runs: vec![json!({
+                    "run_id": "run-swarm-1",
+                    "task_id": "task-swarm-1",
+                    "status": "QUEUED",
+                    "task_type": "topic_consensus",
+                    "created_at": 1_710_000_120_i64,
+                    "updated_at": 1_710_000_120_i64,
+                    "started_at": Value::Null,
+                    "finished_at": Value::Null,
+                    "counts": {
+                        "created": 0,
+                        "queued": 1,
+                        "leased": 0,
+                        "succeeded": 0,
+                        "failed": 0,
+                        "retry_wait": 0,
+                        "cancelled": 0,
+                        "remote_dispatched": 0
+                    }
+                })],
+            },
+        )
+        .await
+        .unwrap();
         {
             let mut identities = state.public_identity_registry.lock().await;
             identities
@@ -4170,6 +4214,23 @@ mod tests {
                 wattetheria_kernel::civilization::identities::OwnershipScope::External,
                 true,
             );
+        }
+        {
+            let mut topics = state.topic_registry.lock().await;
+            topics.upsert_topic(wattetheria_kernel::civilization::topics::TopicCreateSpec {
+                feed_key: "hive.general".to_string(),
+                scope_hint: "org:crew".to_string(),
+                display_name: "Crew Hive".to_string(),
+                summary: Some("crew coordination".to_string()),
+                projection_kind:
+                    wattetheria_kernel::civilization::topics::TopicProjectionKind::ChatRoom,
+                organization_id: Some("crew-org".to_string()),
+                mission_id: None,
+                participant_public_ids: vec![local_public_id.clone(), remote_public_id.clone()],
+                created_by_public_id: local_public_id.clone(),
+                why_this_exists: Some("coordination".to_string()),
+                active: true,
+            });
         }
 
         let export_json = public_get_json(
@@ -4215,6 +4276,31 @@ mod tests {
         assert_eq!(
             export_json["payload"]["dm_messages"][0]["counterpart_public_id"].as_str(),
             Some(remote_public_id.as_str())
+        );
+        assert_eq!(
+            export_json["payload"]["public_topics"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            export_json["payload"]["swarm_task_activity"]["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            export_json["payload"]["swarm_task_activity"]["runs"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            export_json["payload"]["swarm_task_activity"]["tasks"][0]["task_type"].as_str(),
+            Some("topic_consensus")
         );
     }
 
@@ -4357,6 +4443,84 @@ mod tests {
         assert_eq!(
             received[0]["signature"].as_str(),
             Some(pushed.signature.as_str())
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gateway_node_event_can_be_pushed_to_event_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::new_random();
+        let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+        let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+            local_node_id: identity.agent_did.clone(),
+            agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
+                .into_iter()
+                .collect(),
+            network_status: SwarmNetworkStatusView {
+                running: true,
+                mode: "network".to_string(),
+                peer_protocol_distribution: BTreeMap::new(),
+            },
+            peers: vec![],
+            subscriptions: Mutex::new(Vec::new()),
+            messages: Mutex::new(Vec::new()),
+            relationship_views: Mutex::new(Vec::new()),
+            relationship_commands: Mutex::new(Vec::new()),
+            dm_threads: Mutex::new(Vec::new()),
+            dm_messages: Mutex::new(BTreeMap::new()),
+            dm_commands: Mutex::new(Vec::new()),
+        });
+        let (_dir, state, _token, _) =
+            build_test_state_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+        let event = StreamEvent {
+            kind: "mission.published".to_string(),
+            timestamp: Utc::now().timestamp(),
+            payload: json!({
+                "mission_id": "mission-1",
+                "publisher": "org-1",
+            }),
+        };
+        let signed = build_signed_node_event(&state, &event)
+            .unwrap()
+            .expect("gateway event");
+
+        let received = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let ingest_app = axum::Router::new().route(
+            "/api/ingest/event",
+            post({
+                let received = Arc::clone(&received);
+                move |Json(payload): Json<Value>| {
+                    let received = Arc::clone(&received);
+                    async move {
+                        received.lock().await.push(payload);
+                        Json(json!({"status":"ok"}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, ingest_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        push_signed_node_event(&client, &format!("http://{addr}"), &signed)
+            .await
+            .unwrap();
+
+        let received = received.lock().await;
+        assert_eq!(received.len(), 1);
+        assert_eq!(
+            received[0]["payload"]["event_kind"].as_str(),
+            Some("mission.published")
+        );
+        assert_eq!(
+            received[0]["payload"]["data_kind"].as_str(),
+            Some("mission_lifecycle")
         );
 
         server.abort();

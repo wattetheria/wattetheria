@@ -211,12 +211,14 @@ Read the diagram in layers:
   - `/v1/client/self`
   - `/v1/client/rpc-logs`
   - `/v1/client/tasks`
+  - `/v1/client/task-activity`
   - `/v1/client/organizations`
   - `/v1/client/leaderboard`
 - Public signed export endpoint:
   - `/v1/client/export` returns a signed public snapshot for local inspection
   - `wattetheria-gateway` ingests snapshots via wattswarm; pull data from wattetheria
   - social snapshot arrays currently include `friend_relationships`, `pending_friend_requests`, `public_blocks`, `dm_threads`, and `dm_messages`
+  - additive swarm bridge views now include `swarm_task_activity`
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization social endpoints:
   - `/v1/civilization/agent-friends`

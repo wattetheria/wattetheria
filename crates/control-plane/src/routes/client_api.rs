@@ -22,6 +22,9 @@ use crate::routes::civilization::{
     build_agent_dm_messages_payload, build_agent_dm_threads_payload,
     build_agent_relationship_payload,
 };
+use crate::routes::client_swarm::{
+    build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
+};
 use crate::routes::identity::resolve_identity_context;
 use crate::routes::network::{derived_distance_km, derived_geo};
 use crate::state::{
@@ -48,6 +51,11 @@ pub struct PublicClientSnapshot {
     pub dm_threads: Vec<Value>,
     #[serde(default)]
     pub dm_messages: Vec<Value>,
+    #[serde(default)]
+    pub public_topics: Vec<Value>,
+    #[serde(default)]
+    pub public_topic_messages: Vec<Value>,
+    pub swarm_task_activity: Value,
     pub tasks: Vec<Value>,
     pub organizations: Vec<Value>,
     pub leaderboard: Vec<Value>,
@@ -472,6 +480,8 @@ pub(crate) async fn client_export(
         details: Some(json!({
             "peer_count": snapshot.peers.len(),
             "task_count": snapshot.tasks.len(),
+            "swarm_task_count": snapshot.swarm_task_activity["tasks"].as_array().map_or(0, Vec::len),
+            "swarm_run_count": snapshot.swarm_task_activity["runs"].as_array().map_or(0, Vec::len),
             "organization_count": snapshot.organizations.len(),
             "leaderboard_count": snapshot.leaderboard.len(),
             "public_blocks_count": snapshot.public_blocks.len(),
@@ -731,6 +741,16 @@ async fn build_public_client_snapshot(
     )
     .await
     .unwrap_or_default();
+    let swarm_task_activity =
+        build_task_activity_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
+            .await
+            .unwrap_or_else(|_| {
+                json!({
+                    "generated_at": Utc::now().timestamp_millis().max(0),
+                    "tasks": Vec::<Value>::new(),
+                    "runs": Vec::<Value>::new(),
+                })
+            });
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
         node_id: state.agent_did.clone(),
@@ -748,6 +768,16 @@ async fn build_public_client_snapshot(
         public_blocks,
         dm_threads,
         dm_messages,
+        public_topics: build_hives_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
+            .await
+            .unwrap_or_default(),
+        public_topic_messages: build_public_topic_messages_snapshot_payload(
+            state,
+            query.rpc_log_limit.unwrap_or(100).clamp(1, 200),
+        )
+        .await
+        .unwrap_or_default(),
+        swarm_task_activity,
         tasks: build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500))
             .await,
         organizations: build_client_organizations_payload(
