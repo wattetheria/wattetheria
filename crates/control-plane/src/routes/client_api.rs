@@ -55,6 +55,7 @@ pub struct PublicClientSnapshot {
     pub public_topics: Vec<Value>,
     #[serde(default)]
     pub public_topic_messages: Vec<Value>,
+    #[serde(default)]
     pub swarm_task_activity: Value,
     pub tasks: Vec<Value>,
     pub organizations: Vec<Value>,
