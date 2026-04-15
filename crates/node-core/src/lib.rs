@@ -20,7 +20,7 @@ use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
-    RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
+    NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
     push_signed_snapshot, run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
@@ -152,17 +152,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         &cli.data_dir.join("online_proof.json"),
     )?;
     online_proof.create_lease(&identity.agent_did, 300, 20);
-    let ledger_path = cli.data_dir.join("ledger.json");
-    let legacy_task_engine =
-        wattetheria_kernel::task_engine::TaskEngine::new_with_ledger_and_signer(
-            event_log.clone(),
-            identity.clone(),
-            signer.clone(),
-            &ledger_path,
-        )?;
     let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(HybridSwarmBridge::new(
-        legacy_task_engine,
-        ledger_path.clone(),
+        cli.data_dir.join("missions/state.json"),
         cli.wattswarm_ui_base_url.as_deref(),
     ));
     let agent_surface = AgentParticipationSurface {
@@ -282,6 +273,7 @@ fn build_control_state(
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),
+        geo_location: NodeGeoLocation::load_or_fetch_blocking(&cli.data_dir, &identity.agent_did),
     }
 }
 

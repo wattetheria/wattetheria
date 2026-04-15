@@ -40,7 +40,8 @@ pub use routes::client_api::{
     push_signed_public_client_snapshot,
 };
 pub use state::{
-    ClientExportQuery, ControlPlaneState, GatewayEventSequence, RateLimiter, StreamEvent,
+    ClientExportQuery, ControlPlaneState, GatewayEventSequence, NodeGeoLocation, RateLimiter,
+    StreamEvent,
 };
 pub use swarm_sync::{DEFAULT_WATTSWARM_SYNC_GRPC_PORT, spawn_wattswarm_sync_bridge};
 
@@ -494,6 +495,7 @@ pub async fn serve_control_plane(state: ControlPlaneState, bind: SocketAddr) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::social_host::{WattetheriaLocalIdentityProvider, WattetheriaTransportAdapter};
     use axum::extract::Path;
     use axum::http::StatusCode;
     use axum::routing::{get, post};
@@ -531,10 +533,9 @@ mod tests {
     use wattetheria_kernel::servicenet::ServiceNetClient;
     use wattetheria_kernel::signing::verify_payload;
     use wattetheria_kernel::swarm_bridge::{
-        LegacyTaskEngineBridge, SwarmAgentEnvelope, SwarmAgentView, SwarmBridge,
-        SwarmDirectMessageCommand, SwarmNetworkStatusView, SwarmPeerDmMessageView,
-        SwarmPeerDmThreadView, SwarmPeerRelationshipView, SwarmPeerView,
-        SwarmRelationshipActionCommand, SwarmTaskProjectionView, SwarmTaskReceipt,
+        SwarmAgentEnvelope, SwarmAgentView, SwarmBridge, SwarmDirectMessageCommand,
+        SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
+        SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
         SwarmTopicCursorView, SwarmTopicMessageView,
     };
     use wattetheria_kernel::types::AgentStats;
@@ -544,9 +545,6 @@ mod tests {
     };
     use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
     use wattetheria_social::ports::transport_port::TransportPort;
-    use wattswarm_protocol::types::{EventPayload, TaskContract};
-
-    use crate::social_host::{WattetheriaLocalIdentityProvider, WattetheriaTransportAdapter};
 
     #[allow(clippy::too_many_lines)]
     fn build_test_app(
@@ -561,13 +559,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let identity = Identity::new_random();
         let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
-        let ledger_path = dir.path().join("ledger.json");
-        let bridge_event_log = event_log.clone();
-        let bridge_identity = identity.clone();
-        let bridge: Arc<dyn SwarmBridge> = Arc::new(LegacyTaskEngineBridge::new(
-            wattetheria_kernel::task_engine::TaskEngine::new(bridge_event_log, bridge_identity),
-            ledger_path,
-        ));
+        let bridge: Arc<dyn SwarmBridge> =
+            Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
         build_test_app_with_bridge(rate_limit, dir, identity, event_log, bridge)
     }
 
@@ -757,6 +750,11 @@ mod tests {
             rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
             stream_tx,
             gateway_event_seq: GatewayEventSequence::load_or_seed(dir.path()),
+            geo_location: Arc::new(NodeGeoLocation {
+                lat: 0.0,
+                lng: 0.0,
+                source: crate::state::GeoSource::Derived,
+            }),
         };
 
         (dir, state, token, policy_engine)
@@ -939,35 +937,30 @@ mod tests {
         dm_commands: Mutex<Vec<SwarmDirectMessageCommand>>,
     }
 
+    impl MockSwarmBridge {
+        fn default_for(local_node_id: String) -> Self {
+            Self {
+                local_node_id,
+                agent_stats: BTreeMap::new(),
+                network_status: SwarmNetworkStatusView {
+                    running: false,
+                    mode: "local".to_owned(),
+                    peer_protocol_distribution: BTreeMap::new(),
+                },
+                peers: Vec::new(),
+                subscriptions: Mutex::new(Vec::new()),
+                messages: Mutex::new(Vec::new()),
+                relationship_views: Mutex::new(Vec::new()),
+                relationship_commands: Mutex::new(Vec::new()),
+                dm_threads: Mutex::new(Vec::new()),
+                dm_messages: Mutex::new(BTreeMap::new()),
+                dm_commands: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl SwarmBridge for MockSwarmBridge {
-        async fn submit_task_contract(
-            &self,
-            _submitter_id: &str,
-            _contract: TaskContract,
-        ) -> anyhow::Result<SwarmTaskReceipt> {
-            Err(anyhow::anyhow!("not implemented in mock bridge"))
-        }
-
-        async fn task_projection(
-            &self,
-            _task_id: &str,
-        ) -> anyhow::Result<Option<SwarmTaskProjectionView>> {
-            Ok(None)
-        }
-
-        async fn task_events(&self, _task_id: &str) -> anyhow::Result<Vec<EventPayload>> {
-            Ok(Vec::new())
-        }
-
-        async fn run_task_contract(
-            &self,
-            _worker_id: &str,
-            _contract: TaskContract,
-        ) -> anyhow::Result<SwarmTaskProjectionView> {
-            Err(anyhow::anyhow!("not implemented in mock bridge"))
-        }
-
         async fn agent_view(&self, agent_did: &str) -> anyhow::Result<SwarmAgentView> {
             Ok(SwarmAgentView {
                 agent_did: agent_did.to_string(),

@@ -3,23 +3,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AgentStats {
     pub power: i64,
     pub watt: i64,
     pub reputation: i64,
     pub capacity: i64,
-}
-
-impl Default for AgentStats {
-    fn default() -> Self {
-        Self {
-            power: 1,
-            watt: 0,
-            reputation: 0,
-            capacity: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

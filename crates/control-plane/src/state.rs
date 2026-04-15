@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, broadcast};
-use tracing::warn;
+use tracing::{info, warn};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::civilization::galaxy::{DynamicEventCategory, GalaxyState};
@@ -109,6 +109,7 @@ pub struct ControlPlaneState {
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
     pub gateway_event_seq: Arc<GatewayEventSequence>,
+    pub geo_location: Arc<NodeGeoLocation>,
 }
 
 impl ControlPlaneState {
@@ -191,6 +192,105 @@ fn persist_gateway_seq(path: &std::path::Path, last_seq: u64) -> anyhow::Result<
 struct PersistedGatewayEventSequence {
     last_seq: u64,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct NodeGeoLocation {
+    pub lat: f64,
+    pub lng: f64,
+    pub source: GeoSource,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum GeoSource {
+    #[serde(rename = "ip_api")]
+    IpApi,
+    #[serde(rename = "cached")]
+    Cached,
+    #[serde(rename = "derived")]
+    Derived,
+}
+
+impl NodeGeoLocation {
+    pub fn load_or_fetch_blocking(data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
+        let cache_path = data_dir.join("geo_location.json");
+        if let Some(cached) = read_cached_geo(&cache_path) {
+            info!(
+                lat = cached.lat,
+                lng = cached.lng,
+                "loaded cached geo location"
+            );
+            return Arc::new(Self {
+                lat: cached.lat,
+                lng: cached.lng,
+                source: GeoSource::Cached,
+            });
+        }
+
+        match fetch_geo_from_ip_api() {
+            Ok(geo) => {
+                info!(
+                    lat = geo.lat,
+                    lng = geo.lng,
+                    "resolved geo location via ip-api.com"
+                );
+                let _ = persist_geo(&cache_path, &geo);
+                Arc::new(geo)
+            }
+            Err(error) => {
+                warn!("ip-api.com geo lookup failed, using derived fallback: {error:#}");
+                let (lat, lng) = super::routes::network::derived_geo(fallback_id);
+                Arc::new(Self {
+                    lat,
+                    lng,
+                    source: GeoSource::Derived,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct IpApiResponse {
+    status: String,
+    lat: Option<f64>,
+    lon: Option<f64>,
+}
+
+fn fetch_geo_from_ip_api() -> anyhow::Result<NodeGeoLocation> {
+    let response: IpApiResponse =
+        reqwest::blocking::get("http://ip-api.com/json/?fields=status,lat,lon")
+            .context("ip-api.com request failed")?
+            .json()
+            .context("ip-api.com response parse failed")?;
+
+    if response.status != "success" {
+        anyhow::bail!("ip-api.com returned status: {}", response.status);
+    }
+
+    let lat = response.lat.context("ip-api.com missing lat")?;
+    let lon = response.lon.context("ip-api.com missing lon")?;
+
+    Ok(NodeGeoLocation {
+        lat,
+        lng: lon,
+        source: GeoSource::IpApi,
+    })
+}
+
+fn read_cached_geo(path: &std::path::Path) -> Option<NodeGeoLocation> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn persist_geo(path: &std::path::Path, geo: &NodeGeoLocation) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(geo)?)?;
+    Ok(())
+}
+
+use anyhow::Context as _;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct EventsQuery {

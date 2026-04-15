@@ -148,18 +148,11 @@ Read the diagram in layers:
 
 ### Tasks, Oracle, And Mailbox
 
-- Legacy task engine with deterministic lifecycle:
-  - publish
-  - claim
-  - execute
-  - submit
-  - verify
-  - settle
-- `market.match` task path with deterministic and witness verification modes
-- `swarm_bridge` adapter that maps current task execution into a `wattswarm`-oriented bridge surface
+- Product-layer galaxy task definitions in `crates/kernel-core/src/tasks/galaxy_task.rs`
+- `swarm_bridge` adapter for `wattswarm` topic, task/run read models, and peer/network surfaces
 - Hybrid `swarm_bridge` path for `wattswarm` topic and network read models
   - optional `--wattswarm-ui-base-url` wiring from CLI config into node runtime
-  - topic subscribe, post, history, cursor, network-status, and peer-list bridge calls
+  - topic subscribe, post, history, cursor, task/run snapshots, network-status, and peer-list bridge calls
 - Oracle registry with signed feed publish, subscribe, pull, and watt-based settlement
 - Cross-subnet mailbox with send, fetch, and ack persistence
 

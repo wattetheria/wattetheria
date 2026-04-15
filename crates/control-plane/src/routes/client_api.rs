@@ -70,15 +70,13 @@ pub struct SignedPublicClientSnapshot {
 }
 
 async fn build_client_network_status_payload(state: &ControlPlaneState) -> anyhow::Result<Value> {
-    let network = state.swarm_bridge.network_status().await?;
-    let peers = state.swarm_bridge.peers().await?;
-    let total_nodes = peers.len() + 1;
-    let active_nodes = if network.running { total_nodes } else { 0 };
-    let health_percent = if total_nodes == 0 {
-        0
-    } else {
-        ((active_nodes * 100) / total_nodes) as u64
-    };
+    let network = state.swarm_bridge.network_status().await.ok();
+    let peers = state.swarm_bridge.peers().await.unwrap_or_default();
+    let swarm_running = network.as_ref().is_some_and(|n| n.running);
+    let active_peers = if swarm_running { peers.len() } else { 0 };
+    let active_nodes = 1 + active_peers;
+    let total_nodes = 1 + peers.len();
+    let health_percent = ((active_nodes * 100) / total_nodes.max(1)) as u64;
     Ok(json!({
         "total_nodes": total_nodes,
         "active_nodes": active_nodes,
@@ -131,14 +129,15 @@ async fn build_client_self_payload(
         || public_id.clone(),
         |identity| identity.display_name.clone(),
     );
-    let (lat, lng) = derived_geo(&public_id);
+    let geo = &state.geo_location;
     Ok(json!({
         "id": public_id,
         "display_name": display_name,
         "watt_balance": agent_stats.watt,
         "status": "online",
-        "lat": lat,
-        "lng": lng,
+        "lat": geo.lat,
+        "lng": geo.lng,
+        "coordinate_source": geo.source,
         "controller_id": controller_id,
     }))
 }

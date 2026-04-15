@@ -26,13 +26,10 @@ pub(crate) async fn network_status(
         Ok(peers) => peers,
         Err(error) => return internal_error(&error),
     };
-    let total_nodes = peers.len() + 1;
-    let active_nodes = if network.running { total_nodes } else { 0 };
-    let health_percent = if total_nodes == 0 {
-        0
-    } else {
-        ((active_nodes * 100) / total_nodes) as u64
-    };
+    let active_peers = if network.running { peers.len() } else { 0 };
+    let active_nodes = 1 + active_peers;
+    let total_nodes = 1 + peers.len();
+    let health_percent = ((active_nodes * 100) / total_nodes.max(1)) as u64;
     let payload = json!({
         "running": network.running,
         "mode": network.mode,

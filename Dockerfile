@@ -16,6 +16,7 @@ COPY apps/wattetheria-kernel/Cargo.toml apps/wattetheria-kernel/Cargo.toml
 COPY apps/wattetheria-observatory/Cargo.toml apps/wattetheria-observatory/Cargo.toml
 COPY crates/conformance/Cargo.toml crates/conformance/Cargo.toml
 COPY crates/control-plane/Cargo.toml crates/control-plane/Cargo.toml
+COPY crates/gateway-contract/Cargo.toml crates/gateway-contract/Cargo.toml
 COPY crates/kernel-core/Cargo.toml crates/kernel-core/Cargo.toml
 COPY crates/node-core/Cargo.toml crates/node-core/Cargo.toml
 COPY crates/observatory-core/Cargo.toml crates/observatory-core/Cargo.toml
@@ -41,6 +42,7 @@ RUN mkdir -p \
     apps/wattetheria-observatory/src \
     crates/conformance/src \
     crates/control-plane/src \
+    crates/gateway-contract/src \
     crates/kernel-core/src \
     crates/node-core/src \
     crates/observatory-core/src \
@@ -50,6 +52,7 @@ RUN mkdir -p \
     && printf "fn main() {}\n" > apps/wattetheria-observatory/src/main.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/conformance/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/control-plane/src/lib.rs \
+    && printf "pub fn _planner_stub() {}\n" > crates/gateway-contract/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/kernel-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/node-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/observatory-core/src/lib.rs \
@@ -62,7 +65,11 @@ FROM chef AS cacher
 COPY --from=planner /app/recipe.json /app/recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo chef cook --release --recipe-path recipe.json \
+    --mount=type=secret,id=github_token \
+    if [ -f /run/secrets/github_token ]; then \
+      git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+    fi \
+    && cargo chef cook --release --recipe-path recipe.json \
     -p wattetheria-kernel -p wattetheria-observatory
 
 FROM chef AS builder
@@ -83,13 +90,21 @@ RUN sed -i \
 
 # Fetch wattswarm proto file for gRPC codegen (build.rs uses WATTSWARM_SYNC_PROTO).
 ARG WATTSWARM_PROTO_REV=main
-RUN curl -fsSL "https://raw.githubusercontent.com/wattetheria/wattswarm/${WATTSWARM_PROTO_REV}/apps/wattswarm/proto/wattetheria_sync.proto" \
-    -o /tmp/wattetheria_sync.proto
+RUN --mount=type=secret,id=github_token \
+    TOKEN=$(cat /run/secrets/github_token 2>/dev/null || echo "") \
+    && curl -fsSL \
+      -H "Authorization: token ${TOKEN}" \
+      "https://raw.githubusercontent.com/wattetheria/wattswarm/${WATTSWARM_PROTO_REV}/apps/wattswarm/proto/wattetheria_sync.proto" \
+      -o /tmp/wattetheria_sync.proto
 
 ENV WATTSWARM_SYNC_PROTO=/tmp/wattetheria_sync.proto
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo build --release -p wattetheria-kernel -p wattetheria-observatory
+    --mount=type=secret,id=github_token \
+    if [ -f /run/secrets/github_token ]; then \
+      git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+    fi \
+    && cargo build --release -p wattetheria-kernel -p wattetheria-observatory
 
 FROM debian:bookworm-slim
 

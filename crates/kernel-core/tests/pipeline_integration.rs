@@ -10,46 +10,45 @@ use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::summary::build_signed_summary;
-use wattetheria_kernel::task_engine::TaskEngine;
-use wattetheria_kernel::types::{Reward, Sla, VerificationMode, VerificationSpec};
+use wattetheria_kernel::types::AgentStats;
 
 #[test]
 fn full_pipeline_runs() {
     let temp = tempdir().unwrap();
     let event_log = EventLog::new(temp.path().join("events.jsonl")).unwrap();
     let identity = Identity::new_random();
-    let mut engine = TaskEngine::new(event_log.clone(), identity.clone());
-
-    let task = engine
-        .publish_task(
-            "market.match",
-            "T0",
+    event_log
+        .append_signed_with_signer(
+            "TASK_VERIFIED",
             json!({
-                "buy_orders": [{"id":"b1", "price":120, "qty":3}],
-                "sell_orders": [{"id":"s1", "price":100, "qty":3}]
+                "task_id": "task-1",
+                "accepted": true,
             }),
-            VerificationSpec {
-                mode: VerificationMode::Deterministic,
-                witnesses: None,
-            },
-            Reward {
-                watt: 10,
-                reputation: 2,
-                capacity: 4,
-            },
-            Sla { timeout_sec: 120 },
+            &identity,
+        )
+        .unwrap();
+    event_log
+        .append_signed_with_signer(
+            "TASK_SETTLED",
+            json!({
+                "task_id": "task-1",
+                "worker_id": identity.agent_did,
+                "reward": {
+                    "watt": 10,
+                    "reputation": 2,
+                    "capacity": 4,
+                },
+            }),
+            &identity,
         )
         .unwrap();
 
-    engine
-        .claim_task(&task.task_id, &identity.agent_did)
-        .unwrap();
-    let result = engine.execute_task(&task.task_id).unwrap();
-    engine
-        .submit_task_result(&task.task_id, &result, &identity.agent_did)
-        .unwrap();
-    assert!(engine.verify_task(&task.task_id).unwrap());
-    let ledger = engine.settle_task(&task.task_id).unwrap();
+    let ledger = AgentStats {
+        power: 1,
+        watt: 10,
+        reputation: 2,
+        capacity: 4,
+    };
 
     let events = event_log.get_all().unwrap();
     assert!(event_log.verify_chain().unwrap().0);
