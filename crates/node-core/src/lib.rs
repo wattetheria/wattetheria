@@ -209,7 +209,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         social_store,
         servicenet_client,
         stream_tx,
-    );
+    )
+    .await;
 
     Ok(RuntimeState {
         control_bind,
@@ -221,7 +222,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_control_state(
+async fn build_control_state(
     cli: &Cli,
     identity: &IdentityCompatView,
     signer: Arc<dyn PayloadSigner>,
@@ -273,7 +274,7 @@ fn build_control_state(
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),
-        geo_location: NodeGeoLocation::load_or_fetch_blocking(&cli.data_dir, &identity.agent_did),
+        geo_location: NodeGeoLocation::load_or_fetch(&cli.data_dir, &identity.agent_did).await,
     }
 }
 

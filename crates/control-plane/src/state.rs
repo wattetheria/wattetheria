@@ -211,6 +211,43 @@ pub enum GeoSource {
 }
 
 impl NodeGeoLocation {
+    pub async fn load_or_fetch(data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
+        let cache_path = data_dir.join("geo_location.json");
+        if let Some(cached) = read_cached_geo(&cache_path) {
+            info!(
+                lat = cached.lat,
+                lng = cached.lng,
+                "loaded cached geo location"
+            );
+            return Arc::new(Self {
+                lat: cached.lat,
+                lng: cached.lng,
+                source: GeoSource::Cached,
+            });
+        }
+
+        match fetch_geo_from_ip_api().await {
+            Ok(geo) => {
+                info!(
+                    lat = geo.lat,
+                    lng = geo.lng,
+                    "resolved geo location via ip-api.com"
+                );
+                let _ = persist_geo(&cache_path, &geo);
+                Arc::new(geo)
+            }
+            Err(error) => {
+                warn!("ip-api.com geo lookup failed, using derived fallback: {error:#}");
+                let (lat, lng) = super::routes::network::derived_geo(fallback_id);
+                Arc::new(Self {
+                    lat,
+                    lng,
+                    source: GeoSource::Derived,
+                })
+            }
+        }
+    }
+
     pub fn load_or_fetch_blocking(data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
         let cache_path = data_dir.join("geo_location.json");
         if let Some(cached) = read_cached_geo(&cache_path) {
@@ -226,7 +263,7 @@ impl NodeGeoLocation {
             });
         }
 
-        match fetch_geo_from_ip_api() {
+        match fetch_geo_from_ip_api_blocking() {
             Ok(geo) => {
                 info!(
                     lat = geo.lat,
@@ -256,7 +293,29 @@ struct IpApiResponse {
     lon: Option<f64>,
 }
 
-fn fetch_geo_from_ip_api() -> anyhow::Result<NodeGeoLocation> {
+async fn fetch_geo_from_ip_api() -> anyhow::Result<NodeGeoLocation> {
+    let response: IpApiResponse = reqwest::get("http://ip-api.com/json/?fields=status,lat,lon")
+        .await
+        .context("ip-api.com request failed")?
+        .json()
+        .await
+        .context("ip-api.com response parse failed")?;
+
+    if response.status != "success" {
+        anyhow::bail!("ip-api.com returned status: {}", response.status);
+    }
+
+    let lat = response.lat.context("ip-api.com missing lat")?;
+    let lon = response.lon.context("ip-api.com missing lon")?;
+
+    Ok(NodeGeoLocation {
+        lat,
+        lng: lon,
+        source: GeoSource::IpApi,
+    })
+}
+
+fn fetch_geo_from_ip_api_blocking() -> anyhow::Result<NodeGeoLocation> {
     let response: IpApiResponse =
         reqwest::blocking::get("http://ip-api.com/json/?fields=status,lat,lon")
             .context("ip-api.com request failed")?
