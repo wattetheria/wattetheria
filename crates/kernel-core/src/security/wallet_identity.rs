@@ -8,9 +8,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use watt_wallet::WalletMetadataStore;
-use watt_wallet::{FileKeyStore, FileWalletMetadataStore, SignerPurpose, Wallet};
+use watt_wallet::{
+    FileKeyStore, FileWalletMetadataStore, PaymentAccount, SignerPurpose, Wallet,
+    WalletProfileMetadata,
+};
 
 const DEFAULT_WALLET_PROFILE_ID: &str = "default";
+
+pub type LocalWallet = Wallet<FileKeyStore, FileWalletMetadataStore>;
+
+pub struct LocalWalletState {
+    pub wallet: LocalWallet,
+    pub profile: WalletProfileMetadata,
+}
+
+impl LocalWalletState {
+    pub fn save(&self) -> Result<()> {
+        Ok(self.wallet.save_profile(&self.profile)?)
+    }
+}
 
 pub fn load_or_create_wallet_backed_identity(data_dir: impl AsRef<Path>) -> Result<Identity> {
     let data_dir = data_dir.as_ref();
@@ -89,6 +105,29 @@ pub fn load_wallet_backed_identity(data_dir: impl AsRef<Path>) -> Result<Identit
         .context("export active wallet seed for runtime identity")?;
     Identity::from_ed25519_seed(active_identity.did.to_string(), seed)
         .context("build runtime identity from wallet")
+}
+
+pub fn open_local_wallet(data_dir: impl AsRef<Path>) -> Result<LocalWalletState> {
+    let data_dir = data_dir.as_ref();
+    fs::create_dir_all(data_dir).context("create data directory for wallet")?;
+    let wallet_paths = wallet_paths(data_dir);
+    let metadata_store = FileWalletMetadataStore::new(&wallet_paths.metadata_path);
+    let keystore =
+        FileKeyStore::open(&wallet_paths.keystore_path).context("open wallet keystore")?;
+    let wallet = Wallet::new(keystore, metadata_store);
+    let profile = wallet
+        .load_or_create_profile(DEFAULT_WALLET_PROFILE_ID, now_ms())
+        .context("load or create wallet profile")?;
+    Ok(LocalWalletState { wallet, profile })
+}
+
+pub fn active_payment_account(data_dir: impl AsRef<Path>) -> Result<PaymentAccount> {
+    let state = open_local_wallet(data_dir)?;
+    state
+        .wallet
+        .active_payment_account(&state.profile)
+        .cloned()
+        .context("resolve active payment account")
 }
 
 #[derive(Debug, Clone)]
@@ -210,5 +249,29 @@ mod tests {
             .unwrap()
         );
         assert_eq!(signer.agent_did(), identity.agent_did);
+    }
+
+    #[test]
+    fn local_wallet_state_supports_payment_accounts() {
+        let dir = tempdir().unwrap();
+        let _ = load_or_create_wallet_backed_identity(dir.path()).unwrap();
+        let mut state = open_local_wallet(dir.path()).unwrap();
+        let account = state
+            .wallet
+            .create_payment_account_web3_evm(
+                &mut state.profile,
+                Some("settlement".into()),
+                Some("base-sepolia".into()),
+                Some("x402".into()),
+                now_ms(),
+            )
+            .unwrap();
+        state
+            .wallet
+            .set_active_payment_account(&mut state.profile, &account.account_id, now_ms())
+            .unwrap();
+        let active = active_payment_account(dir.path()).unwrap();
+        assert_eq!(active.account_id, account.account_id);
+        assert!(active.address.as_deref().is_some());
     }
 }

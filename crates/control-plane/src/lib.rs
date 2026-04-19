@@ -882,6 +882,11 @@ mod tests {
                                 "output": {
                                     "echo": body["message"].clone(),
                                 },
+                                "settlement": body["settlement"].clone(),
+                                "payment_receipt": {
+                                    "status": "submitted",
+                                    "rail": body["settlement"]["rail"].clone(),
+                                },
                                 "raw": {
                                     "kind": "invoke",
                                 },
@@ -4549,6 +4554,14 @@ mod tests {
             json!({
                 "message": "hello servicenet",
                 "input": {"amount": 7},
+                "settlement": {
+                    "layer": "web3",
+                    "rail": "x402",
+                    "request": {
+                        "protocol": "x402",
+                        "payment_account_ref": "payment-account-123"
+                    }
+                }
             }),
         )
         .await;
@@ -4558,6 +4571,15 @@ mod tests {
             Some("hello servicenet")
         );
         assert_eq!(invoke_json["task_id"].as_str(), Some("task-42"));
+        assert_eq!(invoke_json["settlement"]["rail"].as_str(), Some("x402"));
+        assert_eq!(
+            invoke_json["settlement"]["request"]["payment_account_ref"].as_str(),
+            Some("payment-account-123")
+        );
+        assert_eq!(
+            invoke_json["payment_receipt"]["status"].as_str(),
+            Some("submitted")
+        );
 
         let task_json = authed_post_json(
             app,

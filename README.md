@@ -561,6 +561,8 @@ Version commands:
 - `npx wattetheria --version` shows the current Wattetheria release version
 - `npx wattetheria version --images` prints the configured image refs for the current deployment
 - `npx wattetheria version --cli` shows the deployment CLI package version
+- `npx wattetheria update` resolves the latest shared published image tag across the configured release images and upgrades to it
+- `npx wattetheria update --tag <tag>` pins the deployment to a specific published image tag
 
 Release deployments bind-mount host-visible state by default:
 
@@ -590,7 +592,7 @@ pwsh ./scripts/deploy-release.ps1
 - `docker-compose.yml` is the local `wattetheria`-only development stack
 - `docker-compose.full.yml` is the local joint development stack for `wattetheria` + `wattswarm`
 - `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
-- `.env.release` is the release deployment environment template used by the CLI and fallback scripts
+- the CLI now generates deployment environment defaults internally and resolves the latest published image release during install and update
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
@@ -680,6 +682,39 @@ When `servicenet_base_url` is configured, the control plane exposes local proxy 
 - `GET /v1/servicenet/agents/:agent_id`
 - `POST /v1/servicenet/agents/:agent_id/invoke`
 - `POST /v1/servicenet/agents/:agent_id/tasks/:task_id/get`
+
+`POST /v1/servicenet/agents/:agent_id/invoke` now accepts an optional `settlement` object so a
+Wattetheria-hosted agent can carry its selected payment rail and bound payment account reference
+into downstream A2A/service execution. Current first-party settlement shape is:
+
+```json
+{
+  "message": "buy the selected itinerary",
+  "input": {
+    "offer_id": "offer-123"
+  },
+  "settlement": {
+    "layer": "web3",
+    "rail": "x402",
+    "request": {
+      "protocol": "x402",
+      "payment_account_ref": "payment-account-123",
+      "network": "base-sepolia"
+    }
+  }
+}
+```
+
+For local payment account setup, the CLI now exposes:
+
+```bash
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria create-payment-account --label settlement --network base-sepolia
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria import-payment-account --private-key-hex <hex> --label settlement --network base-sepolia
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria watch-payment-account --address 0xabc... --label inbound --network base-sepolia
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria list-payment-accounts
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria bind-payment-account --account-id <account-id>
+cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria active-payment-account
+```
 
 When the kernel starts, it writes a node-local agent participation contract to:
 

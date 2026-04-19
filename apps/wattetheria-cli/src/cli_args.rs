@@ -66,6 +66,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DataCommand,
     },
+    Wallet {
+        #[arg(long, default_value = ".wattetheria")]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        command: WalletCommand,
+    },
     Oracle {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
@@ -202,6 +208,44 @@ pub(crate) enum DataCommand {
     BackupImport {
         input: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WalletCommand {
+    CreatePaymentAccount {
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, default_value = "x402")]
+        rail: String,
+        #[arg(long)]
+        network: Option<String>,
+    },
+    ImportPaymentAccount {
+        #[arg(long)]
+        private_key_hex: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, default_value = "x402")]
+        rail: String,
+        #[arg(long)]
+        network: Option<String>,
+    },
+    WatchPaymentAccount {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, default_value = "x402")]
+        rail: String,
+        #[arg(long)]
+        network: Option<String>,
+    },
+    ListPaymentAccounts,
+    BindPaymentAccount {
+        #[arg(long)]
+        account_id: String,
+    },
+    ActivePaymentAccount,
 }
 
 #[derive(Debug, Subcommand)]

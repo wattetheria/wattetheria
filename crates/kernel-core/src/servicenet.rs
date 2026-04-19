@@ -9,6 +9,23 @@ use uuid::Uuid;
 const DEFAULT_TIMEOUT_SEC: u64 = 15;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementLayer {
+    Web2,
+    #[default]
+    Web3,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SettlementRequest {
+    #[serde(default)]
+    pub layer: SettlementLayer,
+    pub rail: String,
+    #[serde(default)]
+    pub request: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServiceNetInvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -30,6 +47,8 @@ pub struct ServiceNetInvokeRequest {
     pub confirm_risky: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cost_units: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<SettlementRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -56,6 +75,10 @@ pub struct ServiceNetInvokeResponse {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement: Option<SettlementRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_receipt: Option<Value>,
     pub raw: Value,
 }
 
@@ -225,5 +248,39 @@ impl ServiceNetClient {
                 status: Some(status),
                 message: format!("{error:#}"),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn invoke_request_round_trips_settlement() {
+        let request = ServiceNetInvokeRequest {
+            message: Some("buy flight".into()),
+            input: json!({"route": "SYD-LAX"}),
+            settlement: Some(SettlementRequest {
+                layer: SettlementLayer::Web3,
+                rail: "x402".into(),
+                request: json!({
+                    "protocol": "x402",
+                    "payment_account_ref": "payment-account-123",
+                }),
+            }),
+            ..ServiceNetInvokeRequest::default()
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["settlement"]["rail"].as_str(), Some("x402"));
+        let round_tripped: ServiceNetInvokeRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            round_tripped
+                .settlement
+                .as_ref()
+                .and_then(|value| value.request.get("payment_account_ref"))
+                .and_then(Value::as_str),
+            Some("payment-account-123")
+        );
     }
 }
