@@ -340,13 +340,12 @@ fn build_priority_cards(game: &GameView) -> Vec<SupervisionPriorityCard> {
     }
 
     if let Some(mission_pack) = game.mission_pack.as_ref() {
-        let progress_pct = if mission_pack.summary.current_template_count == 0 {
-            0
-        } else {
-            let progress = (mission_pack.summary.existing_count * 100)
-                / mission_pack.summary.current_template_count;
-            u8::try_from(progress.min(100)).unwrap_or(100)
-        };
+        let progress_pct = mission_pack
+            .summary
+            .existing_count
+            .checked_mul(100)
+            .and_then(|value| value.checked_div(mission_pack.summary.current_template_count))
+            .map_or(0, |progress| u8::try_from(progress.min(100)).unwrap_or(100));
         cards.push(SupervisionPriorityCard {
             key: "mission_pack".to_string(),
             title: "Current stage mission pack".to_string(),

@@ -45,7 +45,7 @@ pub(crate) async fn list_topics(
         query.mission_id.as_deref(),
         query.include_inactive.unwrap_or(false),
     );
-    items.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
