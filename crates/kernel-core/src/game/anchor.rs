@@ -68,7 +68,7 @@ fn preferred_route<'a>(
     }
     match role {
         RolePath::Broker => routes.sort_by_key(|route| route.travel_cost),
-        RolePath::Enforcer => routes.sort_by(|left, right| right.risk.cmp(&left.risk)),
+        RolePath::Enforcer => routes.sort_by_key(|route| std::cmp::Reverse(route.risk)),
         RolePath::Operator | RolePath::Artificer => routes.sort_by_key(|route| route.risk),
     }
     routes.into_iter().next()

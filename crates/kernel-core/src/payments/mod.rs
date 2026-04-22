@@ -533,7 +533,7 @@ impl PaymentLedger {
             .collect();
 
         // Sort by proposed_at descending (newest first)
-        results.sort_by(|a, b| b.proposed_at.cmp(&a.proposed_at));
+        results.sort_by_key(|payment| std::cmp::Reverse(payment.proposed_at));
 
         if let Some(limit) = query.limit {
             results.truncate(limit);
