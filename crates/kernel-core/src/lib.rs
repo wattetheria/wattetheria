@@ -5,6 +5,7 @@ pub mod civilization;
 pub mod game;
 pub mod governance;
 pub mod map;
+pub mod payments;
 pub mod security;
 pub mod servicenet;
 pub mod storage;

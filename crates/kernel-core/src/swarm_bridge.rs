@@ -148,6 +148,13 @@ pub struct SwarmDirectMessageCommand {
     pub content: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmAgentPaymentCommand {
+    pub remote_node_id: String,
+    pub message_kind: String,
+    pub payment: Value,
+}
+
 #[async_trait]
 pub trait SwarmBridge: Send + Sync {
     async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView>;
@@ -222,6 +229,13 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn send_peer_direct_message(&self, _command: SwarmDirectMessageCommand) -> Result<Value> {
         Err(anyhow!("wattswarm peer direct messages are not configured"))
+    }
+
+    async fn publish_agent_payment_message(
+        &self,
+        _command: SwarmAgentPaymentCommand,
+    ) -> Result<Value> {
+        Err(anyhow!("wattswarm agent payments are not configured"))
     }
 
     async fn task_run_projection(
@@ -385,6 +399,15 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn send_peer_direct_message(&self, command: SwarmDirectMessageCommand) -> Result<Value> {
         self.topic_api()?.send_peer_direct_message(command).await
+    }
+
+    async fn publish_agent_payment_message(
+        &self,
+        command: SwarmAgentPaymentCommand,
+    ) -> Result<Value> {
+        self.topic_api()?
+            .publish_agent_payment_message(command)
+            .await
     }
 
     async fn task_run_projection(
@@ -633,6 +656,21 @@ impl HttpWattswarmApi {
             .json::<Value>()
             .await
             .context("decode wattswarm peer direct message response")
+    }
+
+    async fn publish_agent_payment_message(
+        &self,
+        command: SwarmAgentPaymentCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/payments/messages", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm agent payment response")
     }
 
     async fn task_run_projection(

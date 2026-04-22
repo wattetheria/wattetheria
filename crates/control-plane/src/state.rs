@@ -1,4 +1,5 @@
 use axum::extract::ws::Message;
+use axum::http::HeaderMap;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +34,7 @@ use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::TravelStateRegistry;
+use wattetheria_kernel::payments::PaymentLedger;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
@@ -77,6 +79,31 @@ pub struct StreamEvent {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentCommitContext {
+    pub event_id: String,
+    pub decision_id: String,
+}
+
+pub fn agent_commit_context_from_headers(headers: &HeaderMap) -> Option<AgentCommitContext> {
+    let event_id = headers
+        .get("x-agent-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+    let decision_id = headers
+        .get("x-agent-decision-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+    Some(AgentCommitContext {
+        event_id,
+        decision_id,
+    })
+}
+
 #[derive(Clone)]
 pub struct ControlPlaneState {
     pub data_dir: PathBuf,
@@ -97,6 +124,7 @@ pub struct ControlPlaneState {
     pub relationship_registry: Arc<Mutex<RelationshipRegistry>>,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
     pub topic_registry: Arc<Mutex<TopicRegistry>>,
+    pub payment_ledger: Arc<Mutex<PaymentLedger>>,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,
     pub travel_state_registry: Arc<Mutex<TravelStateRegistry>>,
@@ -106,6 +134,8 @@ pub struct ControlPlaneState {
     pub local_db: Arc<LocalDb>,
     pub social_store: Arc<SocialStore>,
     pub servicenet_client: Option<Arc<ServiceNetClient>>,
+    pub agent_executor_base_url: Option<String>,
+    pub agent_event_callback_base_url: Option<String>,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
     pub gateway_event_seq: Arc<GatewayEventSequence>,
@@ -550,6 +580,38 @@ pub struct TopicMessageBody {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct AgentActionCommitBody {
+    pub event: AgentActionCommitEvent,
+    pub decision: AgentActionDecision,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+pub struct AgentActionCommitEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub source_kind: String,
+    #[serde(default)]
+    pub source_node_id: Option<String>,
+    #[serde(default)]
+    pub target_agent_id: Option<String>,
+    pub payload: Value,
+    #[serde(default)]
+    pub requires_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentActionDecision {
+    pub decision_id: String,
+    pub action: String,
+    pub route: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct NetworkPeersQuery {
     pub limit: Option<usize>,
 }
@@ -714,6 +776,57 @@ pub struct AgentDmSendBody {
     pub content: Value,
     #[serde(default)]
     pub extensions: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentPaymentsQuery {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: Option<String>,
+    pub status: Option<wattetheria_kernel::payments::PaymentStatus>,
+    pub role: Option<String>,
+    pub rail: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentPaymentProposeBody {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: String,
+    pub amount: String,
+    pub currency: String,
+    pub rail: String,
+    #[serde(default)]
+    pub layer: wattetheria_kernel::payments::SettlementLayer,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub recipient_address: Option<String>,
+    #[serde(default)]
+    pub mission_id: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentPaymentAuthorizeBody {
+    #[serde(default)]
+    pub sender_address: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentPaymentSettleBody {
+    pub settlement_receipt: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentPaymentRejectBody {
+    pub reject_reason: String,
 }
 
 #[derive(Debug, Deserialize)]

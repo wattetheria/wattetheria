@@ -4,19 +4,79 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
-    StreamEvent,
+    StreamEvent, agent_commit_context_from_headers,
 };
 use wattetheria_kernel::audit::AuditEntry;
+
+struct CommitResponseArgs<'a> {
+    action_type: &'a str,
+    target_id: Option<String>,
+    actor_agent_did: Option<String>,
+    request_json: &'a Value,
+    response_json: &'a Value,
+}
+
+fn replay_commit_response(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    action_type: &str,
+) -> anyhow::Result<Option<Response>> {
+    let Some(context) = agent_commit_context_from_headers(headers) else {
+        return Ok(None);
+    };
+    let Some(entry) = state.local_db.load_agent_action_commit(
+        &context.event_id,
+        &context.decision_id,
+        action_type,
+    )?
+    else {
+        return Ok(None);
+    };
+    let payload: Value = serde_json::from_str(&entry.result_json)?;
+    Ok(Some(Json(payload).into_response()))
+}
+
+fn append_commit_response(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    args: CommitResponseArgs<'_>,
+) -> anyhow::Result<()> {
+    let Some(context) = agent_commit_context_from_headers(headers) else {
+        return Ok(());
+    };
+    state.local_db.append_agent_action_commit(
+        &wattetheria_kernel::local_db::AgentActionCommitLogEntry {
+            commit_id: Uuid::new_v4().to_string(),
+            event_id: context.event_id,
+            decision_id: context.decision_id,
+            action_type: args.action_type.to_owned(),
+            domain: "mission".to_owned(),
+            target_id: args.target_id,
+            expected_state: None,
+            result_state: None,
+            request_json: serde_json::to_string(args.request_json)?,
+            result_json: serde_json::to_string(args.response_json)?,
+            status: "accepted".to_owned(),
+            actor_public_id: None,
+            actor_agent_did: args.actor_agent_did,
+            created_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        },
+    )
+}
 
 pub(crate) async fn mission_list(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Query(query): Query<MissionsQuery>,
 ) -> Response {
+    if let Ok(Some(response)) = replay_commit_response(&state, &headers, "missions.publish") {
+        return response;
+    }
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
@@ -91,7 +151,21 @@ pub(crate) async fn mission_publish(
         details: Some(payload.clone()),
     });
 
-    (StatusCode::CREATED, Json(mission)).into_response()
+    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    if let Err(error) = append_commit_response(
+        &state,
+        &headers,
+        CommitResponseArgs {
+            action_type: "missions.publish",
+            target_id: Some(mission.mission_id.clone()),
+            actor_agent_did: None,
+            request_json: &json!({"title": body.title, "publisher": body.publisher}),
+            response_json: &response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    (StatusCode::CREATED, Json(response_json)).into_response()
 }
 
 pub(crate) async fn mission_claim(
@@ -116,10 +190,17 @@ async fn transition_mission(
     body: MissionClaimBody,
     action: &str,
 ) -> Response {
+    if let Ok(Some(response)) =
+        replay_commit_response(&state, &headers, &format!("missions.{action}"))
+    {
+        return response;
+    }
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
+    let request_mission_id = body.mission_id.clone();
+    let request_agent_did = body.agent_did.clone();
     let mut board = state.mission_board.lock().await;
     let mission = match action {
         "claim" => board.claim(&body.mission_id, &body.agent_did),
@@ -169,7 +250,21 @@ async fn transition_mission(
         details: Some(payload.clone()),
     });
 
-    Json(mission).into_response()
+    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    if let Err(error) = append_commit_response(
+        &state,
+        &headers,
+        CommitResponseArgs {
+            action_type: &format!("missions.{action}"),
+            target_id: Some(mission.mission_id.clone()),
+            actor_agent_did: Some(request_agent_did.clone()),
+            request_json: &json!({"mission_id": request_mission_id, "agent_did": request_agent_did}),
+            response_json: &response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    Json(response_json).into_response()
 }
 
 pub(crate) async fn mission_settle(
@@ -177,10 +272,14 @@ pub(crate) async fn mission_settle(
     headers: HeaderMap,
     Json(body): Json<MissionSettleBody>,
 ) -> Response {
+    if let Ok(Some(response)) = replay_commit_response(&state, &headers, "missions.settle") {
+        return response;
+    }
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
+    let request_mission_id = body.mission_id.clone();
 
     let mission = {
         let mut board = state.mission_board.lock().await;
@@ -241,5 +340,19 @@ pub(crate) async fn mission_settle(
         details: Some(payload.clone()),
     });
 
-    Json(mission).into_response()
+    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    if let Err(error) = append_commit_response(
+        &state,
+        &headers,
+        CommitResponseArgs {
+            action_type: "missions.settle",
+            target_id: Some(mission.mission_id.clone()),
+            actor_agent_did: None,
+            request_json: &json!({"mission_id": request_mission_id}),
+            response_json: &response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    Json(response_json).into_response()
 }

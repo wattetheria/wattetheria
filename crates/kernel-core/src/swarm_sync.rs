@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::swarm_bridge::{
+    SwarmPeerDmMessageView, SwarmPeerDmThreadView, SwarmPeerRelationshipView,
+};
 use crate::swarm_bridge::{SwarmTopicCursorView, SwarmTopicMessageView};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -49,6 +52,14 @@ pub struct SwarmTopicActivitySnapshot {
     pub scope_hint: String,
     pub messages: Vec<SwarmTopicMessageView>,
     pub cursor: Option<SwarmTopicCursorView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmSocialProjectionSnapshot {
+    pub generated_at: u64,
+    pub relationships: Vec<SwarmPeerRelationshipView>,
+    pub threads: Vec<SwarmPeerDmThreadView>,
+    pub messages: Vec<SwarmPeerDmMessageView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

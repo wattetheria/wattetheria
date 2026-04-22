@@ -1,3 +1,7 @@
+use crate::routes::civilization::{
+    reconcile_swarm_dm_messages, reconcile_swarm_dm_threads, reconcile_swarm_relationship_views,
+};
+use crate::social_host::{load_social_identity_maps, resolve_social_local_context};
 use crate::state::{ControlPlaneState, StreamEvent};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -12,7 +16,9 @@ use tonic::{Code, Request, Status};
 use tracing::{debug, warn};
 use wattetheria_kernel::civilization::topics::TopicProfile;
 use wattetheria_kernel::local_db::LocalDb;
-use wattetheria_kernel::swarm_sync::{SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot};
+use wattetheria_kernel::swarm_sync::{
+    SwarmSocialProjectionSnapshot, SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot,
+};
 
 #[allow(
     clippy::doc_markdown,
@@ -53,8 +59,12 @@ pub fn spawn_wattswarm_sync_bridge(
             state.clone(),
             grpc_endpoint.clone(),
         ));
+        let social_task = tokio::spawn(run_social_projection_stream(
+            state.clone(),
+            grpc_endpoint.clone(),
+        ));
         let topic_task = tokio::spawn(run_topic_projection_supervisor(state, grpc_endpoint));
-        let _ = tokio::join!(network_task, task_run_task, topic_task);
+        let _ = tokio::join!(network_task, task_run_task, social_task, topic_task);
     }))
 }
 
@@ -185,6 +195,40 @@ async fn task_run_projection_session(state: ControlPlaneState, grpc_endpoint: &s
     Ok(())
 }
 
+async fn run_social_projection_stream(state: ControlPlaneState, grpc_endpoint: String) {
+    loop {
+        match social_projection_session(state.clone(), &grpc_endpoint).await {
+            Ok(()) => debug!("wattswarm social projection stream closed cleanly"),
+            Err(error) => warn!("wattswarm social projection stream failed: {error:#}"),
+        }
+        sleep(Duration::from_secs(RECONNECT_DELAY_SEC)).await;
+    }
+}
+
+async fn social_projection_session(state: ControlPlaneState, grpc_endpoint: &str) -> Result<()> {
+    let mut client = connect_client(grpc_endpoint).await?;
+    let request = Request::new(ProjectionStreamRequest {
+        poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+        limit: DEFAULT_STREAM_LIMIT,
+        feed_key: String::new(),
+        scope_hint: String::new(),
+        subscriber_node_id: String::new(),
+    });
+    let mut stream = client
+        .stream_social_projection(request)
+        .await
+        .context("open wattswarm social projection stream")?
+        .into_inner();
+    while let Some(frame) = stream
+        .message()
+        .await
+        .context("read wattswarm social projection frame")?
+    {
+        apply_social_projection_frame(&state, &frame).await?;
+    }
+    Ok(())
+}
+
 async fn run_topic_projection_supervisor(state: ControlPlaneState, grpc_endpoint: String) {
     let mut topic_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
 
@@ -286,6 +330,42 @@ async fn topic_projection_session(
     })? {
         emit_projection_frame(&state, "wattswarm.sync.topic_activity", &frame).await;
     }
+    Ok(())
+}
+
+async fn apply_social_projection_frame(
+    state: &ControlPlaneState,
+    frame: &ProjectionFrame,
+) -> Result<()> {
+    let snapshot: SwarmSocialProjectionSnapshot =
+        serde_json::from_str(&frame.json_payload).context("decode wattswarm social projection")?;
+    let local = resolve_social_local_context(state, None).await;
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let relationships = snapshot.relationships.clone();
+    let threads = snapshot.threads.clone();
+    let messages = snapshot.messages.clone();
+    reconcile_swarm_relationship_views(
+        state,
+        &local.public_id,
+        &identities,
+        &bindings,
+        &relationships,
+    )?;
+    reconcile_swarm_dm_threads(state, &local.public_id, &identities, &bindings, &threads)?;
+    reconcile_swarm_dm_messages(state, &local.public_id, &identities, &bindings, &messages)?;
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "wattswarm.sync.social_projection".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!({
+            "source": "wattswarm",
+            "projection_kind": frame.kind,
+            "cursor": frame.cursor,
+            "generated_at": frame.generated_at,
+            "relationship_count": relationships.len(),
+            "thread_count": threads.len(),
+            "message_count": messages.len(),
+        }),
+    });
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, extract::ws::WebSocket};
 use chrono::Utc;
@@ -11,11 +11,409 @@ use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::routes::identity::identity_context_value;
 use crate::state::{
-    ActionRequest, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery,
-    EventsQuery, NightShiftQuery, StreamEvent, send_stream_text,
+    ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
+    AgentPaymentRejectBody, AgentPaymentSettleBody, AgentRelationshipActionBody, AuditQuery,
+    AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery, EventsQuery,
+    MissionClaimBody, MissionPublishBody, MissionSettleBody, NightShiftQuery, StreamEvent,
+    TopicMessageBody, send_stream_text,
 };
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
+use wattetheria_kernel::swarm_bridge::SwarmRelationshipAction;
+
+fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let auth_value = format!("Bearer {auth}");
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        HeaderValue::from_str(&auth_value).expect("valid bearer token header"),
+    );
+    headers.insert(
+        "x-agent-event-id",
+        HeaderValue::from_str(event_id).expect("valid agent event id"),
+    );
+    headers.insert(
+        "x-agent-decision-id",
+        HeaderValue::from_str(decision_id).expect("valid agent decision id"),
+    );
+    headers
+}
+
+fn event_message_public_id(
+    event: &crate::state::AgentActionCommitBody,
+    key: &str,
+) -> Option<String> {
+    event
+        .event
+        .payload
+        .pointer(&format!("/agent_envelope/message/{key}"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn bad_request(message: impl Into<String>) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": message.into()})),
+    )
+        .into_response()
+}
+
+fn required_payload_string(payload: &Value, pointer: &str) -> Option<String> {
+    payload
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn optional_payload_value<T: serde::de::DeserializeOwned>(
+    payload: &Value,
+    key: &str,
+    field_label: &str,
+) -> Result<Option<T>, String> {
+    payload
+        .get(key)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("invalid {field_label}: {error}"))
+}
+
+fn mission_agent_did(payload: &Value, default_agent_did: &str) -> String {
+    payload
+        .get("agent_did")
+        .and_then(Value::as_str)
+        .map_or(default_agent_did.to_owned(), ToOwned::to_owned)
+}
+
+async fn commit_friend_request(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
+        return bad_request("friend_request missing source_public_id");
+    };
+    let action = match body.decision.action.as_str() {
+        "accept" => SwarmRelationshipAction::Accept,
+        "reject" => SwarmRelationshipAction::Reject,
+        "block" => SwarmRelationshipAction::Block,
+        _ => unreachable!("friend_request action already matched"),
+    };
+    crate::routes::civilization::agent_relationship_action(
+        State(state),
+        commit_headers,
+        Json(AgentRelationshipActionBody {
+            public_id: event_message_public_id(&body, "target_public_id"),
+            counterpart_public_id,
+            action,
+            message: body.decision.payload.get("message").cloned(),
+            extensions: body.decision.payload.get("extensions").cloned(),
+        }),
+    )
+    .await
+}
+
+async fn commit_dm_received(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
+        return bad_request("dm_received missing source_public_id");
+    };
+    match body.decision.action.as_str() {
+        "reply" => {
+            let Some(content) = body.decision.payload.get("content").cloned() else {
+                return bad_request("dm reply requires content");
+            };
+            crate::routes::civilization::send_agent_dm_message(
+                State(state),
+                commit_headers,
+                Json(AgentDmSendBody {
+                    public_id: event_message_public_id(&body, "target_public_id"),
+                    counterpart_public_id,
+                    content,
+                    extensions: body.decision.payload.get("extensions").cloned(),
+                }),
+            )
+            .await
+        }
+        "block" => {
+            crate::routes::civilization::agent_relationship_action(
+                State(state),
+                commit_headers,
+                Json(AgentRelationshipActionBody {
+                    public_id: event_message_public_id(&body, "target_public_id"),
+                    counterpart_public_id,
+                    action: SwarmRelationshipAction::Block,
+                    message: body.decision.payload.get("message").cloned(),
+                    extensions: body.decision.payload.get("extensions").cloned(),
+                }),
+            )
+            .await
+        }
+        "ignore" => Json(json!({
+            "ok": true,
+            "status": "ignored",
+            "event_id": body.event.event_id,
+            "decision_id": body.decision.decision_id,
+        }))
+        .into_response(),
+        _ => unreachable!("dm action already matched"),
+    }
+}
+
+async fn commit_payment_action(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(payment_id) = required_payload_string(&body.event.payload, "/payment/payment_id")
+    else {
+        return bad_request("missing payment.payment_id");
+    };
+    match body.decision.action.as_str() {
+        "authorize" => {
+            crate::routes::payments::authorize_agent_payment(
+                State(state),
+                commit_headers,
+                axum::extract::Path(payment_id),
+                Json(AgentPaymentAuthorizeBody {
+                    sender_address: body
+                        .decision
+                        .payload
+                        .get("sender_address")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                }),
+            )
+            .await
+        }
+        "reject" => {
+            let reject_reason = body
+                .decision
+                .payload
+                .get("reject_reason")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or(body.decision.reason.clone())
+                .unwrap_or_else(|| "rejected_by_agent".to_owned());
+            crate::routes::payments::reject_agent_payment(
+                State(state),
+                commit_headers,
+                axum::extract::Path(payment_id),
+                Json(AgentPaymentRejectBody { reject_reason }),
+            )
+            .await
+        }
+        "submit" => {
+            crate::routes::payments::submit_agent_payment(
+                State(state),
+                commit_headers,
+                axum::extract::Path(payment_id),
+            )
+            .await
+        }
+        "settle" => {
+            let Some(settlement_receipt) = body.decision.payload.get("settlement_receipt").cloned()
+            else {
+                return bad_request("payment settle requires settlement_receipt");
+            };
+            crate::routes::payments::settle_agent_payment(
+                State(state),
+                commit_headers,
+                axum::extract::Path(payment_id),
+                Json(AgentPaymentSettleBody { settlement_receipt }),
+            )
+            .await
+        }
+        "cancel" => {
+            crate::routes::payments::cancel_agent_payment(
+                State(state),
+                commit_headers,
+                axum::extract::Path(payment_id),
+            )
+            .await
+        }
+        _ => unreachable!("payment action already matched"),
+    }
+}
+
+async fn commit_topic_reply(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(feed_key) = required_payload_string(&body.event.payload, "/feed_key") else {
+        return bad_request("missing feed_key");
+    };
+    let Some(scope_hint) = required_payload_string(&body.event.payload, "/scope_hint") else {
+        return bad_request("missing scope_hint");
+    };
+    let Some(content) = body.decision.payload.get("content").cloned() else {
+        return bad_request("topic reply requires content");
+    };
+    crate::routes::topics::post_topic_message(
+        State(state),
+        commit_headers,
+        Json(TopicMessageBody {
+            public_id: body
+                .decision
+                .payload
+                .get("public_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            feed_key,
+            scope_hint,
+            content,
+            reply_to_message_id: body
+                .decision
+                .payload
+                .get("reply_to_message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    body.event
+                        .payload
+                        .get("message_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                }),
+        }),
+    )
+    .await
+}
+
+async fn commit_publish_mission(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(title) = required_payload_string(&body.decision.payload, "/title") else {
+        return bad_request("missing title");
+    };
+    let Some(description) = required_payload_string(&body.decision.payload, "/description") else {
+        return bad_request("missing description");
+    };
+    let publisher = body
+        .decision
+        .payload
+        .get("publisher")
+        .and_then(Value::as_str)
+        .map_or_else(|| state.agent_did.clone(), ToOwned::to_owned);
+    let publisher_kind =
+        match optional_payload_value(&body.decision.payload, "publisher_kind", "publisher_kind") {
+            Ok(Some(value)) => value,
+            Ok(None) => wattetheria_kernel::civilization::missions::MissionPublisherKind::System,
+            Err(error) => return bad_request(error),
+        };
+    let domain = match optional_payload_value(&body.decision.payload, "domain", "mission domain") {
+        Ok(Some(value)) => value,
+        Ok(None) => wattetheria_kernel::civilization::missions::MissionDomain::Trade,
+        Err(error) => return bad_request(error),
+    };
+    let reward = match optional_payload_value(&body.decision.payload, "reward", "mission reward") {
+        Ok(Some(value)) => value,
+        Ok(None) => return bad_request("publish_mission requires reward"),
+        Err(error) => return bad_request(error),
+    };
+    let required_role =
+        match optional_payload_value(&body.decision.payload, "required_role", "required_role") {
+            Ok(value) => value,
+            Err(error) => return bad_request(error),
+        };
+    let required_faction = match optional_payload_value(
+        &body.decision.payload,
+        "required_faction",
+        "required_faction",
+    ) {
+        Ok(value) => value,
+        Err(error) => return bad_request(error),
+    };
+    crate::routes::missions::mission_publish(
+        State(state),
+        commit_headers,
+        Json(MissionPublishBody {
+            title,
+            description,
+            publisher,
+            publisher_kind,
+            domain,
+            subnet_id: body
+                .decision
+                .payload
+                .get("subnet_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            zone_id: body
+                .decision
+                .payload
+                .get("zone_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            required_role,
+            required_faction,
+            reward,
+            payload: body
+                .decision
+                .payload
+                .get("payload")
+                .cloned()
+                .unwrap_or(Value::Null),
+        }),
+    )
+    .await
+}
+
+async fn commit_transition_mission(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let Some(mission_id) = required_payload_string(&body.decision.payload, "/mission_id") else {
+        return bad_request("missing mission_id");
+    };
+    match body.decision.action.as_str() {
+        "claim_mission" => {
+            let default_agent_did = state.agent_did.clone();
+            crate::routes::missions::mission_claim(
+                State(state),
+                commit_headers,
+                Json(MissionClaimBody {
+                    mission_id,
+                    agent_did: mission_agent_did(&body.decision.payload, &default_agent_did),
+                }),
+            )
+            .await
+        }
+        "complete_mission" => {
+            let default_agent_did = state.agent_did.clone();
+            crate::routes::missions::mission_complete(
+                State(state),
+                commit_headers,
+                Json(MissionClaimBody {
+                    mission_id,
+                    agent_did: mission_agent_did(&body.decision.payload, &default_agent_did),
+                }),
+            )
+            .await
+        }
+        "settle_mission" => {
+            crate::routes::missions::mission_settle(
+                State(state),
+                commit_headers,
+                Json(MissionSettleBody { mission_id }),
+            )
+            .await
+        }
+        _ => unreachable!("mission transition action already matched"),
+    }
+}
 
 pub(crate) async fn health(State(state): State<ControlPlaneState>) -> impl IntoResponse {
     Json(json!({
@@ -24,6 +422,52 @@ pub(crate) async fn health(State(state): State<ControlPlaneState>) -> impl IntoR
         "agent_did": state.agent_did,
         "uptime_sec": Utc::now().timestamp() - state.started_at,
     }))
+}
+
+pub(crate) async fn agent_action_commit(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<AgentActionCommitBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let commit_headers =
+        forwarded_agent_commit_headers(&auth, &body.event.event_id, &body.decision.decision_id);
+
+    match (
+        body.event.event_type.as_str(),
+        body.decision.action.as_str(),
+    ) {
+        ("friend_request", "accept" | "reject" | "block") => {
+            commit_friend_request(state, commit_headers, body).await
+        }
+        ("dm_received", "reply" | "block" | "ignore") => {
+            commit_dm_received(state, commit_headers, body).await
+        }
+        (
+            "payment_request" | "payment_update",
+            "authorize" | "reject" | "submit" | "settle" | "cancel",
+        ) => commit_payment_action(state, commit_headers, body).await,
+        ("topic_message_requires_reply", "reply") => {
+            commit_topic_reply(state, commit_headers, body).await
+        }
+        (_, "publish_mission") => commit_publish_mission(state, commit_headers, body).await,
+        (_, "claim_mission" | "complete_mission" | "settle_mission") => {
+            commit_transition_mission(state, commit_headers, body).await
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "unsupported agent action commit",
+                "event_type": body.event.event_type,
+                "action": body.decision.action,
+                "route": body.decision.route,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 pub(crate) async fn state_view(

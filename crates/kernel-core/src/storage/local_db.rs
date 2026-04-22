@@ -10,10 +10,11 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, Error::QueryReturnedNoRows, params};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub mod domain {
     pub const GOVERNANCE: &str = "governance";
@@ -25,12 +26,31 @@ pub mod domain {
     pub const RELATIONSHIP_REGISTRY: &str = "relationship_registry";
     pub const ORGANIZATION_REGISTRY: &str = "organization_registry";
     pub const TOPIC_REGISTRY: &str = "topic_registry";
+    pub const PAYMENT_LEDGER: &str = "payment_ledger";
     pub const GALAXY_STATE: &str = "galaxy_state";
     pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";
     pub const TRAVEL_STATE_REGISTRY: &str = "travel_state_registry";
     pub const ORACLE_REGISTRY: &str = "oracle_registry";
     pub const ONLINE_PROOF: &str = "online_proof";
     pub const POLICY: &str = "policy";
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentActionCommitLogEntry {
+    pub commit_id: String,
+    pub event_id: String,
+    pub decision_id: String,
+    pub action_type: String,
+    pub domain: String,
+    pub target_id: Option<String>,
+    pub expected_state: Option<String>,
+    pub result_state: Option<String>,
+    pub request_json: String,
+    pub result_json: String,
+    pub status: String,
+    pub actor_public_id: Option<String>,
+    pub actor_agent_did: Option<String>,
+    pub created_at: String,
 }
 
 pub struct LocalDb {
@@ -97,6 +117,28 @@ impl LocalDb {
             );",
         )
         .context("create domain_state table")?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_action_commit_log (
+                commit_id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL,
+                decision_id TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                target_id TEXT,
+                expected_state TEXT,
+                result_state TEXT,
+                request_json TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                actor_public_id TEXT,
+                actor_agent_did TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_action_commit_log_event_decision_action
+                ON agent_action_commit_log(event_id, decision_id, action_type);",
+        )
+        .context("create agent_action_commit_log table")?;
 
         // v1 → v2: convert integer timestamps to UTC strings.
         if current == Some(1) {
@@ -200,6 +242,99 @@ impl LocalDb {
                 params![domain],
             )
             .with_context(|| format!("delete domain state: {domain}"))?;
+        Ok(())
+    }
+
+    pub fn load_agent_action_commit(
+        &self,
+        event_id: &str,
+        decision_id: &str,
+        action_type: &str,
+    ) -> Result<Option<AgentActionCommitLogEntry>> {
+        let conn = self.conn();
+        let row = conn.query_row(
+            "SELECT commit_id,
+                    event_id,
+                    decision_id,
+                    action_type,
+                    domain,
+                    target_id,
+                    expected_state,
+                    result_state,
+                    request_json,
+                    result_json,
+                    status,
+                    actor_public_id,
+                    actor_agent_did,
+                    created_at
+             FROM agent_action_commit_log
+             WHERE event_id = ?1 AND decision_id = ?2 AND action_type = ?3
+             LIMIT 1",
+            params![event_id, decision_id, action_type],
+            |row| {
+                Ok(AgentActionCommitLogEntry {
+                    commit_id: row.get(0)?,
+                    event_id: row.get(1)?,
+                    decision_id: row.get(2)?,
+                    action_type: row.get(3)?,
+                    domain: row.get(4)?,
+                    target_id: row.get(5)?,
+                    expected_state: row.get(6)?,
+                    result_state: row.get(7)?,
+                    request_json: row.get(8)?,
+                    result_json: row.get(9)?,
+                    status: row.get(10)?,
+                    actor_public_id: row.get(11)?,
+                    actor_agent_did: row.get(12)?,
+                    created_at: row.get(13)?,
+                })
+            },
+        );
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error).context("query agent action commit log"),
+        }
+    }
+
+    pub fn append_agent_action_commit(&self, entry: &AgentActionCommitLogEntry) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO agent_action_commit_log (
+                    commit_id,
+                    event_id,
+                    decision_id,
+                    action_type,
+                    domain,
+                    target_id,
+                    expected_state,
+                    result_state,
+                    request_json,
+                    result_json,
+                    status,
+                    actor_public_id,
+                    actor_agent_did,
+                    created_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    entry.commit_id,
+                    entry.event_id,
+                    entry.decision_id,
+                    entry.action_type,
+                    entry.domain,
+                    entry.target_id,
+                    entry.expected_state,
+                    entry.result_state,
+                    entry.request_json,
+                    entry.result_json,
+                    entry.status,
+                    entry.actor_public_id,
+                    entry.actor_agent_did,
+                    entry.created_at,
+                ],
+            )
+            .context("insert agent action commit log")?;
         Ok(())
     }
 
@@ -356,6 +491,35 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn agent_action_commit_log_roundtrip() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let entry = AgentActionCommitLogEntry {
+            commit_id: "commit-1".to_string(),
+            event_id: "evt-1".to_string(),
+            decision_id: "decision-1".to_string(),
+            action_type: "payments.authorize".to_string(),
+            domain: "payment".to_string(),
+            target_id: Some("payment-1".to_string()),
+            expected_state: Some("proposed".to_string()),
+            result_state: Some("authorized".to_string()),
+            request_json: "{\"payment_id\":\"payment-1\"}".to_string(),
+            result_json: "{\"ok\":true}".to_string(),
+            status: "accepted".to_string(),
+            actor_public_id: Some("captain-aurora".to_string()),
+            actor_agent_did: Some("did:key:zAgent".to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        db.append_agent_action_commit(&entry)
+            .expect("append commit log");
+
+        let loaded = db
+            .load_agent_action_commit("evt-1", "decision-1", "payments.authorize")
+            .expect("load commit log")
+            .expect("commit exists");
+        assert_eq!(loaded, entry);
     }
 
     #[test]

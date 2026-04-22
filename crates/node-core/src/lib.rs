@@ -43,6 +43,7 @@ use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::online_proof::OnlineProofManager;
+use wattetheria_kernel::payments::PaymentLedger;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::PayloadSigner;
@@ -66,6 +67,7 @@ struct CivilizationRuntimeState {
     relationship_registry: RelationshipRegistry,
     organization_registry: OrganizationRegistry,
     topic_registry: TopicRegistry,
+    payment_ledger: PaymentLedger,
     galaxy_state: GalaxyState,
     galaxy_map_registry: GalaxyMapRegistry,
     travel_state_registry: TravelStateRegistry,
@@ -208,6 +210,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         local_db,
         social_store,
         servicenet_client,
+        resolve_executor_base_url(&brain_config),
+        Some(resolve_agent_event_callback_base_url(cli)),
         stream_tx,
     )
     .await;
@@ -239,6 +243,8 @@ async fn build_control_state(
     local_db: Arc<LocalDb>,
     social_store: Arc<SocialStore>,
     servicenet_client: Option<Arc<ServiceNetClient>>,
+    agent_executor_base_url: Option<String>,
+    agent_event_callback_base_url: Option<String>,
     stream_tx: broadcast::Sender<StreamEvent>,
 ) -> ControlPlaneState {
     ControlPlaneState {
@@ -262,6 +268,7 @@ async fn build_control_state(
         relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
         topic_registry: Arc::new(Mutex::new(civilization_state.topic_registry)),
+        payment_ledger: Arc::new(Mutex::new(civilization_state.payment_ledger)),
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
         travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
@@ -271,6 +278,8 @@ async fn build_control_state(
         local_db,
         social_store,
         servicenet_client,
+        agent_executor_base_url,
+        agent_event_callback_base_url,
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),
@@ -327,6 +336,10 @@ fn load_civilization_runtime_state(
         local_db::domain::TOPIC_REGISTRY,
         &cli.data_dir.join("civilization/topics.json"),
     )?;
+    let payment_ledger: PaymentLedger = local_db.load_or_migrate(
+        local_db::domain::PAYMENT_LEDGER,
+        &cli.data_dir.join("payments/ledger.json"),
+    )?;
     let galaxy_state: GalaxyState = load_or_migrate_galaxy(
         local_db,
         &cli.data_dir.join("galaxy/state.json"),
@@ -382,6 +395,7 @@ fn load_civilization_runtime_state(
         relationship_registry,
         organization_registry,
         topic_registry,
+        payment_ledger,
         galaxy_state,
         galaxy_map_registry,
         travel_state_registry,
@@ -488,13 +502,19 @@ struct WattswarmExecutorRegistration {
     endpoint_url: String,
     executor_name: String,
     executor_base_url: String,
+    agent_event_callback_base_url: String,
+    commit_plane_endpoint: String,
+    commit_plane_token_file: String,
 }
 
 #[derive(Debug, serde::Serialize)]
 struct ExecutorAddRequest<'a> {
     name: &'a str,
     base_url: &'a str,
+    agent_event_callback_base_url: Option<&'a str>,
     remote: bool,
+    commit_plane_endpoint: Option<&'a str>,
+    commit_plane_token_file: Option<&'a str>,
 }
 
 fn spawn_wattswarm_executor_registration_task(
@@ -540,6 +560,7 @@ fn resolve_wattswarm_executor_registration(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     let executor_base_url = resolve_executor_base_url(brain_config)?;
+    let agent_event_callback_base_url = resolve_agent_event_callback_base_url(cli);
     Some(WattswarmExecutorRegistration {
         endpoint_url: format!(
             "{}/api/executors/add",
@@ -547,6 +568,17 @@ fn resolve_wattswarm_executor_registration(
         ),
         executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
         executor_base_url,
+        agent_event_callback_base_url: agent_event_callback_base_url.clone(),
+        commit_plane_endpoint: agent_event_callback_base_url,
+        commit_plane_token_file: cli
+            .agent_host_data_dir
+            .as_deref()
+            .map_or_else(
+                || cli.data_dir.join("control.token"),
+                |dir| std::path::Path::new(dir).join("control.token"),
+            )
+            .display()
+            .to_string(),
     })
 }
 
@@ -561,6 +593,12 @@ fn resolve_executor_base_url(brain_config: &BrainProviderConfig) -> Option<Strin
     }
 }
 
+fn resolve_agent_event_callback_base_url(cli: &Cli) -> String {
+    cli.agent_control_plane_endpoint
+        .clone()
+        .unwrap_or_else(|| format!("http://{}", cli.control_plane_bind))
+}
+
 async fn register_executor_once(
     client: &reqwest::Client,
     registration: &WattswarmExecutorRegistration,
@@ -570,7 +608,10 @@ async fn register_executor_once(
         .json(&ExecutorAddRequest {
             name: &registration.executor_name,
             base_url: &registration.executor_base_url,
+            agent_event_callback_base_url: Some(&registration.agent_event_callback_base_url),
             remote: false,
+            commit_plane_endpoint: Some(&registration.commit_plane_endpoint),
+            commit_plane_token_file: Some(&registration.commit_plane_token_file),
         })
         .send()
         .await
@@ -744,6 +785,10 @@ mod tests {
             "http://127.0.0.1:7788/api/executors/add"
         );
         assert_eq!(registration.executor_base_url, "http://127.0.0.1:8787/v1");
+        assert_eq!(
+            registration.agent_event_callback_base_url,
+            "http://127.0.0.1:7777"
+        );
     }
 
     #[tokio::test]
@@ -771,6 +816,9 @@ mod tests {
             endpoint_url: format!("http://{addr}/api/executors/add"),
             executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
             executor_base_url: "http://127.0.0.1:8787".to_owned(),
+            agent_event_callback_base_url: "http://127.0.0.1:7777".to_owned(),
+            commit_plane_endpoint: "http://127.0.0.1:7791".to_owned(),
+            commit_plane_token_file: "/tmp/wattetheria-token".to_owned(),
         };
 
         register_executor_once(&reqwest::Client::new(), &registration)
@@ -781,7 +829,19 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0]["name"].as_str(), Some(CORE_AGENT_EXECUTOR_NAME));
         assert_eq!(seen[0]["base_url"].as_str(), Some("http://127.0.0.1:8787"));
+        assert_eq!(
+            seen[0]["agent_event_callback_base_url"].as_str(),
+            Some("http://127.0.0.1:7777")
+        );
         assert_eq!(seen[0]["remote"].as_bool(), Some(false));
+        assert_eq!(
+            seen[0]["commit_plane_endpoint"].as_str(),
+            Some("http://127.0.0.1:7791")
+        );
+        assert_eq!(
+            seen[0]["commit_plane_token_file"].as_str(),
+            Some("/tmp/wattetheria-token")
+        );
         server.abort();
     }
 }

@@ -9,13 +9,15 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::social_host::{
-    build_signed_agent_envelope, capability_for_relationship_action,
-    counterpart_public_id_for_remote_node, load_social_identity_maps,
-    resolve_social_counterpart_target, resolve_social_local_context, with_social_defaults,
+    SocialCounterpartTarget, SocialLocalContext, build_signed_agent_envelope,
+    capability_for_relationship_action, counterpart_public_id_for_remote_node,
+    load_social_identity_maps, resolve_social_counterpart_target, resolve_social_local_context,
+    with_social_defaults,
 };
 use crate::state::{
     AgentDmMessagesQuery, AgentDmSendBody, AgentDmThreadsQuery, AgentRelationshipActionBody,
     ControlPlaneState, RelationshipBody, RelationshipQuery, StreamEvent,
+    agent_commit_context_from_headers,
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
@@ -39,6 +41,222 @@ use wattetheria_social::domain::messages::{
 use wattetheria_social::domain::receipts::{MessageReceipt, ReceiptKind};
 use wattetheria_social::domain::threads::{DirectThread, ThreadState};
 use wattetheria_social::policy::decisions::PolicyDecision;
+
+struct CommitResponseArgs<'a> {
+    action_type: &'a str,
+    target_id: Option<String>,
+    actor_public_id: Option<String>,
+    request_json: &'a Value,
+    response_json: &'a Value,
+}
+
+struct FinalizeRelationshipActionArgs {
+    auth: String,
+    local_public_id: String,
+    counterpart_public_id: String,
+    target_agent: String,
+    remote_node_id: String,
+    action: SwarmRelationshipAction,
+    capability: String,
+    request_counterpart_public_id: String,
+    message: Value,
+    response_json: Value,
+}
+
+struct FinalizeDmArgs {
+    auth: String,
+    local_public_id: String,
+    counterpart_public_id: String,
+    target_agent: String,
+    remote_node_id: String,
+    thread_id: String,
+    message_id: String,
+    request_counterpart_public_id: String,
+    content: Value,
+    agent_envelope_json: Value,
+    agent_signature: Option<String>,
+    response_json: Value,
+}
+
+fn replay_commit_response(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    action_type: &str,
+) -> anyhow::Result<Option<Response>> {
+    let Some(context) = agent_commit_context_from_headers(headers) else {
+        return Ok(None);
+    };
+    let Some(entry) = state.local_db.load_agent_action_commit(
+        &context.event_id,
+        &context.decision_id,
+        action_type,
+    )?
+    else {
+        return Ok(None);
+    };
+    let payload: Value = serde_json::from_str(&entry.result_json)?;
+    Ok(Some(Json(payload).into_response()))
+}
+
+fn append_commit_response(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    args: CommitResponseArgs<'_>,
+) -> anyhow::Result<()> {
+    let Some(context) = agent_commit_context_from_headers(headers) else {
+        return Ok(());
+    };
+    state.local_db.append_agent_action_commit(
+        &wattetheria_kernel::local_db::AgentActionCommitLogEntry {
+            commit_id: Uuid::new_v4().to_string(),
+            event_id: context.event_id,
+            decision_id: context.decision_id,
+            action_type: args.action_type.to_owned(),
+            domain: "social".to_owned(),
+            target_id: args.target_id,
+            expected_state: None,
+            result_state: None,
+            request_json: serde_json::to_string(args.request_json)?,
+            result_json: serde_json::to_string(args.response_json)?,
+            status: "accepted".to_owned(),
+            actor_public_id: args.actor_public_id,
+            actor_agent_did: None,
+            created_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        },
+    )
+}
+
+async fn finalize_agent_relationship_action(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    args: FinalizeRelationshipActionArgs,
+) -> Response {
+    if let Err(error) = persist_social_relationship_action(
+        state,
+        &args.local_public_id,
+        &args.counterpart_public_id,
+        &args.target_agent,
+        &args.remote_node_id,
+        &args.action,
+        &args.message,
+    )
+    .await
+    {
+        return internal_error(&error);
+    }
+
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "civilization.agent_relationship.command".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!({
+            "counterpart_public_id": args.counterpart_public_id,
+            "remote_node_id": args.remote_node_id,
+            "action": args.action,
+            "response": args.response_json,
+        }),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_relationships.command".to_string(),
+        status: "ok".to_string(),
+        actor: Some(args.auth),
+        subject: Some(args.local_public_id.clone()),
+        capability: Some(args.capability),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "counterpart_public_id": args.counterpart_public_id,
+            "remote_node_id": args.remote_node_id,
+            "action": args.action,
+        })),
+    });
+    if let Err(error) = append_commit_response(
+        state,
+        headers,
+        CommitResponseArgs {
+            action_type: "social.agent_relationship_action",
+            target_id: Some(args.counterpart_public_id),
+            actor_public_id: Some(args.local_public_id),
+            request_json: &json!({
+                "counterpart_public_id": args.request_counterpart_public_id,
+                "action": args.action,
+            }),
+            response_json: &args.response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    (StatusCode::ACCEPTED, Json(args.response_json)).into_response()
+}
+
+async fn finalize_agent_dm_message(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    args: FinalizeDmArgs,
+) -> Response {
+    if let Err(error) = persist_social_dm_message(
+        state,
+        PersistSocialDmMessageArgs {
+            local_public_id: args.local_public_id.clone(),
+            counterpart_public_id: args.counterpart_public_id.clone(),
+            target_agent: args.target_agent,
+            remote_node_id: args.remote_node_id.clone(),
+            thread_id: args.thread_id,
+            message_id: args.message_id,
+            content: args.content.clone(),
+            agent_envelope_json: args.agent_envelope_json,
+            agent_signature: args.agent_signature,
+        },
+    )
+    .await
+    {
+        return internal_error(&error);
+    }
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "civilization.agent_dm.command".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: json!({
+            "counterpart_public_id": args.counterpart_public_id,
+            "remote_node_id": args.remote_node_id,
+            "response": args.response_json,
+        }),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.agent_dm.send".to_string(),
+        status: "ok".to_string(),
+        actor: Some(args.auth),
+        subject: Some(args.local_public_id.clone()),
+        capability: Some("social.dm.send".to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "counterpart_public_id": args.counterpart_public_id,
+            "remote_node_id": args.remote_node_id,
+        })),
+    });
+    if let Err(error) = append_commit_response(
+        state,
+        headers,
+        CommitResponseArgs {
+            action_type: "social.agent_dm_send",
+            target_id: Some(args.counterpart_public_id),
+            actor_public_id: Some(args.local_public_id),
+            request_json: &json!({
+                "counterpart_public_id": args.request_counterpart_public_id,
+                "content": args.content,
+            }),
+            response_json: &args.response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    (StatusCode::ACCEPTED, Json(args.response_json)).into_response()
+}
 
 fn relationship_view_to_payload(
     view: &SwarmPeerRelationshipView,
@@ -376,7 +594,7 @@ fn counterpart_snapshot(
     }
 }
 
-fn reconcile_swarm_relationship_views(
+pub(crate) fn reconcile_swarm_relationship_views(
     state: &ControlPlaneState,
     local_public_id: &str,
     identities: &BTreeMap<String, PublicIdentity>,
@@ -432,7 +650,7 @@ fn reconcile_swarm_relationship_views(
     .map_err(anyhow::Error::msg)
 }
 
-fn reconcile_swarm_dm_threads(
+pub(crate) fn reconcile_swarm_dm_threads(
     state: &ControlPlaneState,
     local_public_id: &str,
     identities: &BTreeMap<String, PublicIdentity>,
@@ -473,7 +691,7 @@ fn reconcile_swarm_dm_threads(
         .map_err(anyhow::Error::msg)
 }
 
-fn reconcile_swarm_dm_messages(
+pub(crate) fn reconcile_swarm_dm_messages(
     state: &ControlPlaneState,
     local_public_id: &str,
     identities: &BTreeMap<String, PublicIdentity>,
@@ -1180,7 +1398,6 @@ pub(crate) async fn build_agent_dm_messages_payload(
         counterpart_public_id,
         thread_id,
     );
-
     let mut items = if let Some(messages) = social_items {
         build_social_dm_message_payloads(state, &identities, &bindings, messages)
     } else {
@@ -1245,26 +1462,46 @@ pub(crate) async fn agent_relationship_action(
     headers: HeaderMap,
     Json(body): Json<AgentRelationshipActionBody>,
 ) -> Response {
+    if let Ok(Some(response)) =
+        replay_commit_response(&state, &headers, "social.agent_relationship_action")
+    {
+        return response;
+    }
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
-    let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let counterpart =
-        match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
-            Ok(counterpart) => counterpart,
-            Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-            }
-        };
-    let capability = capability_for_relationship_action(&body.action);
+    handle_agent_relationship_action(state, headers, body, auth).await
+}
+
+async fn handle_agent_relationship_action(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    body: AgentRelationshipActionBody,
+    auth: String,
+) -> Response {
+    let SocialLocalContext {
+        public_id: local_public_id,
+        agent_id: local_agent_id,
+    } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
+    let SocialCounterpartTarget {
+        counterpart_public_id,
+        remote_node,
+        target_agent,
+    } = match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+        Ok(counterpart) => counterpart,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
     if body.action == SwarmRelationshipAction::Request {
         match ensure_outbound_friend_request_allowed(
             &state,
-            &local.public_id,
-            &counterpart.counterpart_public_id,
-            &counterpart.remote_node,
+            &local_public_id,
+            &counterpart_public_id,
+            &remote_node,
             now,
         ) {
             Ok(Some(response)) => return response,
@@ -1273,22 +1510,22 @@ pub(crate) async fn agent_relationship_action(
         }
     }
     let message = build_relationship_action_message(
-        &local.public_id,
-        &counterpart.counterpart_public_id,
+        &local_public_id,
+        &counterpart_public_id,
         &body.action,
-        body.message.clone(),
+        body.message,
         now,
     );
-    let response = match send_signed_relationship_action_command(
+    let response_json = match send_signed_relationship_action_command(
         &state,
         SignedRelationshipActionArgs {
-            local_agent_id: local.agent_id.clone(),
-            target_agent_id: counterpart.target_agent.clone(),
-            remote_node_id: counterpart.remote_node.clone(),
+            local_agent_id,
+            target_agent_id: target_agent.clone(),
+            remote_node_id: remote_node.clone(),
             action: body.action.clone(),
-            capability: capability.to_string(),
+            capability: capability.clone(),
             message: message.clone(),
-            extensions: body.extensions.clone(),
+            extensions: body.extensions,
         },
     )
     .await
@@ -1296,48 +1533,23 @@ pub(crate) async fn agent_relationship_action(
         Ok(response) => response,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = persist_social_relationship_action(
+    finalize_agent_relationship_action(
         &state,
-        &local.public_id,
-        &counterpart.counterpart_public_id,
-        &counterpart.target_agent,
-        &counterpart.remote_node,
-        &body.action,
-        &message,
+        &headers,
+        FinalizeRelationshipActionArgs {
+            auth,
+            local_public_id,
+            counterpart_public_id,
+            target_agent,
+            remote_node_id: remote_node,
+            action: body.action,
+            capability,
+            request_counterpart_public_id: body.counterpart_public_id,
+            message,
+            response_json,
+        },
     )
     .await
-    {
-        return internal_error(&error);
-    }
-
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "civilization.agent_relationship.command".to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: json!({
-            "counterpart_public_id": counterpart.counterpart_public_id,
-            "remote_node_id": counterpart.remote_node,
-            "action": body.action,
-            "response": response,
-        }),
-    });
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "civilization".to_string(),
-        action: "civilization.agent_relationships.command".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(local.public_id),
-        capability: Some(capability.to_string()),
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({
-            "counterpart_public_id": counterpart.counterpart_public_id,
-            "remote_node_id": counterpart.remote_node,
-            "action": body.action,
-        })),
-    });
-    (StatusCode::ACCEPTED, Json(response)).into_response()
 }
 
 pub(crate) async fn list_agent_dm_threads(
@@ -1411,24 +1623,42 @@ pub(crate) async fn send_agent_dm_message(
     headers: HeaderMap,
     Json(body): Json<AgentDmSendBody>,
 ) -> Response {
+    if let Ok(Some(response)) = replay_commit_response(&state, &headers, "social.agent_dm_send") {
+        return response;
+    }
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
-    let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let counterpart =
-        match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
-            Ok(counterpart) => counterpart,
-            Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-            }
-        };
+    handle_send_agent_dm_message(state, headers, body, auth).await
+}
+
+async fn handle_send_agent_dm_message(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    body: AgentDmSendBody,
+    auth: String,
+) -> Response {
+    let SocialLocalContext {
+        public_id: local_public_id,
+        agent_id: local_agent_id,
+    } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
+    let SocialCounterpartTarget {
+        counterpart_public_id,
+        remote_node,
+        target_agent,
+    } = match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+        Ok(counterpart) => counterpart,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
     let now = Utc::now().timestamp();
     match ensure_outbound_dm_allowed(
         &state,
-        &local.public_id,
-        &counterpart.counterpart_public_id,
-        &counterpart.remote_node,
+        &local_public_id,
+        &counterpart_public_id,
+        &remote_node,
         now,
     ) {
         Ok(Some(response)) => return response,
@@ -1436,71 +1666,45 @@ pub(crate) async fn send_agent_dm_message(
         Err(error) => return internal_error(&error),
     }
     let content = body.content.clone();
-    let thread_id =
-        dm_thread_id_for_counterpart(&state, &local.public_id, &counterpart.counterpart_public_id);
+    let thread_id = dm_thread_id_for_counterpart(&state, &local_public_id, &counterpart_public_id);
     let (message_id, message) = build_outbound_dm_message(
-        &local.public_id,
-        &counterpart.counterpart_public_id,
+        &local_public_id,
+        &counterpart_public_id,
         &thread_id,
         &content,
         now,
     );
     let (response, agent_envelope_json, agent_signature) = match send_signed_direct_message_command(
         &state,
-        local.agent_id.clone(),
-        counterpart.target_agent.clone(),
-        counterpart.remote_node.clone(),
+        local_agent_id,
+        target_agent.clone(),
+        remote_node.clone(),
         content.clone(),
         message.clone(),
-        body.extensions.clone(),
+        body.extensions,
     )
     .await
     {
         Ok(result) => result,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = persist_social_dm_message(
+    finalize_agent_dm_message(
         &state,
-        PersistSocialDmMessageArgs {
-            local_public_id: local.public_id.clone(),
-            counterpart_public_id: counterpart.counterpart_public_id.clone(),
-            target_agent: counterpart.target_agent.clone(),
-            remote_node_id: counterpart.remote_node.clone(),
-            thread_id: thread_id.clone(),
-            message_id: message_id.clone(),
-            content: content.clone(),
-            agent_envelope_json: agent_envelope_json.clone(),
+        &headers,
+        FinalizeDmArgs {
+            auth,
+            local_public_id,
+            counterpart_public_id,
+            target_agent,
+            remote_node_id: remote_node,
+            thread_id,
+            message_id,
+            request_counterpart_public_id: body.counterpart_public_id,
+            content,
+            agent_envelope_json,
             agent_signature,
+            response_json: response,
         },
     )
     .await
-    {
-        return internal_error(&error);
-    }
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "civilization.agent_dm.command".to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: json!({
-            "counterpart_public_id": counterpart.counterpart_public_id,
-            "remote_node_id": counterpart.remote_node,
-            "response": response,
-        }),
-    });
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "civilization".to_string(),
-        action: "civilization.agent_dm.send".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(local.public_id),
-        capability: Some("social.dm.send".to_string()),
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({
-            "counterpart_public_id": counterpart.counterpart_public_id,
-            "remote_node_id": counterpart.remote_node,
-        })),
-    });
-    (StatusCode::ACCEPTED, Json(response)).into_response()
 }

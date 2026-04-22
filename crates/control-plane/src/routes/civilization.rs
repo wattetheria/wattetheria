@@ -21,5 +21,7 @@ pub(crate) use civilization_profile::{
 pub(crate) use civilization_social::{
     agent_relationship_action, build_agent_dm_messages_payload, build_agent_dm_threads_payload,
     build_agent_relationship_payload, list_agent_dm_messages, list_agent_dm_threads,
-    list_agent_relationships, list_relationships, send_agent_dm_message, upsert_relationship,
+    list_agent_relationships, list_relationships, reconcile_swarm_dm_messages,
+    reconcile_swarm_dm_threads, reconcile_swarm_relationship_views, send_agent_dm_message,
+    upsert_relationship,
 };

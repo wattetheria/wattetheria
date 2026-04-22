@@ -14,6 +14,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 chrono.workspace = true
 prost = "0.13"
 serde.workspace = true
@@ -26,6 +27,7 @@ uuid.workspace = true
 wattetheria-social = { path = "../social" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+watt-wallet = { path = "../../../watt-wallet" }
 
 [build-dependencies]
 prost-build = "0.13"

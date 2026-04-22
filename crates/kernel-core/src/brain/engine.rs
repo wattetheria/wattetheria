@@ -31,6 +31,15 @@ pub struct ActionProposal {
     pub rationale: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEventResolution {
+    pub action: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub payload: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum BrainProviderConfig {
@@ -55,6 +64,7 @@ pub struct BrainEngine {
 pub trait BrainProvider: Send + Sync {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport>;
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>>;
+    async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>>;
     async fn health_check(&self) -> Result<String>;
 }
 
@@ -87,6 +97,10 @@ impl BrainEngine {
 
     pub async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>> {
         self.provider.propose_actions(state).await
+    }
+
+    pub async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
+        self.provider.decide_agent_event(event).await
     }
 
     pub async fn doctor(&self) -> Result<String> {
@@ -158,6 +172,10 @@ impl BrainProvider for RulesBrain {
         Ok(out)
     }
 
+    async fn decide_agent_event(&self, _event: &Value) -> Result<Option<AgentEventResolution>> {
+        Ok(None)
+    }
+
     async fn health_check(&self) -> Result<String> {
         Ok("rules_brain_ready".to_string())
     }
@@ -196,6 +214,12 @@ impl BrainProvider for OllamaBrain {
         parse_proposals_or_fallback(&output, state).await
     }
 
+    async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
+        let prompt = build_agent_event_prompt(event)?;
+        let output = ollama_generate(&self.base_url, &self.model, &prompt).await?;
+        parse_agent_event_or_fallback(&output, event).await
+    }
+
     async fn health_check(&self) -> Result<String> {
         let response = reqwest::Client::new()
             .get(format!("{}/api/tags", self.base_url.trim_end_matches('/')))
@@ -228,6 +252,12 @@ impl BrainProvider for OpenAiCompatibleBrain {
         );
         let output = openai_compatible_generate(self, &prompt).await?;
         parse_proposals_or_fallback(&output, state).await
+    }
+
+    async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
+        let prompt = build_agent_event_prompt(event)?;
+        let output = openai_compatible_generate(self, &prompt).await?;
+        parse_agent_event_or_fallback(&output, event).await
     }
 
     async fn health_check(&self) -> Result<String> {
@@ -312,6 +342,67 @@ async fn parse_proposals_or_fallback(raw: &str, state: &Value) -> Result<Vec<Act
         Ok(actions) if !actions.is_empty() => Ok(actions),
         _ => RulesBrain.propose_actions(state).await,
     }
+}
+
+fn build_agent_event_prompt(event: &Value) -> Result<String> {
+    Ok(format!(
+        concat!(
+            "Return strict JSON object with keys action,reason,payload. ",
+            "Choose action from allowed_actions only. ",
+            "If no safe action should be taken, return {{\"action\": null, \"reason\": \"...\", \"payload\": {{}}}}. ",
+            "Rules: ",
+            "1. payload must be a JSON object. ",
+            "2. For action=reply on dm_received or topic_message_requires_reply, payload must include key content. ",
+            "3. For payment reject, payload may include reject_reason. ",
+            "4. For payment authorize, payload may include sender_address. ",
+            "5. For mission transition actions, include mission_id when known. ",
+            "Input: {}"
+        ),
+        serde_json::to_string(event)?
+    ))
+}
+
+async fn parse_agent_event_or_fallback(
+    raw: &str,
+    event: &Value,
+) -> Result<Option<AgentEventResolution>> {
+    match serde_json::from_str::<AgentEventResolution>(raw) {
+        Ok(decision) => Ok(validate_agent_event_resolution(decision, event)),
+        Err(_) => RulesBrain.decide_agent_event(event).await,
+    }
+}
+
+fn validate_agent_event_resolution(
+    mut decision: AgentEventResolution,
+    event: &Value,
+) -> Option<AgentEventResolution> {
+    let allowed_actions = event
+        .get("allowed_actions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if allowed_actions.is_empty() {
+        return None;
+    }
+    let action = decision
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if !allowed_actions.contains(&action) {
+        return None;
+    }
+    if !decision.payload.is_object() {
+        decision.payload = json!({});
+    }
+    Some(decision)
 }
 
 #[cfg(test)]

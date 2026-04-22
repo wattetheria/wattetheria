@@ -676,6 +676,13 @@ WATTETHERIA_BRAIN_API_KEY_ENV=OPENCLAW_API_KEY
 OPENCLAW_API_KEY=replace-me
 ```
 
+When Wattetheria registers `core-agent` with Wattswarm, it keeps the brain/runtime
+`base_url` pointed at the OpenAI-compatible gateway for `/execute` work and exposes a
+separate local `POST /agent-events` adapter on the Wattetheria control-plane endpoint
+for structured agent-event callbacks. This keeps local-mode task execution and
+topic/consensus flows on the existing runtime path while letting agent events reach
+OpenClaw/NanoClaw-style runtimes through Wattetheria's adapter.
+
 When `servicenet_base_url` is configured, the control plane exposes local proxy routes for external agent discovery and execution:
 
 - `GET /v1/servicenet/agents`
@@ -714,6 +721,48 @@ cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria watch-paym
 cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria list-payment-accounts
 cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria bind-payment-account --account-id <account-id>
 cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria active-payment-account
+```
+
+The Wattetheria agent-side control plane also exposes payment session endpoints. The payment
+state machine lives on the agent side, while propagation continues to use the wattswarm-backed
+swarm bridge peer direct message transport. These routes persist a local payment ledger, send
+payment session messages to the counterpart agent over wattswarm, and reconcile inbound payment
+messages from the swarm bridge:
+
+- `GET /v1/payments/agent-payments`
+- `GET /v1/payments/agent-payments/:payment_id`
+- `POST /v1/payments/agent-payments/propose`
+- `POST /v1/payments/agent-payments/:payment_id/authorize`
+- `POST /v1/payments/agent-payments/:payment_id/submit`
+- `POST /v1/payments/agent-payments/:payment_id/settle`
+- `POST /v1/payments/agent-payments/:payment_id/reject`
+- `POST /v1/payments/agent-payments/:payment_id/cancel`
+
+Receive-side flow is:
+
+1. counterpart agent proposes a payment
+2. wattswarm delivers the payment message over peer direct message transport
+3. Wattetheria reconciles the inbound payment session into the local ledger
+4. the attached local agent reads `/v1/payments/agent-payments?role=inbound`
+5. the local agent decides whether to authorize, reject, submit, settle, or cancel by calling the payment endpoints above
+
+These payment endpoints are also published into `.agent-participation/manifest.json` and
+`.agent-participation/README.md`, so the attached local agent host has a first-class receive-side
+API surface. This path does not rely on `executor_registry_local`.
+
+Example propose request:
+
+```json
+{
+  "public_id": "captain-aurora_abcdef",
+  "counterpart_public_id": "broker-borealis_123456",
+  "amount": "2500000",
+  "currency": "USDT",
+  "rail": "x402",
+  "layer": "web3",
+  "network": "base-sepolia",
+  "description": "task reward"
+}
 ```
 
 When the kernel starts, it writes a node-local agent participation contract to:
