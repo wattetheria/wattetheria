@@ -59,4 +59,16 @@ if [ -n "${WATTETHERIA_SERVICENET_BASE_URL:-}" ]; then
   set -- "$@" --servicenet-base-url "${WATTETHERIA_SERVICENET_BASE_URL}"
 fi
 
+if [ -n "${WATTETHERIA_GATEWAY_CONFIG_PATH:-}" ] && [ -f "${WATTETHERIA_GATEWAY_CONFIG_PATH}" ]; then
+  set -- "$@" --gateway-config-path "${WATTETHERIA_GATEWAY_CONFIG_PATH}"
+fi
+
+if [ -n "${WATTETHERIA_GATEWAY_URLS:-}" ]; then
+  for gateway_url in $(printf '%s' "${WATTETHERIA_GATEWAY_URLS}" | tr ',' '\n'); do
+    if [ -n "${gateway_url}" ]; then
+      set -- "$@" --gateway-url "${gateway_url}"
+    fi
+  done
+fi
+
 exec "$@"

@@ -2,6 +2,8 @@ FROM rust:1.93-bookworm AS chef
 
 WORKDIR /app
 
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+
 RUN cargo install cargo-chef --locked
 
 FROM chef AS dev
@@ -24,17 +26,24 @@ COPY crates/social/Cargo.toml crates/social/Cargo.toml
 
 # Replace local path dependencies with git sources for Docker builds.
 # This lets users build the image without cloning watt-did / watt-wallet.
-# 1) kernel-core + social: swap path deps to git
+# 1) kernel-core + control-plane + social: swap path deps to git
 RUN sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/kernel-core/Cargo.toml \
+    && sed -i \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    crates/control-plane/Cargo.toml \
     && sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     crates/social/Cargo.toml
 # 2) root Cargo.toml: patch watt-wallet's internal path dep on watt-did
 RUN printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
+# 3) root Cargo.toml: remove local wattswarm path override inside Docker.
+RUN sed -i \
+    '/^\[patch\."https:\/\/github\.com\/wattetheria\/wattswarm\.git"\]$/,+1d' \
+    Cargo.toml
 
 RUN mkdir -p \
     apps/wattetheria-cli/src \
@@ -83,8 +92,14 @@ RUN sed -i \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/kernel-core/Cargo.toml \
     && sed -i \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    crates/control-plane/Cargo.toml \
+    && sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     crates/social/Cargo.toml \
+    && sed -i \
+    '/^\[patch\."https:\/\/github\.com\/wattetheria\/wattswarm\.git"\]$/,+1d' \
+    Cargo.toml \
     && printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
 

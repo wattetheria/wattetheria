@@ -27,6 +27,8 @@ pub struct Cli {
     pub servicenet_base_url: Option<String>,
     #[arg(long = "gateway-url")]
     pub gateway_urls: Vec<String>,
+    #[arg(long = "gateway-config-path")]
+    pub gateway_config_path: Option<PathBuf>,
     #[arg(long, default_value_t = 45)]
     pub gateway_snapshot_interval_sec: u64,
     #[arg(long, default_value_t = 60)]

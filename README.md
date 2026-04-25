@@ -209,7 +209,7 @@ Read the diagram in layers:
   - `/v1/client/leaderboard`
 - Public signed export endpoint:
   - `/v1/client/export` returns a signed public snapshot for local inspection
-  - `wattetheria-gateway` ingests snapshots via wattswarm; pull data from wattetheria
+  - `wattetheria-gateway` can ingest snapshots either by pulling `/v1/client/export` or by receiving node pushes when the kernel is started with one or more `--gateway-url` values
   - social snapshot arrays currently include `friend_relationships`, `pending_friend_requests`, `public_blocks`, `dm_threads`, and `dm_messages`
   - additive swarm bridge views now include `swarm_task_activity`
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
@@ -673,8 +673,13 @@ WATTETHERIA_BRAIN_PROVIDER_KIND=openai-compatible
 WATTETHERIA_BRAIN_BASE_URL=http://host.docker.internal:18789/v1
 WATTETHERIA_BRAIN_MODEL=openclaw
 WATTETHERIA_BRAIN_API_KEY_ENV=OPENCLAW_API_KEY
+WATTETHERIA_GATEWAY_URLS=http://gateway.example.com:8080
 OPENCLAW_API_KEY=replace-me
 ```
+
+`docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
+kernel container. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel now falls back to `gateway_urls`
+saved by the Wattswarm startup UI in that file.
 
 When Wattetheria registers `core-agent` with Wattswarm, it keeps the brain/runtime
 `base_url` pointed at the OpenAI-compatible gateway for `/execute` work and exposes a
