@@ -26,7 +26,6 @@ use crate::routes::client_swarm::{
     build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
 };
 use crate::routes::identity::resolve_identity_context;
-use crate::routes::network::{derived_distance_km, derived_geo};
 use crate::state::{
     ClientExportQuery, ClientIdentityQuery, ClientLeaderboardQuery, ClientListQuery,
     ClientRpcLogsQuery, ControlPlaneState,
@@ -96,14 +95,10 @@ async fn build_client_peers_payload(
         .into_iter()
         .take(limit)
         .map(|peer| {
-            let (lat, lng) = derived_geo(&peer.node_id);
             json!({
                 "id": peer.node_id,
-                "distance_km": derived_distance_km(&peer.node_id),
                 "latency_ms": 0,
                 "status": "online",
-                "lat": lat,
-                "lng": lng,
             })
         })
         .collect())

@@ -136,6 +136,7 @@ pub struct ControlPlaneState {
     pub servicenet_client: Option<Arc<ServiceNetClient>>,
     pub agent_executor_base_url: Option<String>,
     pub agent_event_callback_base_url: Option<String>,
+    pub agent_topic_bridge_enabled: bool,
     pub rate_limiter: Arc<RateLimiter>,
     pub stream_tx: broadcast::Sender<StreamEvent>,
     pub gateway_event_seq: Arc<GatewayEventSequence>,

@@ -90,6 +90,8 @@ async fn client_api_routes_align_with_client_dtos() {
     let peers_json = authed_get_json(app.clone(), &token, "/v1/client/peers?limit=1").await;
     assert_eq!(peers_json.as_array().unwrap().len(), 1);
     assert_eq!(peers_json[0]["id"].as_str(), Some("peer-a"));
+    assert!(peers_json[0].get("lat").is_none());
+    assert!(peers_json[0].get("lng").is_none());
 
     let self_json = authed_get_json(
         app.clone(),
@@ -404,6 +406,8 @@ async fn client_export_is_public_and_signed() {
         Some(2)
     );
     assert_eq!(export_json["payload"]["peers"].as_array().unwrap().len(), 1);
+    assert!(export_json["payload"]["peers"][0].get("lat").is_none());
+    assert!(export_json["payload"]["peers"][0].get("lng").is_none());
     let verified = verify_payload(
         &export_json["payload"],
         export_json["signature"].as_str().unwrap(),

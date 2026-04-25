@@ -79,7 +79,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
     fi \
     && cargo chef cook --release --recipe-path recipe.json \
-    -p wattetheria-kernel -p wattetheria-observatory
+    -p wattetheria-kernel -p wattetheria-observatory \
+    && rm -f /root/.gitconfig
 
 FROM chef AS builder
 
@@ -119,7 +120,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -f /run/secrets/github_token ]; then \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
     fi \
-    && cargo build --release -p wattetheria-kernel -p wattetheria-observatory
+    && cargo build --release -p wattetheria-kernel -p wattetheria-observatory \
+    && rm -f /root/.gitconfig
 
 FROM debian:bookworm-slim
 

@@ -255,6 +255,7 @@ fn build_test_state_with_bridge(
         servicenet_client: None,
         agent_executor_base_url: None,
         agent_event_callback_base_url: None,
+        agent_topic_bridge_enabled: true,
         rate_limiter: Arc::new(RateLimiter::new(rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(dir.path()),
@@ -1243,6 +1244,7 @@ mod agent_event_tests;
 mod civilization_tests;
 mod client_tests;
 mod galaxy_tests;
+mod mcp_tests;
 mod organization_tests;
 mod servicenet_tests;
 mod social_tests;

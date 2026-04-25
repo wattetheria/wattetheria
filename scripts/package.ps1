@@ -18,6 +18,11 @@ Copy-Item "target/release/wattetheria-kernel.exe" (Join-Path $binDir "wattetheri
 Copy-Item "target/release/wattetheria-client-cli.exe" (Join-Path $binDir "wattetheria-client-cli.exe") -Force
 Copy-Item "target/release/wattetheria-observatory.exe" (Join-Path $binDir "wattetheria-observatory.exe") -Force
 Copy-Item "README.md" (Join-Path $pkgDir "README.md") -Force
+Copy-Item "docker-compose.release.yml" (Join-Path $pkgDir "docker-compose.release.yml") -Force
+Copy-Item ".env.release" (Join-Path $pkgDir ".env.release") -Force
+New-Item -ItemType Directory -Path (Join-Path $pkgDir "scripts") -Force | Out-Null
+Copy-Item "scripts/deploy-release.ps1" (Join-Path $pkgDir "scripts/deploy-release.ps1") -Force
+Copy-Item "docs/dev/RELEASE_PUBLISH_CHECKLIST.md" (Join-Path $pkgDir "RELEASE_PUBLISH_CHECKLIST.md") -Force
 
 $zipPath = Join-Path $DistDir "$pkgName.zip"
 if (Test-Path $zipPath) {

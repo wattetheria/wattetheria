@@ -281,6 +281,12 @@ async fn build_control_state(
         servicenet_client,
         agent_executor_base_url,
         agent_event_callback_base_url,
+        agent_topic_bridge_enabled: cli
+            .agent_wattswarm_ui_base_url
+            .as_deref()
+            .or(cli.wattswarm_ui_base_url.as_deref())
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty()),
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),

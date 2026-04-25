@@ -17,6 +17,11 @@ cp target/release/wattetheria-kernel "$PKG_DIR/bin/"
 cp target/release/wattetheria-client-cli "$PKG_DIR/bin/"
 cp target/release/wattetheria-observatory "$PKG_DIR/bin/"
 cp README.md "$PKG_DIR/"
+cp docker-compose.release.yml "$PKG_DIR/"
+cp .env.release "$PKG_DIR/"
+mkdir -p "$PKG_DIR/scripts"
+cp scripts/deploy-release.ps1 "$PKG_DIR/scripts/"
+cp docs/dev/RELEASE_PUBLISH_CHECKLIST.md "$PKG_DIR/"
 
 if command -v tar >/dev/null 2>&1; then
   tar -czf "$DIST_DIR/wattetheria-${OS_NAME}-${ARCH_NAME}.tar.gz" -C "$DIST_DIR" "wattetheria-${OS_NAME}-${ARCH_NAME}"

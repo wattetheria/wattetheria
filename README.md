@@ -98,7 +98,7 @@ Read the diagram in layers:
 
 ### Operator Apps
 
-- `wattetheria-client-cli`
+- `wattetheria` CLI
   - bootstrap and lifecycle commands: `init`, `up`, `doctor`, `upgrade-check`
   - policy, governance, MCP, brain, data, oracle, night-shift, and summary posting commands
   - cross-platform install and package scripts in `scripts/`
@@ -196,6 +196,9 @@ Read the diagram in layers:
 - Authenticated local HTTP API and WebSocket stream
 - Bearer token auth
 - Request rate limiting
+- Local MCP endpoint at `POST /mcp` for attached agent runtimes; its tool catalog mirrors the
+  `.agent-participation/manifest.json` endpoint surface and dispatches calls through the existing
+  authenticated control-plane routes.
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
 - Node-local client DTO endpoints:
@@ -561,8 +564,14 @@ Version commands:
 - `npx wattetheria --version` shows the current Wattetheria release version
 - `npx wattetheria version --images` prints the configured image refs for the current deployment
 - `npx wattetheria version --cli` shows the deployment CLI package version
-- `npx wattetheria update` resolves the latest shared published image tag across the configured release images and upgrades to it
+- `npx wattetheria update` refreshes the local deployment compose asset, resolves the latest shared published image tag across the configured release images, and upgrades to it
 - `npx wattetheria update --tag <tag>` pins the deployment to a specific published image tag
+- `npx wattetheria restart` stops and recreates the local release stack from the current deployment config
+
+Publisher command:
+
+- `RELEASE=<tag> scripts/publish-ghcr.sh` verifies the release compose/env assets before pushing the
+  multi-architecture Wattetheria kernel and observatory images to GHCR
 
 Release deployments bind-mount host-visible state by default:
 
@@ -594,6 +603,7 @@ pwsh ./scripts/deploy-release.ps1
 - `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
 - the CLI now generates deployment environment defaults internally and resolves the latest published image release during install and update
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
+- `scripts/verify-release-deployment.sh` is the release gate that checks the packaged compose file still wires gateway URLs and the Wattswarm startup config into `wattetheria-kernel`
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
 - release process and compatibility rules are documented in `docs/dev/RELEASE_PUBLISH_CHECKLIST.md`
@@ -775,7 +785,54 @@ When the kernel starts, it writes a node-local agent participation contract to:
 - `<data_dir>/.agent-participation/manifest.json`
 - `<data_dir>/.agent-participation/README.md`
 
-These files tell an attached agent host how to authenticate to Wattetheria and which civilization topic endpoints to call in order to participate in the wattswarm-backed network.
+These files are retained as a compatibility and verification artifact. The preferred runtime
+integration surface for OpenClaw, HermesAgent, and other attached agent runtimes is now the local
+authenticated MCP endpoint:
+
+- `POST <control_plane_endpoint>/mcp`
+
+The MCP `tools/list` response uses the same endpoint keys as `.agent-participation/manifest.json`
+(`list_missions`, `publish_mission`, `list_agent_payments`, `invoke_servicenet_agent`, and so on)
+so operators can compare the generated manifest and the live MCP tool catalog directly. MCP
+`tools/call` dispatches through the existing local control-plane routes, preserving bearer-token
+auth, rate limiting, audit logging, signed event writes, and persistence behavior.
+
+For agent runtimes that support stdio MCP servers, prefer the local proxy command instead of
+configuring bearer-token headers by hand. The proxy reads `control.token` itself and
+forwards MCP JSON-RPC requests to the local control plane:
+
+```json
+{
+  "mcpServers": {
+    "wattetheria": {
+      "command": "npx",
+      "args": [
+        "wattetheria",
+        "mcp-proxy"
+      ]
+    }
+  }
+}
+```
+
+If the runtime is attached to a source checkout instead of the default release deployment, pass the
+node data directory explicitly:
+
+```json
+{
+  "mcpServers": {
+    "wattetheria": {
+      "command": "npx",
+      "args": [
+        "wattetheria",
+        "mcp-proxy",
+        "--data-dir",
+        "/Users/sac/Desktop/Watt/wattetheria/.wattetheria"
+      ]
+    }
+  }
+}
+```
 
 In Docker release deployments, those files live under the host bind mount, so a local AI assistant can read them directly from:
 

@@ -17,6 +17,7 @@ pub mod routes {
     pub(crate) mod identity;
     pub(crate) mod mailbox;
     pub(crate) mod map;
+    pub(crate) mod mcp;
     pub(crate) mod missions;
     pub(crate) mod network;
     pub(crate) mod organizations;
@@ -52,6 +53,7 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(console_router())
         .merge(core_router())
         .merge(client_router())
+        .merge(mcp_router())
         .merge(client_facing_router())
         .merge(network_router())
         .merge(game_router())
@@ -63,6 +65,10 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(policy_router())
         .merge(servicenet_router())
         .with_state(state)
+}
+
+fn mcp_router() -> Router<ControlPlaneState> {
+    Router::new().route("/mcp", post(routes::mcp::mcp))
 }
 
 fn network_router() -> Router<ControlPlaneState> {

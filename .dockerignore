@@ -3,4 +3,10 @@
 target
 dist
 .wattetheria
+.watt-wallet
+data
+.env
+.env.*
+!.env.example
+!.env.release
 **/.DS_Store
