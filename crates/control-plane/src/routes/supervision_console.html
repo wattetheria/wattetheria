@@ -3,78 +3,97 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wattetheria Supervision Console</title>
+  <title>Wattetheria Node Console</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f4efe3;
-      --surface: #fffaf0;
+      --bg: #f5f6f2;
+      --surface: #ffffff;
+      --surface-alt: #f0f5f4;
       --ink: #17212b;
-      --muted: #5f6c76;
-      --line: #d8cdb9;
-      --accent: #145c75;
-      --accent-soft: #d7ebf0;
-      --danger: #8a2f2f;
+      --muted: #62717c;
+      --line: #d7ddd8;
+      --line-strong: #aebbb6;
+      --teal: #2f8b84;
+      --teal-dark: #236b66;
+      --copper: #a65f23;
+      --green: #347c45;
+      --red: #9b3a36;
+      --blue: #2f6690;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, #efe6d1 0, transparent 26rem),
-        linear-gradient(180deg, #f7f2e8 0%, var(--bg) 100%);
+      font-family: Inter, "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: var(--bg);
       color: var(--ink);
     }
 
     header, main {
-      max-width: 1180px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: 1.25rem;
+      padding: 1rem 1.25rem;
     }
 
     header {
-      padding-top: 2rem;
-      padding-bottom: 0.5rem;
+      padding-top: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-end;
+      border-bottom: 1px solid var(--line);
     }
 
     h1 {
-      margin: 0 0 0.4rem;
-      font-size: 2rem;
-      line-height: 1.1;
+      margin: 0 0 0.3rem;
+      font-size: 1.8rem;
+      line-height: 1.05;
     }
 
     .lead {
       margin: 0;
       color: var(--muted);
-      max-width: 60rem;
+      max-width: 68rem;
+      line-height: 1.35;
+    }
+
+    .timestamp {
+      color: var(--muted);
+      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    main {
+      display: grid;
+      gap: 0.9rem;
+      padding-bottom: 2rem;
     }
 
     .panel {
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 16px;
-      padding: 1rem;
-      box-shadow: 0 10px 30px rgba(23, 33, 43, 0.06);
-    }
-
-    .stack {
-      display: grid;
-      gap: 1rem;
+      border-radius: 8px;
+      padding: 0.9rem;
+      min-width: 0;
     }
 
     .toolbar {
       display: grid;
       gap: 0.75rem;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1.2fr) minmax(120px, 0.45fr) repeat(3, minmax(120px, 0.42fr));
       align-items: end;
     }
 
     label {
       display: grid;
       gap: 0.35rem;
-      font-size: 0.92rem;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
       color: var(--muted);
     }
 
@@ -84,92 +103,267 @@
 
     input, select {
       width: 100%;
-      padding: 0.7rem 0.8rem;
-      border-radius: 10px;
-      border: 1px solid var(--line);
+      min-height: 2.5rem;
+      padding: 0.55rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--line-strong);
       background: #fff;
       color: var(--ink);
     }
 
     button {
+      min-height: 2.5rem;
       border: 0;
-      border-radius: 10px;
-      padding: 0.8rem 1rem;
+      border-radius: 6px;
+      padding: 0.55rem 0.75rem;
       cursor: pointer;
-      background: var(--accent);
+      background: var(--teal-dark);
       color: white;
-      font-weight: 600;
+      font-weight: 750;
     }
 
     button.secondary {
-      background: var(--accent-soft);
-      color: var(--accent);
+      background: var(--surface-alt);
+      color: var(--teal-dark);
+      border: 1px solid var(--line-strong);
     }
 
-    .grid {
+    .notice {
+      margin-top: 0.65rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .error {
+      color: var(--red);
+      font-weight: 750;
+    }
+
+    .summary {
       display: grid;
-      gap: 1rem;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 0.8rem;
+      grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(180px, 0.8fr));
     }
 
-    .section-title {
-      margin: 0 0 0.75rem;
-      font-size: 1rem;
+    .metric-card {
+      border-left: 4px solid var(--teal);
+    }
+
+    .metric-card.wallet {
+      border-left-color: var(--copper);
+    }
+
+    .metric-card.network {
+      border-left-color: var(--blue);
+    }
+
+    .metric-card h2, .panel h2 {
+      margin: 0 0 0.7rem;
+      font-size: 0.82rem;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.08em;
       color: var(--muted);
     }
 
-    .metric-list, .list {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      display: grid;
-      gap: 0.5rem;
+    .big {
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: 0;
+      color: var(--ink);
+      overflow-wrap: anywhere;
     }
 
-    .metric {
+    .subtle {
+      margin-top: 0.25rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      overflow-wrap: anywhere;
+    }
+
+    .kpis {
+      display: grid;
+      gap: 0.7rem;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    }
+
+    .kpi {
+      background: var(--surface-alt);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0.75rem;
+    }
+
+    .kpi strong {
+      display: block;
+      font-size: 1.35rem;
+      color: var(--ink);
+    }
+
+    .kpi span {
+      display: block;
+      margin-top: 0.1rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-weight: 750;
+    }
+
+    .layout {
+      display: grid;
+      gap: 0.9rem;
+      grid-template-columns: 1.25fr 0.85fr;
+      align-items: start;
+    }
+
+    .columns {
+      display: grid;
+      gap: 0.9rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .stack {
+      display: grid;
+      gap: 0.9rem;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+      font-size: 0.86rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.58rem 0.65rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      background: #f7f9f8;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.35rem;
+      padding: 0.15rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .pill.published, .pill.open { color: var(--copper); border-color: #d6a77e; background: #fff8f1; }
+    .pill.claimed { color: var(--blue); border-color: #9bbbd2; background: #f2f8fc; }
+    .pill.completed { color: var(--teal-dark); border-color: #98c5c0; background: #edf8f6; }
+    .pill.settled, .pill.ready, .pill.online, .pill.friend { color: var(--green); border-color: #9ec8a7; background: #f0f8f1; }
+    .pill.blocked, .pill.error { color: var(--red); border-color: #d7aaa7; background: #fff4f3; }
+    .pill.requested, .pill.pending { color: var(--copper); border-color: #d6a77e; background: #fff8f1; }
+
+    .list {
+      display: grid;
+      gap: 0.55rem;
+    }
+
+    .row {
+      padding: 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      min-width: 0;
+    }
+
+    .row-head {
       display: flex;
       justify-content: space-between;
-      gap: 1rem;
-      padding-bottom: 0.35rem;
-      border-bottom: 1px dashed var(--line);
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 0.25rem;
+    }
+
+    .row-title {
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .row-body {
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .empty {
+      color: var(--muted);
+      background: var(--surface-alt);
+      border: 1px dashed var(--line-strong);
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-size: 0.86rem;
     }
 
     .code {
       margin: 0;
-      background: #f7f6f2;
-      border: 1px solid var(--line);
-      border-radius: 12px;
+      background: #0f1720;
+      color: #e7edf2;
+      border-radius: 8px;
       padding: 0.75rem;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
-      font-size: 0.85rem;
+      font-size: 0.76rem;
+      max-height: 20rem;
+      overflow: auto;
     }
 
-    .notice {
-      color: var(--muted);
-      font-size: 0.92rem;
-    }
+    @media (max-width: 1100px) {
+      .toolbar, .summary, .layout, .columns {
+        grid-template-columns: 1fr;
+      }
 
-    .error {
-      color: var(--danger);
-      font-weight: 600;
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>Wattetheria Supervision Console</h1>
-    <p class="lead">
-      Local observation surface for public identities, bootstrap state, mission pressure,
-      governance posture, travel state, and operator briefing. This console reads canonical
-      supervision APIs only.
-    </p>
+    <div>
+      <h1>Wattetheria Node Console</h1>
+      <p class="lead">
+        Local control surface for identities, wallet state, WATT balance, social graph,
+        direct messages, missions, topic activity, network status, and recent node events.
+      </p>
+    </div>
+    <div id="last-refresh" class="timestamp">Not refreshed</div>
   </header>
-  <main class="stack">
-    <section class="panel stack">
+
+  <main>
+    <section class="panel">
       <div class="toolbar">
         <label>
           Control token
@@ -182,88 +376,132 @@
           </select>
         </label>
         <label>
-          Briefing window (hours)
-          <input id="hours" type="number" min="1" max="168" value="12">
+          Limit
+          <input id="limit" type="number" min="5" max="200" value="50">
         </label>
+        <button id="load-identities" type="button">Load IDs</button>
+        <button id="refresh" type="button">Refresh</button>
+        <button id="save-settings" class="secondary" type="button">Save</button>
       </div>
-      <div class="toolbar">
-        <button id="load-identities" type="button">Load identities</button>
-        <button id="refresh" type="button">Refresh supervision</button>
-        <button id="save-settings" class="secondary" type="button">Save local settings</button>
+      <div id="status" class="notice">Enter a control token, then load local identities.</div>
+    </section>
+
+    <section class="summary">
+      <article class="panel metric-card">
+        <h2>Active Identity</h2>
+        <div id="identity-name" class="big">-</div>
+        <div id="identity-detail" class="subtle">No identity loaded.</div>
+      </article>
+      <article class="panel metric-card wallet">
+        <h2>WATT Balance</h2>
+        <div id="watt-balance" class="big">-</div>
+        <div id="wallet-detail" class="subtle">Wallet data not loaded.</div>
+      </article>
+      <article class="panel metric-card network">
+        <h2>Network</h2>
+        <div id="network-status" class="big">-</div>
+        <div id="network-detail" class="subtle">Peer data not loaded.</div>
+      </article>
+      <article class="panel metric-card">
+        <h2>Node</h2>
+        <div id="node-id" class="big">-</div>
+        <div id="node-detail" class="subtle">No node snapshot loaded.</div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Overview</h2>
+      <div id="kpis" class="kpis"></div>
+    </section>
+
+    <section class="layout">
+      <div class="stack">
+        <article class="panel">
+          <h2>Missions</h2>
+          <div id="missions-table" class="table-wrap"></div>
+        </article>
+
+        <div class="columns">
+          <article class="panel">
+            <h2>Friends</h2>
+            <div id="friends-list" class="list"></div>
+          </article>
+          <article class="panel">
+            <h2>Friend Requests</h2>
+            <div id="friend-requests-list" class="list"></div>
+          </article>
+        </div>
+
+        <article class="panel">
+          <h2>DM Messages</h2>
+          <div id="dm-list" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Topics</h2>
+          <div id="topics-table" class="table-wrap"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Topic Messages</h2>
+          <div id="topic-messages-list" class="list"></div>
+        </article>
       </div>
-      <div id="status" class="notice">Enter a control token, then load public identities.</div>
-    </section>
 
-    <section class="grid">
-      <article class="panel">
-        <h2 class="section-title">Identity</h2>
-        <ul id="identity-metrics" class="metric-list"></ul>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Supervision Signals</h2>
-        <ul id="supervision-signals" class="metric-list"></ul>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Travel State</h2>
-        <pre id="travel-state" class="code">No travel state loaded yet.</pre>
-      </article>
-    </section>
+      <aside class="stack">
+        <article class="panel">
+          <h2>Agent Identities</h2>
+          <div id="identities-list" class="list"></div>
+        </article>
 
-    <section class="grid">
-      <article class="panel">
-        <h2 class="section-title">Next Actions</h2>
-        <ul id="next-actions" class="list"></ul>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Alerts</h2>
-        <ul id="alerts" class="list"></ul>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Priority Cards</h2>
-        <ul id="priority-cards" class="list"></ul>
-      </article>
-    </section>
+        <article class="panel">
+          <h2>Wallet</h2>
+          <div id="wallet-list" class="list"></div>
+        </article>
 
-    <section class="grid">
-      <article class="panel">
-        <h2 class="section-title">Briefing</h2>
-        <pre id="briefing" class="code">No briefing loaded yet.</pre>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Missions</h2>
-        <pre id="missions" class="code">No mission view loaded yet.</pre>
-      </article>
-      <article class="panel">
-        <h2 class="section-title">Governance</h2>
-        <pre id="governance" class="code">No governance view loaded yet.</pre>
-      </article>
+        <article class="panel">
+          <h2>Peers</h2>
+          <div id="peers-list" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Organizations</h2>
+          <div id="organizations-list" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Recent Events</h2>
+          <div id="rpc-list" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Raw Snapshot</h2>
+          <pre id="raw-snapshot" class="code">No snapshot loaded.</pre>
+        </article>
+      </aside>
     </section>
   </main>
 
   <script>
-    const storageKey = "wattetheria-supervision-console";
+    const storageKey = "wattetheria-node-console";
 
     const statusEl = document.getElementById("status");
     const tokenEl = document.getElementById("token");
     const publicIdEl = document.getElementById("public-id");
-    const hoursEl = document.getElementById("hours");
+    const limitEl = document.getElementById("limit");
+    const lastRefreshEl = document.getElementById("last-refresh");
+    const identitiesByPublicId = new Map();
 
-    const identityMetricsEl = document.getElementById("identity-metrics");
-    const supervisionSignalsEl = document.getElementById("supervision-signals");
-    const travelStateEl = document.getElementById("travel-state");
-    const nextActionsEl = document.getElementById("next-actions");
-    const alertsEl = document.getElementById("alerts");
-    const priorityCardsEl = document.getElementById("priority-cards");
-    const briefingEl = document.getElementById("briefing");
-    const missionsEl = document.getElementById("missions");
-    const governanceEl = document.getElementById("governance");
+    function qs(id) {
+      return document.getElementById(id);
+    }
 
     function loadSettings() {
       try {
         const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
         if (saved.token) tokenEl.value = saved.token;
         if (saved.publicId) publicIdEl.dataset.savedPublicId = saved.publicId;
-        if (saved.hours) hoursEl.value = saved.hours;
+        if (saved.limit) limitEl.value = saved.limit;
       } catch (_) {}
     }
 
@@ -271,9 +509,9 @@
       localStorage.setItem(storageKey, JSON.stringify({
         token: tokenEl.value.trim(),
         publicId: publicIdEl.value,
-        hours: hoursEl.value
+        limit: limitEl.value
       }));
-      setStatus("Local supervision-console settings saved.");
+      setStatus("Local console settings saved.");
     }
 
     function setStatus(message, isError = false) {
@@ -283,14 +521,15 @@
 
     function authHeaders() {
       const token = tokenEl.value.trim();
-      if (!token) {
-        throw new Error("Control token is required.");
-      }
+      if (!token) throw new Error("Control token is required.");
       return { authorization: `Bearer ${token}` };
     }
 
-    async function fetchJson(url) {
-      const response = await fetch(url, { headers: authHeaders() });
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, {
+        ...options,
+        headers: options.auth ? authHeaders() : {}
+      });
       const text = await response.text();
       let data;
       try {
@@ -304,138 +543,411 @@
       return data;
     }
 
-    function renderMetricList(target, items) {
-      target.innerHTML = "";
-      for (const [label, value] of items) {
-        const item = document.createElement("li");
-        item.className = "metric";
-        const left = document.createElement("span");
-        left.textContent = label;
-        const right = document.createElement("strong");
-        right.textContent = value == null ? "-" : String(value);
-        item.appendChild(left);
-        item.appendChild(right);
-        target.appendChild(item);
+    function at(value, path) {
+      let current = value;
+      for (const key of path) {
+        if (current == null || typeof current !== "object") return undefined;
+        current = current[key];
       }
+      return current;
     }
 
-    function renderList(target, entries, formatter) {
-      target.innerHTML = "";
-      const values = entries || [];
-      if (!values.length) {
-        const item = document.createElement("li");
-        item.textContent = "None";
-        target.appendChild(item);
+    function valueOrDash(value) {
+      return value == null || value === "" ? "-" : String(value);
+    }
+
+    function compactId(value, size = 18) {
+      const text = valueOrDash(value);
+      if (text.length <= size + 8) return text;
+      return `${text.slice(0, size)}...${text.slice(-6)}`;
+    }
+
+    function formatTime(value) {
+      if (value == null || value === "") return "-";
+      if (typeof value === "number") {
+        const milliseconds = value > 100000000000 ? value : value * 1000;
+        return new Date(milliseconds).toLocaleString();
+      }
+      const parsed = Date.parse(value);
+      if (!Number.isNaN(parsed)) return new Date(parsed).toLocaleString();
+      return String(value);
+    }
+
+    function safeArray(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function textFromContent(content) {
+      if (content == null) return "";
+      if (typeof content === "string") return content;
+      return content.text
+        || content.message
+        || content.summary
+        || content.body
+        || content.kind
+        || JSON.stringify(content);
+    }
+
+    function identityContext(record) {
+      return record?.identity || record || {};
+    }
+
+    function identityRecordPublicIdentity(record) {
+      const context = identityContext(record);
+      return context.public_identity || record?.public_identity || null;
+    }
+
+    function identityRecordPublicId(record) {
+      const publicIdentity = identityRecordPublicIdentity(record);
+      return publicIdentity?.public_id
+        || at(record, ["identity", "public_memory_owner", "public_id"])
+        || record?.public_id
+        || "";
+    }
+
+    function identityRecordDisplayName(record) {
+      const publicIdentity = identityRecordPublicIdentity(record);
+      return publicIdentity?.display_name || identityRecordPublicId(record) || "Unnamed identity";
+    }
+
+    function pill(text, className = "") {
+      return `<span class="pill ${String(className || "").toLowerCase()}">${escapeHtml(valueOrDash(text))}</span>`;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function empty(message) {
+      return `<div class="empty">${escapeHtml(message)}</div>`;
+    }
+
+    function renderKpis(payload) {
+      const tasks = safeArray(payload.tasks);
+      const relationships = safeArray(payload.friend_relationships);
+      const requests = safeArray(payload.pending_friend_requests);
+      const dmMessages = safeArray(payload.dm_messages);
+      const topics = safeArray(payload.public_topics);
+      const topicMessages = safeArray(payload.public_topic_messages);
+      const statusCounts = tasks.reduce((counts, task) => {
+        const status = task.status || "unknown";
+        counts[status] = (counts[status] || 0) + 1;
+        return counts;
+      }, {});
+      const kpis = [
+        ["Friends", relationships.filter((item) => item.relationship_state === "friend" || item.relationship_kind === "friend").length],
+        ["Friend Requests", requests.length],
+        ["DM Messages", dmMessages.length],
+        ["Topics", topics.length],
+        ["Topic Messages", topicMessages.length],
+        ["Published", statusCounts.published || 0],
+        ["Claimed", statusCounts.claimed || 0],
+        ["Completed", statusCounts.completed || 0],
+        ["Settled", statusCounts.settled || 0],
+      ];
+      qs("kpis").innerHTML = kpis.map(([label, value]) =>
+        `<div class="kpi"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`
+      ).join("");
+    }
+
+    function renderTable(targetId, columns, rows, emptyMessage) {
+      const target = qs(targetId);
+      if (!rows.length) {
+        target.innerHTML = empty(emptyMessage);
         return;
       }
-      for (const entry of values) {
-        const item = document.createElement("li");
-        item.textContent = formatter(entry);
-        target.appendChild(item);
-      }
+      target.innerHTML = `
+        <table>
+          <thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${rows.map((row) => `
+              <tr>${columns.map((column) => `<td>${column.render(row)}</td>`).join("")}</tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
     }
 
-    function pretty(value) {
-      return JSON.stringify(value, null, 2);
+    function renderList(targetId, rows, emptyMessage, renderRow) {
+      const target = qs(targetId);
+      if (!rows.length) {
+        target.innerHTML = empty(emptyMessage);
+        return;
+      }
+      target.innerHTML = rows.map(renderRow).join("");
     }
 
     async function loadIdentities() {
-      setStatus("Loading public identities...");
+      setStatus("Loading local identities...");
       try {
-        const payload = await fetchJson("/v1/civilization/identities");
-        const identities = payload.public_identities || [];
+        const payload = await fetchJson("/v1/civilization/identities", { auth: true });
+        const identities = safeArray(payload.public_identities);
         publicIdEl.innerHTML = "";
-        if (!identities.length) {
+        identitiesByPublicId.clear();
+        for (const record of identities) {
+          const publicId = identityRecordPublicId(record);
+          if (!publicId) continue;
+          identitiesByPublicId.set(publicId, record);
+          const option = document.createElement("option");
+          option.value = publicId;
+          option.textContent = `${identityRecordDisplayName(record)} (${publicId})`;
+          publicIdEl.appendChild(option);
+        }
+        if (!publicIdEl.options.length) {
           const option = document.createElement("option");
           option.value = "";
-          option.textContent = "No public identities";
+          option.textContent = "No usable identities";
           publicIdEl.appendChild(option);
-          setStatus("No public identities found. Bootstrap one first.");
+          setStatus("Identity records loaded, but no public_id was present.", true);
+          renderIdentities([]);
           return;
         }
-        for (const record of identities) {
-          const option = document.createElement("option");
-          option.value = record.public_identity.public_id;
-          option.textContent = `${record.public_identity.display_name} (${record.public_identity.public_id})`;
-          publicIdEl.appendChild(option);
-        }
-        if (publicIdEl.dataset.savedPublicId) {
-          publicIdEl.value = publicIdEl.dataset.savedPublicId;
-        }
-        setStatus(`Loaded ${identities.length} public identities.`);
+        if (publicIdEl.dataset.savedPublicId) publicIdEl.value = publicIdEl.dataset.savedPublicId;
+        renderIdentities([...identitiesByPublicId.values()]);
+        setStatus(`Loaded ${publicIdEl.options.length} local identities.`);
       } catch (error) {
         setStatus(error.message, true);
       }
     }
 
-    async function refreshSupervision() {
+    async function refreshConsole() {
       const publicId = publicIdEl.value;
       if (!publicId) {
         setStatus("Choose a public identity first.", true);
         return;
       }
-
-      const hours = Number(hoursEl.value || 12);
-      setStatus(`Refreshing supervision for ${publicId}...`);
-
+      const limit = Number(limitEl.value || 50);
+      saveSettings();
+      setStatus(`Refreshing node console for ${publicId}...`);
       try {
-        const query = `public_id=${encodeURIComponent(publicId)}`;
-        const [home, status, briefing, missions, governance] = await Promise.all([
-          fetchJson(`/v1/supervision/home?${query}`),
-          fetchJson(`/v1/supervision/status?${query}`),
-          fetchJson(`/v1/supervision/briefing?hours=${encodeURIComponent(hours)}`),
-          fetchJson(`/v1/supervision/missions?${query}`),
-          fetchJson(`/v1/supervision/governance?${query}`)
-        ]);
-
-        const identity = home.identity?.public_identity || {};
-        const metrics = home.metrics || {};
-        const supervision = home.supervision || status.supervision || {};
-
-        renderMetricList(identityMetricsEl, [
-          ["Public ID", identity.public_id],
-          ["Display Name", identity.display_name],
-          ["Faction", home.identity?.profile?.faction],
-          ["Role", home.identity?.profile?.role],
-          ["Strategy", home.identity?.profile?.strategy]
-        ]);
-
-        renderMetricList(supervisionSignalsEl, [
-          ["Stage", status.status?.stage],
-          ["Tier", status.status?.tier],
-          ["Wealth", metrics.wealth],
-          ["Power", metrics.power],
-          ["Trade", metrics.trade],
-          ["Culture", metrics.culture]
-        ]);
-
-        travelStateEl.textContent = pretty(home.travel_state || {});
-        briefingEl.textContent = pretty(briefing.briefing || briefing);
-        missionsEl.textContent = pretty(missions);
-        governanceEl.textContent = pretty(governance);
-
-        renderList(nextActionsEl, supervision.next_actions, (entry) =>
-          `${entry.label || entry.kind || "action"}${entry.target ? ` -> ${entry.target}` : ""}`
-        );
-        renderList(alertsEl, supervision.alerts, (entry) =>
-          `${entry.title || entry.kind || "alert"}${entry.summary ? `: ${entry.summary}` : ""}`
-        );
-        renderList(priorityCardsEl, supervision.priority_cards, (entry) =>
-          `${entry.title || entry.kind || "card"}${entry.summary ? `: ${entry.summary}` : ""}`
-        );
-
-        saveSettings();
-        setStatus(`Supervision data refreshed for ${publicId}.`);
+        const query = new URLSearchParams({
+          public_id: publicId,
+          peer_limit: String(limit),
+          task_limit: String(limit),
+          organization_limit: String(limit),
+          rpc_log_limit: String(limit),
+          leaderboard_limit: "20"
+        });
+        const signed = await fetchJson(`/v1/client/export?${query.toString()}`);
+        const payload = signed.payload || signed;
+        const localSocial = await loadLocalSocialPayload(publicId, limit);
+        Object.assign(payload, localSocial);
+        renderSnapshot(payload);
+        lastRefreshEl.textContent = `Refreshed ${new Date().toLocaleString()}`;
+        setStatus(`Node console refreshed for ${publicId}.`);
       } catch (error) {
         setStatus(error.message, true);
       }
     }
 
+    async function loadLocalSocialPayload(publicId, limit) {
+      const query = new URLSearchParams({
+        public_id: publicId,
+        limit: String(limit),
+      });
+      const relationships = await fetchJson(`/v1/civilization/agent-friends?${query.toString()}`, { auth: true });
+      const dmMessages = await fetchJson(`/v1/civilization/agent-dm/messages?${query.toString()}`, { auth: true });
+      return {
+        friend_relationships: safeArray(relationships),
+        pending_friend_requests: safeArray(relationships).filter((entry) => entry.pending_inbound || entry.pending_outbound),
+        dm_messages: safeArray(dmMessages),
+      };
+    }
+
+    function renderSnapshot(payload) {
+      const operator = payload.operator || {};
+      const network = payload.network_status || {};
+      const payment = operator.active_payment_account;
+      qs("identity-name").textContent = valueOrDash(operator.display_name || operator.id);
+      qs("identity-detail").textContent = `Public ${compactId(operator.id)} | Controller ${compactId(operator.controller_id || operator.wallet_bound_agent_did)}`;
+      qs("watt-balance").textContent = valueOrDash(operator.watt_balance);
+      qs("wallet-detail").textContent = payment
+        ? `${valueOrDash(payment.account_kind || payment.kind)} ${compactId(payment.address || payment.account_id || payment.payment_account_ref)}`
+        : "No active payment account";
+      qs("network-status").textContent = valueOrDash(network.status || operator.status);
+      qs("network-detail").textContent = `${safeArray(payload.peers).length} peers | ${valueOrDash(operator.coordinate_source)} geo`;
+      qs("node-id").textContent = compactId(payload.node_id);
+      qs("node-detail").textContent = `Generated ${formatTime(payload.generated_at)} | public key ${compactId(payload.public_key)}`;
+
+      renderKpis(payload);
+      renderMissions(payload);
+      renderFriends(payload);
+      renderFriendRequests(payload);
+      renderDmMessages(payload);
+      renderTopics(payload);
+      renderTopicMessages(payload);
+      renderWallet(operator);
+      renderPeers(payload);
+      renderOrganizations(payload);
+      renderRpcLogs(payload);
+      qs("raw-snapshot").textContent = JSON.stringify(payload, null, 2);
+    }
+
+    function renderMissions(payload) {
+      const rows = safeArray(payload.tasks);
+      renderTable("missions-table", [
+        { label: "Status", render: (row) => pill(row.status, row.status) },
+        { label: "Mission", render: (row) => `<strong>${escapeHtml(row.title || row.id)}</strong><div class="subtle">${escapeHtml(row.id || "")}</div>` },
+        { label: "Domain", render: (row) => escapeHtml(valueOrDash(row.domain)) },
+        { label: "Publisher", render: (row) => escapeHtml(compactId(row.publisher_id, 20)) },
+        { label: "Claimer", render: (row) => escapeHtml(compactId(row.claimer_id, 20)) },
+        { label: "Reward", render: (row) => escapeHtml(valueOrDash(row.reward_watt)) },
+        { label: "Created", render: (row) => escapeHtml(formatTime(row.created_at)) },
+      ], rows, "No missions recorded.");
+    }
+
+    function renderFriends(payload) {
+      const rows = safeArray(payload.friend_relationships)
+        .filter((row) => !row.pending_inbound && !row.pending_outbound && row.relationship_state !== "blocked");
+      renderList("friends-list", rows, "No friends recorded.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.public_id || row.counterpart_public_id)}</div>
+            ${pill(row.relationship_state || row.relationship_kind || "friend", row.relationship_state || row.relationship_kind)}
+          </div>
+          <div class="row-body">${escapeHtml(compactId(row.counterpart_public_id || row.public_id, 28))} | ${escapeHtml(valueOrDash(row.remote_node_id))}</div>
+        </div>
+      `);
+    }
+
+    function renderFriendRequests(payload) {
+      const rows = safeArray(payload.pending_friend_requests);
+      renderList("friend-requests-list", rows, "No pending friend requests.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_public_id)}</div>
+            ${pill(row.pending_inbound ? "inbound" : "outbound", "pending")}
+          </div>
+          <div class="row-body">${escapeHtml(valueOrDash(row.relationship_state))} | updated ${escapeHtml(formatTime(row.updated_at))}</div>
+        </div>
+      `);
+    }
+
+    function renderDmMessages(payload) {
+      const rows = safeArray(payload.dm_messages);
+      renderList("dm-list", rows, "No direct messages recorded.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_public_id || row.remote_node_id)}</div>
+            ${pill(row.direction || row.delivery_state, row.delivery_state || row.direction)}
+          </div>
+          <div class="row-body">${escapeHtml(textFromContent(row.content) || row.encrypted_body || "No message preview")}</div>
+          <div class="subtle">${escapeHtml(formatTime(row.created_at))} | thread ${escapeHtml(compactId(row.thread_id, 24))}</div>
+        </div>
+      `);
+    }
+
+    function renderTopics(payload) {
+      const rows = safeArray(payload.public_topics);
+      renderTable("topics-table", [
+        { label: "Topic", render: (row) => `<strong>${escapeHtml(row.title || row.name || row.topic_id)}</strong><div class="subtle">${escapeHtml(valueOrDash(row.feed_key))} / ${escapeHtml(valueOrDash(row.scope_hint))}</div>` },
+        { label: "Kind", render: (row) => escapeHtml(valueOrDash(row.projection_kind || row.kind)) },
+        { label: "Messages", render: (row) => escapeHtml(valueOrDash(row.message_count || row.messages_count || row.activity_count)) },
+        { label: "Active", render: (row) => pill(row.active === false ? "inactive" : "active", row.active === false ? "blocked" : "ready") },
+      ], rows, "No topics recorded.");
+    }
+
+    function renderTopicMessages(payload) {
+      const rows = safeArray(payload.public_topic_messages);
+      renderList("topic-messages-list", rows, "No topic messages recorded.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.author_display_name || row.author_public_id || row.author_node_id)}</div>
+            ${pill(row.feed_key || "topic", "ready")}
+          </div>
+          <div class="row-body">${escapeHtml(textFromContent(row.content) || "No content preview")}</div>
+          <div class="subtle">${escapeHtml(valueOrDash(row.scope_hint))} | ${escapeHtml(formatTime(row.created_at))}</div>
+        </div>
+      `);
+    }
+
+    function renderIdentities(rows) {
+      renderList("identities-list", rows, "No agent identities loaded.", (row) => {
+        const identity = identityRecordPublicIdentity(row) || {};
+        const owner = at(row, ["identity", "public_memory_owner"]) || {};
+        const profile = at(row, ["identity", "profile"]) || {};
+        return `
+          <div class="row">
+            <div class="row-head">
+              <div class="row-title">${escapeHtml(identity.display_name || identity.public_id || "Unnamed identity")}</div>
+              ${pill(identity.active === false ? "inactive" : "active", identity.active === false ? "blocked" : "ready")}
+            </div>
+            <div class="row-body">${escapeHtml(compactId(identity.public_id || owner.public_id, 32))}</div>
+            <div class="subtle">controller ${escapeHtml(compactId(owner.controller_id || owner.controller, 24))} | ${escapeHtml(valueOrDash(profile.role))}</div>
+          </div>
+        `;
+      });
+    }
+
+    function renderWallet(operator) {
+      const payment = operator.active_payment_account;
+      const rows = [
+        ["WATT", operator.watt_balance],
+        ["Reward Policy", operator.reward_policy_version],
+        ["Wallet Agent DID", operator.wallet_bound_agent_did],
+        ["Controller", operator.controller_id],
+        ["Payment Account", payment ? (payment.account_id || payment.address || payment.payment_account_ref) : "none"],
+        ["Payment Kind", payment ? (payment.account_kind || payment.kind || payment.chain) : "none"],
+      ];
+      qs("wallet-list").innerHTML = rows.map(([label, value]) => `
+        <div class="row">
+          <div class="row-head"><div class="row-title">${escapeHtml(label)}</div></div>
+          <div class="row-body">${escapeHtml(valueOrDash(value))}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderPeers(payload) {
+      renderList("peers-list", safeArray(payload.peers), "No peers visible.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(compactId(row.node_id || row.peer_id || row.id, 24))}</div>
+            ${pill(row.status || "peer", row.status)}
+          </div>
+          <div class="row-body">${escapeHtml(valueOrDash(row.address || row.endpoint || row.region))}</div>
+        </div>
+      `);
+    }
+
+    function renderOrganizations(payload) {
+      renderList("organizations-list", safeArray(payload.organizations), "No organizations recorded.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.name || row.id)}</div>
+            ${pill(row.status || "org", row.status)}
+          </div>
+          <div class="row-body">${escapeHtml(valueOrDash(row.member_count))} members | ${escapeHtml(valueOrDash(row.treasury_watt))} WATT | ${escapeHtml(valueOrDash(row.mission_count))} missions</div>
+        </div>
+      `);
+    }
+
+    function renderRpcLogs(payload) {
+      renderList("rpc-list", safeArray(payload.rpc_logs), "No recent events recorded.", (row) => `
+        <div class="row">
+          <div class="row-head">
+            <div class="row-title">${escapeHtml(row.message || "event")}</div>
+            ${pill(row.level || "info", row.level)}
+          </div>
+          <div class="row-body">${escapeHtml(formatTime(row.timestamp))}</div>
+        </div>
+      `);
+    }
+
     document.getElementById("load-identities").addEventListener("click", loadIdentities);
-    document.getElementById("refresh").addEventListener("click", refreshSupervision);
+    document.getElementById("refresh").addEventListener("click", refreshConsole);
     document.getElementById("save-settings").addEventListener("click", saveSettings);
 
     loadSettings();
+    if (tokenEl.value.trim()) {
+      loadIdentities().then(() => {
+        if (publicIdEl.value) refreshConsole();
+      });
+    }
   </script>
 </body>
 </html>

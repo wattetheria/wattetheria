@@ -33,6 +33,8 @@ pub mod domain {
     pub const ORACLE_REGISTRY: &str = "oracle_registry";
     pub const ONLINE_PROOF: &str = "online_proof";
     pub const POLICY: &str = "policy";
+    pub const ECONOMIC_POLICY: &str = "economic_policy";
+    pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

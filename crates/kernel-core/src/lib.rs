@@ -2,6 +2,7 @@
 
 pub mod brain;
 pub mod civilization;
+pub mod economy;
 pub mod game;
 pub mod governance;
 pub mod map;
@@ -27,6 +28,7 @@ pub use civilization::organizations;
 pub use civilization::profiles;
 pub use civilization::relationships;
 pub use civilization::topics;
+pub use economy as economic_policy;
 pub use game::catalog as game_catalog;
 pub use game::progression as game_progression;
 pub use governance::mailbox;

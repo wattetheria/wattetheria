@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::reward_view::refresh_known_wallet_balances;
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
     StreamEvent, agent_commit_context_from_headers,
@@ -19,6 +20,22 @@ struct CommitResponseArgs<'a> {
     actor_agent_did: Option<String>,
     request_json: &'a Value,
     response_json: &'a Value,
+}
+
+fn mission_stream_kind(action: &str) -> &'static str {
+    match action {
+        "claim" => "mission.claimed",
+        "complete" => "mission.completed",
+        _ => "mission.updated",
+    }
+}
+
+fn mission_signed_event_kind(action: &str) -> &'static str {
+    match action {
+        "claim" => "MISSION_CLAIMED",
+        "complete" => "MISSION_COMPLETED",
+        _ => "MISSION_UPDATED",
+    }
 }
 
 fn replay_commit_response(
@@ -128,6 +145,9 @@ pub(crate) async fn mission_publish(
         return internal_error(&error);
     }
     drop(board);
+    if let Err(error) = refresh_known_wallet_balances(&state).await {
+        return internal_error(&error);
+    }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
     let _ = state.stream_tx.send(StreamEvent {
@@ -224,17 +244,17 @@ async fn transition_mission(
         return internal_error(&error);
     }
     drop(board);
+    if let Err(error) = refresh_known_wallet_balances(&state).await {
+        return internal_error(&error);
+    }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
     let _ = state.stream_tx.send(StreamEvent {
-        kind: format!("mission.{action}ed"),
+        kind: mission_stream_kind(action).to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.append_signed_event(
-        format!("MISSION_{}", action.to_uppercase()),
-        payload.clone(),
-    );
+    let _ = state.append_signed_event(mission_signed_event_kind(action), payload.clone());
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -316,6 +336,9 @@ pub(crate) async fn mission_settle(
         ) {
             return internal_error(&error);
         }
+    }
+    if let Err(error) = refresh_known_wallet_balances(&state).await {
+        return internal_error(&error);
     }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);

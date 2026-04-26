@@ -453,6 +453,10 @@ pub(crate) async fn agent_action_commit(
         ("topic_message_requires_reply", "reply") => {
             commit_topic_reply(state, commit_headers, body).await
         }
+        (
+            "topic_message_requires_reply",
+            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+        ) => bad_request("mission actions are not supported for topic messages"),
         (_, "publish_mission") => commit_publish_mission(state, commit_headers, body).await,
         (_, "claim_mission" | "complete_mission" | "settle_mission") => {
             commit_transition_mission(state, commit_headers, body).await

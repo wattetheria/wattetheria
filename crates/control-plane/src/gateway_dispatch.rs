@@ -74,7 +74,7 @@ pub fn describe_stream_event(event: &StreamEvent) -> Option<GatewayDispatchDecis
         .or_else(|| plan_organization_event(kind, payload))
         .or_else(|| plan_governance_event(kind, payload))
         .or_else(|| plan_topic_event(kind, payload))
-        .or_else(|| plan_relationship_event(kind, payload))
+        .or_else(|| plan_public_block_event(kind, payload))
         .or_else(|| plan_galaxy_event(kind, payload))
     {
         return Some(GatewayDispatchDecision {
@@ -113,16 +113,10 @@ fn non_push_stream_decision(kind: &str, payload: &Value) -> Option<GatewayDispat
             GatewayPushDisposition::NotPubliclyExported,
             GatewayProvisionalExportPolicy::EphemeralOnly,
         )),
-        "civilization.agent_relationship.command" => Some(private_non_push_decision(
-            payload,
-            GatewayDataKind::FriendRelationship,
-            "remote_node_id",
-        )),
-        "civilization.agent_dm.command" => Some(private_non_push_decision(
-            payload,
-            GatewayDataKind::DmMessage,
-            "thread_id",
-        )),
+        "civilization.agent_relationship.command" => {
+            Some(private_non_push_decision(payload, "remote_node_id"))
+        }
+        "civilization.agent_dm.command" => Some(private_non_push_decision(payload, "thread_id")),
         _ => None,
     }
 }
@@ -162,13 +156,9 @@ fn topic_non_push_decision(
     }
 }
 
-fn private_non_push_decision(
-    payload: &Value,
-    data_kind: GatewayDataKind,
-    identity_field: &str,
-) -> GatewayDispatchDecision {
+fn private_non_push_decision(payload: &Value, identity_field: &str) -> GatewayDispatchDecision {
     GatewayDispatchDecision {
-        data_kind: Some(data_kind),
+        data_kind: None,
         mechanism_path: GatewayMechanismPath::WattswarmFirst,
         push_disposition: GatewayPushDisposition::NotPubliclyExported,
         confirmation_requirement: GatewayConfirmationRequirement::Required,
@@ -297,18 +287,6 @@ fn proposal_id_from_payload(payload: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
         })
-}
-
-fn relationship_kind_to_data_kind(payload: &Value) -> GatewayDataKind {
-    match payload
-        .get("relationship_state")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-    {
-        "blocked" => GatewayDataKind::PublicBlock,
-        "pending_inbound" | "pending_outbound" => GatewayDataKind::FriendRequestPending,
-        _ => GatewayDataKind::FriendRelationship,
-    }
 }
 
 fn plan_mission_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
@@ -453,20 +431,22 @@ fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> 
     }
 }
 
-fn plan_relationship_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
-    match kind {
-        "civilization.relationship.updated" => Some(GatewayDispatchPlan {
-            data_kind: relationship_kind_to_data_kind(payload),
-            visibility: GatewayVisibility::Public,
-            provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
-            scope: GatewayEventScope::default(),
-            identity_key: payload
-                .get("counterpart_public_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        }),
-        _ => None,
+fn plan_public_block_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
+    if kind != "civilization.relationship.updated"
+        || payload.get("relationship_state").and_then(Value::as_str) != Some("blocked")
+    {
+        return None;
     }
+    Some(GatewayDispatchPlan {
+        data_kind: GatewayDataKind::PublicBlock,
+        visibility: GatewayVisibility::Public,
+        provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+        scope: GatewayEventScope::default(),
+        identity_key: payload
+            .get("counterpart_public_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    })
 }
 
 fn plan_galaxy_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
@@ -562,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn relationship_state_routes_to_block_or_request_kinds() {
+    fn only_public_blocks_are_public_relationship_exports() {
         let block = StreamEvent {
             kind: "civilization.relationship.updated".to_string(),
             timestamp: 1,
@@ -583,10 +563,8 @@ mod tests {
             plan_stream_event(&block).expect("block plan").data_kind,
             GatewayDataKind::PublicBlock
         );
-        assert_eq!(
-            plan_stream_event(&pending).expect("pending plan").data_kind,
-            GatewayDataKind::FriendRequestPending
-        );
+        assert!(plan_stream_event(&pending).is_none());
+        assert!(describe_stream_event(&pending).is_none());
     }
 
     #[test]

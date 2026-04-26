@@ -10,6 +10,9 @@ use wattetheria_kernel::relationships::RelationshipKind;
 use wattetheria_kernel::swarm_sync::{SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot};
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::civilization::{
+    build_agent_dm_messages_payload, build_agent_dm_threads_payload,
+};
 use crate::routes::identity::resolve_identity_context;
 use crate::state::{ClientIdentityQuery, ClientListQuery, ControlPlaneState, TopicMessagesQuery};
 use crate::swarm_sync::{load_cached_task_run_projection, load_cached_topic_activity};
@@ -47,13 +50,11 @@ struct ClientHiveView {
 
 #[derive(Debug, Clone, Serialize)]
 struct ClientConversationView {
-    topic_id: String,
-    feed_key: String,
-    scope_hint: String,
-    display_name: String,
-    counterpart_public_id: Option<String>,
+    dm_thread_id: String,
+    counterpart_public_id: String,
     counterpart_display_name: Option<String>,
     counterpart_status: &'static str,
+    session_state: Option<String>,
     last_message_text: Option<String>,
     last_message_at: Option<u64>,
     unread_count: usize,
@@ -66,8 +67,8 @@ struct ClientFriendView {
     relationship_kind: RelationshipKind,
     status: &'static str,
     active: bool,
-    has_direct_conversation: bool,
-    direct_topic_id: Option<String>,
+    has_dm_thread: bool,
+    dm_thread_id: Option<String>,
     last_message_text: Option<String>,
     last_message_at: Option<u64>,
 }
@@ -83,10 +84,6 @@ fn is_hive_topic(kind: &TopicProjectionKind) -> bool {
     )
 }
 
-fn is_direct_conversation_topic(kind: &TopicProjectionKind) -> bool {
-    matches!(kind, TopicProjectionKind::DirectConversation)
-}
-
 fn message_text_preview(content: &Value) -> Option<String> {
     content
         .get("text")
@@ -94,6 +91,7 @@ fn message_text_preview(content: &Value) -> Option<String> {
         .map(str::trim)
         .filter(|text| !text.is_empty())
         .map(ToOwned::to_owned)
+        .or_else(|| content.get("content").and_then(message_text_preview))
         .or_else(|| content.as_str().map(ToOwned::to_owned))
 }
 
@@ -104,14 +102,6 @@ fn latest_message(
         .messages
         .iter()
         .max_by_key(|message| message.created_at)
-}
-
-fn counterpart_public_id(topic: &TopicProfile, local_public_id: &str) -> Option<String> {
-    topic
-        .participant_public_ids
-        .iter()
-        .find(|candidate| candidate.as_str() != local_public_id)
-        .cloned()
 }
 
 async fn topic_activity_or_empty(
@@ -176,6 +166,64 @@ async fn author_lookup(
             )
         })
         .collect()
+}
+
+fn latest_dm_messages_by_thread(messages: &[Value]) -> std::collections::BTreeMap<String, Value> {
+    let mut latest = std::collections::BTreeMap::<String, Value>::new();
+    for message in messages {
+        let Some(thread_id) = message.get("thread_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let created_at = message
+            .get("created_at")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let replace = latest
+            .get(thread_id)
+            .and_then(|existing| existing.get("created_at").and_then(Value::as_u64))
+            .is_none_or(|existing_created_at| created_at > existing_created_at);
+        if replace {
+            latest.insert(thread_id.to_string(), message.clone());
+        }
+    }
+    latest
+}
+
+fn dm_threads_by_counterpart(threads: &[Value]) -> std::collections::BTreeMap<String, Value> {
+    let mut indexed = std::collections::BTreeMap::<String, Value>::new();
+    for thread in threads {
+        let Some(counterpart_public_id) =
+            thread.get("counterpart_public_id").and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let updated_at = thread
+            .get("updated_at")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let replace = indexed
+            .get(counterpart_public_id)
+            .and_then(|existing| existing.get("updated_at").and_then(Value::as_u64))
+            .is_none_or(|existing_updated_at| updated_at > existing_updated_at);
+        if replace {
+            indexed.insert(counterpart_public_id.to_string(), thread.clone());
+        }
+    }
+    indexed
+}
+
+fn peer_status(
+    state: &ControlPlaneState,
+    peer_ids: &std::collections::BTreeSet<String>,
+    remote_node_id: Option<&str>,
+) -> &'static str {
+    remote_node_id.map_or("unknown", |controller_id| {
+        if controller_id == state.agent_did || peer_ids.contains(controller_id) {
+            "online"
+        } else {
+            "offline"
+        }
+    })
 }
 
 pub(crate) async fn build_hives_payload(
@@ -293,22 +341,6 @@ async fn build_conversations_payload(
     query: &ClientIdentityQuery,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    let context = resolve_identity_context(
-        state,
-        query.public_id.as_deref(),
-        query.agent_did.as_deref(),
-    )
-    .await;
-    let local_public_id = context.public_identity.as_ref().map_or_else(
-        || context.public_memory_owner.controller.clone(),
-        |identity| identity.public_id.clone(),
-    );
-    let topics = state.topic_registry.lock().await.list();
-    let public_identities = state.public_identity_registry.lock().await.list();
-    let identity_by_public_id = public_identities
-        .into_iter()
-        .map(|identity| (identity.public_id.clone(), identity))
-        .collect::<std::collections::BTreeMap<_, _>>();
     let peer_ids = state
         .swarm_bridge
         .peers()
@@ -317,53 +349,46 @@ async fn build_conversations_payload(
         .into_iter()
         .map(|peer| peer.node_id)
         .collect::<std::collections::BTreeSet<_>>();
-    let bindings = state.controller_binding_registry.lock().await.list();
-    let binding_by_public_id = bindings
-        .into_iter()
-        .map(|binding| (binding.public_id.clone(), binding))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let threads = build_agent_dm_threads_payload(state, query.public_id.as_deref())
+        .await
+        .unwrap_or_default();
+    let messages =
+        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, 200)
+            .await
+            .unwrap_or_default();
+    let latest_by_thread = latest_dm_messages_by_thread(&messages);
     let mut items = Vec::new();
 
-    for topic in topics
-        .into_iter()
-        .filter(|topic| topic.active && is_direct_conversation_topic(&topic.projection_kind))
-        .filter(|topic| {
-            topic.participant_public_ids.is_empty()
-                || topic
-                    .participant_public_ids
-                    .iter()
-                    .any(|id| id == &local_public_id)
-        })
-        .take(limit)
-    {
-        let activity = topic_activity_or_empty(state, &topic).await;
-        let latest = activity.as_ref().and_then(latest_message);
-        let counterpart_public_id = counterpart_public_id(&topic, &local_public_id);
-        let counterpart_display_name = counterpart_public_id
-            .as_ref()
-            .and_then(|public_id| identity_by_public_id.get(public_id))
-            .map(|identity| identity.display_name.clone());
-        let counterpart_status = counterpart_public_id
-            .as_ref()
-            .and_then(|public_id| binding_by_public_id.get(public_id))
-            .and_then(|binding| binding.controller_node_id.as_deref())
-            .map_or("unknown", |controller_id| {
-                if controller_id == state.agent_did || peer_ids.contains(controller_id) {
-                    "online"
-                } else {
-                    "offline"
-                }
-            });
+    for thread in threads.into_iter().take(limit) {
+        let Some(thread_id) = thread.get("thread_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(counterpart_public_id) =
+            thread.get("counterpart_public_id").and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let latest = latest_by_thread.get(thread_id);
         items.push(json!(ClientConversationView {
-            topic_id: topic.topic_id,
-            feed_key: topic.feed_key,
-            scope_hint: topic.scope_hint,
-            display_name: topic.display_name,
-            counterpart_public_id,
-            counterpart_display_name,
-            counterpart_status,
-            last_message_text: latest.and_then(|message| message_text_preview(&message.content)),
-            last_message_at: latest.map(|message| message.created_at),
+            dm_thread_id: thread_id.to_string(),
+            counterpart_public_id: counterpart_public_id.to_string(),
+            counterpart_display_name: thread
+                .get("counterpart_display_name")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            counterpart_status: peer_status(
+                state,
+                &peer_ids,
+                thread.get("remote_node_id").and_then(Value::as_str),
+            ),
+            session_state: thread
+                .get("session_state")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            last_message_text: latest.and_then(message_text_preview),
+            last_message_at: latest
+                .and_then(|message| message.get("created_at").and_then(Value::as_u64))
+                .or_else(|| thread.get("last_message_at").and_then(Value::as_u64)),
             unread_count: 0,
         }));
     }
@@ -374,10 +399,10 @@ async fn build_conversations_payload(
             .unwrap_or_default()
             .cmp(&left["last_message_at"].as_u64().unwrap_or_default())
             .then_with(|| {
-                left["topic_id"]
+                left["dm_thread_id"]
                     .as_str()
                     .unwrap_or_default()
-                    .cmp(right["topic_id"].as_str().unwrap_or_default())
+                    .cmp(right["dm_thread_id"].as_str().unwrap_or_default())
             })
     });
     Ok(items)
@@ -421,24 +446,22 @@ async fn build_friends_payload(
         .lock()
         .await
         .list_for_public(&local_public_id);
-    let topics = state.topic_registry.lock().await.list();
-    let dm_topics_by_counterpart = topics
-        .into_iter()
-        .filter(|topic| topic.active && is_direct_conversation_topic(&topic.projection_kind))
-        .filter_map(|topic| {
-            counterpart_public_id(&topic, &local_public_id).map(|counterpart| (counterpart, topic))
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let dm_threads = build_agent_dm_threads_payload(state, query.public_id.as_deref())
+        .await
+        .unwrap_or_default();
+    let dm_threads_by_counterpart = dm_threads_by_counterpart(&dm_threads);
+    let dm_messages =
+        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, 200)
+            .await
+            .unwrap_or_default();
+    let latest_by_thread = latest_dm_messages_by_thread(&dm_messages);
 
     let mut items = Vec::new();
     for edge in relationships.into_iter().take(limit) {
-        let topic = dm_topics_by_counterpart.get(&edge.counterpart_public_id);
-        let activity = if let Some(topic) = topic {
-            topic_activity_or_empty(state, topic).await
-        } else {
-            None
-        };
-        let latest = activity.as_ref().and_then(latest_message);
+        let dm_thread = dm_threads_by_counterpart.get(&edge.counterpart_public_id);
+        let latest = dm_thread
+            .and_then(|thread| thread.get("thread_id").and_then(Value::as_str))
+            .and_then(|thread_id| latest_by_thread.get(thread_id));
         let display_name = identity_by_public_id
             .get(&edge.counterpart_public_id)
             .map(|identity| identity.display_name.clone());
@@ -458,10 +481,17 @@ async fn build_friends_payload(
             relationship_kind: edge.kind,
             status,
             active: edge.active,
-            has_direct_conversation: topic.is_some(),
-            direct_topic_id: topic.map(|topic| topic.topic_id.clone()),
-            last_message_text: latest.and_then(|message| message_text_preview(&message.content)),
-            last_message_at: latest.map(|message| message.created_at),
+            has_dm_thread: dm_thread.is_some(),
+            dm_thread_id: dm_thread
+                .and_then(|thread| thread.get("thread_id").and_then(Value::as_str))
+                .map(ToOwned::to_owned),
+            last_message_text: latest.and_then(message_text_preview),
+            last_message_at: latest
+                .and_then(|message| message.get("created_at").and_then(Value::as_u64))
+                .or_else(|| {
+                    dm_thread
+                        .and_then(|thread| thread.get("last_message_at").and_then(Value::as_u64))
+                }),
         }));
     }
 
@@ -719,6 +749,10 @@ mod tests {
             Some("hello".to_string())
         );
         assert_eq!(
+            message_text_preview(&json!({"content": {"text": "nested"}})),
+            Some("nested".to_string())
+        );
+        assert_eq!(
             message_text_preview(&json!("fallback")),
             Some("fallback".to_string())
         );
@@ -726,26 +760,28 @@ mod tests {
     }
 
     #[test]
-    fn counterpart_skips_local_public_id() {
-        let topic = TopicProfile {
-            topic_id: "dm@a".to_string(),
-            feed_key: "dm.chat".to_string(),
-            scope_hint: "dm:one".to_string(),
-            display_name: "DM One".to_string(),
-            summary: None,
-            projection_kind: TopicProjectionKind::DirectConversation,
-            organization_id: None,
-            mission_id: None,
-            participant_public_ids: vec!["self".to_string(), "friend".to_string()],
-            created_by_public_id: "self".to_string(),
-            why_this_exists: None,
-            active: true,
-            created_at: 0,
-            updated_at: 0,
-        };
-        assert_eq!(
-            counterpart_public_id(&topic, "self"),
-            Some("friend".to_string())
-        );
+    fn latest_dm_messages_are_indexed_by_thread() {
+        let messages = vec![
+            json!({"thread_id": "dm-1", "message_id": "old", "created_at": 10}),
+            json!({"thread_id": "dm-1", "message_id": "new", "created_at": 20}),
+            json!({"thread_id": "dm-2", "message_id": "other", "created_at": 15}),
+        ];
+
+        let indexed = latest_dm_messages_by_thread(&messages);
+
+        assert_eq!(indexed["dm-1"]["message_id"].as_str(), Some("new"));
+        assert_eq!(indexed["dm-2"]["message_id"].as_str(), Some("other"));
+    }
+
+    #[test]
+    fn dm_threads_are_indexed_by_counterpart() {
+        let threads = vec![
+            json!({"counterpart_public_id": "friend", "thread_id": "old", "updated_at": 10}),
+            json!({"counterpart_public_id": "friend", "thread_id": "new", "updated_at": 20}),
+        ];
+
+        let indexed = dm_threads_by_counterpart(&threads);
+
+        assert_eq!(indexed["friend"]["thread_id"].as_str(), Some("new"));
     }
 }

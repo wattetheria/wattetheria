@@ -23,6 +23,7 @@ pub mod routes {
     pub(crate) mod organizations;
     pub(crate) mod payments;
     pub(crate) mod policy;
+    pub(crate) mod reward_view;
     pub(crate) mod servicenet;
     pub(crate) mod supervision;
     pub(crate) mod topics;
@@ -149,7 +150,7 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         )
         .route(
             "/v1/client/conversations/messages",
-            get(routes::client_swarm::client_topic_messages),
+            get(routes::civilization::list_agent_dm_messages),
         )
         .route(
             "/v1/client/friends",
@@ -157,7 +158,7 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         )
         .route(
             "/v1/client/friends/messages",
-            get(routes::client_swarm::client_topic_messages),
+            get(routes::civilization::list_agent_dm_messages),
         )
         .route(
             "/v1/client/leaderboard",

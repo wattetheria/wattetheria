@@ -9,9 +9,14 @@ services:
       target: dev
     volumes:
       - .:/app
+      - ../watt-did:/watt-did:ro
+      - ../watt-wallet:/watt-wallet:ro
+      - ../wattswarm:/wattswarm:ro
       - wattetheria_cargo_target:/app/target
       - wattetheria_cargo_registry:/usr/local/cargo/registry
       - wattetheria_state:/var/lib/wattetheria
+    healthcheck:
+      start_period: 180s
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
@@ -29,6 +34,9 @@ services:
       target: dev
     volumes:
       - .:/app
+      - ../watt-did:/watt-did:ro
+      - ../watt-wallet:/watt-wallet:ro
+      - ../wattswarm:/wattswarm:ro
       - wattetheria_cargo_target:/app/target
       - wattetheria_cargo_registry:/usr/local/cargo/registry
     entrypoint: ["/bin/sh", "-c"]

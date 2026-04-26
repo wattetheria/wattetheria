@@ -3,7 +3,7 @@ use crate::store::SharedStore;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse};
+use axum::response::IntoResponse;
 use serde::Deserialize;
 use wattetheria_kernel::types::SignedSummary;
 
@@ -21,10 +21,6 @@ pub struct EventQuery {
 #[derive(Debug, Deserialize)]
 pub struct PlanetQuery {
     pub limit: Option<usize>,
-}
-
-pub async fn index() -> impl IntoResponse {
-    Html(include_str!("index.html"))
 }
 
 pub async fn healthz(State(store): State<SharedStore>) -> impl IntoResponse {

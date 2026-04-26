@@ -101,7 +101,13 @@ async fn client_api_routes_align_with_client_dtos() {
     .await;
     assert_eq!(self_json["id"].as_str(), Some(captain.as_str()));
     assert_eq!(self_json["display_name"].as_str(), Some("Captain Aurora"));
-    assert_eq!(self_json["watt_balance"].as_i64(), Some(77));
+    assert_eq!(self_json["watt_balance"].as_i64(), Some(0));
+    assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
+    assert_eq!(
+        self_json["wallet_bound_agent_did"].as_str(),
+        Some(identity.agent_did.as_str())
+    );
+    assert!(self_json["active_payment_account"].is_null());
 
     let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
@@ -133,9 +139,85 @@ async fn client_api_routes_align_with_client_dtos() {
     assert!(rpc_logs_json[0]["message"].is_string());
     assert!(rpc_logs_json[0]["level"].is_string());
 }
+
+#[tokio::test]
+async fn client_self_reports_wallet_bound_mission_rewards() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let identity = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let agent_did = identity["wallet_bound_agent_did"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &agent_did).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Tune local agent",
+            "description": "Run a wallet-bound task.",
+            "publisher": public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "subnet_id": null,
+            "zone_id": null,
+            "required_role": null,
+            "required_faction": null,
+            "reward": {
+                "agent_watt": 24,
+                "reputation": 3,
+                "capacity": 1,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "wallet-bound-balance"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap();
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/claim",
+        json!({"mission_id": mission_id, "agent_did": agent_did}),
+    )
+    .await;
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/complete",
+        json!({"mission_id": mission_id, "agent_did": agent_did}),
+    )
+    .await;
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/settle",
+        json!({"mission_id": mission_id}),
+    )
+    .await;
+
+    let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .unwrap()
+        .unwrap();
+    let stored = balance_state.get(&agent_did, Some(&public_id)).unwrap();
+    assert_eq!(stored.watt_balance, 27);
+    assert_eq!(stored.policy_version, 1);
+
+    let self_json = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/client/self?public_id={public_id}"),
+    )
+    .await;
+    assert_eq!(self_json["watt_balance"].as_i64(), Some(27));
+    assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn client_export_includes_social_snapshot_arrays() {
+async fn client_export_excludes_local_friends_and_dm() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity = Identity::new_random();
@@ -287,20 +369,8 @@ async fn client_export_includes_social_snapshot_arrays() {
             &format!("/v1/client/export?public_id={local_public_id}&peer_limit=10&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
         )
         .await;
-    assert_eq!(
-        export_json["payload"]["friend_relationships"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        export_json["payload"]["pending_friend_requests"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(export_json["payload"]["friend_relationships"].is_null());
+    assert!(export_json["payload"]["pending_friend_requests"].is_null());
     assert_eq!(
         export_json["payload"]["public_blocks"]
             .as_array()
@@ -308,24 +378,8 @@ async fn client_export_includes_social_snapshot_arrays() {
             .len(),
         0
     );
-    assert_eq!(
-        export_json["payload"]["dm_threads"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        export_json["payload"]["dm_messages"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        export_json["payload"]["dm_messages"][0]["counterpart_public_id"].as_str(),
-        Some(remote_public_id.as_str())
-    );
+    assert!(export_json["payload"]["dm_threads"].is_null());
+    assert!(export_json["payload"]["dm_messages"].is_null());
     assert_eq!(
         export_json["payload"]["public_topics"]
             .as_array()

@@ -45,6 +45,12 @@ services:
       - ${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var/lib/wattswarm:ro
     ports:
       - "${WATTETHERIA_CONTROL_PLANE_BIND_HOST:-127.0.0.1}:${WATTETHERIA_CONTROL_PLANE_PORT:-7777}:7777"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7777/supervision >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

@@ -6,7 +6,6 @@ use tower_http::cors::{Any, CorsLayer};
 
 pub fn app(store: SharedStore) -> Router {
     Router::new()
-        .route("/", get(routes::index))
         .route("/healthz", get(routes::healthz))
         .route("/api/docs", get(routes::api_docs))
         .route("/api/summaries", post(routes::ingest_summary))

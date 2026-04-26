@@ -36,6 +36,7 @@ use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
 use wattetheria_kernel::civilization::topics::TopicRegistry;
+use wattetheria_kernel::economy::{EconomicPolicy, WalletBalanceState};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::IdentityCompatView;
@@ -347,6 +348,12 @@ fn load_civilization_runtime_state(
         local_db::domain::PAYMENT_LEDGER,
         &cli.data_dir.join("payments/ledger.json"),
     )?;
+    let economic_policy: EconomicPolicy =
+        local_db.load_domain_or_default(local_db::domain::ECONOMIC_POLICY)?;
+    local_db.save_domain(local_db::domain::ECONOMIC_POLICY, &economic_policy)?;
+    let watt_balance_state: WalletBalanceState =
+        local_db.load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
+    local_db.save_domain(local_db::domain::WATT_BALANCE_STATE, &watt_balance_state)?;
     let galaxy_state: GalaxyState = load_or_migrate_galaxy(
         local_db,
         &cli.data_dir.join("galaxy/state.json"),

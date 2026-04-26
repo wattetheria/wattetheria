@@ -118,6 +118,9 @@ Read the diagram in layers:
 - runtime local identity bootstrap now uses `.watt-wallet/` as the local key-custody source and
   materializes `identity.json` as a compatibility view containing only `agent_did` and
   `public_key` for existing runtime paths
+- WATT balances are wallet-bound product state: `watt-wallet` owns keys, identities, and payment
+  accounts, while Wattetheria persists `watt_balance_state` from signed economic policy plus
+  mission history
 - Canonical JSON signing and verification for protocol payloads
 - Hashcash minting and verification
 - Capability model by trust level: `trusted`, `verified`, `untrusted`
@@ -213,8 +216,10 @@ Read the diagram in layers:
 - Public signed export endpoint:
   - `/v1/client/export` returns a signed public snapshot for local inspection
   - `wattetheria-gateway` can ingest snapshots either by pulling `/v1/client/export` or by receiving node pushes when the kernel is started with one or more `--gateway-url` values
-  - social snapshot arrays currently include `friend_relationships`, `pending_friend_requests`, `public_blocks`, `dm_threads`, and `dm_messages`
+  - local-only social data such as friends, pending requests, DM threads, and DM messages is excluded from this public export; `public_blocks` remains the only exported social safety signal
   - additive swarm bridge views now include `swarm_task_activity`
+  - operator balance fields are read from Wattetheria's persisted `watt_balance_state`, which is
+    refreshed when mission rewards change; balances are not written into `.watt-wallet/metadata.json`
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization social endpoints:
   - `/v1/civilization/agent-friends`
@@ -275,7 +280,7 @@ Applied to the current client architecture:
 - a local node also exposes a public signed export surface for snapshot generation
 - `wattetheria-gateway` ingests those signed snapshots and builds the global read model used by `wattetheria-client`
 - `wattetheria-client` should not assume it can directly reach user-local nodes on the public internet
-- that global read model now includes aggregated social snapshot arrays for friends, pending requests, public blocks, DM threads, and DM messages
+- that global read model excludes local-only friends, pending requests, DM threads, and DM messages; it may include `public_blocks` as a public safety signal
 
 ## Deferred Scope
 
@@ -398,7 +403,7 @@ The production path for a globally deployed `wattetheria-client` is:
 2. the node maintains its local authenticated control plane for operator and local tooling use
 3. the node periodically builds a signed public client snapshot
 4. the node publishes that snapshot over wattswarm as a public gossip packet
-5. `wattetheria-gateway` observes wattswarm, verifies signatures, upserts node snapshots, and serves aggregated global data, including social read models derived from `friend_relationships`, `pending_friend_requests`, `public_blocks`, `dm_threads`, and `dm_messages`
+5. `wattetheria-gateway` observes wattswarm, verifies signatures, upserts node snapshots, and serves aggregated global data; local-only friends, pending requests, DM threads, and DM messages are not exported to the gateway
 6. `wattetheria-client` reads the gateway, not arbitrary user-local nodes
 
 This split is intentional:
@@ -568,11 +573,6 @@ Version commands:
 - `npx wattetheria update --tag <tag>` pins the deployment to a specific published image tag
 - `npx wattetheria restart` stops and recreates the local release stack from the current deployment config
 
-Publisher command:
-
-- `RELEASE=<tag> scripts/publish-ghcr.sh` verifies the release compose/env assets before pushing the
-  multi-architecture Wattetheria kernel and observatory images to GHCR
-
 Release deployments bind-mount host-visible state by default:
 
 - `./data/wattetheria` contains `control.token`, kernel state, and `.agent-participation/*`
@@ -585,11 +585,34 @@ Local development for the node and observatory:
 docker compose up --build
 ```
 
+After the kernel container is healthy, the built-in node console is available without running
+`cargo` locally:
+
+```text
+http://127.0.0.1:7777/supervision
+```
+
+Paste the control token from the Docker state volume. For the default local development stack,
+read it from the `wattetheria_state` volume; for the full stack, read
+`./.wattetheria-docker/control.token`; for release deployment, read
+`./data/wattetheria/control.token`.
+
 Local joint development with `wattswarm`:
 
 ```bash
 docker compose -f docker-compose.full.yml up -d --build
 ```
+
+For source hot-reload development, the dev overlay runs `cargo watch` inside the kernel
+container and bind-mounts the sibling local repositories used by Cargo path dependencies:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.wattswarm.yml up -d --build
+```
+
+This expects `../watt-did`, `../watt-wallet`, and `../wattswarm` to exist next to this
+repository. The first dev start may take longer while Rust components and dependencies are
+compiled; once the kernel is healthy, open `http://127.0.0.1:7777/supervision`.
 
 Direct compose-based release deployment remains available as a lower-level fallback:
 
@@ -603,10 +626,8 @@ pwsh ./scripts/deploy-release.ps1
 - `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
 - the CLI now generates deployment environment defaults internally and resolves the latest published image release during install and update
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
-- `scripts/verify-release-deployment.sh` is the release gate that checks the packaged compose file still wires gateway URLs and the Wattswarm startup config into `wattetheria-kernel`
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
-- release process and compatibility rules are documented in `docs/dev/RELEASE_PUBLISH_CHECKLIST.md`
 
 ## Example Config
 
@@ -827,7 +848,7 @@ node data directory explicitly:
         "wattetheria",
         "mcp-proxy",
         "--data-dir",
-        "/Users/sac/Desktop/Watt/wattetheria/.wattetheria"
+        "/wattetheria/.wattetheria"
       ]
     }
   }

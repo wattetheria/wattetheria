@@ -13,19 +13,20 @@ use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scor
 use wattetheria_kernel::civilization::missions::{
     MissionDomain, MissionPublisherKind, MissionStatus,
 };
+use wattetheria_kernel::economy::WalletBoundBalance;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
-use crate::routes::civilization::{
-    build_agent_dm_messages_payload, build_agent_dm_threads_payload,
-    build_agent_relationship_payload,
-};
+use crate::routes::civilization::build_agent_relationship_payload;
 use crate::routes::client_swarm::{
     build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
 };
 use crate::routes::identity::resolve_identity_context;
+use crate::routes::reward_view::{
+    active_wallet_payment_account_payload, wallet_bound_balance_for_identity,
+};
 use crate::state::{
     ClientExportQuery, ClientIdentityQuery, ClientLeaderboardQuery, ClientListQuery,
     ClientRpcLogsQuery, ControlPlaneState,
@@ -41,15 +42,7 @@ pub struct PublicClientSnapshot {
     pub operator: Value,
     pub rpc_logs: Vec<Value>,
     #[serde(default)]
-    pub friend_relationships: Vec<Value>,
-    #[serde(default)]
-    pub pending_friend_requests: Vec<Value>,
-    #[serde(default)]
     pub public_blocks: Vec<Value>,
-    #[serde(default)]
-    pub dm_threads: Vec<Value>,
-    #[serde(default)]
-    pub dm_messages: Vec<Value>,
     #[serde(default)]
     pub public_topics: Vec<Value>,
     #[serde(default)]
@@ -115,7 +108,6 @@ async fn build_client_self_payload(
     )
     .await;
     let controller_id = context.public_memory_owner.controller.clone();
-    let agent_stats = state.swarm_bridge.agent_view(&controller_id).await?.stats;
     let public_id = context.public_identity.as_ref().map_or_else(
         || controller_id.clone(),
         |identity| identity.public_id.clone(),
@@ -124,11 +116,17 @@ async fn build_client_self_payload(
         || public_id.clone(),
         |identity| identity.display_name.clone(),
     );
+    let balance =
+        wallet_bound_balance_for_identity(state, &controller_id, Some(&public_id)).await?;
+    let payment_account = active_wallet_payment_account_payload(state);
     let geo = &state.geo_location;
     Ok(json!({
         "id": public_id,
         "display_name": display_name,
-        "watt_balance": agent_stats.watt,
+        "watt_balance": balance.watt,
+        "reward_policy_version": balance.policy_version,
+        "wallet_bound_agent_did": controller_id,
+        "active_payment_account": payment_account,
         "status": "online",
         "lat": geo.lat,
         "lng": geo.lng,
@@ -603,12 +601,17 @@ async fn leaderboard_agent_stats(
     identities: &[(String, PublicIdentity)],
 ) -> BTreeMap<String, AgentStats> {
     let mut agent_stats_by_controller = BTreeMap::new();
-    for (controller_id, _) in identities {
-        let agent_stats = match state.swarm_bridge.agent_view(controller_id).await {
-            Ok(view) => view.stats,
-            Err(_) => AgentStats::default(),
-        };
-        agent_stats_by_controller.insert(controller_id.clone(), agent_stats);
+    for (controller_id, identity) in identities {
+        let balance =
+            wallet_bound_balance_for_identity(state, controller_id, Some(&identity.public_id))
+                .await
+                .unwrap_or(WalletBoundBalance {
+                    policy_version: 0,
+                    watt: 0,
+                    reputation: 0,
+                    capacity: 0,
+                });
+        agent_stats_by_controller.insert(controller_id.clone(), balance.stats());
     }
     agent_stats_by_controller
 }
@@ -713,29 +716,13 @@ async fn build_public_client_snapshot(
     identity_query: &ClientIdentityQuery,
     leaderboard_category: LeaderboardCategory,
 ) -> anyhow::Result<PublicClientSnapshot> {
-    let friend_relationships =
+    let relationship_entries =
         build_agent_relationship_payload(state, identity_query.public_id.as_deref(), None).await?;
-    let pending_friend_requests = friend_relationships
-        .iter()
-        .filter(|entry| entry["pending_inbound"].as_bool() == Some(true))
-        .cloned()
-        .collect::<Vec<_>>();
-    let public_blocks = friend_relationships
+    let public_blocks = relationship_entries
         .iter()
         .filter(|entry| entry["relationship_state"].as_str() == Some("blocked"))
         .cloned()
         .collect::<Vec<_>>();
-    let dm_threads =
-        build_agent_dm_threads_payload(state, identity_query.public_id.as_deref()).await?;
-    let dm_messages = build_agent_dm_messages_payload(
-        state,
-        identity_query.public_id.as_deref(),
-        None,
-        None,
-        100,
-    )
-    .await
-    .unwrap_or_default();
     let swarm_task_activity =
         build_task_activity_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
             .await
@@ -758,11 +745,7 @@ async fn build_public_client_snapshot(
             state,
             query.rpc_log_limit.unwrap_or(20).clamp(1, 200),
         )?,
-        friend_relationships,
-        pending_friend_requests,
         public_blocks,
-        dm_threads,
-        dm_messages,
         public_topics: build_hives_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
             .await
             .unwrap_or_default(),
@@ -809,7 +792,7 @@ fn client_task_status(status: &MissionStatus) -> &'static str {
     match status {
         MissionStatus::Open => "published",
         MissionStatus::Claimed => "claimed",
-        MissionStatus::Completed => "executed",
+        MissionStatus::Completed => "completed",
         MissionStatus::Settled | MissionStatus::Cancelled => "settled",
     }
 }
