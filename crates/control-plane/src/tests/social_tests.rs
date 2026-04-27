@@ -8,6 +8,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -214,6 +215,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -309,6 +311,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -412,6 +415,7 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
     let local_public_id = scoped_id("captain-aurora", &identity.agent_did);
     let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -603,6 +607,7 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -777,6 +782,7 @@ async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -863,6 +869,7 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -952,6 +959,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let remote_node_id = "12D3KooRemotePeer".to_string();
     let transport_thread_id = "transport-thread-42".to_string();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -1157,6 +1165,7 @@ async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

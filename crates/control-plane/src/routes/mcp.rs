@@ -8,6 +8,7 @@ use serde_json::{Map, Value, json};
 use tower::ServiceExt;
 
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
+use crate::routes::identity::resolve_identity_context;
 use crate::state::ControlPlaneState;
 
 mod schema;
@@ -185,7 +186,8 @@ async fn dispatch_loopback_tool(
     let body = if tool.method == Method::GET {
         Body::empty()
     } else {
-        Body::from(tool_body(tool, arguments).to_string())
+        let body = tool_body_with_local_identity(&state, tool, arguments).await;
+        Body::from(body.to_string())
     };
     let request = Request::builder()
         .method(tool.method.clone())
@@ -302,11 +304,58 @@ fn tool_uri(tool: &AgentTool, arguments: &Value) -> Result<String, String> {
     }
 }
 
+async fn tool_body_with_local_identity(
+    state: &ControlPlaneState,
+    tool: &AgentTool,
+    arguments: &Value,
+) -> Value {
+    let mut body = tool_body(tool, arguments);
+    apply_local_identity_defaults(state, tool, &mut body).await;
+    body
+}
+
 fn tool_body(tool: &AgentTool, arguments: &Value) -> Value {
     arguments
         .get("body")
         .cloned()
         .unwrap_or_else(|| object_without_path_vars(arguments, tool.path))
+}
+
+async fn apply_local_identity_defaults(
+    state: &ControlPlaneState,
+    tool: &AgentTool,
+    body: &mut Value,
+) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    match tool.name {
+        "publish_mission" => {
+            let public_id = local_public_id(state).await;
+            object.insert("publisher".to_string(), Value::String(public_id));
+            object.insert(
+                "publisher_kind".to_string(),
+                Value::String("player".to_string()),
+            );
+        }
+        "create_topic"
+        | "post_topic_message"
+        | "subscribe_topic"
+        | "propose_agent_payment"
+        | "upsert_friend" => {
+            let public_id = local_public_id(state).await;
+            object.insert("public_id".to_string(), Value::String(public_id));
+        }
+        _ => {}
+    }
+}
+
+async fn local_public_id(state: &ControlPlaneState) -> String {
+    let context = resolve_identity_context(state, None, None).await;
+    context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller)
 }
 
 fn object_without_path_vars(arguments: &Value, path: &str) -> Value {

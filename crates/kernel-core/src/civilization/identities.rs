@@ -133,17 +133,22 @@ impl PublicIdentityRegistry {
         if let Some(identity) = self.identities.get(agent_did) {
             return Ok(identity.clone());
         }
-        // Existing active identity bound to this agent_did.
-        if let Some(identity) = self.active_for_agent_did(agent_did) {
-            return Ok(identity);
-        }
         let fingerprint = fingerprint_from_did_key(agent_did)
             .context("derive fingerprint for default public_id")?;
-        let slug = slugify_did(agent_did);
+        let slug = default_public_slug(agent_did);
         let public_id = build_scoped_public_id(&slug, &fingerprint);
+        if let Some(identity) = self.identities.get(&public_id) {
+            return Ok(identity.clone());
+        }
+        // Existing active identity bound to this agent_did.
+        if let Some(identity) = self.active_for_agent_did(agent_did)
+            && !is_legacy_default_identity(&identity, agent_did)
+        {
+            return Ok(identity);
+        }
         self.upsert(
             &public_id,
-            format!("Citizen-{}", &slug[..slug.len().min(12)]),
+            default_display_name(agent_did),
             bound_agent_did.map(ToOwned::to_owned),
             true,
         )
@@ -258,19 +263,30 @@ impl ControllerBindingRegistry {
     }
 }
 
-/// Derive a short human-ish slug from a `did:key:z...` string.
-/// Takes the last 8 characters of the did for brevity.
-fn slugify_did(agent_did: &str) -> String {
+/// Derive a readable slug while keeping the fingerprinted `public_id` globally unique.
+fn default_public_slug(agent_did: &str) -> String {
+    format!("agent-{}", did_suffix(agent_did, 12))
+}
+
+fn default_display_name(agent_did: &str) -> String {
+    format!("Agent-{}", did_suffix(agent_did, 8))
+}
+
+fn did_suffix(agent_did: &str, len: usize) -> String {
     let raw = agent_did.trim_start_matches("did:key:");
-    let suffix: String = raw
-        .chars()
+    raw.chars()
         .rev()
-        .take(8)
+        .take(len)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .collect();
-    format!("citizen-{suffix}")
+        .collect()
+}
+
+fn is_legacy_default_identity(identity: &PublicIdentity, agent_did: &str) -> bool {
+    identity.agent_did.as_deref() == Some(agent_did)
+        && identity.public_id.starts_with("citizen-")
+        && identity.display_name.starts_with("Citizen-")
 }
 
 #[cfg(test)]
@@ -291,7 +307,31 @@ mod tests {
         let expected_fp = public_key_fingerprint(&identity.public_key).unwrap();
         let embedded_fp = extract_public_id_fingerprint(&public.public_id).unwrap();
         assert_eq!(embedded_fp, expected_fp);
-        assert!(public.public_id.starts_with("citizen-"));
+        assert!(public.public_id.starts_with("agent-"));
+        assert!(public.display_name.starts_with("Agent-"));
+    }
+
+    #[test]
+    fn ensure_default_replaces_legacy_citizen_identity() {
+        let identity = Identity::new_random();
+        let mut registry = PublicIdentityRegistry::default();
+        let fingerprint = public_key_fingerprint(&identity.public_key).unwrap();
+        let legacy_public_id = build_scoped_public_id("citizen-legacy", &fingerprint);
+        registry
+            .upsert(
+                &legacy_public_id,
+                "Citizen-legacy".to_string(),
+                Some(identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+
+        let public = registry
+            .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did))
+            .unwrap();
+
+        assert!(public.public_id.starts_with("agent-"));
+        assert!(registry.get(&legacy_public_id).is_some());
     }
 
     #[test]

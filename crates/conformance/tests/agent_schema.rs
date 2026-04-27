@@ -7,7 +7,7 @@ use wattetheria_conformance::validate;
 fn agent_schema_accepts_valid_payload() {
     let payload = json!({
         "agent_did": "agent-1",
-        "public_id": "citizen-alpha",
+        "public_id": "agent-alpha",
         "controller_id": "controller-1",
         "model_provider": "ollama:qwen2.5:7b",
         "personality_params": {"risk": 0.3},

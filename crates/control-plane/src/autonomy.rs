@@ -98,9 +98,19 @@ pub async fn run_autonomy_tick_once(state: &ControlPlaneState, hours: i64) -> Re
     let emergencies = brain_state["emergencies"]
         .as_array()
         .map_or(0_usize, std::vec::Vec::len);
-    let proposals = state.brain_engine.propose_actions(&brain_state).await?;
+    let proposals = state
+        .brain_engine
+        .read()
+        .await
+        .propose_actions(&brain_state)
+        .await?;
     let report = load_night_shift_report(state, hours)?;
-    let human_report = state.brain_engine.humanize_night_shift(&report).await?;
+    let human_report = state
+        .brain_engine
+        .read()
+        .await
+        .humanize_night_shift(&report)
+        .await?;
     let strategy = brain_state["strategy"].clone();
     let auto_action_budget = strategy["max_auto_actions"]
         .as_u64()
@@ -169,7 +179,12 @@ pub(crate) async fn build_operator_briefing(
     hours: i64,
 ) -> Result<Value> {
     let report = load_night_shift_report(state, hours)?;
-    let human_report = state.brain_engine.humanize_night_shift(&report).await?;
+    let human_report = state
+        .brain_engine
+        .read()
+        .await
+        .humanize_night_shift(&report)
+        .await?;
     let brain_state = build_brain_state(state).await?;
     Ok(json!({
         "hours": hours,

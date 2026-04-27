@@ -44,6 +44,54 @@ async fn brain_doctor_updates_attach_status() {
 }
 
 #[tokio::test]
+async fn brain_config_save_updates_deploy_env_and_runtime_label() {
+    let (dir, app, token, _, _state) = build_test_app(10);
+
+    let updated = request_json(
+        app.clone(),
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/v1/brain/config")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "kind": "openai-compatible",
+                    "base_url": "http://127.0.0.1:18789/v1",
+                    "model": "openclaw",
+                    "api_key_env": "OPENCLAW_API_KEY"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(updated["ok"].as_bool(), Some(true));
+    assert_eq!(updated["restart_required"].as_bool(), Some(true));
+    assert_eq!(
+        updated["label"].as_str(),
+        Some("openai-compatible model=openclaw url=http://127.0.0.1:18789/v1")
+    );
+
+    let env_path = dir.path().join("deploy/.env");
+    let env_body = fs::read_to_string(&env_path).unwrap();
+    assert!(env_body.contains("WATTETHERIA_BRAIN_PROVIDER_KIND=openai-compatible"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_BASE_URL=http://127.0.0.1:18789/v1"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_MODEL=openclaw"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=OPENCLAW_API_KEY"));
+
+    let loaded = authed_get_json(app.clone(), &token, "/v1/brain/config").await;
+    assert_eq!(
+        loaded["label"].as_str(),
+        Some("openai-compatible model=openclaw url=http://127.0.0.1:18789/v1")
+    );
+    assert_eq!(
+        loaded["env_path"].as_str(),
+        Some(env_path.to_string_lossy().as_ref())
+    );
+}
+
+#[tokio::test]
 async fn night_shift_alias_endpoints_match_primary_routes() {
     let (_dir, app, token, _, _state) = build_test_app(20);
     let summary_json = authed_get_json(app.clone(), &token, "/v1/night-shift?hours=12").await;
@@ -483,14 +531,14 @@ async fn public_identity_and_controller_binding_flow_works() {
         Some("local_wattswarm")
     );
 
-    let citizen_alpha = scoped_id("citizen-alpha", agent_did);
+    let agent_alpha = scoped_id("agent-alpha", agent_did);
     let public_identity_status = authed_post(
         app.clone(),
         &token,
         "/v1/civilization/public-identity",
         json!({
-            "public_id": citizen_alpha,
-            "display_name": "Citizen Alpha",
+            "public_id": agent_alpha,
+            "display_name": "Agent Alpha",
             "agent_did": agent_did,
             "active": true
         }),
@@ -503,7 +551,7 @@ async fn public_identity_and_controller_binding_flow_works() {
         &token,
         "/v1/civilization/controller-binding",
         json!({
-            "public_id": citizen_alpha,
+            "public_id": agent_alpha,
             "controller_kind": "external_runtime",
             "controller_ref": "openclaw://alpha",
             "controller_node_id": null,
@@ -517,18 +565,18 @@ async fn public_identity_and_controller_binding_flow_works() {
     let fetched_identity = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/public-identity?public_id={citizen_alpha}"),
+        &format!("/v1/civilization/public-identity?public_id={agent_alpha}"),
     )
     .await;
     assert_eq!(
         fetched_identity["public_identity"]["display_name"].as_str(),
-        Some("Citizen Alpha")
+        Some("Agent Alpha")
     );
 
     let fetched_binding = authed_get_json(
         app,
         &token,
-        &format!("/v1/civilization/controller-binding?public_id={citizen_alpha}"),
+        &format!("/v1/civilization/controller-binding?public_id={agent_alpha}"),
     )
     .await;
     assert_eq!(
@@ -537,7 +585,7 @@ async fn public_identity_and_controller_binding_flow_works() {
     );
     assert_eq!(
         fetched_binding["public_memory_owner"]["public_id"].as_str(),
-        Some(citizen_alpha.as_str())
+        Some(agent_alpha.as_str())
     );
 
     let persisted_identities: PublicIdentityRegistry = state
@@ -545,12 +593,12 @@ async fn public_identity_and_controller_binding_flow_works() {
         .load_domain(wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY)
         .unwrap()
         .unwrap();
-    assert!(persisted_identities.get(&citizen_alpha).is_some());
+    assert!(persisted_identities.get(&agent_alpha).is_some());
 
     let persisted_bindings: ControllerBindingRegistry = state
         .local_db
         .load_domain(wattetheria_kernel::local_db::domain::CONTROLLER_BINDING_REGISTRY)
         .unwrap()
         .unwrap();
-    assert!(persisted_bindings.get(&citizen_alpha).is_some());
+    assert!(persisted_bindings.get(&agent_alpha).is_some());
 }

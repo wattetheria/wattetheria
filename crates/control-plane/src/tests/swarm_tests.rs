@@ -89,6 +89,7 @@ async fn network_routes_surface_bridge_read_models() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -135,6 +136,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

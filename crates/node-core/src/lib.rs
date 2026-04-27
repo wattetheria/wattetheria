@@ -143,7 +143,11 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     );
 
     let brain_config = resolve_brain_config(cli)?;
-    let brain_engine = Arc::new(BrainEngine::from_config(&brain_config));
+    let brain_provider_label = brain_provider_label(&brain_config);
+    let brain_engine = BrainEngine::from_config(&brain_config);
+    let executor_base_url = resolve_executor_base_url(&brain_config);
+    let brain_config_arc = Arc::new(tokio::sync::RwLock::new(brain_config.clone()));
+    let brain_engine_arc = Arc::new(tokio::sync::RwLock::new(brain_engine));
     let servicenet_client = cli
         .servicenet_base_url
         .as_deref()
@@ -206,13 +210,14 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         policy_engine,
         mailbox,
         civilization_state,
-        &brain_config,
-        brain_engine,
+        brain_config_arc.clone(),
+        brain_engine_arc,
+        brain_provider_label,
         audit_log,
         local_db,
         social_store,
         servicenet_client,
-        resolve_executor_base_url(&brain_config),
+        executor_base_url,
         Some(resolve_agent_event_callback_base_url(cli)),
         stream_tx,
     )
@@ -239,8 +244,9 @@ async fn build_control_state(
     policy_engine: PolicyEngine,
     mailbox: CrossSubnetMailbox,
     civilization_state: CivilizationRuntimeState,
-    brain_config: &BrainProviderConfig,
-    brain_engine: Arc<BrainEngine>,
+    brain_config: Arc<tokio::sync::RwLock<BrainProviderConfig>>,
+    brain_engine: Arc<tokio::sync::RwLock<BrainEngine>>,
+    brain_provider_label: String,
     audit_log: AuditLog,
     local_db: Arc<LocalDb>,
     social_store: Arc<SocialStore>,
@@ -275,7 +281,8 @@ async fn build_control_state(
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
         travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
         brain_engine,
-        brain_provider_label: brain_provider_label(brain_config),
+        brain_config,
+        brain_provider_label,
         audit_log,
         local_db,
         social_store,

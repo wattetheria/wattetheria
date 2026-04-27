@@ -13,6 +13,11 @@ use crate::state::{
     StreamEvent, agent_commit_context_from_headers,
 };
 use wattetheria_kernel::audit::AuditEntry;
+use wattetheria_kernel::civilization::missions::CivilMission;
+use wattetheria_kernel::swarm_bridge::{
+    SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
+};
+use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
@@ -35,6 +40,85 @@ fn mission_signed_event_kind(action: &str) -> &'static str {
         "claim" => "MISSION_CLAIMED",
         "complete" => "MISSION_COMPLETED",
         _ => "MISSION_UPDATED",
+    }
+}
+
+fn mission_execution_id(mission_id: &str, agent_did: &str) -> String {
+    format!("wattetheria:{mission_id}:{agent_did}")
+}
+
+fn mission_candidate_id(mission_id: &str, agent_did: &str) -> String {
+    format!("wattetheria-candidate-{mission_id}-{agent_did}")
+}
+
+fn mission_task_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["mission_id", "agent_did", "result"],
+        "properties": {
+            "mission_id": {"type": "string"},
+            "agent_did": {"type": "string"},
+            "result": {}
+        }
+    })
+}
+
+fn mission_task_contract(mut contract: TaskContract, mission: &CivilMission) -> TaskContract {
+    contract.task_id.clone_from(&mission.mission_id);
+    "wattetheria.mission".clone_into(&mut contract.task_type);
+    contract.inputs = json!({
+        "kind": "wattetheria_mission",
+        "mission_id": mission.mission_id,
+        "publisher": mission.publisher,
+        "publisher_kind": mission.publisher_kind,
+        "domain": mission.domain,
+        "reward": mission.reward,
+        "required_role": mission.required_role,
+        "required_faction": mission.required_faction,
+        "subnet_id": mission.subnet_id,
+        "zone_id": mission.zone_id,
+        "payload": mission.payload,
+    });
+    contract.output_schema = mission_task_output_schema();
+    contract
+}
+
+fn mission_announce_command(mission: &CivilMission) -> SwarmTaskAnnounceCommand {
+    SwarmTaskAnnounceCommand {
+        task_id: mission.mission_id.clone(),
+        announcement_id: None,
+        feed_key: "wattetheria.missions".to_owned(),
+        scope_hint: "global".to_owned(),
+        summary: json!({
+            "kind": "wattetheria_mission",
+            "mission_id": mission.mission_id,
+            "title": mission.title,
+            "description": mission.description,
+            "domain": mission.domain,
+            "reward": mission.reward,
+            "publisher": mission.publisher,
+        }),
+        detail_ref: None,
+    }
+}
+
+fn mission_complete_command(
+    mission: &CivilMission,
+    agent_did: &str,
+) -> SwarmTaskProposeCandidateCommand {
+    let execution_id = mission_execution_id(&mission.mission_id, agent_did);
+    SwarmTaskProposeCandidateCommand {
+        task_id: mission.mission_id.clone(),
+        execution_id: execution_id.clone(),
+        candidate_id: mission_candidate_id(&mission.mission_id, agent_did),
+        output: json!({
+            "kind": "wattetheria_mission_result",
+            "mission_id": mission.mission_id,
+            "agent_did": agent_did,
+            "result": mission.payload,
+        }),
+        evidence_inline: Vec::new(),
+        evidence_refs: Vec::new(),
     }
 }
 
@@ -148,6 +232,26 @@ pub(crate) async fn mission_publish(
     if let Err(error) = refresh_known_wallet_balances(&state).await {
         return internal_error(&error);
     }
+    if agent_commit_context_from_headers(&headers).is_none() {
+        let contract = match state
+            .swarm_bridge
+            .sample_task_contract(&mission.mission_id)
+            .await
+        {
+            Ok(contract) => mission_task_contract(contract, &mission),
+            Err(error) => return internal_error(&error),
+        };
+        if let Err(error) = state.swarm_bridge.submit_task(contract).await {
+            return internal_error(&error);
+        }
+        if let Err(error) = state
+            .swarm_bridge
+            .announce_task(mission_announce_command(&mission))
+            .await
+        {
+            return internal_error(&error);
+        }
+    }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
     let _ = state.stream_tx.send(StreamEvent {
@@ -246,6 +350,31 @@ async fn transition_mission(
     drop(board);
     if let Err(error) = refresh_known_wallet_balances(&state).await {
         return internal_error(&error);
+    }
+    if agent_commit_context_from_headers(&headers).is_none() {
+        let bridge_result = match action {
+            "claim" => {
+                state
+                    .swarm_bridge
+                    .claim_task(SwarmTaskClaimCommand {
+                        task_id: mission.mission_id.clone(),
+                        role: ClaimRole::Propose,
+                        execution_id: mission_execution_id(&mission.mission_id, &request_agent_did),
+                        lease_ms: None,
+                    })
+                    .await
+            }
+            "complete" => {
+                state
+                    .swarm_bridge
+                    .propose_task_candidate(mission_complete_command(&mission, &request_agent_did))
+                    .await
+            }
+            _ => unreachable!("unsupported mission transition"),
+        };
+        if let Err(error) = bridge_result {
+            return internal_error(&error);
+        }
     }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);

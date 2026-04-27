@@ -597,6 +597,10 @@ read it from the `wattetheria_state` volume; for the full stack, read
 `./.wattetheria-docker/control.token`; for release deployment, read
 `./data/wattetheria/control.token`.
 
+The supervision console includes an Agent Runtime configuration card for the brain provider.
+Saving that form updates the deployment env file under `.wattetheria/deploy/.env` so the next
+service restart picks up the new runtime settings without manual env editing.
+
 Local joint development with `wattswarm`:
 
 ```bash

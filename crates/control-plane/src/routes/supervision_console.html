@@ -6,35 +6,169 @@
   <title>Wattetheria Node Console</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f5f6f2;
-      --surface: #ffffff;
-      --surface-alt: #f0f5f4;
-      --ink: #17212b;
-      --muted: #62717c;
-      --line: #d7ddd8;
-      --line-strong: #aebbb6;
-      --teal: #2f8b84;
-      --teal-dark: #236b66;
-      --copper: #a65f23;
-      --green: #347c45;
-      --red: #9b3a36;
-      --blue: #2f6690;
+      --bg: #f0e8d8;
+      --surface: #fff6e8;
+      --surface-alt: #efe2cf;
+      --ink: #1e1a16;
+      --muted: #5f5549;
+      --line: #2b2520;
+      --line-strong: #8c7f71;
+      --teal: #1f7fd4;
+      --teal-dark: #1f7fd4;
+      --copper: #d46a1f;
+      --green: #2b8a3e;
+      --red: #9f1f1f;
+      --blue: #1f4e8b;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: Inter, "IBM Plex Sans", "Segoe UI", sans-serif;
-      background: var(--bg);
+      font-family: "IBM Plex Mono", "Fira Code", "JetBrains Mono", monospace;
+      background:
+        linear-gradient(90deg, rgba(30,26,22,0.05) 1px, transparent 1px),
+        linear-gradient(rgba(30,26,22,0.05) 1px, transparent 1px),
+        var(--bg);
+      background-size: 12px 12px, 12px 12px, auto;
       color: var(--ink);
     }
 
+    html {
+      scroll-behavior: smooth;
+    }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: 17rem minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      padding: 1.1rem 0.9rem;
+      border-right: 3px solid var(--line);
+      background:
+        linear-gradient(90deg, rgba(30,26,22,0.05) 1px, transparent 1px),
+        linear-gradient(rgba(30,26,22,0.05) 1px, transparent 1px),
+        var(--surface);
+      background-size: 12px 12px, 12px 12px, auto;
+      color: var(--ink);
+      overflow-y: auto;
+    }
+
+    .brand {
+      display: grid;
+      gap: 0.3rem;
+      padding: 0.25rem 0.25rem 0.8rem;
+      border-bottom: 2px solid var(--line);
+    }
+
+    .brand-title {
+      font-size: 1.02rem;
+      font-weight: 900;
+      line-height: 1.05;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 0.72rem;
+      line-height: 1.35;
+    }
+
+    .sidebar-status {
+      display: grid;
+      gap: 0.55rem;
+      padding: 0.75rem;
+      border: 2px solid var(--line);
+      background: var(--surface-alt);
+    }
+
+    .status-row {
+      display: grid;
+      gap: 0.18rem;
+    }
+
+    .status-label {
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .status-value {
+      overflow-wrap: anywhere;
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .side-nav {
+      display: grid;
+      gap: 0.2rem;
+    }
+
+    .side-link {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.62rem 0.65rem;
+      border: 2px solid transparent;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.82rem;
+      font-weight: 850;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .side-link:hover,
+    .side-link:focus,
+    .side-link.active {
+      border-color: var(--line);
+      background: var(--surface-alt);
+      color: var(--ink);
+      outline: none;
+    }
+
+    .side-link .hint {
+      color: var(--line-strong);
+      font-size: 0.7rem;
+    }
+
+    .sidebar-footer {
+      display: grid;
+      gap: 0.45rem;
+      margin-top: auto;
+      padding-top: 0.8rem;
+      border-top: 2px solid var(--line);
+    }
+
+    .sidebar-footer a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.76rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .workspace {
+      min-width: 0;
+      padding: 1rem 1.25rem 2rem;
+    }
+
     header, main {
-      max-width: 1440px;
+      max-width: 1560px;
       margin: 0 auto;
-      padding: 1rem 1.25rem;
     }
 
     header {
@@ -43,13 +177,19 @@
       justify-content: space-between;
       gap: 1rem;
       align-items: flex-end;
-      border-bottom: 1px solid var(--line);
+      border: 3px solid var(--line);
+      background: var(--surface);
+      box-shadow: 8px 8px 0 var(--line);
+      margin-top: 0.25rem;
+      padding: 1rem 1.25rem;
     }
 
     h1 {
       margin: 0 0 0.3rem;
-      font-size: 1.8rem;
+      font-size: 1.55rem;
       line-height: 1.05;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
     }
 
     .lead {
@@ -61,7 +201,6 @@
 
     .timestamp {
       color: var(--muted);
-      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
       font-size: 0.78rem;
       white-space: nowrap;
     }
@@ -69,13 +208,24 @@
     main {
       display: grid;
       gap: 0.9rem;
-      padding-bottom: 2rem;
+      padding-top: 1rem;
+      padding-bottom: 0;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .view-page {
+      display: grid;
+      gap: 0.9rem;
+      min-width: 0;
     }
 
     .panel {
       background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      border: 3px solid var(--line);
+      box-shadow: 6px 6px 0 var(--line);
       padding: 0.9rem;
       min-width: 0;
     }
@@ -83,7 +233,7 @@
     .toolbar {
       display: grid;
       gap: 0.75rem;
-      grid-template-columns: minmax(220px, 1.2fr) minmax(220px, 1.2fr) minmax(120px, 0.45fr) repeat(3, minmax(120px, 0.42fr));
+      grid-template-columns: minmax(180px, 1fr) minmax(200px, 1.1fr) minmax(80px, 0.35fr) repeat(3, minmax(96px, 0.32fr));
       align-items: end;
     }
 
@@ -105,27 +255,45 @@
       width: 100%;
       min-height: 2.5rem;
       padding: 0.55rem 0.65rem;
-      border-radius: 6px;
-      border: 1px solid var(--line-strong);
+      border-radius: 0;
+      border: 2px solid var(--line);
       background: #fff;
       color: var(--ink);
     }
 
     button {
       min-height: 2.5rem;
-      border: 0;
-      border-radius: 6px;
+      border: 2px solid var(--line);
+      border-radius: 0;
       padding: 0.55rem 0.75rem;
       cursor: pointer;
-      background: var(--teal-dark);
+      background: var(--copper);
       color: white;
       font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
 
     button.secondary {
       background: var(--surface-alt);
-      color: var(--teal-dark);
-      border: 1px solid var(--line-strong);
+      color: var(--ink);
+      border: 2px solid var(--line);
+    }
+
+    .action-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.5rem;
+      padding: 0.55rem 0.75rem;
+      border: 2px solid var(--line);
+      background: var(--teal-dark);
+      color: #fff;
+      text-decoration: none;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
     }
 
     .notice {
@@ -146,7 +314,7 @@
     }
 
     .metric-card {
-      border-left: 4px solid var(--teal);
+      border-left: 8px solid var(--teal);
     }
 
     .metric-card.wallet {
@@ -162,7 +330,7 @@
       font-size: 0.82rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--muted);
+      color: var(--copper);
     }
 
     .big {
@@ -188,8 +356,7 @@
 
     .kpi {
       background: var(--surface-alt);
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      border: 2px solid var(--line);
       padding: 0.75rem;
     }
 
@@ -209,10 +376,10 @@
       font-weight: 750;
     }
 
-    .layout {
+    .content-grid {
       display: grid;
       gap: 0.9rem;
-      grid-template-columns: 1.25fr 0.85fr;
+      grid-template-columns: minmax(0, 1.32fr) minmax(22rem, 0.68fr);
       align-items: start;
     }
 
@@ -227,10 +394,126 @@
       gap: 0.9rem;
     }
 
+    .config-panel {
+      background: var(--surface);
+    }
+
+    .config-intro {
+      margin: 0 0 0.8rem;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.36fr);
+      gap: 0.75rem;
+    }
+
+    .config-section {
+      border: 2px solid var(--line);
+      padding: 0.75rem;
+      background: #fff;
+    }
+
+    .config-section-title {
+      margin: 0 0 0.2rem;
+      font-size: 0.76rem;
+      font-weight: 800;
+      color: var(--teal-dark);
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+    }
+
+    .config-section-copy {
+      margin: 0 0 0.75rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+
+    .runtime-examples {
+      margin: 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+
+    .runtime-examples li + li {
+      margin-top: 0.45rem;
+    }
+
+    .runtime-example-code {
+      display: block;
+      margin-top: 0.15rem;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .field-stack {
+      display: grid;
+      gap: 0.7rem;
+    }
+
+    .field-label {
+      display: block;
+      margin-bottom: 0.35rem;
+      font-size: 0.75rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    .field-input {
+      width: 100%;
+      min-height: 2.5rem;
+      padding: 0.55rem 0.65rem;
+      border-radius: 0;
+      border: 2px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .config-meta {
+      display: grid;
+      gap: 0.35rem;
+      margin-top: 0.8rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.8rem;
+      overflow-wrap: anywhere;
+    }
+
+    .config-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      align-items: center;
+      margin-top: 0.85rem;
+    }
+
+    .status-text {
+      font-size: 0.83rem;
+      color: var(--muted);
+    }
+
+    .status-text.ok {
+      color: var(--green);
+      font-weight: 700;
+    }
+
+    .status-text.error {
+      color: var(--red);
+      font-weight: 700;
+    }
+
     .table-wrap {
       overflow-x: auto;
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      border: 2px solid var(--line);
     }
 
     table {
@@ -249,7 +532,7 @@
 
     th {
       color: var(--muted);
-      background: #f7f9f8;
+      background: var(--surface-alt);
       font-size: 0.72rem;
       text-transform: uppercase;
       letter-spacing: 0.06em;
@@ -264,8 +547,8 @@
       align-items: center;
       min-height: 1.35rem;
       padding: 0.15rem 0.45rem;
-      border-radius: 999px;
-      border: 1px solid var(--line-strong);
+      border-radius: 0;
+      border: 2px solid var(--line);
       background: #fff;
       color: var(--muted);
       font-size: 0.72rem;
@@ -289,8 +572,7 @@
 
     .row {
       padding: 0.65rem;
-      border: 1px solid var(--line);
-      border-radius: 8px;
+      border: 2px solid var(--line);
       background: #fff;
       min-width: 0;
     }
@@ -318,28 +600,45 @@
     .empty {
       color: var(--muted);
       background: var(--surface-alt);
-      border: 1px dashed var(--line-strong);
-      border-radius: 8px;
+      border: 2px dashed var(--line);
       padding: 0.75rem;
       font-size: 0.86rem;
     }
 
     .code {
       margin: 0;
-      background: #0f1720;
-      color: #e7edf2;
-      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      border: 2px solid var(--line);
       padding: 0.75rem;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
-      font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
       font-size: 0.76rem;
       max-height: 20rem;
       overflow: auto;
     }
 
-    @media (max-width: 1100px) {
-      .toolbar, .summary, .layout, .columns {
+    @media (max-width: 1180px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 3px solid var(--line);
+      }
+
+      .side-nav {
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      }
+
+      .sidebar-footer {
+        margin-top: 0;
+      }
+
+      .toolbar, .summary, .content-grid, .columns {
         grid-template-columns: 1fr;
       }
 
@@ -351,139 +650,262 @@
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Wattetheria Node Console</h1>
-      <p class="lead">
-        Local control surface for identities, wallet state, WATT balance, social graph,
-        direct messages, missions, topic activity, network status, and recent node events.
-      </p>
-    </div>
-    <div id="last-refresh" class="timestamp">Not refreshed</div>
-  </header>
-
-  <main>
-    <section class="panel">
-      <div class="toolbar">
-        <label>
-          Control token
-          <input id="token" type="password" placeholder="Paste .wattetheria/control.token">
-        </label>
-        <label>
-          Public identity
-          <select id="public-id">
-            <option value="">Load identities first</option>
-          </select>
-        </label>
-        <label>
-          Limit
-          <input id="limit" type="number" min="5" max="200" value="50">
-        </label>
-        <button id="load-identities" type="button">Load IDs</button>
-        <button id="refresh" type="button">Refresh</button>
-        <button id="save-settings" class="secondary" type="button">Save</button>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Console navigation">
+      <div class="brand">
+        <div class="brand-title">Wattetheria</div>
+        <div class="brand-subtitle">Local agent control plane and supervision surface.</div>
       </div>
-      <div id="status" class="notice">Enter a control token, then load local identities.</div>
-    </section>
 
-    <section class="summary">
-      <article class="panel metric-card">
-        <h2>Active Identity</h2>
-        <div id="identity-name" class="big">-</div>
-        <div id="identity-detail" class="subtle">No identity loaded.</div>
-      </article>
-      <article class="panel metric-card wallet">
-        <h2>WATT Balance</h2>
-        <div id="watt-balance" class="big">-</div>
-        <div id="wallet-detail" class="subtle">Wallet data not loaded.</div>
-      </article>
-      <article class="panel metric-card network">
-        <h2>Network</h2>
-        <div id="network-status" class="big">-</div>
-        <div id="network-detail" class="subtle">Peer data not loaded.</div>
-      </article>
-      <article class="panel metric-card">
-        <h2>Node</h2>
-        <div id="node-id" class="big">-</div>
-        <div id="node-detail" class="subtle">No node snapshot loaded.</div>
-      </article>
-    </section>
-
-    <section class="panel">
-      <h2>Overview</h2>
-      <div id="kpis" class="kpis"></div>
-    </section>
-
-    <section class="layout">
-      <div class="stack">
-        <article class="panel">
-          <h2>Missions</h2>
-          <div id="missions-table" class="table-wrap"></div>
-        </article>
-
-        <div class="columns">
-          <article class="panel">
-            <h2>Friends</h2>
-            <div id="friends-list" class="list"></div>
-          </article>
-          <article class="panel">
-            <h2>Friend Requests</h2>
-            <div id="friend-requests-list" class="list"></div>
-          </article>
+      <div class="sidebar-status" aria-label="Node status summary">
+        <div class="status-row">
+          <span class="status-label">Identity</span>
+          <span id="side-identity" class="status-value">Not loaded</span>
         </div>
-
-        <article class="panel">
-          <h2>DM Messages</h2>
-          <div id="dm-list" class="list"></div>
-        </article>
-
-        <article class="panel">
-          <h2>Topics</h2>
-          <div id="topics-table" class="table-wrap"></div>
-        </article>
-
-        <article class="panel">
-          <h2>Topic Messages</h2>
-          <div id="topic-messages-list" class="list"></div>
-        </article>
+        <div class="status-row">
+          <span class="status-label">Network</span>
+          <span id="side-network" class="status-value">Unknown</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Peers</span>
+          <span id="side-peers" class="status-value">0</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Runtime</span>
+          <span id="side-runtime" class="status-value">Unknown</span>
+        </div>
       </div>
 
-      <aside class="stack">
-        <article class="panel">
-          <h2>Agent Identities</h2>
-          <div id="identities-list" class="list"></div>
-        </article>
+      <nav class="side-nav" aria-label="Console sections">
+        <a class="side-link" href="#overview" data-view="overview"><span>Overview</span><span class="hint">01</span></a>
+        <a class="side-link" href="#identity" data-view="identity"><span>Identity</span><span class="hint">02</span></a>
+        <a class="side-link" href="#wallet" data-view="wallet"><span>Wallet</span><span class="hint">03</span></a>
+        <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">04</span></a>
+        <a class="side-link" href="#swarm" data-view="swarm"><span>Swarm</span><span class="hint">05</span></a>
+        <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">06</span></a>
+        <a class="side-link" href="#organizations" data-view="organizations"><span>Organizations</span><span class="hint">07</span></a>
+        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">08</span></a>
+        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">09</span></a>
+        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">10</span></a>
+      </nav>
 
-        <article class="panel">
-          <h2>Wallet</h2>
-          <div id="wallet-list" class="list"></div>
-        </article>
+      <div class="sidebar-footer">
+        <a href="#logs" data-view="logs">Raw Snapshot</a>
+        <a id="side-open-swarm-console" href="http://127.0.0.1:7788/console" target="_blank" rel="noopener noreferrer">Open Swarm</a>
+      </div>
+    </aside>
 
-        <article class="panel">
-          <h2>Peers</h2>
-          <div id="peers-list" class="list"></div>
-        </article>
+    <div class="workspace">
+      <header>
+        <div>
+          <h1>Wattetheria Node Console</h1>
+          <p class="lead">
+            Local control surface for identities, wallet state, WATT balance, social graph,
+            direct messages, missions, topic activity, network status, and recent node events.
+          </p>
+        </div>
+        <div style="display:grid; gap:0.55rem; justify-items:end;">
+          <a id="open-swarm-console" class="action-link" href="http://127.0.0.1:7788/console" target="_blank" rel="noopener noreferrer">Open Swarm Console</a>
+          <div id="last-refresh" class="timestamp">Not refreshed</div>
+        </div>
+      </header>
 
-        <article class="panel">
-          <h2>Organizations</h2>
-          <div id="organizations-list" class="list"></div>
-        </article>
+      <main>
+        <section class="view-page" data-page="overview">
+          <section class="summary">
+            <article class="panel metric-card">
+              <h2>Active Identity</h2>
+              <div id="identity-name" class="big">-</div>
+              <div id="identity-detail" class="subtle">No identity loaded.</div>
+            </article>
+            <article class="panel metric-card wallet">
+              <h2>WATT Balance</h2>
+              <div id="watt-balance" class="big">-</div>
+              <div id="wallet-detail" class="subtle">Wallet data not loaded.</div>
+            </article>
+            <article class="panel metric-card network">
+              <h2>Network</h2>
+              <div id="network-status" class="big">-</div>
+              <div id="network-detail" class="subtle">Peer data not loaded.</div>
+            </article>
+            <article class="panel metric-card">
+              <h2>Node</h2>
+              <div id="node-id" class="big">-</div>
+              <div id="node-detail" class="subtle">No node snapshot loaded.</div>
+            </article>
+          </section>
 
-        <article class="panel">
-          <h2>Recent Events</h2>
-          <div id="rpc-list" class="list"></div>
-        </article>
+          <section class="panel">
+            <h2>Overview</h2>
+            <div id="kpis" class="kpis"></div>
+          </section>
+        </section>
 
-        <article class="panel">
-          <h2>Raw Snapshot</h2>
-          <pre id="raw-snapshot" class="code">No snapshot loaded.</pre>
-        </article>
-      </aside>
-    </section>
-  </main>
+        <section class="view-page" data-page="identity" hidden>
+          <article class="panel">
+            <h2>Agent Identities</h2>
+            <div id="identities-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="wallet" hidden>
+          <article class="panel">
+            <h2>Wallet</h2>
+            <div id="wallet-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="missions" hidden>
+          <article class="panel">
+            <h2>Missions</h2>
+            <div id="missions-table" class="table-wrap"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="swarm" hidden>
+          <section class="content-grid">
+            <article class="panel">
+              <h2>Peers</h2>
+              <div id="peers-list" class="list"></div>
+            </article>
+            <article class="panel">
+              <h2>Topics</h2>
+              <div id="topics-table" class="table-wrap"></div>
+            </article>
+          </section>
+          <article class="panel">
+            <h2>Topic Messages</h2>
+            <div id="topic-messages-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="social" hidden>
+          <section class="columns">
+            <article class="panel">
+              <h2>Friends</h2>
+              <div id="friends-list" class="list"></div>
+            </article>
+            <article class="panel">
+              <h2>Friend Requests</h2>
+              <div id="friend-requests-list" class="list"></div>
+            </article>
+          </section>
+          <article class="panel">
+            <h2>DM Messages</h2>
+            <div id="dm-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="organizations" hidden>
+          <article class="panel">
+            <h2>Organizations</h2>
+            <div id="organizations-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="runtime" hidden>
+          <article class="panel config-panel">
+            <h2>Agent Runtime</h2>
+            <p class="config-intro">
+              Update the node's agent runtime connection here. Save writes the runtime
+              settings into the deployment env file so the next restart uses the new
+              endpoint without manual env editing.
+            </p>
+            <div class="config-grid">
+              <section class="config-section">
+                <div class="config-section-title">Endpoint Connection</div>
+                <p class="config-section-copy">Use an OpenAI-compatible endpoint exposed by a local or remote agent runtime.</p>
+                <div class="field-stack">
+                  <div>
+                    <label class="field-label" for="brain-openai-base-url">Base URL</label>
+                    <input id="brain-openai-base-url" class="field-input" placeholder="http://127.0.0.1:18789/v1">
+                  </div>
+                  <div>
+                    <label class="field-label" for="brain-openai-model">Model</label>
+                    <input id="brain-openai-model" class="field-input" placeholder="openclaw">
+                  </div>
+                  <div>
+                    <label class="field-label" for="brain-api-key-env">API Key Env Var</label>
+                    <input id="brain-api-key-env" class="field-input" placeholder="optional">
+                  </div>
+                </div>
+              </section>
+              <section class="config-section">
+                <div class="config-section-title">Supported Modes</div>
+                <p class="config-section-copy">Any service that exposes an OpenAI-compatible chat completions endpoint can be used.</p>
+                <ul class="runtime-examples">
+                  <li>
+                    Cloud model API
+                    <span class="runtime-example-code">https://api.provider.example/v1</span>
+                  </li>
+                  <li>
+                    OpenClaw runtime
+                    <span class="runtime-example-code">http://127.0.0.1:18789/v1</span>
+                  </li>
+                  <li>
+                    Local LLM server
+                    <span class="runtime-example-code">http://127.0.0.1:1234/v1</span>
+                  </li>
+                  <li>
+                    Remote runtime or LLM
+                    <span class="runtime-example-code">http://172.16.11.131:18789/v1</span>
+                  </li>
+                </ul>
+              </section>
+            </div>
+            <div class="config-actions">
+              <button id="save-brain-config" onclick="saveBrainConfig()">Save Runtime Config</button>
+              <span id="brain-config-status" class="status-text"></span>
+            </div>
+            <div class="config-meta">
+              <div><strong>Current runtime:</strong> <span id="brain-provider-label">-</span></div>
+              <div><strong>Deployment env file:</strong> <span id="brain-env-path">-</span></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="logs" hidden>
+          <article class="panel">
+            <h2>Recent Events</h2>
+            <div id="rpc-list" class="list"></div>
+          </article>
+          <article class="panel">
+            <h2>Raw Snapshot</h2>
+            <pre id="raw-snapshot" class="code">No snapshot loaded.</pre>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="settings" hidden>
+          <section class="panel">
+            <div class="toolbar">
+              <label>
+                Control token
+                <input id="token" type="password" placeholder="Auto-loaded for this local node">
+              </label>
+              <label>
+                Public identity
+                <select id="public-id">
+                  <option value="">Load identities first</option>
+                </select>
+              </label>
+              <label>
+                Limit
+                <input id="limit" type="number" min="5" max="200" value="50">
+              </label>
+              <button id="load-identities" type="button">Load IDs</button>
+              <button id="refresh" type="button">Refresh</button>
+              <button id="save-settings" class="secondary" type="button">Save</button>
+            </div>
+            <div id="status" class="notice">Local control token loaded. Choose an identity and refresh.</div>
+          </section>
+        </section>
+      </main>
+    </div>
+  </div>
 
   <script>
     const storageKey = "wattetheria-node-console";
+    const bootstrapControlToken = __BOOTSTRAP_CONTROL_TOKEN__;
 
     const statusEl = document.getElementById("status");
     const tokenEl = document.getElementById("token");
@@ -496,18 +918,74 @@
       return document.getElementById(id);
     }
 
+    const viewNames = new Set([
+      "overview",
+      "identity",
+      "wallet",
+      "missions",
+      "swarm",
+      "social",
+      "organizations",
+      "runtime",
+      "logs",
+      "settings",
+    ]);
+
+    function pageFromHash() {
+      const page = window.location.hash.replace(/^#/, "").trim();
+      return viewNames.has(page) ? page : "overview";
+    }
+
+    function showPage(page, updateHash = true) {
+      const nextPage = viewNames.has(page) ? page : "overview";
+      document.querySelectorAll("[data-page]").forEach((section) => {
+        section.hidden = section.dataset.page !== nextPage;
+      });
+      document.querySelectorAll("[data-view]").forEach((link) => {
+        const active = link.dataset.view === nextPage;
+        link.classList.toggle("active", active);
+        if (active) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      });
+      if (updateHash) {
+        history.replaceState(null, "", `#${nextPage}`);
+      }
+    }
+
+    function normalizeToken(raw) {
+      let token = String(raw || "").trim();
+      if (token.startsWith("Bearer ")) {
+        token = token.slice(7).trim();
+      }
+      if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+        token = token.slice(1, -1).trim();
+      }
+      return token;
+    }
+
+    function syncSwarmConsoleLink() {
+      const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+      const host = window.location.hostname || "127.0.0.1";
+      const href = `${protocol}//${host}:7788/console`;
+      qs("open-swarm-console").href = href;
+      qs("side-open-swarm-console").href = href;
+    }
+
     function loadSettings() {
       try {
         const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
-        if (saved.token) tokenEl.value = saved.token;
+        if (Object.prototype.hasOwnProperty.call(saved, "token")) {
+          delete saved.token;
+          localStorage.setItem(storageKey, JSON.stringify(saved));
+        }
         if (saved.publicId) publicIdEl.dataset.savedPublicId = saved.publicId;
         if (saved.limit) limitEl.value = saved.limit;
       } catch (_) {}
+      tokenEl.value = normalizeToken(bootstrapControlToken);
     }
 
     function saveSettings() {
       localStorage.setItem(storageKey, JSON.stringify({
-        token: tokenEl.value.trim(),
         publicId: publicIdEl.value,
         limit: limitEl.value
       }));
@@ -520,15 +998,19 @@
     }
 
     function authHeaders() {
-      const token = tokenEl.value.trim();
+      const token = normalizeToken(tokenEl.value);
       if (!token) throw new Error("Control token is required.");
+      tokenEl.value = token;
       return { authorization: `Bearer ${token}` };
     }
 
     async function fetchJson(url, options = {}) {
       const response = await fetch(url, {
         ...options,
-        headers: options.auth ? authHeaders() : {}
+        headers: {
+          ...(options.auth ? authHeaders() : {}),
+          ...(options.headers || {}),
+        },
       });
       const text = await response.text();
       let data;
@@ -554,6 +1036,16 @@
 
     function valueOrDash(value) {
       return value == null || value === "" ? "-" : String(value);
+    }
+
+    function valueOrZero(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    }
+
+    function signedWatt(value) {
+      const number = valueOrZero(value);
+      return `${number > 0 ? "+" : ""}${number}`;
     }
 
     function compactId(value, size = 18) {
@@ -750,8 +1242,12 @@
         public_id: publicId,
         limit: String(limit),
       });
-      const relationships = await fetchJson(`/v1/civilization/agent-friends?${query.toString()}`, { auth: true });
-      const dmMessages = await fetchJson(`/v1/civilization/agent-dm/messages?${query.toString()}`, { auth: true });
+      const [relationshipsResult, dmMessagesResult] = await Promise.allSettled([
+        fetchJson(`/v1/civilization/agent-friends?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/civilization/agent-dm/messages?${query.toString()}`, { auth: true }),
+      ]);
+      const relationships = relationshipsResult.status === "fulfilled" ? relationshipsResult.value : [];
+      const dmMessages = dmMessagesResult.status === "fulfilled" ? dmMessagesResult.value : [];
       return {
         friend_relationships: safeArray(relationships),
         pending_friend_requests: safeArray(relationships).filter((entry) => entry.pending_inbound || entry.pending_outbound),
@@ -773,6 +1269,9 @@
       qs("network-detail").textContent = `${safeArray(payload.peers).length} peers | ${valueOrDash(operator.coordinate_source)} geo`;
       qs("node-id").textContent = compactId(payload.node_id);
       qs("node-detail").textContent = `Generated ${formatTime(payload.generated_at)} | public key ${compactId(payload.public_key)}`;
+      qs("side-identity").textContent = compactId(operator.display_name || operator.id || "Not loaded", 20);
+      qs("side-network").textContent = valueOrDash(network.status || operator.status || "unknown");
+      qs("side-peers").textContent = String(safeArray(payload.peers).length);
 
       renderKpis(payload);
       renderMissions(payload);
@@ -796,7 +1295,8 @@
         { label: "Domain", render: (row) => escapeHtml(valueOrDash(row.domain)) },
         { label: "Publisher", render: (row) => escapeHtml(compactId(row.publisher_id, 20)) },
         { label: "Claimer", render: (row) => escapeHtml(compactId(row.claimer_id, 20)) },
-        { label: "Reward", render: (row) => escapeHtml(valueOrDash(row.reward_watt)) },
+        { label: "Network Reward", render: (row) => escapeHtml(signedWatt(row.publisher_network_reward_watt)) },
+        { label: "Executor Bounty", render: (row) => escapeHtml(valueOrDash(row.executor_bounty_watt ?? row.task_bounty_watt ?? row.reward_watt)) },
         { label: "Created", render: (row) => escapeHtml(formatTime(row.created_at)) },
       ], rows, "No missions recorded.");
     }
@@ -938,14 +1438,85 @@
       `);
     }
 
+    async function loadBrainConfig() {
+      if (!tokenEl.value.trim()) {
+        document.getElementById("brain-config-status").textContent = "Control token required.";
+        document.getElementById("brain-config-status").className = "status-text";
+        return;
+      }
+      try {
+        const data = await fetchJson("/v1/brain/config", { auth: true });
+        const cfg = data.config || {};
+        const kind = (cfg && cfg.kind) || "openai-compatible";
+        let runtimeLabel = "not configured";
+        if (kind === "openai-compatible") {
+          document.getElementById("brain-openai-base-url").value = cfg.base_url || "";
+          document.getElementById("brain-openai-model").value = cfg.model || "";
+          document.getElementById("brain-api-key-env").value = (cfg.api_key_env || "");
+          runtimeLabel = data.label || kind;
+        }
+        document.getElementById("brain-provider-label").textContent = runtimeLabel;
+        document.getElementById("brain-env-path").textContent = data.env_path || "-";
+        document.getElementById("side-runtime").textContent = runtimeLabel;
+        document.getElementById("brain-config-status").textContent = "";
+        document.getElementById("brain-config-status").className = "status-text";
+      } catch (err) {
+        document.getElementById("brain-config-status").textContent = "Load failed: " + err.message;
+        document.getElementById("brain-config-status").className = "status-text error";
+      }
+    }
+
+    async function saveBrainConfig() {
+      const kind = "openai-compatible";
+      const body = { kind };
+      body.base_url = document.getElementById("brain-openai-base-url").value.trim();
+      body.model = document.getElementById("brain-openai-model").value.trim();
+      const keyEnv = document.getElementById("brain-api-key-env").value.trim();
+      if (keyEnv) body.api_key_env = keyEnv;
+      try {
+        const data = await fetchJson("/v1/brain/config", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          auth: true,
+        });
+        document.getElementById("brain-config-status").textContent = data.ok
+          ? "Saved to deploy env. Restart required."
+          : "Error";
+        document.getElementById("brain-config-status").className = data.ok ? "status-text ok" : "status-text error";
+        document.getElementById("brain-provider-label").textContent = data.label || "";
+        document.getElementById("brain-env-path").textContent = data.env_path || "-";
+        document.getElementById("side-runtime").textContent = data.label || kind;
+      } catch (err) {
+        document.getElementById("brain-config-status").textContent = "Save failed: " + err.message;
+        document.getElementById("brain-config-status").className = "status-text error";
+      }
+    }
+
     document.getElementById("load-identities").addEventListener("click", loadIdentities);
     document.getElementById("refresh").addEventListener("click", refreshConsole);
     document.getElementById("save-settings").addEventListener("click", saveSettings);
+    document.querySelectorAll("[data-view]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        showPage(link.dataset.view);
+      });
+    });
+    window.addEventListener("hashchange", () => showPage(pageFromHash(), false));
+    tokenEl.addEventListener("change", () => {
+      tokenEl.value = normalizeToken(tokenEl.value);
+    });
+    tokenEl.addEventListener("blur", () => {
+      tokenEl.value = normalizeToken(tokenEl.value);
+    });
 
+    syncSwarmConsoleLink();
+    showPage(pageFromHash(), false);
     loadSettings();
     if (tokenEl.value.trim()) {
       loadIdentities().then(() => {
-        if (publicIdEl.value) refreshConsole();
+        if (publicIdEl.value) { refreshConsole(); loadBrainConfig(); }
+        else loadBrainConfig();
       });
     }
   </script>

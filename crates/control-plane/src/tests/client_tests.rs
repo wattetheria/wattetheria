@@ -17,6 +17,7 @@ async fn client_api_routes_align_with_client_dtos() {
         },
     );
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats,
         network_status: SwarmNetworkStatusView {
@@ -113,6 +114,21 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
     assert_eq!(tasks_json[0]["title"].as_str(), Some("Calibrate relay"));
     assert_eq!(tasks_json[0]["status"].as_str(), Some("published"));
+    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
+    assert_eq!(tasks_json[0]["task_bounty_watt"].as_i64(), Some(24));
+    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
+    assert_eq!(
+        tasks_json[0]["network_publish_reward_watt"].as_i64(),
+        Some(1)
+    );
+    assert_eq!(
+        tasks_json[0]["network_settle_publisher_reward_watt"].as_i64(),
+        Some(2)
+    );
+    assert_eq!(
+        tasks_json[0]["publisher_network_reward_watt"].as_i64(),
+        Some(1)
+    );
 
     let organizations_json = authed_get_json(app.clone(), &token, "/v1/client/organizations").await;
     assert_eq!(organizations_json.as_array().unwrap().len(), 1);
@@ -196,6 +212,15 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     )
     .await;
 
+    let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
+    assert_eq!(tasks_json.as_array().unwrap().len(), 1);
+    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
+    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
+    assert_eq!(
+        tasks_json[0]["publisher_network_reward_watt"].as_i64(),
+        Some(3)
+    );
+
     let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
         .local_db
         .load_domain(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
@@ -215,6 +240,176 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
 }
 
+#[tokio::test]
+async fn task_result_commit_settles_mission_from_wattswarm_event() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let identity = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let agent_did = identity["wallet_bound_agent_did"].as_str().unwrap();
+    let public_id = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Accept remote result",
+            "description": "Publisher agent settles after wattswarm result callback.",
+            "publisher": public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "subnet_id": null,
+            "zone_id": null,
+            "required_role": null,
+            "required_faction": null,
+            "reward": {
+                "agent_watt": 8,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "remote-result"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap();
+    let worker = "did:key:worker";
+
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-task-result-commit",
+                "event_type": "task_result_received",
+                "source_kind": "task_lifecycle",
+                "source_node_id": "worker-node",
+                "target_agent_id": agent_did,
+                "payload": {
+                    "event_kind": "candidate_proposed",
+                    "task_id": mission_id,
+                    "candidate_id": "cand-test",
+                    "execution_id": "exec-test",
+                    "candidate_output": {
+                        "kind": "wattetheria_mission_result",
+                        "mission_id": mission_id,
+                        "agent_did": worker,
+                        "result": {"ok": true}
+                    },
+                    "created_at": 1
+                },
+                "allowed_actions": [
+                    "inspect_task",
+                    "accept_result",
+                    "reject_result",
+                    "request_retry"
+                ],
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-task-result-settle",
+                "action": "settle_mission",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "mission_id": mission_id,
+                    "agent_did": worker
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(committed["status"].as_str(), Some("settled"));
+
+    let board = state.mission_board.lock().await;
+    let settled = board.get(mission_id).unwrap();
+    assert_eq!(
+        settled.status,
+        wattetheria_kernel::civilization::missions::MissionStatus::Settled
+    );
+    assert_eq!(settled.completed_by.as_deref(), Some(worker));
+}
+
+#[tokio::test]
+async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let agent_did = identity.agent_did.clone();
+    let mut bridge = MockSwarmBridge::default_for(agent_did.clone());
+    bridge.fail_accept_and_finalize = true;
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, Arc::new(bridge));
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &agent_did).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Fail path",
+            "description": "Task finalize failure must not change mission state.",
+            "publisher": public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {"agent_watt": 1, "reputation": 0, "capacity": 0, "treasury_share_watt": 0},
+            "payload": {"objective": "fail-test"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap();
+
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-fail-path",
+                "event_type": "task_result_received",
+                "source_kind": "task_lifecycle",
+                "source_node_id": "worker-node",
+                "target_agent_id": agent_did,
+                "payload": {
+                    "event_kind": "candidate_proposed",
+                    "task_id": mission_id,
+                    "candidate_id": "cand-fail",
+                    "execution_id": "exec-fail",
+                    "candidate_output": {
+                        "kind": "wattetheria_mission_result",
+                        "mission_id": mission_id,
+                        "agent_did": "did:key:worker",
+                        "result": {"ok": true}
+                    },
+                    "created_at": 1
+                },
+                "allowed_actions": ["inspect_task", "accept_result", "reject_result", "request_retry"],
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-fail-path",
+                "action": "settle_mission",
+                "route": "wattetheria_commit",
+                "payload": {"mission_id": mission_id, "agent_did": "did:key:worker"}
+            }
+        }),
+    )
+    .await;
+
+    // Task finalize failed: response is 500 with error, mission must stay Open.
+    assert!(
+        committed["error"]
+            .as_str()
+            .unwrap()
+            .contains("mock task finalize failure")
+    );
+
+    let board = state.mission_board.lock().await;
+    let stuck = board.get(mission_id).unwrap();
+    assert_eq!(
+        stuck.status,
+        wattetheria_kernel::civilization::missions::MissionStatus::Open,
+        "mission must remain Open when task finalize fails"
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn client_export_excludes_local_friends_and_dm() {
@@ -226,6 +421,7 @@ async fn client_export_excludes_local_friends_and_dm() {
     let remote_node_id = "12D3KooRemotePeer".to_string();
     let thread_id = format!("dm:{remote_node_id}");
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()
@@ -423,6 +619,7 @@ async fn client_export_is_public_and_signed() {
         },
     );
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats,
         network_status: SwarmNetworkStatusView {
@@ -477,6 +674,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()
@@ -561,6 +759,7 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()

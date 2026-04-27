@@ -24,6 +24,7 @@ pub mod routes {
     pub(crate) mod payments;
     pub(crate) mod policy;
     pub(crate) mod reward_view;
+    pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
     pub(crate) mod supervision;
     pub(crate) mod topics;
@@ -32,7 +33,7 @@ mod state;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use std::net::SocketAddr;
 
 pub use autonomy::run_autonomy_tick_once;
@@ -217,6 +218,14 @@ fn core_router() -> Router<ControlPlaneState> {
             post(routes::core::agent_action_commit),
         )
         .route("/v1/brain/doctor", post(routes::core::brain_doctor))
+        .route(
+            "/v1/brain/config",
+            get(routes::runtime_config::brain_config_get),
+        )
+        .route(
+            "/v1/brain/config",
+            put(routes::runtime_config::brain_config_put),
+        )
         .route(
             "/v1/brain/propose-actions",
             get(routes::core::brain_propose_actions),

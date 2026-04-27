@@ -143,20 +143,13 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let publish_mission = find_tool(tools, "publish_mission");
     assert_schema_requires(
         publish_mission,
-        &[
-            "title",
-            "description",
-            "publisher",
-            "publisher_kind",
-            "domain",
-            "reward",
-            "payload",
-        ],
+        &["title", "description", "domain", "reward", "payload"],
     );
     assert_eq!(
         publish_mission["inputSchema"]["properties"]["title"]["type"].as_str(),
         Some("string")
     );
+    assert_schema_omits(publish_mission, &["publisher", "publisher_kind"]);
     assert_eq!(
         publish_mission["inputSchema"]["properties"]
             .get("body")
@@ -169,16 +162,101 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         propose_payment,
         &["counterpart_public_id", "amount", "currency", "rail"],
     );
+    assert_schema_omits(propose_payment, &["public_id"]);
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["layer"]["enum"][1].as_str(),
         Some("web3")
     );
+
+    let create_topic = find_tool(tools, "create_topic");
+    assert_schema_omits(create_topic, &["public_id"]);
+    let post_topic_message = find_tool(tools, "post_topic_message");
+    assert_schema_omits(post_topic_message, &["public_id"]);
+    let subscribe_topic = find_tool(tools, "subscribe_topic");
+    assert_schema_omits(subscribe_topic, &["public_id"]);
+    let upsert_friend = find_tool(tools, "upsert_friend");
+    assert_schema_omits(upsert_friend, &["public_id"]);
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
     assert_schema_requires(settle_payment, &["payment_id", "settlement_receipt"]);
 
     let fetch_messages = find_tool(tools, "fetch_messages");
     assert_schema_requires(fetch_messages, &["subnet_id"]);
+}
+
+#[tokio::test]
+async fn mcp_publish_mission_uses_current_local_public_identity() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_mission",
+                "arguments": {
+                    "title": "MCP local publisher",
+                    "description": "Publisher should be injected by the local MCP server.",
+                    "publisher": "wrong-manual-value",
+                    "publisher_kind": "system",
+                    "domain": "trade",
+                    "reward": {
+                        "agent_watt": 10,
+                        "reputation": 0,
+                        "capacity": 0,
+                        "treasury_share_watt": 0
+                    },
+                    "payload": {"objective": "identity-default"}
+                }
+            }
+        }),
+    )
+    .await;
+
+    let mission = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(mission["publisher"].as_str(), Some(local_public_id));
+    assert_eq!(mission["publisher_kind"].as_str(), Some("player"));
+}
+
+#[tokio::test]
+async fn mcp_create_topic_uses_current_local_public_identity() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_topic",
+                "arguments": {
+                    "public_id": "wrong-manual-value",
+                    "feed_key": "mcp-topic-feed",
+                    "scope_hint": "local-test",
+                    "display_name": "MCP Topic",
+                    "projection_kind": "chat_room"
+                }
+            }
+        }),
+    )
+    .await;
+
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        content["topic"]["created_by_public_id"].as_str(),
+        Some(local_public_id)
+    );
 }
 
 #[tokio::test]
@@ -244,6 +322,17 @@ fn assert_schema_requires(tool: &Value, expected: &[&str]) {
         assert!(
             required.contains(&Some(*field)),
             "expected {} schema to require {field}, got {required:?}",
+            tool["name"].as_str().unwrap()
+        );
+    }
+}
+
+fn assert_schema_omits(tool: &Value, omitted: &[&str]) {
+    let properties = tool["inputSchema"]["properties"].as_object().unwrap();
+    for field in omitted {
+        assert!(
+            !properties.contains_key(*field),
+            "expected {} schema to hide local identity field {field}",
             tool["name"].as_str().unwrap()
         );
     }

@@ -77,7 +77,6 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
         "propose_agent_payment" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Sender public identity."),
                 string_field("counterpart_public_id", "Recipient public identity."),
                 string_field("amount", "Payment amount as a string."),
                 string_field("currency", "Payment currency."),
@@ -152,7 +151,6 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
         "create_topic" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Public identity creating the topic."),
                 string_field("feed_key", "Topic feed key."),
                 string_field("scope_hint", "Topic scope hint."),
                 string_field("display_name", "Human-readable topic name."),
@@ -194,7 +192,6 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
         "post_topic_message" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Public identity posting the message."),
                 string_field("feed_key", "Topic feed key."),
                 string_field("scope_hint", "Topic scope hint."),
                 value_field("content", "Message content payload."),
@@ -206,7 +203,6 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
         "subscribe_topic" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Public identity subscribing to the topic."),
                 string_field("feed_key", "Topic feed key."),
                 string_field("scope_hint", "Topic scope hint."),
                 bool_field("active", "Whether the subscription should be active."),
@@ -235,21 +231,6 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
             &[
                 string_field("title", "Mission title."),
                 string_field("description", "Mission description."),
-                string_field(
-                    "publisher",
-                    "Publisher public identity or system identifier.",
-                ),
-                enum_field(
-                    "publisher_kind",
-                    "Mission publisher kind.",
-                    &[
-                        "player",
-                        "organization",
-                        "planetary_government",
-                        "neutral_hub",
-                        "system",
-                    ],
-                ),
                 enum_field(
                     "domain",
                     "Mission domain.",
@@ -270,15 +251,7 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
                 reward_field(),
                 value_field("payload", "Mission payload."),
             ],
-            &[
-                "title",
-                "description",
-                "publisher",
-                "publisher_kind",
-                "domain",
-                "reward",
-                "payload",
-            ],
+            &["title", "description", "domain", "reward", "payload"],
             false,
         )),
         "claim_mission" | "complete_mission" => Some(tool_schema(
@@ -317,7 +290,6 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         "upsert_friend" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Local public identity."),
                 string_field("counterpart_public_id", "Counterpart public identity."),
                 enum_field("kind", "Relationship kind.", &["follow", "friend"]),
                 bool_field("active", "Whether the relationship is active."),

@@ -19,6 +19,7 @@ use crate::state::{
 };
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
+use wattetheria_kernel::civilization::missions::MissionStatus;
 use wattetheria_kernel::swarm_bridge::SwarmRelationshipAction;
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
@@ -83,11 +84,29 @@ fn optional_payload_value<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("invalid {field_label}: {error}"))
 }
 
-fn mission_agent_did(payload: &Value, default_agent_did: &str) -> String {
+fn payload_string(payload: &Value, pointer: &str) -> Option<String> {
     payload
-        .get("agent_did")
+        .pointer(pointer)
         .and_then(Value::as_str)
-        .map_or(default_agent_did.to_owned(), ToOwned::to_owned)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn mission_id_for_commit(body: &AgentActionCommitBody) -> Option<String> {
+    required_payload_string(&body.decision.payload, "/mission_id")
+        .or_else(|| payload_string(&body.event.payload, "/mission_id"))
+        .or_else(|| payload_string(&body.event.payload, "/candidate_output/mission_id"))
+        .or_else(|| payload_string(&body.event.payload, "/task_inputs/mission_id"))
+}
+
+fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did: &str) -> String {
+    payload_string(&body.decision.payload, "/agent_did")
+        .or_else(|| payload_string(&body.event.payload, "/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/candidate_output/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/task_inputs/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
+        .unwrap_or_else(|| default_agent_did.to_owned())
 }
 
 async fn commit_friend_request(
@@ -375,7 +394,7 @@ async fn commit_transition_mission(
     commit_headers: HeaderMap,
     body: AgentActionCommitBody,
 ) -> Response {
-    let Some(mission_id) = required_payload_string(&body.decision.payload, "/mission_id") else {
+    let Some(mission_id) = mission_id_for_commit(&body) else {
         return bad_request("missing mission_id");
     };
     match body.decision.action.as_str() {
@@ -386,7 +405,7 @@ async fn commit_transition_mission(
                 commit_headers,
                 Json(MissionClaimBody {
                     mission_id,
-                    agent_did: mission_agent_did(&body.decision.payload, &default_agent_did),
+                    agent_did: mission_agent_did_for_commit(&body, &default_agent_did),
                 }),
             )
             .await
@@ -398,12 +417,26 @@ async fn commit_transition_mission(
                 commit_headers,
                 Json(MissionClaimBody {
                     mission_id,
-                    agent_did: mission_agent_did(&body.decision.payload, &default_agent_did),
+                    agent_did: mission_agent_did_for_commit(&body, &default_agent_did),
                 }),
             )
             .await
         }
         "settle_mission" => {
+            if body.event.event_type == "task_result_received" {
+                let default_agent_did = state.agent_did.clone();
+                let task_id = payload_string(&body.event.payload, "/task_id");
+                let candidate_id = payload_string(&body.event.payload, "/candidate_id");
+                return commit_task_result_settle_mission(
+                    state,
+                    commit_headers,
+                    mission_id,
+                    mission_agent_did_for_commit(&body, &default_agent_did),
+                    task_id,
+                    candidate_id,
+                )
+                .await;
+            }
             crate::routes::missions::mission_settle(
                 State(state),
                 commit_headers,
@@ -413,6 +446,78 @@ async fn commit_transition_mission(
         }
         _ => unreachable!("mission transition action already matched"),
     }
+}
+
+async fn commit_task_result_settle_mission(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    mission_id: String,
+    agent_did: String,
+    task_id: Option<String>,
+    candidate_id: Option<String>,
+) -> Response {
+    let status = {
+        let board = state.mission_board.lock().await;
+        board.get(&mission_id).map(|mission| mission.status.clone())
+    };
+    let Some(status) = status else {
+        return bad_request("mission not found");
+    };
+    if status == MissionStatus::Settled {
+        return Json(json!({
+            "ok": true,
+            "status": "settled",
+            "replay": true,
+            "mission_id": mission_id,
+        }))
+        .into_response();
+    }
+    // Finalize the underlying task first — this is all-or-nothing (HTTP call).
+    // If it fails, no mission state has changed, so the caller can safely retry.
+    if let (Some(task_id), Some(candidate_id)) = (&task_id, &candidate_id)
+        && let Err(error) = state
+            .swarm_bridge
+            .accept_and_finalize_task(task_id, candidate_id)
+            .await
+    {
+        return internal_error(&error);
+    }
+    // Mission transitions are idempotent via replay guards (commit_headers dedup).
+    // If any step fails, a retry will skip already-completed steps.
+    if status == MissionStatus::Open {
+        let response = crate::routes::missions::mission_claim(
+            State(state.clone()),
+            commit_headers.clone(),
+            Json(MissionClaimBody {
+                mission_id: mission_id.clone(),
+                agent_did: agent_did.clone(),
+            }),
+        )
+        .await;
+        if !response.status().is_success() {
+            return response;
+        }
+    }
+    if matches!(status, MissionStatus::Open | MissionStatus::Claimed) {
+        let response = crate::routes::missions::mission_complete(
+            State(state.clone()),
+            commit_headers.clone(),
+            Json(MissionClaimBody {
+                mission_id: mission_id.clone(),
+                agent_did,
+            }),
+        )
+        .await;
+        if !response.status().is_success() {
+            return response;
+        }
+    }
+    crate::routes::missions::mission_settle(
+        State(state),
+        commit_headers,
+        Json(MissionSettleBody { mission_id }),
+    )
+    .await
 }
 
 pub(crate) async fn health(State(state): State<ControlPlaneState>) -> impl IntoResponse {
@@ -647,7 +752,13 @@ pub(crate) async fn night_shift_narrative_payload(
         Err(error) => return internal_error(&error),
     };
 
-    let human = match state.brain_engine.humanize_night_shift(&report).await {
+    let human = match state
+        .brain_engine
+        .read()
+        .await
+        .humanize_night_shift(&report)
+        .await
+    {
         Ok(human) => human,
         Err(error) => return internal_error(&error),
     };
@@ -711,7 +822,13 @@ pub(crate) async fn brain_propose_actions(
         Err(error) => return internal_error(&error),
     };
 
-    let proposals = match state.brain_engine.propose_actions(&brain_state).await {
+    let proposals = match state
+        .brain_engine
+        .read()
+        .await
+        .propose_actions(&brain_state)
+        .await
+    {
         Ok(proposals) => proposals,
         Err(error) => return internal_error(&error),
     };
@@ -802,9 +919,12 @@ pub(crate) async fn brain_doctor(
         Err(response) => return response,
     };
 
-    let status = match state.brain_engine.doctor().await {
+    let provider_label = crate::routes::runtime_config::brain_provider_label(
+        &state.brain_config.read().await.clone(),
+    );
+    let status = match state.brain_engine.read().await.doctor().await {
         Ok(detail) => {
-            let status = AgentAttachStatus::connected(state.brain_provider_label.clone());
+            let status = AgentAttachStatus::connected(provider_label.clone());
             if let Err(error) = write_status(&state.data_dir, &status) {
                 return internal_error(&error);
             }
@@ -825,10 +945,7 @@ pub(crate) async fn brain_doctor(
         }
         Err(error) => {
             let message = error.to_string();
-            let status = AgentAttachStatus::disconnected(
-                state.brain_provider_label.clone(),
-                message.clone(),
-            );
+            let status = AgentAttachStatus::disconnected(provider_label.clone(), message.clone());
             if let Err(write_error) = write_status(&state.data_dir, &status) {
                 return internal_error(&write_error);
             }
@@ -863,7 +980,11 @@ pub(crate) async fn agent_attach_status(
 
     let status = match read_status(&state.data_dir) {
         Ok(Some(status)) => status,
-        Ok(None) => AgentAttachStatus::unknown(Some(state.brain_provider_label.clone())),
+        Ok(None) => {
+            AgentAttachStatus::unknown(Some(crate::routes::runtime_config::brain_provider_label(
+                &state.brain_config.read().await.clone(),
+            )))
+        }
         Err(error) => return internal_error(&error),
     };
 

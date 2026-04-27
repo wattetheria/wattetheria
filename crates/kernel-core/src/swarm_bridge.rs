@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use wattswarm_protocol::types::{ArtifactRef, ClaimRole, InlineEvidence, TaskContract};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmAgentView {
@@ -155,6 +156,39 @@ pub struct SwarmAgentPaymentCommand {
     pub payment: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskAnnounceCommand {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement_id: Option<String>,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub summary: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_ref: Option<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmTaskClaimCommand {
+    pub task_id: String,
+    pub role: ClaimRole,
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskProposeCandidateCommand {
+    pub task_id: String,
+    pub execution_id: String,
+    pub candidate_id: String,
+    pub output: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_inline: Vec<InlineEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<ArtifactRef>,
+}
+
 #[async_trait]
 pub trait SwarmBridge: Send + Sync {
     async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView>;
@@ -236,6 +270,35 @@ pub trait SwarmBridge: Send + Sync {
         _command: SwarmAgentPaymentCommand,
     ) -> Result<Value> {
         Err(anyhow!("wattswarm agent payments are not configured"))
+    }
+
+    async fn sample_task_contract(&self, _task_id: &str) -> Result<TaskContract> {
+        Err(anyhow!("wattswarm task sample is not configured"))
+    }
+
+    async fn submit_task(&self, _contract: TaskContract) -> Result<Value> {
+        Err(anyhow!("wattswarm task submit is not configured"))
+    }
+
+    async fn announce_task(&self, _command: SwarmTaskAnnounceCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm task announce is not configured"))
+    }
+
+    async fn claim_task(&self, _command: SwarmTaskClaimCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm task claim is not configured"))
+    }
+
+    async fn propose_task_candidate(
+        &self,
+        _command: SwarmTaskProposeCandidateCommand,
+    ) -> Result<Value> {
+        Err(anyhow!(
+            "wattswarm task candidate proposal is not configured"
+        ))
+    }
+
+    async fn accept_and_finalize_task(&self, _task_id: &str, _candidate_id: &str) -> Result<Value> {
+        Err(anyhow!("wattswarm task accept result is not configured"))
     }
 
     async fn task_run_projection(
@@ -407,6 +470,35 @@ impl SwarmBridge for HybridSwarmBridge {
     ) -> Result<Value> {
         self.topic_api()?
             .publish_agent_payment_message(command)
+            .await
+    }
+
+    async fn sample_task_contract(&self, task_id: &str) -> Result<TaskContract> {
+        self.topic_api()?.sample_task_contract(task_id).await
+    }
+
+    async fn submit_task(&self, contract: TaskContract) -> Result<Value> {
+        self.topic_api()?.submit_task(contract).await
+    }
+
+    async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> Result<Value> {
+        self.topic_api()?.announce_task(command).await
+    }
+
+    async fn claim_task(&self, command: SwarmTaskClaimCommand) -> Result<Value> {
+        self.topic_api()?.claim_task(command).await
+    }
+
+    async fn propose_task_candidate(
+        &self,
+        command: SwarmTaskProposeCandidateCommand,
+    ) -> Result<Value> {
+        self.topic_api()?.propose_task_candidate(command).await
+    }
+
+    async fn accept_and_finalize_task(&self, task_id: &str, candidate_id: &str) -> Result<Value> {
+        self.topic_api()?
+            .accept_and_finalize_task(task_id, candidate_id)
             .await
     }
 
@@ -673,6 +765,87 @@ impl HttpWattswarmApi {
             .context("decode wattswarm agent payment response")
     }
 
+    async fn sample_task_contract(&self, task_id: &str) -> Result<TaskContract> {
+        self.client
+            .get(format!("{}/api/task/sample", self.base_url))
+            .query(&TaskSampleQuery {
+                task_id: task_id.to_owned(),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TaskSampleResponse>()
+            .await
+            .context("decode wattswarm task sample response")
+            .map(|response| response.contract)
+    }
+
+    async fn submit_task(&self, contract: TaskContract) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/submit", self.base_url))
+            .json(&json!({ "contract": contract }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task submit response")
+    }
+
+    async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/announce", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task announce response")
+    }
+
+    async fn claim_task(&self, command: SwarmTaskClaimCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/claim", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task claim response")
+    }
+
+    async fn propose_task_candidate(
+        &self,
+        command: SwarmTaskProposeCandidateCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/propose-candidate", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task candidate proposal response")
+    }
+
+    async fn accept_and_finalize_task(&self, task_id: &str, candidate_id: &str) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/accept-result", self.base_url))
+            .json(&json!({
+                "task_id": task_id,
+                "candidate_id": candidate_id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task accept result response")
+    }
+
     async fn task_run_projection(
         &self,
         task_limit: usize,
@@ -791,6 +964,11 @@ impl HttpWattswarmApi {
 }
 
 #[derive(Debug, Serialize)]
+struct TaskSampleQuery {
+    task_id: String,
+}
+
+#[derive(Debug, Serialize)]
 struct TopicMessagesQuery {
     feed_key: String,
     scope_hint: String,
@@ -828,6 +1006,11 @@ struct TopicActivitySnapshotQuery {
 struct KnowledgeExportRequest {
     task_type: Option<String>,
     task_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskSampleResponse {
+    contract: TaskContract,
 }
 
 #[derive(Debug, Deserialize)]

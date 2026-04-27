@@ -11,10 +11,11 @@ use std::collections::BTreeMap;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scores};
 use wattetheria_kernel::civilization::missions::{
-    MissionDomain, MissionPublisherKind, MissionStatus,
+    CivilMission, MissionDomain, MissionPublisherKind, MissionStatus,
 };
-use wattetheria_kernel::economy::WalletBoundBalance;
+use wattetheria_kernel::economy::{EconomicPolicy, WalletBoundBalance};
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
+use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::types::AgentStats;
 
@@ -156,6 +157,10 @@ fn build_client_rpc_logs_payload(
 }
 
 async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> Vec<Value> {
+    let policy = state
+        .local_db
+        .load_domain_or_default::<EconomicPolicy>(local_db::domain::ECONOMIC_POLICY)
+        .unwrap_or_default();
     let mut missions = state.mission_board.lock().await.list(None);
     missions.sort_by(|left, right| {
         right
@@ -168,11 +173,18 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
         .filter(|mission| mission.status != MissionStatus::Cancelled)
         .take(limit)
         .map(|mission| {
+            let publisher_network_reward_watt =
+                publisher_network_reward_watt(&mission, &policy);
             json!({
                 "id": mission.mission_id,
                 "title": mission.title,
                 "domain": mission_domain_label(&mission.domain),
                 "reward_watt": mission.reward.agent_watt,
+                "task_bounty_watt": mission.reward.agent_watt,
+                "executor_bounty_watt": mission.reward.agent_watt,
+                "network_publish_reward_watt": policy.rewards.mission_publish_watt,
+                "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
+                "publisher_network_reward_watt": publisher_network_reward_watt,
                 "status": client_task_status(&mission.status),
                 "publisher_id": mission.publisher,
                 "claimer_id": mission.claimed_by,
@@ -180,6 +192,17 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
             })
         })
         .collect()
+}
+
+fn publisher_network_reward_watt(mission: &CivilMission, policy: &EconomicPolicy) -> i64 {
+    if !policy.enabled || mission.status == MissionStatus::Cancelled {
+        return 0;
+    }
+    let mut watt = policy.rewards.mission_publish_watt;
+    if mission.status == MissionStatus::Settled {
+        watt += policy.rewards.mission_settle_publisher_watt;
+    }
+    watt
 }
 
 async fn build_client_organizations_payload(state: &ControlPlaneState, limit: usize) -> Vec<Value> {
@@ -538,15 +561,23 @@ fn controller_id_for_identity(
         .unwrap_or_else(|| identity.public_id.clone())
 }
 
-fn prefers_existing_identity(
+fn is_default_controller_identity(identity: &PublicIdentity, controller_id: &str) -> bool {
+    identity.agent_did.as_deref() == Some(controller_id)
+        && (identity.public_id == controller_id || identity.public_id.starts_with("agent-"))
+}
+
+fn should_keep_leaderboard_identity(
     existing: &PublicIdentity,
     candidate: &PublicIdentity,
     controller_id: &str,
 ) -> bool {
-    let existing_is_default = existing.public_id == controller_id;
-    let candidate_is_default = candidate.public_id == controller_id;
+    let existing_is_default = is_default_controller_identity(existing, controller_id);
+    let candidate_is_default = is_default_controller_identity(candidate, controller_id);
     if existing_is_default != candidate_is_default {
         return !existing_is_default;
+    }
+    if existing.updated_at != candidate.updated_at {
+        return existing.updated_at > candidate.updated_at;
     }
     existing.public_id <= candidate.public_id
 }
@@ -585,9 +616,7 @@ async fn leaderboard_identities(
             controller_id_for_identity(&identity, binding_by_public_id.get(&identity.public_id));
         match identity_by_controller.get(&controller_id) {
             Some(existing)
-                if existing.updated_at > identity.updated_at
-                    || (existing.updated_at == identity.updated_at
-                        && prefers_existing_identity(existing, &identity, &controller_id)) => {}
+                if should_keep_leaderboard_identity(existing, &identity, &controller_id) => {}
             _ => {
                 identity_by_controller.insert(controller_id, identity);
             }

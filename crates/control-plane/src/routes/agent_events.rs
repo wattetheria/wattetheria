@@ -69,7 +69,11 @@ fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
         | (
             "third_party_result",
             "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
-        ) => Some("wattetheria_commit"),
+        )
+        | ("task_claim_received", "claim_mission")
+        | ("task_result_received", "complete_mission" | "settle_mission") => {
+            Some("wattetheria_commit")
+        }
         ("topic_message_requires_reply", "reply" | "ignore")
         | ("task_claim_received", "decide_claim" | "inspect_task")
         | (
@@ -99,14 +103,63 @@ fn build_brain_event_input(state: &ControlPlaneState, event: &AgentEventEnvelope
     })
 }
 
+fn is_mission_event(event: &AgentEventEnvelope) -> bool {
+    event
+        .payload
+        .pointer("/task_inputs/kind")
+        .and_then(Value::as_str)
+        == Some("wattetheria_mission")
+        || event
+            .payload
+            .pointer("/candidate_output/kind")
+            .and_then(Value::as_str)
+            == Some("wattetheria_mission_result")
+        || event
+            .payload
+            .pointer("/mission_id")
+            .and_then(Value::as_str)
+            .is_some()
+}
+
+fn push_allowed_action(event: &mut AgentEventEnvelope, action: &str) {
+    if !event
+        .allowed_actions
+        .iter()
+        .any(|allowed| allowed == action)
+    {
+        event.allowed_actions.push(action.to_owned());
+    }
+}
+
+fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
+    if !is_mission_event(event) {
+        return;
+    }
+    match event.event_type.as_str() {
+        "task_claim_received" => push_allowed_action(event, "claim_mission"),
+        "task_result_received" => {
+            push_allowed_action(event, "complete_mission");
+            push_allowed_action(event, "settle_mission");
+        }
+        _ => {}
+    }
+}
+
 pub(crate) async fn callback(
     State(state): State<ControlPlaneState>,
     Json(body): Json<AgentEventCallbackRequest>,
 ) -> Response {
     let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
-    let event = body.event;
+    let mut event = body.event;
+    add_mission_allowed_actions(&mut event);
     let input = build_brain_event_input(&state, &event);
-    let resolution = match state.brain_engine.decide_agent_event(&input).await {
+    let resolution = match state
+        .brain_engine
+        .read()
+        .await
+        .decide_agent_event(&input)
+        .await
+    {
         Ok(resolution) => resolution,
         Err(error) => {
             return Json(AgentEventCallbackResponse {
@@ -148,6 +201,18 @@ pub(crate) async fn callback(
         })
         .into_response();
     };
+    if !event.allowed_actions.iter().any(|a| a == &action) {
+        return Json(AgentEventCallbackResponse {
+            ok: false,
+            acked_at: Some(acked_at),
+            detail: Some(format!(
+                "action {action} not in allowed_actions for {}",
+                event.event_type
+            )),
+            decision: None,
+        })
+        .into_response();
+    }
     Json(AgentEventCallbackResponse {
         ok: true,
         acked_at: Some(acked_at),

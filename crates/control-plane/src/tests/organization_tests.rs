@@ -534,6 +534,15 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("Friend Requests"));
     assert!(body.contains("DM Messages"));
     assert!(body.contains("WATT Balance"));
+    assert!(body.contains("Agent Runtime"));
+    assert!(body.contains("Deployment env file"));
+    assert!(body.contains("Open Swarm Console"));
+    assert!(body.contains("id=\"open-swarm-console\""));
+    assert!(body.contains(":7788/console"));
+    assert!(body.contains("box-shadow: 8px 8px 0 var(--line);"));
+    assert!(body.contains("bootstrapControlToken"));
+    assert!(body.contains("Auto-loaded for this local node"));
+    assert!(body.contains("normalizeToken"));
     assert!(body.contains("wallet_bound_agent_did"));
     assert!(body.contains("public_topic_messages"));
 }

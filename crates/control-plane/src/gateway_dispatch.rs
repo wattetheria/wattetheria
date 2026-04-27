@@ -299,10 +299,7 @@ fn plan_mission_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan
                 scope: GatewayEventScope {
                     node_id: None,
                     topic_id: None,
-                    organization_id: payload
-                        .get("publisher")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
+                    organization_id: organization_id_from_payload(payload),
                     task_id: payload
                         .get("mission_id")
                         .and_then(Value::as_str)
@@ -494,12 +491,27 @@ mod tests {
             timestamp: 1_710_000_000,
             payload: json!({
                 "mission_id": "mission-1",
-                "publisher": "org-1",
+                "organization_id": "org-1",
             }),
         };
         let plan = plan_stream_event(&event).expect("mission plan");
         assert_eq!(plan.data_kind, GatewayDataKind::MissionLifecycle);
         assert_eq!(plan.scope.organization_id.as_deref(), Some("org-1"));
+        assert_eq!(plan.scope.task_id.as_deref(), Some("mission-1"));
+    }
+
+    #[test]
+    fn citizen_published_missions_do_not_use_publisher_as_organization_scope() {
+        let event = StreamEvent {
+            kind: "mission.published".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "mission_id": "mission-1",
+                "publisher": "Citizen-citizen-b2HM",
+            }),
+        };
+        let plan = plan_stream_event(&event).expect("mission plan");
+        assert_eq!(plan.scope.organization_id, None);
         assert_eq!(plan.scope.task_id.as_deref(), Some("mission-1"));
     }
 

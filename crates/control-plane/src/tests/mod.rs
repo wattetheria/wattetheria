@@ -40,7 +40,8 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDirectMessageCommand, SwarmNetworkStatusView, SwarmPeerDmMessageView,
     SwarmPeerDmThreadView, SwarmPeerRelationshipView, SwarmPeerView,
-    SwarmRelationshipActionCommand, SwarmTopicCursorView, SwarmTopicMessageView,
+    SwarmRelationshipActionCommand, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
+    SwarmTaskProposeCandidateCommand, SwarmTopicCursorView, SwarmTopicMessageView,
 };
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::open_local_wallet;
@@ -50,6 +51,7 @@ use wattetheria_social::application::{
 };
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
 use wattetheria_social::ports::transport_port::TransportPort;
+use wattswarm_protocol::types::TaskContract;
 
 #[allow(clippy::too_many_lines)]
 fn build_test_app(
@@ -247,7 +249,10 @@ fn build_test_state_with_bridge(
         galaxy_state,
         galaxy_map_registry,
         travel_state_registry,
-        brain_engine: Arc::new(BrainEngine::from_config(&BrainProviderConfig::Rules)),
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::Rules,
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(BrainProviderConfig::Rules)),
         brain_provider_label: "rules".to_string(),
         audit_log,
         local_db,
@@ -474,6 +479,7 @@ struct MockSwarmBridge {
     dm_messages: Mutex<BTreeMap<String, Vec<SwarmPeerDmMessageView>>>,
     dm_commands: Mutex<Vec<SwarmDirectMessageCommand>>,
     payment_commands: Mutex<Vec<SwarmAgentPaymentCommand>>,
+    fail_accept_and_finalize: bool,
 }
 
 impl MockSwarmBridge {
@@ -495,6 +501,7 @@ impl MockSwarmBridge {
             dm_messages: Mutex::new(BTreeMap::new()),
             dm_commands: Mutex::new(Vec::new()),
             payment_commands: Mutex::new(Vec::new()),
+            fail_accept_and_finalize: false,
         }
     }
 }
@@ -644,6 +651,138 @@ impl SwarmBridge for MockSwarmBridge {
             "ok": true,
             "remote_node_id": command.remote_node_id,
             "message_kind": command.message_kind,
+        }))
+    }
+
+    async fn sample_task_contract(&self, task_id: &str) -> anyhow::Result<TaskContract> {
+        Ok(TaskContract {
+            protocol_version: "v0.1".to_owned(),
+            task_id: task_id.to_owned(),
+            task_type: "swarm".to_owned(),
+            inputs: json!({"prompt":"hello"}),
+            output_schema: json!({"type":"object"}),
+            budget: wattswarm_protocol::types::Budget {
+                time_ms: 30_000,
+                max_steps: 10,
+                cost_units: 1_000,
+                mode: wattswarm_protocol::types::BudgetMode::Lifetime,
+                explore_cost_units: 350,
+                verify_cost_units: 450,
+                finalize_cost_units: 200,
+                reuse_verify_time_ms: 20_000,
+                reuse_verify_cost_units: 200,
+                reuse_max_attempts: 1,
+            },
+            assignment: wattswarm_protocol::types::Assignment {
+                mode: "CLAIM".to_owned(),
+                claim: wattswarm_protocol::types::ClaimPolicy {
+                    lease_ms: 5_000,
+                    max_concurrency: wattswarm_protocol::types::MaxConcurrency {
+                        propose: 1,
+                        verify: 1,
+                    },
+                },
+                explore: wattswarm_protocol::types::ExploreAssignment {
+                    max_proposers: 1,
+                    topk: 3,
+                    stop: wattswarm_protocol::types::ExploreStopPolicy {
+                        no_new_evidence_rounds: 3,
+                    },
+                },
+                verify: wattswarm_protocol::types::VerifyAssignment { max_verifiers: 1 },
+                finalize: wattswarm_protocol::types::FinalizeAssignment { max_finalizers: 1 },
+            },
+            acceptance: wattswarm_protocol::types::Acceptance {
+                quorum_threshold: 1,
+                verifier_policy: wattswarm_protocol::types::PolicyBinding {
+                    policy_id: "vp.schema_only.v1".to_owned(),
+                    policy_version: "1".to_owned(),
+                    policy_hash: "policy-hash".to_owned(),
+                    policy_params: json!({}),
+                },
+                vote: wattswarm_protocol::types::VotePolicy {
+                    commit_reveal: true,
+                    reveal_deadline_ms: 10_000,
+                },
+                settlement: wattswarm_protocol::types::SettlementPolicy {
+                    window_ms: 86_400_000,
+                    implicit_weight: 0.1,
+                    implicit_diminishing_returns:
+                        wattswarm_protocol::types::SettlementDiminishingReturns { w: 10, k: 50 },
+                    bad_penalty: wattswarm_protocol::types::SettlementBadPenalty { p: 3 },
+                    feedback: wattswarm_protocol::types::FeedbackCapabilityPolicy {
+                        mode: "CAPABILITY".to_owned(),
+                        authority_pubkey: "ed25519:placeholder".to_owned(),
+                    },
+                },
+                da_quorum_threshold: 1,
+            },
+            task_mode: wattswarm_protocol::types::TaskMode::OneShot,
+            expiry_ms: 86_400_000,
+            evidence_policy: wattswarm_protocol::types::EvidencePolicy {
+                max_inline_evidence_bytes: 65_536,
+                max_inline_media_bytes: 0,
+                inline_mime_allowlist: vec![
+                    "application/json".to_owned(),
+                    "text/plain".to_owned(),
+                    "text/markdown".to_owned(),
+                    "text/csv".to_owned(),
+                ],
+                max_snippet_bytes: 8_192,
+                max_snippet_tokens: 2_048,
+            },
+        })
+    }
+
+    async fn submit_task(&self, contract: TaskContract) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": contract.task_id,
+        }))
+    }
+
+    async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "feed_key": command.feed_key,
+            "scope_hint": command.scope_hint,
+        }))
+    }
+
+    async fn claim_task(&self, command: SwarmTaskClaimCommand) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+        }))
+    }
+
+    async fn propose_task_candidate(
+        &self,
+        command: SwarmTaskProposeCandidateCommand,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+            "candidate_id": command.candidate_id,
+        }))
+    }
+
+    async fn accept_and_finalize_task(
+        &self,
+        task_id: &str,
+        candidate_id: &str,
+    ) -> anyhow::Result<Value> {
+        if self.fail_accept_and_finalize {
+            return Err(anyhow::anyhow!("mock task finalize failure"));
+        }
+        Ok(json!({
+            "ok": true,
+            "status": "finalized",
+            "task_id": task_id,
+            "candidate_id": candidate_id,
         }))
     }
 }
