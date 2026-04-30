@@ -969,6 +969,10 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         },
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
+            connected: Some(true),
+            discovery: None,
+            metadata: None,
+            relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),

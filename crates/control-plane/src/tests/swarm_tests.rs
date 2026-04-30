@@ -100,9 +100,17 @@ async fn network_routes_surface_bridge_read_models() {
         peers: vec![
             SwarmPeerView {
                 node_id: "peer-a".to_string(),
+                connected: Some(true),
+                discovery: None,
+                metadata: None,
+                relationship: None,
             },
             SwarmPeerView {
                 node_id: "peer-b".to_string(),
+                connected: Some(true),
+                discovery: None,
+                metadata: None,
+                relationship: None,
             },
         ],
         subscriptions: Mutex::new(Vec::new()),
@@ -127,6 +135,244 @@ async fn network_routes_surface_bridge_read_models() {
     assert_eq!(
         peers_json["peers"][0]["coordinate_source"].as_str(),
         Some("derived")
+    );
+}
+
+#[tokio::test]
+async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
+    let (dir, app, token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-1").await;
+    let response = authed_post_json(
+        app,
+        &token,
+        "/v1/missions/claim",
+        json!({
+            "mission_id": "mission-remote-1",
+            "agent_did": agent_did
+        }),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(response["status"].as_str(), Some("network_claim_submitted"));
+    assert_eq!(response["task_id"].as_str(), Some("mission-remote-1"));
+    assert_eq!(
+        response["mission_scope_hint"].as_str(),
+        Some("node:publisher-node")
+    );
+    assert_eq!(
+        response["publisher_wattswarm_node_id"].as_str(),
+        Some("publisher-node")
+    );
+    assert_eq!(
+        response["swarm_claim"]["task_id"].as_str(),
+        Some("mission-remote-1")
+    );
+    assert_eq!(
+        response["task_contract_sync"]["task_id"].as_str(),
+        Some("mission-remote-1")
+    );
+    assert_eq!(
+        response["task_announcement_sync"]["task_id"].as_str(),
+        Some("mission-remote-1")
+    );
+    assert_eq!(
+        response["task_announcement_sync"]["feed_key"].as_str(),
+        Some("wattetheria.missions")
+    );
+    assert_eq!(
+        response["task_announcement_sync"]["scope_hint"].as_str(),
+        Some("node:publisher-node")
+    );
+}
+
+async fn seed_gateway_remote_mission(
+    data_dir: &std::path::Path,
+    state: &ControlPlaneState,
+    mission_id: &str,
+) {
+    let mut contract = state
+        .swarm_bridge
+        .sample_task_contract(mission_id)
+        .await
+        .unwrap();
+    contract.task_type = "wattetheria.mission".to_string();
+    contract.inputs = json!({
+        "kind": "wattetheria_mission",
+        "mission_id": mission_id,
+        "publisher": "publisher-public",
+        "publisher_agent_did": "did:agent:publisher",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "swarm_scope": {"kind": "node", "id": "publisher-node"},
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "node:publisher-node",
+        "reward": {"agent_watt": 10},
+        "payload": {"work": "deliver"}
+    });
+    contract.output_schema = json!({
+        "type": "object",
+        "required": ["mission_id", "agent_did", "result"],
+        "properties": {
+            "mission_id": {"type": "string"},
+            "agent_did": {"type": "string"},
+            "result": {}
+        }
+    });
+    let gateway_task = json!({
+        "id": mission_id,
+        "task_id": mission_id,
+        "task_type": "wattetheria.mission",
+        "title": "Remote mission",
+        "status": "published",
+        "source_node_id": "publisher-node",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "node:publisher-node",
+        "task_contract": contract,
+    });
+    let gateway_app = Router::new().route(
+        "/api/tasks",
+        get(move || {
+            let gateway_task = gateway_task.clone();
+            async move { Json(json!([gateway_task])) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+    std::fs::write(
+        data_dir.join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
+    let (dir, app, token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-2").await;
+    let response = authed_post_json(
+        app,
+        &token,
+        "/v1/missions/complete",
+        json!({
+            "mission_id": "mission-remote-2",
+            "agent_did": agent_did,
+            "claim_route": {
+                "task_id": "mission-remote-2",
+                "mission_feed_key": "wattetheria.missions",
+                "mission_scope_hint": "node:publisher-node",
+                "publisher_wattswarm_node_id": "publisher-node"
+            },
+            "result": {"delivered": true}
+        }),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["status"].as_str(),
+        Some("network_complete_submitted")
+    );
+    assert_eq!(response["task_id"].as_str(), Some("mission-remote-2"));
+    assert_eq!(
+        response["candidate_id"].as_str(),
+        Some(format!("wattetheria-candidate-mission-remote-2-{agent_did}").as_str())
+    );
+    assert_eq!(
+        response["mission_scope_hint"].as_str(),
+        Some("node:publisher-node")
+    );
+    assert_eq!(
+        response["publisher_wattswarm_node_id"].as_str(),
+        Some("publisher-node")
+    );
+    assert_eq!(
+        response["swarm_candidate"]["task_id"].as_str(),
+        Some("mission-remote-2")
+    );
+    assert_eq!(
+        response["task_contract_sync"]["task_id"].as_str(),
+        Some("mission-remote-2")
+    );
+    assert_eq!(
+        response["task_announcement_sync"]["task_id"].as_str(),
+        Some("mission-remote-2")
+    );
+    assert_eq!(
+        response["task_announcement_sync"]["scope_hint"].as_str(),
+        Some("node:publisher-node")
+    );
+}
+
+#[tokio::test]
+async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Publisher mission",
+            "description": "Validate direct settlement finalization",
+            "publisher": "publisher-public",
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 10,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"work": "inspect"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap();
+    let _claimed = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/claim",
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+        }),
+    )
+    .await;
+    let _completed = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/complete",
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+        }),
+    )
+    .await;
+
+    let settled = authed_post_json(
+        app,
+        &token,
+        "/v1/missions/settle",
+        json!({
+            "mission_id": mission_id,
+        }),
+    )
+    .await;
+
+    assert_eq!(settled["status"].as_str(), Some("settled"));
+    assert_eq!(
+        settled["swarm_finalize"]["task_id"].as_str(),
+        Some(mission_id)
+    );
+    assert_eq!(
+        settled["swarm_finalize"]["candidate_id"].as_str(),
+        Some(format!("wattetheria-candidate-{mission_id}-{agent_did}").as_str())
     );
 }
 

@@ -16,6 +16,7 @@ const AGENT_PARTICIPATION_MANIFEST_ENDPOINTS: &[&str] = &[
     "list_topic_messages",
     "post_topic_message",
     "subscribe_topic",
+    "unsubscribe_topic",
     "list_missions",
     "publish_mission",
     "claim_mission",
@@ -174,6 +175,9 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_schema_omits(post_topic_message, &["public_id"]);
     let subscribe_topic = find_tool(tools, "subscribe_topic");
     assert_schema_omits(subscribe_topic, &["public_id"]);
+    let unsubscribe_topic = find_tool(tools, "unsubscribe_topic");
+    assert_schema_requires(unsubscribe_topic, &["feed_key", "scope_hint"]);
+    assert_schema_omits(unsubscribe_topic, &["public_id", "active"]);
     let upsert_friend = find_tool(tools, "upsert_friend");
     assert_schema_omits(upsert_friend, &["public_id"]);
 
@@ -182,6 +186,47 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let fetch_messages = find_tool(tools, "fetch_messages");
     assert_schema_requires(fetch_messages, &["subnet_id"]);
+
+    let list_missions = find_tool(tools, "list_missions");
+    assert_eq!(
+        list_missions["description"].as_str(),
+        Some("Browse the bounded Wattetheria network mission market from the configured gateway.")
+    );
+    assert_eq!(
+        list_missions["inputSchema"]["properties"]["limit"]["type"].as_str(),
+        Some("integer")
+    );
+    assert_eq!(
+        list_missions["inputSchema"]["properties"]["offset"]["type"].as_str(),
+        Some("integer")
+    );
+
+    let claim_mission = find_tool(tools, "claim_mission");
+    assert_schema_requires(claim_mission, &["mission_id", "agent_did"]);
+    assert_eq!(
+        claim_mission["inputSchema"]["properties"]["claim_route"]["description"].as_str(),
+        Some("Claim route object returned by list_missions.")
+    );
+    assert_eq!(
+        claim_mission["inputSchema"]["properties"]["mission_scope_hint"]["type"].as_str(),
+        Some("string")
+    );
+    let complete_mission = find_tool(tools, "complete_mission");
+    assert_schema_requires(complete_mission, &["mission_id", "agent_did"]);
+    assert_eq!(
+        complete_mission["inputSchema"]["properties"]["result"]["description"].as_str(),
+        Some("Mission completion result to submit as the Wattswarm candidate output.")
+    );
+    assert_eq!(
+        complete_mission["inputSchema"]["properties"]["claim_route"]["description"].as_str(),
+        Some("Claim route object returned by list_missions for network missions.")
+    );
+    let settle_mission = find_tool(tools, "settle_mission");
+    assert_schema_requires(settle_mission, &["mission_id"]);
+    assert_eq!(
+        settle_mission["inputSchema"]["properties"]["candidate_id"]["description"].as_str(),
+        Some("Wattswarm candidate ID to accept before settling.")
+    );
 }
 
 #[tokio::test]
@@ -260,8 +305,220 @@ async fn mcp_create_topic_uses_current_local_public_identity() {
 }
 
 #[tokio::test]
-async fn mcp_tool_call_dispatches_to_matching_local_control_plane_endpoint() {
-    let (_dir, app, token, _policy, _state) = build_test_app(100);
+async fn mcp_unsubscribe_topic_uses_current_local_public_identity_and_deactivates() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "unsubscribe_topic",
+                "arguments": {
+                    "feed_key": "codex_topic_smoke_test",
+                    "scope_hint": "global",
+                    "active": true
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let subscriptions = bridge.subscriptions.lock().await;
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].1, "codex_topic_smoke_test");
+    assert_eq!(subscriptions[0].2, "global");
+    assert!(!subscriptions[0].3);
+}
+
+#[tokio::test]
+async fn mcp_list_topics_reads_configured_gateway_hives() {
+    let gateway_url = spawn_gateway_topics_server(gateway_hives_fixture()).await;
+    let (dir, app, token, _policy, _state) = build_test_app(100);
+    std::fs::write(
+        dir.path().join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_topics",
+                "arguments": {
+                    "limit": 1,
+                    "offset": 1,
+                    "projection_kind": "working_group"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["source"].as_str(),
+        Some("wattetheria-gateway.api_topics")
+    );
+    assert_eq!(content["scope"].as_str(), Some("network"));
+    assert_eq!(
+        content["pagination"].as_str(),
+        Some("gateway_limit_client_offset")
+    );
+    assert_eq!(content["limit"].as_u64(), Some(1));
+    assert_eq!(content["offset"].as_u64(), Some(1));
+    assert_eq!(content["known_count"].as_u64(), Some(1));
+    assert_eq!(content["has_more"].as_bool(), Some(false));
+    let topics = content["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 0);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_topics",
+                "arguments": {
+                    "limit": 2,
+                    "projection_kind": "working_group"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_gateway_hive_topic(&response);
+}
+
+async fn spawn_gateway_topics_server(payload: Value) -> String {
+    let gateway_app = axum::Router::new().route(
+        "/api/topics",
+        axum::routing::get(move || async move { axum::Json(payload) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+    gateway_url
+}
+
+fn gateway_hives_fixture() -> Value {
+    json!([
+        {
+            "topic_id": "hive-gateway-1",
+            "display_name": "Gateway Hive One",
+            "projection_kind": "guild",
+            "status": "active",
+            "feed_key": "wattetheria.hives",
+            "scope_hint": "hive:one",
+            "source_node_id": "node-alpha"
+        },
+        {
+            "topic_id": "hive-gateway-2",
+            "display_name": "Gateway Hive Two",
+            "projection_kind": "working_group",
+            "status": "active",
+            "feed_key": "wattetheria.hives",
+            "scope_hint": "hive:two",
+            "source_node_id": "node-beta",
+            "organization_id": "org-filter"
+        },
+        {
+            "topic_id": "hive-inactive",
+            "display_name": "Inactive Gateway Hive",
+            "projection_kind": "guild",
+            "status": "inactive",
+            "feed_key": "wattetheria.hives",
+            "scope_hint": "hive:inactive"
+        }
+    ])
+}
+
+fn assert_gateway_hive_topic(response: &Value) {
+    let content = &response["result"]["structuredContent"];
+    let topics = content["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 1);
+    assert_eq!(topics[0]["topic_id"].as_str(), Some("hive-gateway-2"));
+    assert_eq!(topics[0]["source_node_id"].as_str(), Some("node-beta"));
+    assert_eq!(
+        topics[0]["subscribe_route"]["feed_key"].as_str(),
+        Some("wattetheria.hives")
+    );
+    assert_eq!(
+        topics[0]["subscribe_route"]["scope_hint"].as_str(),
+        Some("hive:two")
+    );
+    assert_eq!(
+        topics[0]["subscribe_route"]["subscribe_ready"].as_bool(),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn mcp_list_missions_reads_configured_gateway_tasks() {
+    let gateway_app = axum::Router::new().route(
+        "/api/tasks",
+        axum::routing::get(|| async {
+            axum::Json(json!([
+                {
+                    "id": "mission-gateway-1",
+                    "title": "Gateway Mission One",
+                    "status": "published",
+                    "source_node_id": "node-alpha",
+                    "task_contract": {"task_id": "mission-gateway-1"}
+                },
+                {
+                    "task_id": "not-a-mission",
+                    "task_type": "topic_consensus",
+                    "terminal_state": "open"
+                },
+                {
+                    "id": "mission-gateway-2",
+                    "title": "Gateway Mission Two",
+                    "status": "published",
+                    "source_node_id": "node-beta",
+                    "task_contract": {"task_id": "mission-gateway-2"}
+                },
+                {
+                    "id": "mission-gateway-settled",
+                    "title": "Settled Gateway Mission",
+                    "status": "settled",
+                    "source_node_id": "node-gamma"
+                }
+            ]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+
+    let (dir, app, token, _policy, _state) = build_test_app(100);
+    std::fs::write(
+        dir.path().join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
 
     let response = mcp_request(
         app,
@@ -272,7 +529,11 @@ async fn mcp_tool_call_dispatches_to_matching_local_control_plane_endpoint() {
             "method": "tools/call",
             "params": {
                 "name": "list_missions",
-                "arguments": {}
+                "arguments": {
+                    "limit": 1,
+                    "offset": 1,
+                    "status": "open"
+                }
             }
         }),
     )
@@ -280,7 +541,68 @@ async fn mcp_tool_call_dispatches_to_matching_local_control_plane_endpoint() {
 
     assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    assert!(response["result"]["structuredContent"].is_array());
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["source"].as_str(),
+        Some("wattetheria-gateway.api_tasks")
+    );
+    assert_eq!(content["scope"].as_str(), Some("network"));
+    assert_eq!(
+        content["pagination"].as_str(),
+        Some("gateway_limit_client_offset")
+    );
+    assert_eq!(content["limit"].as_u64(), Some(1));
+    assert_eq!(content["offset"].as_u64(), Some(1));
+    assert_eq!(content["known_count"].as_u64(), Some(2));
+    assert_eq!(content["has_more"].as_bool(), Some(false));
+    let missions = content["missions"].as_array().unwrap();
+    assert_eq!(missions.len(), 1);
+    assert_eq!(
+        missions[0]["mission_id"].as_str(),
+        Some("mission-gateway-2")
+    );
+    assert_eq!(missions[0]["task_id"].as_str(), Some("mission-gateway-2"));
+    assert_eq!(missions[0]["source_node_id"].as_str(), Some("node-beta"));
+    assert_eq!(missions[0]["status"].as_str(), Some("published"));
+    assert_gateway_claim_route(&missions[0], "mission-gateway-2", "node-beta");
+}
+
+fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) {
+    let scope_hint = format!("node:{node_id}");
+    assert_eq!(
+        mission["publisher_wattswarm_node_id"].as_str(),
+        Some(node_id)
+    );
+    assert_eq!(
+        mission["mission_feed_key"].as_str(),
+        Some("wattetheria.missions")
+    );
+    assert_eq!(
+        mission["mission_scope_hint"].as_str(),
+        Some(scope_hint.as_str())
+    );
+    assert_eq!(
+        mission["swarm_scope"],
+        json!({"kind": "node", "id": node_id})
+    );
+    assert_eq!(mission["claim_route"]["task_id"].as_str(), Some(mission_id));
+    assert_eq!(
+        mission["claim_route"]["mission_id"].as_str(),
+        Some(mission_id)
+    );
+    assert_eq!(
+        mission["claim_route"]["publisher_wattswarm_node_id"].as_str(),
+        Some(node_id)
+    );
+    assert_eq!(
+        mission["claim_route"]["mission_scope_hint"].as_str(),
+        Some(scope_hint.as_str())
+    );
+    assert_eq!(
+        mission["claim_route"]["task_contract_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(mission["claim_route"]["claim_ready"].as_bool(), Some(true));
 }
 
 #[tokio::test]

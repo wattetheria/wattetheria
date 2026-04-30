@@ -7,17 +7,23 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::mcp::{
+    fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
+};
 use crate::routes::reward_view::refresh_known_wallet_balances;
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
     StreamEvent, agent_commit_context_from_headers,
 };
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::missions::CivilMission;
+use wattetheria_kernel::civilization::missions::{CivilMission, MissionStatus};
 use wattetheria_kernel::swarm_bridge::{
     SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
 };
 use wattswarm_protocol::types::{ClaimRole, TaskContract};
+
+const MISSION_FEED_KEY: &str = "wattetheria.missions";
+const GATEWAY_CONTRACT_FETCH_LIMIT: usize = 200;
 
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
@@ -25,6 +31,13 @@ struct CommitResponseArgs<'a> {
     actor_agent_did: Option<String>,
     request_json: &'a Value,
     response_json: &'a Value,
+}
+
+struct NetworkMissionClaimRoute {
+    task_id: String,
+    mission_feed_key: String,
+    mission_scope_hint: String,
+    publisher_wattswarm_node_id: Option<String>,
 }
 
 fn mission_stream_kind(action: &str) -> &'static str {
@@ -51,6 +64,263 @@ fn mission_candidate_id(mission_id: &str, agent_did: &str) -> String {
     format!("wattetheria-candidate-{mission_id}-{agent_did}")
 }
 
+fn non_empty_string(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn claim_route_string(body: &MissionClaimBody, field: &str) -> Option<String> {
+    body.claim_route
+        .as_ref()
+        .and_then(|route| route.get(field))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn claim_route_value<'a>(body: &'a MissionClaimBody, field: &str) -> Option<&'a Value> {
+    body.claim_route.as_ref().and_then(|route| route.get(field))
+}
+
+fn network_claim_route(body: &MissionClaimBody) -> Result<NetworkMissionClaimRoute, String> {
+    let task_id = non_empty_string(body.task_id.as_ref())
+        .or_else(|| claim_route_string(body, "task_id"))
+        .unwrap_or_else(|| body.mission_id.clone());
+    let publisher_wattswarm_node_id = non_empty_string(body.publisher_wattswarm_node_id.as_ref())
+        .or_else(|| claim_route_string(body, "publisher_wattswarm_node_id"));
+    let mission_feed_key = non_empty_string(body.mission_feed_key.as_ref())
+        .or_else(|| claim_route_string(body, "mission_feed_key"))
+        .unwrap_or_else(|| MISSION_FEED_KEY.to_owned());
+    let mission_scope_hint = non_empty_string(body.mission_scope_hint.as_ref())
+        .or_else(|| claim_route_string(body, "mission_scope_hint"))
+        .or_else(|| {
+            publisher_wattswarm_node_id
+                .as_ref()
+                .map(|node_id| publisher_node_scope_hint(node_id))
+        })
+        .ok_or_else(|| {
+            "network mission transition requires mission_scope_hint or publisher_wattswarm_node_id from list_missions claim_route".to_owned()
+        })?;
+
+    Ok(NetworkMissionClaimRoute {
+        task_id,
+        mission_feed_key,
+        mission_scope_hint,
+        publisher_wattswarm_node_id,
+    })
+}
+
+fn task_id_from_gateway_task(task: &Value) -> Option<&str> {
+    task.get("task_id")
+        .or_else(|| task.get("id"))
+        .or_else(|| task.get("mission_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn gateway_task_string(task: &Value, field: &str) -> Option<String> {
+    task.get(field)
+        .or_else(|| task.get("claim_route").and_then(|value| value.get(field)))
+        .or_else(|| task.get("summary").and_then(|value| value.get(field)))
+        .or_else(|| task.get("inputs").and_then(|value| value.get(field)))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn network_claim_route_from_gateway_task(
+    body: &MissionClaimBody,
+    task: &Value,
+) -> Result<NetworkMissionClaimRoute, String> {
+    let task_id =
+        task_id_from_gateway_task(task).map_or_else(|| body.mission_id.clone(), ToOwned::to_owned);
+    let publisher_wattswarm_node_id = gateway_task_string(task, "publisher_wattswarm_node_id");
+    let mission_feed_key = gateway_task_string(task, "mission_feed_key")
+        .unwrap_or_else(|| MISSION_FEED_KEY.to_owned());
+    let mission_scope_hint = gateway_task_string(task, "mission_scope_hint")
+        .or_else(|| {
+            publisher_wattswarm_node_id
+                .as_ref()
+                .map(|node_id| publisher_node_scope_hint(node_id))
+        })
+        .ok_or_else(|| {
+            "gateway mission is missing mission_scope_hint or publisher_wattswarm_node_id"
+                .to_owned()
+        })?;
+
+    Ok(NetworkMissionClaimRoute {
+        task_id,
+        mission_feed_key,
+        mission_scope_hint,
+        publisher_wattswarm_node_id,
+    })
+}
+
+fn contract_value_from_gateway_task(task: &Value) -> Option<&Value> {
+    task.get("task_contract").or_else(|| task.get("contract"))
+}
+
+fn parse_network_task_contract(value: &Value) -> Result<TaskContract, String> {
+    serde_json::from_value::<TaskContract>(value.clone())
+        .map_err(|error| format!("gateway task_contract is invalid: {error}"))
+}
+
+fn validate_network_task_contract(
+    contract: &TaskContract,
+    route: &NetworkMissionClaimRoute,
+    body: &MissionClaimBody,
+) -> Result<(), String> {
+    if contract.task_id != route.task_id {
+        return Err(format!(
+            "gateway task_contract task_id `{}` does not match request task_id `{}`",
+            contract.task_id, route.task_id
+        ));
+    }
+    if contract.task_type != "wattetheria.mission" {
+        return Err(format!(
+            "gateway task_contract task_type `{}` is not wattetheria.mission",
+            contract.task_type
+        ));
+    }
+    let contract_mission_id = contract
+        .inputs
+        .get("mission_id")
+        .and_then(Value::as_str)
+        .unwrap_or(contract.task_id.as_str());
+    if contract_mission_id != body.mission_id {
+        return Err(format!(
+            "gateway task_contract mission_id `{contract_mission_id}` does not match request mission_id `{}`",
+            body.mission_id
+        ));
+    }
+    Ok(())
+}
+
+async fn gateway_network_task_contract(
+    state: &ControlPlaneState,
+    task_id: &str,
+) -> anyhow::Result<Option<TaskContract>> {
+    let Some(task) = gateway_network_task(state, task_id).await? else {
+        return Ok(None);
+    };
+    let Some(contract_value) = contract_value_from_gateway_task(&task) else {
+        return Ok(None);
+    };
+    parse_network_task_contract(contract_value)
+        .map(Some)
+        .map_err(anyhow::Error::msg)
+}
+
+async fn gateway_network_task(
+    state: &ControlPlaneState,
+    task_id: &str,
+) -> anyhow::Result<Option<Value>> {
+    let gateway_url = resolve_gateway_query_url(state)?;
+    let gateway_endpoint = normalized_gateway_tasks_url(&gateway_url);
+    let tasks = fetch_gateway_tasks(&gateway_endpoint, GATEWAY_CONTRACT_FETCH_LIMIT).await?;
+    let Some(task) = tasks
+        .iter()
+        .find(|task| task_id_from_gateway_task(task) == Some(task_id))
+    else {
+        return Ok(None);
+    };
+    Ok(Some(task.clone()))
+}
+
+async fn network_claim_route_for_action(
+    state: &ControlPlaneState,
+    body: &MissionClaimBody,
+) -> Result<NetworkMissionClaimRoute, Response> {
+    match network_claim_route(body) {
+        Ok(route) => Ok(route),
+        Err(route_error) => match gateway_network_task(state, &body.mission_id).await {
+            Ok(Some(task)) => network_claim_route_from_gateway_task(body, &task).map_err(|error| {
+                (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+            }),
+            Ok(None) => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": route_error,
+                    "mission_id": body.mission_id.clone(),
+                    "detail": "refresh list_missions or gateway snapshot before retrying",
+                })),
+            )
+                .into_response()),
+            Err(error) => Err(internal_error(&error)),
+        },
+    }
+}
+
+async fn network_task_contract_for_action(
+    state: &ControlPlaneState,
+    route: &NetworkMissionClaimRoute,
+    body: &MissionClaimBody,
+    action: &str,
+) -> Result<TaskContract, Response> {
+    let inline_contract = claim_route_value(body, "task_contract")
+        .or_else(|| claim_route_value(body, "contract"))
+        .map(parse_network_task_contract)
+        .transpose();
+    let contract = match inline_contract {
+        Ok(Some(contract)) => contract,
+        Ok(None) => match gateway_network_task_contract(state, &route.task_id).await {
+            Ok(Some(contract)) => contract,
+            Ok(None) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": format!("network mission {action} requires task_contract from gateway; refresh publisher snapshot before retrying"),
+                        "action": action,
+                        "task_id": route.task_id,
+                    })),
+                )
+                    .into_response());
+            }
+            Err(error) => return Err(internal_error(&error)),
+        },
+        Err(error) => {
+            return Err((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
+        }
+    };
+    if let Err(error) = validate_network_task_contract(&contract, route, body) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
+    }
+    Ok(contract)
+}
+
+async fn sync_network_task_contract_and_announce(
+    state: &ControlPlaneState,
+    route: &NetworkMissionClaimRoute,
+    contract: TaskContract,
+) -> Result<(String, Value, Value), Response> {
+    let subscriber_node_id = state
+        .swarm_bridge
+        .local_node_id()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let task_announcement = network_mission_announce_command(route, &contract);
+    let task_contract_sync = state
+        .swarm_bridge
+        .submit_task(contract)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let task_announcement_sync = state
+        .swarm_bridge
+        .announce_task(task_announcement)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    Ok((
+        subscriber_node_id,
+        task_contract_sync,
+        task_announcement_sync,
+    ))
+}
+
 fn mission_task_output_schema() -> Value {
     json!({
         "type": "object",
@@ -63,14 +333,29 @@ fn mission_task_output_schema() -> Value {
     })
 }
 
-fn mission_task_contract(mut contract: TaskContract, mission: &CivilMission) -> TaskContract {
-    contract.task_id.clone_from(&mission.mission_id);
-    "wattetheria.mission".clone_into(&mut contract.task_type);
-    contract.inputs = json!({
+fn publisher_node_scope_hint(publisher_wattswarm_node_id: &str) -> String {
+    format!("node:{publisher_wattswarm_node_id}")
+}
+
+fn mission_task_inputs(
+    mission: &CivilMission,
+    publisher_agent_did: &str,
+    publisher_wattswarm_node_id: &str,
+) -> Value {
+    let mission_scope_hint = publisher_node_scope_hint(publisher_wattswarm_node_id);
+    json!({
         "kind": "wattetheria_mission",
         "mission_id": mission.mission_id,
         "publisher": mission.publisher,
         "publisher_kind": mission.publisher_kind,
+        "publisher_agent_did": publisher_agent_did,
+        "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
+        "swarm_scope": {
+            "kind": "node",
+            "id": publisher_wattswarm_node_id,
+        },
+        "mission_feed_key": MISSION_FEED_KEY,
+        "mission_scope_hint": mission_scope_hint,
         "domain": mission.domain,
         "reward": mission.reward,
         "required_role": mission.required_role,
@@ -78,17 +363,34 @@ fn mission_task_contract(mut contract: TaskContract, mission: &CivilMission) -> 
         "subnet_id": mission.subnet_id,
         "zone_id": mission.zone_id,
         "payload": mission.payload,
-    });
+    })
+}
+
+pub(crate) fn mission_task_contract(
+    mut contract: TaskContract,
+    mission: &CivilMission,
+    publisher_agent_did: &str,
+    publisher_wattswarm_node_id: &str,
+) -> TaskContract {
+    contract.task_id.clone_from(&mission.mission_id);
+    "wattetheria.mission".clone_into(&mut contract.task_type);
+    contract.inputs =
+        mission_task_inputs(mission, publisher_agent_did, publisher_wattswarm_node_id);
     contract.output_schema = mission_task_output_schema();
     contract
 }
 
-fn mission_announce_command(mission: &CivilMission) -> SwarmTaskAnnounceCommand {
+fn mission_announce_command(
+    mission: &CivilMission,
+    publisher_agent_did: &str,
+    publisher_wattswarm_node_id: &str,
+) -> SwarmTaskAnnounceCommand {
+    let mission_scope_hint = publisher_node_scope_hint(publisher_wattswarm_node_id);
     SwarmTaskAnnounceCommand {
         task_id: mission.mission_id.clone(),
         announcement_id: None,
-        feed_key: "wattetheria.missions".to_owned(),
-        scope_hint: "global".to_owned(),
+        feed_key: MISSION_FEED_KEY.to_owned(),
+        scope_hint: mission_scope_hint.clone(),
         summary: json!({
             "kind": "wattetheria_mission",
             "mission_id": mission.mission_id,
@@ -97,6 +399,46 @@ fn mission_announce_command(mission: &CivilMission) -> SwarmTaskAnnounceCommand 
             "domain": mission.domain,
             "reward": mission.reward,
             "publisher": mission.publisher,
+            "publisher_agent_did": publisher_agent_did,
+            "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
+            "mission_feed_key": MISSION_FEED_KEY,
+            "mission_scope_hint": mission_scope_hint,
+        }),
+        detail_ref: None,
+    }
+}
+
+fn network_mission_announce_command(
+    route: &NetworkMissionClaimRoute,
+    contract: &TaskContract,
+) -> SwarmTaskAnnounceCommand {
+    let inputs = contract.inputs.as_object();
+    SwarmTaskAnnounceCommand {
+        task_id: route.task_id.clone(),
+        announcement_id: Some(format!("wattetheria-route-{}", route.task_id)),
+        feed_key: route.mission_feed_key.clone(),
+        scope_hint: route.mission_scope_hint.clone(),
+        summary: json!({
+            "kind": "wattetheria_mission",
+            "mission_id": inputs
+                .and_then(|value| value.get("mission_id"))
+                .and_then(Value::as_str)
+                .unwrap_or(route.task_id.as_str()),
+            "title": inputs
+                .and_then(|value| value.get("title"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "publisher": inputs
+                .and_then(|value| value.get("publisher"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "publisher_agent_did": inputs
+                .and_then(|value| value.get("publisher_agent_did"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id.clone(),
+            "mission_feed_key": route.mission_feed_key.clone(),
+            "mission_scope_hint": route.mission_scope_hint.clone(),
         }),
         detail_ref: None,
     }
@@ -120,6 +462,83 @@ fn mission_complete_command(
         evidence_inline: Vec::new(),
         evidence_refs: Vec::new(),
     }
+}
+
+fn mission_network_complete_command(
+    route: &NetworkMissionClaimRoute,
+    body: &MissionClaimBody,
+    result: &Value,
+) -> SwarmTaskProposeCandidateCommand {
+    let execution_id = mission_execution_id(&route.task_id, &body.agent_did);
+    SwarmTaskProposeCandidateCommand {
+        task_id: route.task_id.clone(),
+        execution_id: execution_id.clone(),
+        candidate_id: mission_candidate_id(&route.task_id, &body.agent_did),
+        output: json!({
+            "kind": "wattetheria_mission_result",
+            "mission_id": body.mission_id,
+            "agent_did": body.agent_did,
+            "result": result,
+        }),
+        evidence_inline: Vec::new(),
+        evidence_refs: Vec::new(),
+    }
+}
+
+fn mission_settle_candidate(
+    body: &MissionSettleBody,
+    mission: &CivilMission,
+) -> Option<(String, String)> {
+    let task_id = body
+        .task_id
+        .clone()
+        .unwrap_or_else(|| mission.mission_id.clone());
+    let candidate_id = body.candidate_id.clone().or_else(|| {
+        body.agent_did
+            .as_ref()
+            .or(mission.completed_by.as_ref())
+            .map(|agent_did| mission_candidate_id(&task_id, agent_did))
+    })?;
+    Some((task_id, candidate_id))
+}
+
+async fn finalize_mission_task_before_settle(
+    state: &ControlPlaneState,
+    body: &MissionSettleBody,
+    headers: &HeaderMap,
+) -> Result<Option<Value>, Response> {
+    if agent_commit_context_from_headers(headers).is_some() {
+        return Ok(None);
+    }
+    let mission = {
+        let board = state.mission_board.lock().await;
+        match board.get(&body.mission_id) {
+            Some(mission) => mission.clone(),
+            None => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "mission not found"})),
+                )
+                    .into_response());
+            }
+        }
+    };
+    if mission.status != MissionStatus::Completed {
+        return Ok(None);
+    }
+    let Some((task_id, candidate_id)) = mission_settle_candidate(body, &mission) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "settle_mission requires candidate_id or completed mission agent_did"})),
+        )
+            .into_response());
+    };
+    state
+        .swarm_bridge
+        .accept_and_finalize_task(&task_id, &candidate_id)
+        .await
+        .map(Some)
+        .map_err(|error| internal_error(&error))
 }
 
 fn replay_commit_response(
@@ -233,12 +652,21 @@ pub(crate) async fn mission_publish(
         return internal_error(&error);
     }
     if agent_commit_context_from_headers(&headers).is_none() {
+        let publisher_wattswarm_node_id = match state.swarm_bridge.local_node_id().await {
+            Ok(node_id) => node_id,
+            Err(error) => return internal_error(&error),
+        };
         let contract = match state
             .swarm_bridge
             .sample_task_contract(&mission.mission_id)
             .await
         {
-            Ok(contract) => mission_task_contract(contract, &mission),
+            Ok(contract) => mission_task_contract(
+                contract,
+                &mission,
+                &state.agent_did,
+                &publisher_wattswarm_node_id,
+            ),
             Err(error) => return internal_error(&error),
         };
         if let Err(error) = state.swarm_bridge.submit_task(contract).await {
@@ -246,7 +674,11 @@ pub(crate) async fn mission_publish(
         }
         if let Err(error) = state
             .swarm_bridge
-            .announce_task(mission_announce_command(&mission))
+            .announce_task(mission_announce_command(
+                &mission,
+                &state.agent_did,
+                &publisher_wattswarm_node_id,
+            ))
             .await
         {
             return internal_error(&error);
@@ -308,6 +740,184 @@ pub(crate) async fn mission_complete(
     transition_mission(state, headers, body, "complete").await
 }
 
+async fn claim_network_mission(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    auth: String,
+    body: MissionClaimBody,
+) -> Response {
+    if agent_commit_context_from_headers(&headers).is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "network mission claim requires a direct request"})),
+        )
+            .into_response();
+    }
+    let route = match network_claim_route_for_action(&state, &body).await {
+        Ok(route) => route,
+        Err(response) => return response,
+    };
+    let contract = match network_task_contract_for_action(&state, &route, &body, "claim").await {
+        Ok(contract) => contract,
+        Err(response) => return response,
+    };
+    let (subscriber_node_id, task_contract_sync, task_announcement_sync) =
+        match sync_network_task_contract_and_announce(&state, &route, contract).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let execution_id = mission_execution_id(&route.task_id, &body.agent_did);
+    let swarm_claim = match state
+        .swarm_bridge
+        .claim_task(SwarmTaskClaimCommand {
+            task_id: route.task_id.clone(),
+            role: ClaimRole::Propose,
+            execution_id,
+            lease_ms: None,
+        })
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return internal_error(&error),
+    };
+    let response_json = json!({
+        "ok": true,
+        "status": "network_claim_submitted",
+        "mission_id": body.mission_id,
+        "task_id": route.task_id,
+        "agent_did": body.agent_did,
+        "mission_feed_key": route.mission_feed_key,
+        "mission_scope_hint": route.mission_scope_hint,
+        "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
+        "subscriber_node_id": subscriber_node_id,
+        "task_contract_sync": task_contract_sync,
+        "task_announcement_sync": task_announcement_sync,
+        "swarm_claim": swarm_claim,
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: "mission.claim.network".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: response_json["mission_id"].as_str().map(ToOwned::to_owned),
+        capability: Some("mission.claim".to_string()),
+        reason: response_json["agent_did"].as_str().map(ToOwned::to_owned),
+        duration_ms: None,
+        details: Some(response_json.clone()),
+    });
+    Json(response_json).into_response()
+}
+
+async fn complete_network_mission(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    auth: String,
+    body: MissionClaimBody,
+) -> Response {
+    if agent_commit_context_from_headers(&headers).is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "network mission complete requires a direct request"})),
+        )
+            .into_response();
+    }
+    let route = match network_claim_route_for_action(&state, &body).await {
+        Ok(route) => route,
+        Err(response) => return response,
+    };
+    let Some(result) = body
+        .result
+        .clone()
+        .or_else(|| claim_route_value(&body, "result").cloned())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "network mission complete requires result",
+                "mission_id": body.mission_id,
+                "task_id": route.task_id,
+            })),
+        )
+            .into_response();
+    };
+    let contract = match network_task_contract_for_action(&state, &route, &body, "complete").await {
+        Ok(contract) => contract,
+        Err(response) => return response,
+    };
+    let (subscriber_node_id, task_contract_sync, task_announcement_sync) =
+        match sync_network_task_contract_and_announce(&state, &route, contract).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let command = mission_network_complete_command(&route, &body, &result);
+    let candidate_id = command.candidate_id.clone();
+    let swarm_candidate = match state.swarm_bridge.propose_task_candidate(command).await {
+        Ok(value) => value,
+        Err(error) => return internal_error(&error),
+    };
+    let response_json = json!({
+        "ok": true,
+        "status": "network_complete_submitted",
+        "mission_id": body.mission_id,
+        "task_id": route.task_id,
+        "agent_did": body.agent_did,
+        "candidate_id": candidate_id,
+        "mission_feed_key": route.mission_feed_key,
+        "mission_scope_hint": route.mission_scope_hint,
+        "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
+        "subscriber_node_id": subscriber_node_id,
+        "task_contract_sync": task_contract_sync,
+        "task_announcement_sync": task_announcement_sync,
+        "swarm_candidate": swarm_candidate,
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: "mission.complete.network".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: response_json["mission_id"].as_str().map(ToOwned::to_owned),
+        capability: Some("mission.complete".to_string()),
+        reason: response_json["agent_did"].as_str().map(ToOwned::to_owned),
+        duration_ms: None,
+        details: Some(response_json.clone()),
+    });
+    Json(response_json).into_response()
+}
+
+async fn dispatch_local_mission_transition_to_swarm(
+    state: &ControlPlaneState,
+    action: &str,
+    mission: &CivilMission,
+    agent_did: &str,
+) -> anyhow::Result<Value> {
+    match action {
+        "claim" => {
+            state
+                .swarm_bridge
+                .claim_task(SwarmTaskClaimCommand {
+                    task_id: mission.mission_id.clone(),
+                    role: ClaimRole::Propose,
+                    execution_id: mission_execution_id(&mission.mission_id, agent_did),
+                    lease_ms: None,
+                })
+                .await
+        }
+        "complete" => {
+            state
+                .swarm_bridge
+                .propose_task_candidate(mission_complete_command(mission, agent_did))
+                .await
+        }
+        _ => unreachable!("unsupported mission transition"),
+    }
+}
+
 async fn transition_mission(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -326,6 +936,16 @@ async fn transition_mission(
     let request_mission_id = body.mission_id.clone();
     let request_agent_did = body.agent_did.clone();
     let mut board = state.mission_board.lock().await;
+    if board.get(&body.mission_id).is_none() {
+        if action == "claim" {
+            drop(board);
+            return claim_network_mission(state, headers, auth, body).await;
+        }
+        if action == "complete" {
+            drop(board);
+            return complete_network_mission(state, headers, auth, body).await;
+        }
+    }
     let mission = match action {
         "claim" => board.claim(&body.mission_id, &body.agent_did),
         "complete" => board.complete(&body.mission_id, &body.agent_did),
@@ -351,30 +971,12 @@ async fn transition_mission(
     if let Err(error) = refresh_known_wallet_balances(&state).await {
         return internal_error(&error);
     }
-    if agent_commit_context_from_headers(&headers).is_none() {
-        let bridge_result = match action {
-            "claim" => {
-                state
-                    .swarm_bridge
-                    .claim_task(SwarmTaskClaimCommand {
-                        task_id: mission.mission_id.clone(),
-                        role: ClaimRole::Propose,
-                        execution_id: mission_execution_id(&mission.mission_id, &request_agent_did),
-                        lease_ms: None,
-                    })
-                    .await
-            }
-            "complete" => {
-                state
-                    .swarm_bridge
-                    .propose_task_candidate(mission_complete_command(&mission, &request_agent_did))
-                    .await
-            }
-            _ => unreachable!("unsupported mission transition"),
-        };
-        if let Err(error) = bridge_result {
-            return internal_error(&error);
-        }
+    if agent_commit_context_from_headers(&headers).is_none()
+        && let Err(error) =
+            dispatch_local_mission_transition_to_swarm(&state, action, &mission, &request_agent_did)
+                .await
+    {
+        return internal_error(&error);
     }
 
     let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
@@ -429,6 +1031,10 @@ pub(crate) async fn mission_settle(
         Err(response) => return response,
     };
     let request_mission_id = body.mission_id.clone();
+    let swarm_finalize = match finalize_mission_task_before_settle(&state, &body, &headers).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
 
     let mission = {
         let mut board = state.mission_board.lock().await;
@@ -492,7 +1098,12 @@ pub(crate) async fn mission_settle(
         details: Some(payload.clone()),
     });
 
-    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let mut response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    if let Some(swarm_finalize) = swarm_finalize
+        && let Some(object) = response_json.as_object_mut()
+    {
+        object.insert("swarm_finalize".to_string(), swarm_finalize);
+    }
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -507,4 +1118,81 @@ pub(crate) async fn mission_settle(
         return internal_error(&error);
     }
     Json(response_json).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wattetheria_kernel::civilization::missions::{
+        MissionBoard, MissionDomain, MissionPublisherKind, MissionReward,
+    };
+
+    fn sample_mission() -> CivilMission {
+        let mut board = MissionBoard::default();
+        board.publish(
+            "Route cargo",
+            "Move supplies to the outpost",
+            "captain-alpha",
+            MissionPublisherKind::Player,
+            MissionDomain::Trade,
+            Some("subnet-1".to_owned()),
+            Some("zone-2".to_owned()),
+            None,
+            None,
+            MissionReward {
+                agent_watt: 10,
+                reputation: 2,
+                capacity: 1,
+                treasury_share_watt: 3,
+            },
+            json!({"cargo": "water"}),
+        )
+    }
+
+    #[test]
+    fn mission_task_inputs_are_node_scoped_to_publisher_wattswarm_node() {
+        let mission = sample_mission();
+        let inputs = mission_task_inputs(&mission, "did:agent:publisher", "node-publisher");
+
+        assert_eq!(inputs["kind"].as_str(), Some("wattetheria_mission"));
+        assert_eq!(
+            inputs["mission_id"].as_str(),
+            Some(mission.mission_id.as_str())
+        );
+        assert_eq!(inputs["publisher"].as_str(), Some("captain-alpha"));
+        assert_eq!(
+            inputs["publisher_agent_did"].as_str(),
+            Some("did:agent:publisher")
+        );
+        assert_eq!(
+            inputs["publisher_wattswarm_node_id"].as_str(),
+            Some("node-publisher")
+        );
+        assert_eq!(
+            inputs["swarm_scope"],
+            json!({"kind": "node", "id": "node-publisher"})
+        );
+        assert_eq!(inputs["mission_feed_key"].as_str(), Some(MISSION_FEED_KEY));
+        assert_eq!(
+            inputs["mission_scope_hint"].as_str(),
+            Some("node:node-publisher")
+        );
+    }
+
+    #[test]
+    fn mission_announce_uses_same_node_scope_as_contract_inputs() {
+        let mission = sample_mission();
+        let command = mission_announce_command(&mission, "did:agent:publisher", "node-publisher");
+
+        assert_eq!(command.feed_key, MISSION_FEED_KEY);
+        assert_eq!(command.scope_hint, "node:node-publisher");
+        assert_eq!(
+            command.summary["publisher_wattswarm_node_id"].as_str(),
+            Some("node-publisher")
+        );
+        assert_eq!(
+            command.summary["mission_scope_hint"].as_str(),
+            Some(command.scope_hint.as_str())
+        );
+    }
 }

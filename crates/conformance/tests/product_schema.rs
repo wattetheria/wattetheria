@@ -88,6 +88,12 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
                 "url": "http://127.0.0.1:7777/v1/civilization/topics/subscribe",
                 "available": true
             },
+            "unsubscribe_topic": {
+                "method": "POST",
+                "path": "/v1/civilization/topics/subscribe",
+                "url": "http://127.0.0.1:7777/v1/civilization/topics/subscribe",
+                "available": true
+            },
             "list_missions": {
                 "method": "GET",
                 "path": "/v1/missions",

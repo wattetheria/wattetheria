@@ -123,154 +123,259 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
 
 fn topic_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "list_topics" => Some(tool_schema(
-            tool,
-            &[
-                string_field("organization_id", "Organization topic filter."),
-                string_field("mission_id", "Mission topic filter."),
-                enum_field(
-                    "projection_kind",
-                    "Topic projection kind filter.",
-                    &[
-                        "chat_room",
-                        "working_group",
-                        "guild",
-                        "organization",
-                        "mission_thread",
-                        "direct_conversation",
-                    ],
-                ),
-                bool_field(
-                    "include_inactive",
-                    "Whether inactive topics should be included.",
-                ),
-            ],
-            &[],
-            false,
-        )),
+        "list_topics" => Some(tool_schema(tool, &list_topic_fields(), &[], false)),
         "create_topic" => Some(tool_schema(
             tool,
-            &[
-                string_field("feed_key", "Topic feed key."),
-                string_field("scope_hint", "Topic scope hint."),
-                string_field("display_name", "Human-readable topic name."),
-                string_field("summary", "Optional topic summary."),
-                enum_field(
-                    "projection_kind",
-                    "Topic projection kind.",
-                    &[
-                        "chat_room",
-                        "working_group",
-                        "guild",
-                        "organization",
-                        "mission_thread",
-                        "direct_conversation",
-                    ],
-                ),
-                string_field("organization_id", "Organization linked to this topic."),
-                string_field("mission_id", "Mission linked to this topic."),
-                string_array_field("participant_public_ids", "Initial participant public IDs."),
-                string_field("why_this_exists", "Reason this topic exists."),
-                value_field("initial_message", "Optional first topic message payload."),
-            ],
+            &create_topic_fields(),
             &["feed_key", "scope_hint", "display_name", "projection_kind"],
             false,
         )),
         "list_topic_messages" => Some(tool_schema(
             tool,
-            &[
-                string_field("feed_key", "Topic feed key."),
-                string_field("scope_hint", "Topic scope hint."),
-                integer_field("limit", "Maximum number of messages to return."),
-                integer_field("before_created_at", "Cursor timestamp boundary."),
-                string_field("before_message_id", "Cursor message ID boundary."),
-                string_field("subscriber_id", "Subscriber ID for cursor tracking."),
-            ],
+            &list_topic_message_fields(),
             &["feed_key", "scope_hint"],
             false,
         )),
         "post_topic_message" => Some(tool_schema(
             tool,
-            &[
-                string_field("feed_key", "Topic feed key."),
-                string_field("scope_hint", "Topic scope hint."),
-                value_field("content", "Message content payload."),
-                string_field("reply_to_message_id", "Message ID this post replies to."),
-            ],
+            &post_topic_message_fields(),
             &["feed_key", "scope_hint", "content"],
             false,
         )),
         "subscribe_topic" => Some(tool_schema(
             tool,
-            &[
-                string_field("feed_key", "Topic feed key."),
-                string_field("scope_hint", "Topic scope hint."),
-                bool_field("active", "Whether the subscription should be active."),
-            ],
+            &subscribe_topic_fields(true),
             &["feed_key", "scope_hint", "active"],
+            false,
+        )),
+        "unsubscribe_topic" => Some(tool_schema(
+            tool,
+            &subscribe_topic_fields(false),
+            &["feed_key", "scope_hint"],
             false,
         )),
         _ => None,
     }
 }
 
+fn topic_projection_kind_field(description: &str) -> (&'static str, Value) {
+    enum_field(
+        "projection_kind",
+        description,
+        &[
+            "chat_room",
+            "working_group",
+            "guild",
+            "organization",
+            "mission_thread",
+            "direct_conversation",
+        ],
+    )
+}
+
+fn list_topic_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        integer_field("limit", "Maximum number of gateway Hives to return."),
+        integer_field(
+            "offset",
+            "Zero-based client offset into the bounded gateway result window.",
+        ),
+        string_field("topic_id", "Network Hive topic ID filter."),
+        string_field("organization_id", "Organization topic filter."),
+        string_field("mission_id", "Mission topic filter."),
+        topic_projection_kind_field("Topic projection kind filter."),
+        bool_field(
+            "include_inactive",
+            "Whether inactive topics should be included.",
+        ),
+    ]
+}
+
+fn create_topic_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("feed_key", "Topic feed key."),
+        string_field("scope_hint", "Topic scope hint."),
+        string_field("display_name", "Human-readable topic name."),
+        string_field("summary", "Optional topic summary."),
+        topic_projection_kind_field("Topic projection kind."),
+        string_field("organization_id", "Organization linked to this topic."),
+        string_field("mission_id", "Mission linked to this topic."),
+        string_array_field("participant_public_ids", "Initial participant public IDs."),
+        string_field("why_this_exists", "Reason this topic exists."),
+        value_field("initial_message", "Optional first topic message payload."),
+    ]
+}
+
+fn list_topic_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("feed_key", "Topic feed key."),
+        string_field("scope_hint", "Topic scope hint."),
+        integer_field("limit", "Maximum number of messages to return."),
+        integer_field("before_created_at", "Cursor timestamp boundary."),
+        string_field("before_message_id", "Cursor message ID boundary."),
+        string_field("subscriber_id", "Subscriber ID for cursor tracking."),
+    ]
+}
+
+fn post_topic_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("feed_key", "Topic feed key."),
+        string_field("scope_hint", "Topic scope hint."),
+        value_field("content", "Message content payload."),
+        string_field("reply_to_message_id", "Message ID this post replies to."),
+    ]
+}
+
+fn subscribe_topic_fields(include_active: bool) -> Vec<(&'static str, Value)> {
+    let mut fields = vec![
+        string_field("feed_key", "Topic feed key."),
+        string_field("scope_hint", "Topic scope hint."),
+    ];
+    if include_active {
+        fields.push(bool_field(
+            "active",
+            "Whether the subscription should be active.",
+        ));
+    }
+    fields
+}
+
 fn mission_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "list_missions" => Some(tool_schema(
-            tool,
-            &[enum_field(
-                "status",
-                "Mission status filter.",
-                &["open", "claimed", "completed", "settled", "cancelled"],
-            )],
-            &[],
-            false,
-        )),
+        "list_missions" => Some(tool_schema(tool, &list_mission_fields(), &[], false)),
         "publish_mission" => Some(tool_schema(
             tool,
-            &[
-                string_field("title", "Mission title."),
-                string_field("description", "Mission description."),
-                enum_field(
-                    "domain",
-                    "Mission domain.",
-                    &["wealth", "power", "security", "trade", "culture"],
-                ),
-                string_field("subnet_id", "Optional target subnet."),
-                string_field("zone_id", "Optional target zone."),
-                enum_field(
-                    "required_role",
-                    "Required role path.",
-                    &["operator", "broker", "enforcer", "artificer"],
-                ),
-                enum_field(
-                    "required_faction",
-                    "Required faction.",
-                    &["order", "freeport", "raider"],
-                ),
-                reward_field(),
-                value_field("payload", "Mission payload."),
-            ],
+            &publish_mission_fields(),
             &["title", "description", "domain", "reward", "payload"],
             false,
         )),
-        "claim_mission" | "complete_mission" => Some(tool_schema(
+        "claim_mission" => Some(tool_schema(
             tool,
-            &[
-                string_field("mission_id", "Mission ID."),
-                string_field("agent_did", "Agent DID claiming or completing the mission."),
-            ],
+            &claim_mission_fields(),
+            &["mission_id", "agent_did"],
+            false,
+        )),
+        "complete_mission" => Some(tool_schema(
+            tool,
+            &complete_mission_fields(),
             &["mission_id", "agent_did"],
             false,
         )),
         "settle_mission" => Some(tool_schema(
             tool,
-            &[string_field("mission_id", "Mission ID to settle.")],
+            &settle_mission_fields(),
             &["mission_id"],
             false,
         )),
         _ => None,
     }
+}
+
+fn list_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        enum_field(
+            "status",
+            "Network mission status filter.",
+            &[
+                "published",
+                "open",
+                "claimed",
+                "completed",
+                "settled",
+                "cancelled",
+            ],
+        ),
+        integer_field("limit", "Maximum number of gateway missions to return."),
+        integer_field(
+            "offset",
+            "Zero-based client offset into the bounded gateway result window.",
+        ),
+    ]
+}
+
+fn publish_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("title", "Mission title."),
+        string_field("description", "Mission description."),
+        enum_field(
+            "domain",
+            "Mission domain.",
+            &["wealth", "power", "security", "trade", "culture"],
+        ),
+        string_field("subnet_id", "Optional target subnet."),
+        string_field("zone_id", "Optional target zone."),
+        enum_field(
+            "required_role",
+            "Required role path.",
+            &["operator", "broker", "enforcer", "artificer"],
+        ),
+        enum_field(
+            "required_faction",
+            "Required faction.",
+            &["order", "freeport", "raider"],
+        ),
+        reward_field(),
+        value_field("payload", "Mission payload."),
+    ]
+}
+
+fn claim_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("mission_id", "Mission ID."),
+        string_field("agent_did", "Agent DID claiming the mission."),
+        string_field(
+            "task_id",
+            "Wattswarm task ID from list_missions claim_route.",
+        ),
+        string_field(
+            "mission_feed_key",
+            "Mission feed key from list_missions claim_route.",
+        ),
+        string_field(
+            "mission_scope_hint",
+            "Wattswarm mission scope hint from list_missions claim_route.",
+        ),
+        string_field(
+            "publisher_wattswarm_node_id",
+            "Publisher Wattswarm node ID from list_missions claim_route.",
+        ),
+        value_field(
+            "claim_route",
+            "Claim route object returned by list_missions.",
+        ),
+    ]
+}
+
+fn complete_mission_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = claim_mission_fields();
+    fields[1] = string_field("agent_did", "Agent DID completing the mission.");
+    fields[6] = value_field(
+        "claim_route",
+        "Claim route object returned by list_missions for network missions.",
+    );
+    fields.push(value_field(
+        "result",
+        "Mission completion result to submit as the Wattswarm candidate output.",
+    ));
+    fields
+}
+
+fn settle_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("mission_id", "Mission ID to settle."),
+        string_field(
+            "task_id",
+            "Wattswarm task ID to finalize before settling a local publisher mission.",
+        ),
+        string_field(
+            "agent_did",
+            "Completing agent DID used to derive the Wattswarm candidate ID.",
+        ),
+        string_field(
+            "candidate_id",
+            "Wattswarm candidate ID to accept before settling.",
+        ),
+    ]
 }
 
 fn social_schema(tool: &AgentTool) -> Option<Value> {

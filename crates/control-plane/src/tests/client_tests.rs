@@ -27,6 +27,19 @@ async fn client_api_routes_align_with_client_dtos() {
         },
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
+            connected: Some(true),
+            discovery: Some(json!({
+                "listen_addr": "/ip4/203.0.113.10/tcp/4001",
+                "source_kind": "bootstrap"
+            })),
+            metadata: Some(json!({
+                "observed_addr": "/ip4/198.51.100.2/tcp/4001",
+                "handshake_status": "identified"
+            })),
+            relationship: Some(json!({
+                "relationship_state": "friend",
+                "last_action": "accept"
+            })),
         }],
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
@@ -91,6 +104,13 @@ async fn client_api_routes_align_with_client_dtos() {
     let peers_json = authed_get_json(app.clone(), &token, "/v1/client/peers?limit=1").await;
     assert_eq!(peers_json.as_array().unwrap().len(), 1);
     assert_eq!(peers_json[0]["id"].as_str(), Some("peer-a"));
+    assert_eq!(peers_json[0]["connected"].as_bool(), Some(true));
+    assert_eq!(peers_json[0]["source_kind"].as_str(), Some("bootstrap"));
+    assert_eq!(peers_json[0]["relationship_state"].as_str(), Some("friend"));
+    assert_eq!(
+        peers_json[0]["address"].as_str(),
+        Some("/ip4/198.51.100.2/tcp/4001")
+    );
     assert!(peers_json[0].get("lat").is_none());
     assert!(peers_json[0].get("lng").is_none());
 
@@ -238,6 +258,44 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     .await;
     assert_eq!(self_json["watt_balance"].as_i64(), Some(27));
     assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
+}
+
+#[tokio::test]
+async fn wallet_page_can_bind_external_web3_payment_account() {
+    let (_dir, app, token, _, _state) = build_test_app(20);
+    let address = "0x1111111111111111111111111111111111111111";
+    let bound = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wallet/payment-account/bind-web3",
+        json!({
+            "address": address,
+            "network": "base",
+            "rail": "x402",
+            "label": "browser-wallet"
+        }),
+    )
+    .await;
+
+    assert_eq!(bound["ok"].as_bool(), Some(true));
+    assert_eq!(
+        bound["active_payment_account"]["address"].as_str(),
+        Some(address)
+    );
+    assert_eq!(
+        bound["active_payment_account"]["network"].as_str(),
+        Some("base")
+    );
+    assert_eq!(
+        bound["active_payment_account"]["rail"].as_str(),
+        Some("x402")
+    );
+
+    let self_json = authed_get_json(app, &token, "/v1/client/self").await;
+    assert_eq!(
+        self_json["active_payment_account"]["address"].as_str(),
+        Some(address)
+    );
 }
 
 #[tokio::test]
@@ -433,6 +491,10 @@ async fn client_export_excludes_local_friends_and_dm() {
         },
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
+            connected: Some(true),
+            discovery: None,
+            metadata: None,
+            relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
@@ -629,6 +691,10 @@ async fn client_export_is_public_and_signed() {
         },
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
+            connected: Some(true),
+            discovery: None,
+            metadata: None,
+            relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
@@ -669,6 +735,56 @@ async fn client_export_is_public_and_signed() {
 }
 
 #[tokio::test]
+async fn client_export_includes_task_contract_for_network_mission_claims() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let created = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Network cargo",
+            "description": "Move cargo for a remote claimer",
+            "publisher": "publisher-public",
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 10,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"cargo": "ore"}
+        }),
+    )
+    .await;
+    let mission_id = created["mission_id"].as_str().unwrap();
+
+    let export_json = public_get_json(app, "/v1/client/export?task_limit=10").await;
+    let task = export_json["payload"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"].as_str() == Some(mission_id))
+        .unwrap();
+
+    assert_eq!(task["task_id"].as_str(), Some(mission_id));
+    assert_eq!(task["task_type"].as_str(), Some("wattetheria.mission"));
+    assert_eq!(
+        task["publisher_wattswarm_node_id"].as_str(),
+        Some(state.agent_did.as_str())
+    );
+    assert_eq!(
+        task["mission_scope_hint"].as_str(),
+        Some(format!("node:{}", state.agent_did).as_str())
+    );
+    assert_eq!(task["task_contract"]["task_id"].as_str(), Some(mission_id));
+    assert_eq!(
+        task["task_contract"]["inputs"]["mission_id"].as_str(),
+        Some(mission_id)
+    );
+}
+
+#[tokio::test]
 async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -686,6 +802,10 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
         },
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
+            connected: Some(true),
+            discovery: None,
+            metadata: None,
+            relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),

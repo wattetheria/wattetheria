@@ -41,9 +41,17 @@ pub struct SwarmTopicCursorView {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmPeerView {
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connected: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,6 +242,10 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
         Err(anyhow!("wattswarm network status is not configured"))
+    }
+
+    async fn local_node_id(&self) -> Result<String> {
+        Err(anyhow!("wattswarm local node id is not configured"))
     }
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
@@ -435,6 +447,10 @@ impl SwarmBridge for HybridSwarmBridge {
         self.topic_api()?.network_status().await
     }
 
+    async fn local_node_id(&self) -> Result<String> {
+        self.topic_api()?.local_node_id().await
+    }
+
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         self.topic_api()?.peers().await
     }
@@ -564,6 +580,17 @@ impl HttpWattswarmApi {
         }
     }
 
+    async fn node_status_response(&self) -> Result<NodeStatusResponse> {
+        self.client
+            .get(format!("{}/api/node/status", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<NodeStatusResponse>()
+            .await
+            .context("decode wattswarm node status response")
+    }
+
     async fn subscribe_topic(
         &self,
         subscriber_id: &str,
@@ -653,19 +680,21 @@ impl HttpWattswarmApi {
     }
 
     async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
-        let response = self
-            .client
-            .get(format!("{}/api/node/status", self.base_url))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<NodeStatusResponse>()
-            .await?;
+        let response = self.node_status_response().await?;
         Ok(SwarmNetworkStatusView {
             running: response.running,
             mode: response.mode,
             peer_protocol_distribution: response.peer_protocol_distribution,
         })
+    }
+
+    async fn local_node_id(&self) -> Result<String> {
+        let response = self.node_status_response().await?;
+        let node_id = response.node_id.trim();
+        if node_id.is_empty() {
+            return Err(anyhow!("wattswarm node status did not include node_id"));
+        }
+        Ok(node_id.to_owned())
     }
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
@@ -677,11 +706,7 @@ impl HttpWattswarmApi {
             .error_for_status()?
             .json::<PeersListResponse>()
             .await?;
-        Ok(response
-            .peers
-            .into_iter()
-            .map(|node_id| SwarmPeerView { node_id })
-            .collect())
+        Ok(wattswarm_peer_views(response))
     }
 
     async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
@@ -781,15 +806,32 @@ impl HttpWattswarmApi {
     }
 
     async fn submit_task(&self, contract: TaskContract) -> Result<Value> {
-        self.client
+        let task_id = contract.task_id.clone();
+        let response = self
+            .client
             .post(format!("{}/api/task/submit", self.base_url))
             .json(&json!({ "contract": contract }))
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
+            .await?;
+        let status = response.status();
+        let body = response
+            .text()
             .await
-            .context("decode wattswarm task submit response")
+            .context("read wattswarm task submit response")?;
+        if status.is_success() {
+            return serde_json::from_str::<Value>(&body)
+                .context("decode wattswarm task submit response");
+        }
+        if body.contains("task already exists") {
+            return Ok(json!({
+                "ok": true,
+                "task_id": task_id,
+                "already_exists": true,
+            }));
+        }
+        Err(anyhow!(
+            "wattswarm task submit failed with status {status}: {body}"
+        ))
     }
 
     async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> Result<Value> {
@@ -1026,6 +1068,8 @@ struct TopicCursorResponse {
 #[derive(Debug, Deserialize)]
 struct NodeStatusResponse {
     running: bool,
+    #[serde(default)]
+    node_id: String,
     mode: String,
     #[serde(default)]
     peer_protocol_distribution: BTreeMap<String, u64>,
@@ -1033,7 +1077,63 @@ struct NodeStatusResponse {
 
 #[derive(Debug, Deserialize)]
 struct PeersListResponse {
+    #[serde(default)]
     peers: Vec<String>,
+    #[serde(default)]
+    records: Vec<Value>,
+}
+
+fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
+    let mut peers = BTreeMap::<String, SwarmPeerView>::new();
+    for node_id in response.peers {
+        peers.insert(
+            node_id.clone(),
+            SwarmPeerView {
+                node_id,
+                connected: Some(true),
+                discovery: None,
+                metadata: None,
+                relationship: None,
+            },
+        );
+    }
+    for record in response.records {
+        let Some(node_id) = record
+            .get("node_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let connected = record.get("connected").and_then(Value::as_bool);
+        let peer = peers
+            .entry(node_id.clone())
+            .or_insert_with(|| SwarmPeerView {
+                node_id,
+                connected,
+                discovery: None,
+                metadata: None,
+                relationship: None,
+            });
+        if peer.connected.is_none() {
+            peer.connected = connected;
+        }
+        peer.discovery = record
+            .get("discovery")
+            .filter(|value| !value.is_null())
+            .cloned();
+        peer.metadata = record
+            .get("metadata")
+            .filter(|value| !value.is_null())
+            .cloned();
+        peer.relationship = record
+            .get("relationship")
+            .filter(|value| !value.is_null())
+            .cloned();
+    }
+    peers.into_values().collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1121,5 +1221,48 @@ mod tests {
         assert_eq!(stats.reputation, 4);
         assert_eq!(stats.capacity, 11);
         assert_eq!(stats.power, 2);
+    }
+
+    #[test]
+    fn wattswarm_peer_views_preserve_local_peer_records() {
+        let peers = wattswarm_peer_views(PeersListResponse {
+            peers: vec!["peer-a".to_owned()],
+            records: vec![json!({
+                "node_id": "peer-a",
+                "connected": true,
+                "discovery": {
+                    "listen_addr": "/ip4/203.0.113.10/tcp/4001",
+                    "source_kind": "bootstrap"
+                },
+                "metadata": {
+                    "observed_addr": "/ip4/198.51.100.2/tcp/4001",
+                    "handshake_status": "identified"
+                },
+                "relationship": {
+                    "relationship_state": "friend",
+                    "last_action": "accept"
+                }
+            })],
+        });
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].node_id, "peer-a");
+        assert_eq!(peers[0].connected, Some(true));
+        assert_eq!(
+            peers[0]
+                .discovery
+                .as_ref()
+                .and_then(|value| value.get("source_kind"))
+                .and_then(Value::as_str),
+            Some("bootstrap")
+        );
+        assert_eq!(
+            peers[0]
+                .relationship
+                .as_ref()
+                .and_then(|value| value.get("relationship_state"))
+                .and_then(Value::as_str),
+            Some("friend")
+        );
     }
 }

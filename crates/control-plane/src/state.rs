@@ -681,11 +681,35 @@ pub struct MissionPublishBody {
 pub struct MissionClaimBody {
     pub mission_id: String,
     pub agent_did: String,
+    pub task_id: Option<String>,
+    pub mission_feed_key: Option<String>,
+    pub mission_scope_hint: Option<String>,
+    pub publisher_wattswarm_node_id: Option<String>,
+    pub claim_route: Option<Value>,
+    pub result: Option<Value>,
+}
+
+impl MissionClaimBody {
+    pub fn local(mission_id: String, agent_did: String) -> Self {
+        Self {
+            mission_id,
+            agent_did,
+            task_id: None,
+            mission_feed_key: None,
+            mission_scope_hint: None,
+            publisher_wattswarm_node_id: None,
+            claim_route: None,
+            result: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MissionSettleBody {
     pub mission_id: String,
+    pub task_id: Option<String>,
+    pub agent_did: Option<String>,
+    pub candidate_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -829,6 +853,19 @@ pub struct AgentPaymentSettleBody {
 #[derive(Debug, Deserialize)]
 pub struct AgentPaymentRejectBody {
     pub reject_reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WalletBindWeb3PaymentAccountBody {
+    pub address: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub rail: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub chain_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

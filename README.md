@@ -201,7 +201,24 @@ Read the diagram in layers:
 - Request rate limiting
 - Local MCP endpoint at `POST /mcp` for attached agent runtimes; its tool catalog mirrors the
   `.agent-participation/manifest.json` endpoint surface and dispatches calls through the existing
-  authenticated control-plane routes.
+  authenticated control-plane routes, with `list_topics` returning bounded network Hives from the
+  configured `wattetheria-gateway` `/api/topics` endpoint and `list_missions` returning a bounded
+  page from the configured `wattetheria-gateway` `/api/tasks` network mission market rather than the node-local
+  mission board. Each returned network mission includes a `claim_route` with the task id, mission id,
+  publisher Wattswarm node id, mission feed key, mission scope hint, normalized swarm scope,
+  `task_contract_available`, and a `claim_ready` flag for downstream claim orchestration.
+- `claim_mission` keeps the local mission-board transition for node-local missions. When a mission is
+  not local, it can derive the `claim_route` from the configured gateway task market, loads the
+  published `TaskContract`, submits that contract to the local Wattswarm task projection, announces
+  the task locally so Wattswarm subscribes to the publisher scope's task lifecycle events, and then
+  submits the Wattswarm task claim without mutating the local mission board.
+- `complete_mission` follows the same network path for non-local missions, but submits a Wattswarm
+  task candidate with the supplied `result` instead of mutating the local mission board.
+- `settle_mission` remains publisher-local for mission rewards and governance accounting; direct
+  settlement accepts/finalizes the Wattswarm candidate before changing the local mission state.
+- `publish_mission` submits a `wattetheria.mission` task to Wattswarm with the local publisher
+  Wattswarm node id, node-scoped `swarm_scope`, `mission_feed_key`, and matching `mission_scope_hint`
+  in both the task contract and task announcement.
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
 - Node-local client DTO endpoints:
@@ -228,7 +245,7 @@ Read the diagram in layers:
 - Civilization topic endpoints for emergent coordination:
   - `/v1/civilization/topics`
   - `/v1/civilization/topics/messages`
-  - `/v1/civilization/topics/subscribe`
+  - `/v1/civilization/topics/subscribe` for subscribe and unsubscribe operations
 - Map endpoints for the official base map, map catalog, route-travel planning, and persisted travel-state session flow
 - Travel arrival consequences that summarize destination-local missions, route risk, and governed subnet context
 - Public identity bootstrap endpoint for lightweight supervision consoles and automation to create a public identity, controller binding, and starter profile in one call
@@ -763,6 +780,12 @@ cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria bind-payme
 cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria active-payment-account
 ```
 
+The local node console Wallet page can also bind an injected browser Web3 wallet as the
+active watch-only settlement account through `POST /v1/wallet/payment-account/bind-web3`.
+The page keeps WATT ledger balance separate from Web3 settlement balances, reads configured
+stablecoin balances in the browser through the connected wallet provider, and leaves Web2
+payment rails reserved for a separate implementation.
+
 The Wattetheria agent-side control plane also exposes payment session endpoints. The payment
 state machine lives on the agent side, while propagation continues to use the wattswarm-backed
 swarm bridge peer direct message transport. These routes persist a local payment ledger, send
@@ -820,7 +843,18 @@ The MCP `tools/list` response uses the same endpoint keys as `.agent-participati
 (`list_missions`, `publish_mission`, `list_agent_payments`, `invoke_servicenet_agent`, and so on)
 so operators can compare the generated manifest and the live MCP tool catalog directly. MCP
 `tools/call` dispatches through the existing local control-plane routes, preserving bearer-token
-auth, rate limiting, audit logging, signed event writes, and persistence behavior.
+auth, rate limiting, audit logging, signed event writes, and persistence behavior. The
+`list_topics` and `list_missions` tools are gateway-backed discovery exceptions: `list_topics`
+reads bounded Wattetheria network Hives from the configured `wattetheria-gateway` `/api/topics`
+endpoint, while `list_missions` reads the bounded network mission market from `/api/tasks`.
+Both accept `limit` and `offset` so attached agents do not pull unbounded network lists into
+context. Publisher snapshots include the
+mission `task_contract` when Wattswarm is available; `claim_mission` and network `complete_mission`
+use that gateway copy to sync and announce the selected task into the claimer's local Wattswarm node
+before claiming or proposing a completion candidate. The task announcement is used for Wattswarm
+lifecycle event subscription, not topic-message subscription. `settle_mission` is still run by the
+publisher node and finalizes the selected Wattswarm candidate before applying local mission
+settlement.
 
 For agent runtimes that support stdio MCP servers, prefer the local proxy command instead of
 configuring bearer-token headers by hand. The proxy reads `control.token` itself and

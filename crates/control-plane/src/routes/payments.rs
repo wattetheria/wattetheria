@@ -14,8 +14,9 @@ use crate::social_host::{resolve_social_counterpart_target, resolve_social_local
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
     AgentPaymentSettleBody, AgentPaymentsQuery, ControlPlaneState, StreamEvent,
-    agent_commit_context_from_headers,
+    WalletBindWeb3PaymentAccountBody, agent_commit_context_from_headers,
 };
+use watt_wallet::PaymentAccountKind;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
@@ -24,9 +25,12 @@ use wattetheria_kernel::payments::{
     authorization_payload_bytes,
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
-use wattetheria_kernel::wallet_identity::open_local_wallet;
+use wattetheria_kernel::wallet_identity::{
+    load_or_create_wallet_backed_identity, open_local_wallet,
+};
 
 const PAYMENT_MESSAGE_CAPABILITY: &str = "payments.agent.transfer";
+const WALLET_BIND_CAPABILITY: &str = "wallet.bind";
 
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
@@ -83,6 +87,111 @@ fn append_commit_response(
             created_at: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         },
     )
+}
+
+pub(crate) async fn bind_web3_payment_account(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<WalletBindWeb3PaymentAccountBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let address = body.address.trim().to_string();
+    if !is_evm_address(&address) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid EVM address"})),
+        )
+            .into_response();
+    }
+    let rail = body.rail.unwrap_or_else(|| "x402".to_string());
+    let network = body
+        .network
+        .or_else(|| network_from_chain_id(body.chain_id.as_deref()));
+
+    if let Err(error) = load_or_create_wallet_backed_identity(&state.data_dir) {
+        return internal_error(&error);
+    }
+    let mut wallet_state = match open_local_wallet(&state.data_dir) {
+        Ok(wallet) => wallet,
+        Err(error) => return internal_error(&error),
+    };
+    let account_id = wallet_state
+        .profile
+        .payment_accounts
+        .iter()
+        .find(|account| {
+            account.kind == PaymentAccountKind::Web3Evm
+                && account
+                    .address
+                    .as_deref()
+                    .is_some_and(|stored| stored.eq_ignore_ascii_case(address.as_str()))
+                && account.rail.as_str() == rail.as_str()
+                && account.network.as_deref() == network.as_deref()
+        })
+        .map(|account| account.account_id.clone());
+
+    let now_ms = wallet_now_ms();
+    let account = match account_id {
+        Some(account_id) => {
+            if let Err(error) = wallet_state.wallet.set_active_payment_account(
+                &mut wallet_state.profile,
+                &account_id,
+                now_ms,
+            ) {
+                return wallet_internal_error(error);
+            }
+            match wallet_state
+                .wallet
+                .active_payment_account(&wallet_state.profile)
+            {
+                Ok(account) => account.clone(),
+                Err(error) => return wallet_internal_error(error),
+            }
+        }
+        None => match wallet_state.wallet.register_watch_payment_account_web3_evm(
+            &mut wallet_state.profile,
+            address,
+            body.label.or_else(|| Some("browser-wallet".to_string())),
+            network,
+            Some(rail),
+            now_ms,
+        ) {
+            Ok(account) => {
+                if let Err(error) = wallet_state.wallet.set_active_payment_account(
+                    &mut wallet_state.profile,
+                    &account.account_id,
+                    now_ms,
+                ) {
+                    return wallet_internal_error(error);
+                }
+                account
+            }
+            Err(error) => return wallet_internal_error(error),
+        },
+    };
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "wallet".to_string(),
+        action: "wallet.payment_account.bind_web3".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: account.address.clone(),
+        capability: Some(WALLET_BIND_CAPABILITY.to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(payment_account_to_json(&account)),
+    });
+
+    Json(json!({
+        "ok": true,
+        "active_payment_account": payment_account_to_json(&account),
+    }))
+    .into_response()
 }
 
 pub(crate) async fn list_agent_payments(
@@ -755,6 +864,48 @@ fn persist_payment_ledger(state: &ControlPlaneState, ledger: &PaymentLedger) -> 
 
 pub(crate) fn payment_to_json(payment: &PaymentTransaction) -> Value {
     serde_json::to_value(payment).unwrap_or(Value::Null)
+}
+
+fn payment_account_to_json(account: &watt_wallet::PaymentAccount) -> Value {
+    json!({
+        "account_id": account.account_id,
+        "rail": account.rail,
+        "network": account.network,
+        "address": account.address,
+        "kind": account.kind,
+        "layer": account.layer,
+        "capabilities": account.capabilities,
+    })
+}
+
+fn is_evm_address(address: &str) -> bool {
+    address.len() == 42
+        && address.starts_with("0x")
+        && address
+            .chars()
+            .skip(2)
+            .all(|value| value.is_ascii_hexdigit())
+}
+
+fn network_from_chain_id(chain_id: Option<&str>) -> Option<String> {
+    match chain_id {
+        Some("0x1") => Some("ethereum".to_string()),
+        Some("0x89") => Some("polygon".to_string()),
+        Some("0xa") => Some("optimism".to_string()),
+        Some("0xa4b1") => Some("arbitrum-one".to_string()),
+        Some("0x2105") => Some("base".to_string()),
+        Some("0x14a34") => Some("base-sepolia".to_string()),
+        _ => None,
+    }
+}
+
+fn wallet_now_ms() -> u64 {
+    Utc::now().timestamp_millis().try_into().unwrap_or(0)
+}
+
+fn wallet_internal_error(error: impl Into<anyhow::Error>) -> Response {
+    let error = error.into();
+    internal_error(&error)
 }
 
 fn emit_payment_stream_event(state: &ControlPlaneState, kind: &str, payment: &PaymentTransaction) {

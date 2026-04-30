@@ -590,6 +590,10 @@ impl SwarmBridge for MockSwarmBridge {
         Ok(self.network_status.clone())
     }
 
+    async fn local_node_id(&self) -> anyhow::Result<String> {
+        Ok(self.local_node_id.clone())
+    }
+
     async fn peers(&self) -> anyhow::Result<Vec<SwarmPeerView>> {
         Ok(self.peers.clone())
     }

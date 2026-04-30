@@ -533,7 +533,14 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("record?.identity"));
     assert!(body.contains("Friend Requests"));
     assert!(body.contains("DM Messages"));
+    assert!(body.contains("id=\"overview-nearby\""));
+    assert!(body.contains("Overview nearby agents"));
+    assert!(body.contains("overview-nearby-count"));
     assert!(body.contains("WATT Balance"));
+    assert!(body.contains("Web3 Settlement Wallet"));
+    assert!(body.contains("Connect Web3 Wallet"));
+    assert!(body.contains("/v1/wallet/payment-account/bind-web3"));
+    assert!(body.contains("Web2 Payments"));
     assert!(body.contains("Agent Runtime"));
     assert!(body.contains("Deployment env file"));
     assert!(body.contains("Open Swarm Console"));

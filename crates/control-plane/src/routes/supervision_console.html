@@ -91,6 +91,105 @@
       background: var(--surface-alt);
     }
 
+    .nearby-panel {
+      display: grid;
+      gap: 0.75rem;
+      padding: 0;
+      border: 0;
+      background: var(--surface);
+    }
+
+    .nearby-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: center;
+      padding-bottom: 0.55rem;
+      border-bottom: 2px solid var(--line);
+      font-size: 0.9rem;
+      font-weight: 900;
+      color: var(--ink);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .nearby-count {
+      color: var(--line-strong);
+      font-size: 0.8rem;
+    }
+
+    .nearby-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .nearby-item {
+      display: grid;
+      gap: 0.32rem;
+      padding: 0.75rem 0;
+      border-bottom: 2px solid rgba(43, 37, 32, 0.22);
+    }
+
+    .nearby-line {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 0.6rem;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .nearby-dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 999px;
+      border: 2px solid var(--line-strong);
+      background: transparent;
+    }
+
+    .nearby-dot.online,
+    .nearby-dot.friend {
+      border-color: var(--green);
+      background: var(--green);
+    }
+
+    .nearby-dot.pending,
+    .nearby-dot.discovered {
+      border-color: var(--copper);
+      background: transparent;
+    }
+
+    .nearby-dot.blocked {
+      border-color: var(--red);
+      background: var(--red);
+    }
+
+    .nearby-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.96rem;
+      font-weight: 850;
+    }
+
+    .nearby-kind {
+      color: var(--copper);
+      font-size: 0.8rem;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      white-space: nowrap;
+    }
+
+    .nearby-meta {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .status-row {
       display: grid;
       gap: 0.18rem;
@@ -376,6 +475,12 @@
       font-weight: 750;
     }
 
+    .overview-nearby {
+      margin-top: 0.9rem;
+      padding-top: 0.9rem;
+      border-top: 2px solid var(--line);
+    }
+
     .content-grid {
       display: grid;
       gap: 0.9rem;
@@ -396,6 +501,85 @@
 
     .config-panel {
       background: var(--surface);
+    }
+
+    .wallet-grid {
+      display: grid;
+      gap: 0.9rem;
+    }
+
+    .wallet-section {
+      display: grid;
+      gap: 0.7rem;
+      padding: 0.85rem;
+      border: 2px solid var(--line);
+      background: var(--surface);
+    }
+
+    .wallet-section.web3 {
+      border-left: 8px solid var(--blue);
+    }
+
+    .wallet-section.web2 {
+      border-left: 8px solid var(--line-strong);
+      opacity: 0.86;
+    }
+
+    .wallet-section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      border-bottom: 2px solid rgba(43, 37, 32, 0.22);
+      padding-bottom: 0.55rem;
+    }
+
+    .wallet-section-title {
+      color: var(--copper);
+      font-size: 0.82rem;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .wallet-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+    }
+
+    .wallet-fields {
+      display: grid;
+      gap: 0.7rem;
+      grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.45fr) minmax(120px, 0.32fr);
+    }
+
+    .wallet-token-grid {
+      display: grid;
+      gap: 0.65rem;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+    }
+
+    .token-balance {
+      border: 2px solid var(--line);
+      background: var(--surface-alt);
+      padding: 0.7rem;
+      min-height: 5.2rem;
+      display: grid;
+      align-content: space-between;
+    }
+
+    .token-balance strong {
+      font-size: 1.05rem;
+      color: var(--ink);
+    }
+
+    .token-balance span {
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
     }
 
     .config-intro {
@@ -638,7 +822,7 @@
         margin-top: 0;
       }
 
-      .toolbar, .summary, .content-grid, .columns {
+      .toolbar, .summary, .content-grid, .columns, .wallet-fields {
         grid-template-columns: 1fr;
       }
 
@@ -683,10 +867,11 @@
         <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">04</span></a>
         <a class="side-link" href="#swarm" data-view="swarm"><span>Swarm</span><span class="hint">05</span></a>
         <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">06</span></a>
-        <a class="side-link" href="#organizations" data-view="organizations"><span>Organizations</span><span class="hint">07</span></a>
-        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">08</span></a>
-        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">09</span></a>
-        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">10</span></a>
+        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">07</span></a>
+        <a class="side-link" href="#organizations" data-view="organizations"><span>Organizations</span><span class="hint">08</span></a>
+        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">09</span></a>
+        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">10</span></a>
+        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">11</span></a>
       </nav>
 
       <div class="sidebar-footer">
@@ -738,6 +923,15 @@
           <section class="panel">
             <h2>Overview</h2>
             <div id="kpis" class="kpis"></div>
+            <div id="overview-nearby" class="overview-nearby" hidden>
+              <div class="nearby-panel" aria-label="Overview nearby agents">
+                <div class="nearby-head">
+                  <span>Nearby Agents</span>
+                  <span id="overview-nearby-count" class="nearby-count">Top 0</span>
+                </div>
+                <div id="overview-nearby-list" class="nearby-list"></div>
+              </div>
+            </div>
           </section>
         </section>
 
@@ -751,7 +945,7 @@
         <section class="view-page" data-page="wallet" hidden>
           <article class="panel">
             <h2>Wallet</h2>
-            <div id="wallet-list" class="list"></div>
+            <div id="wallet-list" class="wallet-grid"></div>
           </article>
         </section>
 
@@ -793,6 +987,20 @@
           <article class="panel">
             <h2>DM Messages</h2>
             <div id="dm-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="nearby" hidden>
+          <article class="panel">
+            <div class="nearby-panel" aria-label="Nearby agents">
+              <div class="nearby-head">
+                <span>Nearby Agents</span>
+                <span id="nearby-count" class="nearby-count">Top 0</span>
+              </div>
+              <div id="nearby-list" class="nearby-list">
+                <div class="empty">No nearby agents.</div>
+              </div>
+            </div>
           </article>
         </section>
 
@@ -913,6 +1121,31 @@
     const limitEl = document.getElementById("limit");
     const lastRefreshEl = document.getElementById("last-refresh");
     const identitiesByPublicId = new Map();
+    let connectedWeb3Wallet = null;
+    let currentWalletOperator = null;
+
+    const stablecoinContracts = {
+      "0x1": [
+        { symbol: "USDT", address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", decimals: 6 },
+        { symbol: "USDC", address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6 },
+        { symbol: "DAI", address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", decimals: 18 },
+      ],
+      "0x89": [
+        { symbol: "USDC", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 },
+      ],
+      "0x2105": [
+        { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
+      ],
+    };
+
+    const chainLabels = {
+      "0x1": "ethereum",
+      "0x89": "polygon",
+      "0xa": "optimism",
+      "0xa4b1": "arbitrum-one",
+      "0x2105": "base",
+      "0x14a34": "base-sepolia",
+    };
 
     function qs(id) {
       return document.getElementById(id);
@@ -925,6 +1158,7 @@
       "missions",
       "swarm",
       "social",
+      "nearby",
       "organizations",
       "runtime",
       "logs",
@@ -1242,13 +1476,16 @@
         public_id: publicId,
         limit: String(limit),
       });
-      const [relationshipsResult, dmMessagesResult] = await Promise.allSettled([
+      const [relationshipsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
         fetchJson(`/v1/civilization/agent-friends?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/civilization/agent-dm/messages?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/client/friends?${query.toString()}`, { auth: true }),
       ]);
       const relationships = relationshipsResult.status === "fulfilled" ? relationshipsResult.value : [];
       const dmMessages = dmMessagesResult.status === "fulfilled" ? dmMessagesResult.value : [];
+      const clientFriends = clientFriendsResult.status === "fulfilled" ? clientFriendsResult.value : [];
       return {
+        local_client_friends: safeArray(clientFriends),
         friend_relationships: safeArray(relationships),
         pending_friend_requests: safeArray(relationships).filter((entry) => entry.pending_inbound || entry.pending_outbound),
         dm_messages: safeArray(dmMessages),
@@ -1273,6 +1510,7 @@
       qs("side-network").textContent = valueOrDash(network.status || operator.status || "unknown");
       qs("side-peers").textContent = String(safeArray(payload.peers).length);
 
+      renderNearby(payload);
       renderKpis(payload);
       renderMissions(payload);
       renderFriends(payload);
@@ -1285,6 +1523,137 @@
       renderOrganizations(payload);
       renderRpcLogs(payload);
       qs("raw-snapshot").textContent = JSON.stringify(payload, null, 2);
+    }
+
+    function nearbyStatus(row) {
+      const status = String(row.status || row.relationship_state || row.relationship_kind || "").toLowerCase();
+      if (status === "blocked") return "blocked";
+      if (row.pending_inbound || row.pending_outbound || status === "requested" || status === "pending") return "pending";
+      if (row.connected || status === "online" || status === "friend") return "online";
+      if (status === "discovered") return "discovered";
+      return "offline";
+    }
+
+    function nearbyRank(row) {
+      const status = nearbyStatus(row);
+      if (status === "blocked") return 90;
+      if (row.kind === "friend" && status === "online") return 10;
+      if (row.last_message_at) return 20;
+      if (status === "pending") return 30;
+      if (row.kind === "peer" && status === "online") return 40;
+      if (row.kind === "peer") return 50;
+      if (row.kind === "friend") return 60;
+      return 70;
+    }
+
+    function peerRelationshipState(peer) {
+      return peer.relationship_state
+        || at(peer, ["relationship", "relationship_state"])
+        || at(peer, ["relationship", "last_action"]);
+    }
+
+    function buildNearbyRows(payload) {
+      const rows = [];
+      const peerByNode = new Map();
+      for (const peer of safeArray(payload.peers)) {
+        const nodeId = peer.node_id || peer.id || peer.peer_id;
+        if (nodeId) peerByNode.set(nodeId, peer);
+      }
+
+      const seen = new Set();
+      for (const friend of safeArray(payload.local_client_friends)) {
+        const key = friend.public_id || friend.counterpart_public_id;
+        if (!key) continue;
+        seen.add(`public:${key}`);
+        rows.push({
+          key: `public:${key}`,
+          kind: "friend",
+          name: friend.display_name || friend.counterpart_display_name || key,
+          status: friend.status || (friend.active === false ? "offline" : "friend"),
+          relationship_kind: friend.relationship_kind,
+          last_message_text: friend.last_message_text,
+          last_message_at: friend.last_message_at,
+          dm_thread_id: friend.dm_thread_id,
+          detail: friend.last_message_text || compactId(key, 24),
+        });
+      }
+
+      for (const relationship of safeArray(payload.friend_relationships)) {
+        const publicId = relationship.counterpart_public_id || relationship.public_id;
+        const remoteNodeId = relationship.remote_node_id;
+        const key = publicId ? `public:${publicId}` : `node:${remoteNodeId}`;
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          key,
+          kind: relationship.pending_inbound || relationship.pending_outbound ? "request" : "friend",
+          name: relationship.counterpart_display_name || publicId || remoteNodeId,
+          status: relationship.relationship_state || relationship.relationship_kind,
+          pending_inbound: relationship.pending_inbound,
+          pending_outbound: relationship.pending_outbound,
+          detail: remoteNodeId ? compactId(remoteNodeId, 24) : compactId(publicId, 24),
+          updated_at: relationship.updated_at,
+        });
+      }
+
+      for (const peer of safeArray(payload.peers)) {
+        const nodeId = peer.node_id || peer.id || peer.peer_id;
+        if (!nodeId || seen.has(`node:${nodeId}`)) continue;
+        const relationshipState = peerRelationshipState(peer);
+        rows.push({
+          key: `node:${nodeId}`,
+          kind: relationshipState === "friend" ? "friend" : "peer",
+          name: nodeId,
+          status: peer.status || relationshipState || (peer.connected ? "online" : "discovered"),
+          connected: peer.connected,
+          relationship_state: relationshipState,
+          source_kind: peer.source_kind || at(peer, ["discovery", "source_kind"]),
+          detail: peer.address || peer.source_kind || at(peer, ["metadata", "handshake_status"]) || "peer",
+        });
+      }
+
+      return rows
+        .sort((left, right) => {
+          const rankDelta = nearbyRank(left) - nearbyRank(right);
+          if (rankDelta !== 0) return rankDelta;
+          return valueOrZero(right.last_message_at || right.updated_at) - valueOrZero(left.last_message_at || left.updated_at);
+        })
+        .slice(0, 5);
+    }
+
+    function nearbyRowsHtml(rows) {
+      return rows.map((row) => {
+        const status = nearbyStatus(row);
+        const label = row.kind === "request"
+          ? (row.pending_inbound ? "inbound" : "request")
+          : row.kind;
+        return `
+          <div class="nearby-item">
+            <div class="nearby-line">
+              <span class="nearby-dot ${escapeHtml(status)}"></span>
+              <span class="nearby-name">${escapeHtml(compactId(row.name, 20))}</span>
+              <span class="nearby-kind">${escapeHtml(label)}</span>
+            </div>
+            <div class="nearby-meta">${escapeHtml(row.detail || row.source_kind || status)}</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderNearbyList(countId, listId, rows, emptyText) {
+      qs(countId).textContent = `Top ${rows.length}`;
+      qs(listId).innerHTML = rows.length ? nearbyRowsHtml(rows) : empty(emptyText);
+    }
+
+    function renderNearby(payload) {
+      const rows = buildNearbyRows(payload);
+      renderNearbyList("nearby-count", "nearby-list", rows, "No nearby agents.");
+
+      const overviewNearby = qs("overview-nearby");
+      overviewNearby.hidden = rows.length === 0;
+      if (rows.length) {
+        renderNearbyList("overview-nearby-count", "overview-nearby-list", rows, "No nearby agents.");
+      }
     }
 
     function renderMissions(payload) {
@@ -1384,17 +1753,8 @@
       });
     }
 
-    function renderWallet(operator) {
-      const payment = operator.active_payment_account;
-      const rows = [
-        ["WATT", operator.watt_balance],
-        ["Reward Policy", operator.reward_policy_version],
-        ["Wallet Agent DID", operator.wallet_bound_agent_did],
-        ["Controller", operator.controller_id],
-        ["Payment Account", payment ? (payment.account_id || payment.address || payment.payment_account_ref) : "none"],
-        ["Payment Kind", payment ? (payment.account_kind || payment.kind || payment.chain) : "none"],
-      ];
-      qs("wallet-list").innerHTML = rows.map(([label, value]) => `
+    function walletSummaryRows(rows) {
+      return rows.map(([label, value]) => `
         <div class="row">
           <div class="row-head"><div class="row-title">${escapeHtml(label)}</div></div>
           <div class="row-body">${escapeHtml(valueOrDash(value))}</div>
@@ -1402,14 +1762,185 @@
       `).join("");
     }
 
+    function chainNetwork(chainId) {
+      return chainLabels[String(chainId || "").toLowerCase()] || "";
+    }
+
+    function balanceOfData(address) {
+      return `0x70a08231${String(address || "").replace(/^0x/i, "").padStart(64, "0")}`;
+    }
+
+    function formatTokenAmount(hexValue, decimals) {
+      const raw = BigInt(hexValue || "0x0");
+      const scale = 10n ** BigInt(decimals);
+      const whole = raw / scale;
+      const fraction = raw % scale;
+      const fractionText = fraction.toString().padStart(decimals, "0").slice(0, 4).replace(/0+$/, "");
+      return fractionText ? `${whole}.${fractionText}` : whole.toString();
+    }
+
+    function renderTokenBalances(chainId, balances = {}) {
+      const tokens = stablecoinContracts[String(chainId || "").toLowerCase()] || [];
+      const list = qs("web3-token-balances");
+      if (!tokens.length) {
+        list.innerHTML = `<div class="empty">No stablecoin contracts configured for this network.</div>`;
+        return;
+      }
+      list.innerHTML = tokens.map((token) => `
+        <div class="token-balance">
+          <span>${escapeHtml(token.symbol)}</span>
+          <strong>${escapeHtml(balances[token.symbol] || "-")}</strong>
+          <span>${escapeHtml(chainNetwork(chainId) || chainId)}</span>
+        </div>
+      `).join("");
+    }
+
+    async function refreshStablecoinBalances() {
+      if (!connectedWeb3Wallet || !window.ethereum) return;
+      const tokens = stablecoinContracts[connectedWeb3Wallet.chainId] || [];
+      renderTokenBalances(connectedWeb3Wallet.chainId);
+      const balances = {};
+      await Promise.all(tokens.map(async (token) => {
+        const result = await window.ethereum.request({
+          method: "eth_call",
+          params: [{
+            to: token.address,
+            data: balanceOfData(connectedWeb3Wallet.address),
+          }, "latest"],
+        });
+        balances[token.symbol] = formatTokenAmount(result, token.decimals);
+      }));
+      renderTokenBalances(connectedWeb3Wallet.chainId, balances);
+    }
+
+    async function connectWeb3Wallet() {
+      if (!window.ethereum) {
+        setStatus("Browser Web3 wallet not found.", true);
+        return;
+      }
+      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+      const chainId = String(await window.ethereum.request({ method: "eth_chainId" })).toLowerCase();
+      const address = accounts[0];
+      connectedWeb3Wallet = { address, chainId };
+      qs("web3-wallet-address").value = address;
+      qs("web3-wallet-network").value = chainNetwork(chainId);
+      qs("web3-wallet-status").textContent = `${compactId(address, 28)} | ${chainNetwork(chainId) || chainId}`;
+      await refreshStablecoinBalances();
+    }
+
+    async function bindConnectedWeb3Wallet() {
+      const address = qs("web3-wallet-address").value.trim();
+      if (!address) {
+        setStatus("Connect a Web3 wallet first.", true);
+        return;
+      }
+      const chainId = connectedWeb3Wallet?.chainId || "";
+      const network = qs("web3-wallet-network").value.trim() || chainNetwork(chainId);
+      const rail = qs("web3-wallet-rail").value.trim() || "x402";
+      const data = await fetchJson("/v1/wallet/payment-account/bind-web3", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          address,
+          network,
+          rail,
+          chain_id: chainId,
+          label: "browser-wallet",
+        }),
+        auth: true,
+      });
+      setStatus(`Bound Web3 wallet ${compactId(data.active_payment_account?.address || address, 28)}.`);
+      await refreshConsole();
+    }
+
+    function bindWalletControls() {
+      qs("connect-web3-wallet")?.addEventListener("click", () => {
+        connectWeb3Wallet().catch((error) => setStatus(error.message, true));
+      });
+      qs("bind-web3-wallet")?.addEventListener("click", () => {
+        bindConnectedWeb3Wallet().catch((error) => setStatus(error.message, true));
+      });
+      qs("refresh-web3-balances")?.addEventListener("click", () => {
+        refreshStablecoinBalances().catch((error) => setStatus(error.message, true));
+      });
+    }
+
+    function renderWallet(operator) {
+      currentWalletOperator = operator;
+      const payment = operator.active_payment_account;
+      const activeAddress = payment?.address || "";
+      const chainId = connectedWeb3Wallet?.chainId || "";
+      const activeNetwork = payment?.network || chainNetwork(chainId);
+      qs("wallet-list").innerHTML = `
+        <section class="wallet-section">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">WATT Internal Ledger</div>
+            ${pill("local", "ready")}
+          </div>
+          ${walletSummaryRows([
+            ["WATT", operator.watt_balance],
+            ["Reward Policy", operator.reward_policy_version],
+            ["Wallet Agent DID", operator.wallet_bound_agent_did],
+            ["Controller", operator.controller_id],
+          ])}
+        </section>
+        <section class="wallet-section web3">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">Web3 Settlement Wallet</div>
+            ${pill(payment ? "bound" : "unbound", payment ? "ready" : "pending")}
+          </div>
+          ${walletSummaryRows([
+            ["Payment Account", payment ? payment.account_id : "none"],
+            ["Address", activeAddress || "none"],
+            ["Rail", payment?.rail || "x402"],
+            ["Network", activeNetwork || "none"],
+          ])}
+          <div class="wallet-fields">
+            <label>
+              Address
+              <input id="web3-wallet-address" value="${escapeHtml(connectedWeb3Wallet?.address || activeAddress)}" readonly>
+            </label>
+            <label>
+              Network
+              <input id="web3-wallet-network" value="${escapeHtml(activeNetwork)}">
+            </label>
+            <label>
+              Rail
+              <input id="web3-wallet-rail" value="${escapeHtml(payment?.rail || "x402")}">
+            </label>
+          </div>
+          <div class="wallet-actions">
+            <button id="connect-web3-wallet" type="button">Connect Web3 Wallet</button>
+            <button id="bind-web3-wallet" class="secondary" type="button">Bind Wallet</button>
+            <button id="refresh-web3-balances" class="secondary" type="button">Refresh Balances</button>
+          </div>
+          <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No Web3 wallet bound.")}</div>
+          <div id="web3-token-balances" class="wallet-token-grid"></div>
+        </section>
+        <section class="wallet-section web2">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">Web2 Payments</div>
+            ${pill("reserved", "pending")}
+          </div>
+          ${walletSummaryRows([
+            ["Payment Account", "not implemented"],
+            ["Payment Kind", "web2 reserved"],
+          ])}
+        </section>
+      `;
+      renderTokenBalances(chainId);
+      bindWalletControls();
+    }
+
     function renderPeers(payload) {
       renderList("peers-list", safeArray(payload.peers), "No peers visible.", (row) => `
         <div class="row">
           <div class="row-head">
             <div class="row-title">${escapeHtml(compactId(row.node_id || row.peer_id || row.id, 24))}</div>
-            ${pill(row.status || "peer", row.status)}
+            ${pill(row.status || peerRelationshipState(row) || "peer", row.status || peerRelationshipState(row))}
           </div>
-          <div class="row-body">${escapeHtml(valueOrDash(row.address || row.endpoint || row.region))}</div>
+          <div class="row-body">${escapeHtml(valueOrDash(row.address || at(row, ["discovery", "listen_addr"]) || at(row, ["metadata", "observed_addr"]) || row.endpoint || row.region))}</div>
+          <div class="subtle">${escapeHtml(valueOrDash(row.source_kind || at(row, ["discovery", "source_kind"])))} | ${escapeHtml(valueOrDash(at(row, ["metadata", "handshake_status"]) || (row.connected ? "connected" : "not connected")))}</div>
         </div>
       `);
     }

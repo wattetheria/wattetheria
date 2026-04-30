@@ -17,6 +17,7 @@ use wattetheria_kernel::economy::{EconomicPolicy, WalletBoundBalance};
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
+use wattetheria_kernel::swarm_bridge::SwarmPeerView;
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
@@ -25,6 +26,7 @@ use crate::routes::client_swarm::{
     build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
 };
 use crate::routes::identity::resolve_identity_context;
+use crate::routes::missions::mission_task_contract;
 use crate::routes::reward_view::{
     active_wallet_payment_account_payload, wallet_bound_balance_for_identity,
 };
@@ -88,14 +90,56 @@ async fn build_client_peers_payload(
         .await?
         .into_iter()
         .take(limit)
-        .map(|peer| {
-            json!({
-                "id": peer.node_id,
-                "latency_ms": 0,
-                "status": "online",
-            })
-        })
+        .map(build_client_peer_payload)
         .collect())
+}
+
+fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
+    let node_id = peer.node_id;
+    let connected = peer.connected.unwrap_or(true);
+    let source_kind = peer
+        .discovery
+        .as_ref()
+        .and_then(|value| value.get("source_kind"))
+        .and_then(Value::as_str);
+    let relationship_state = peer
+        .relationship
+        .as_ref()
+        .and_then(|value| value.get("relationship_state"))
+        .and_then(Value::as_str);
+    let address = peer
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("observed_addr"))
+        .or_else(|| {
+            peer.discovery
+                .as_ref()
+                .and_then(|value| value.get("listen_addr"))
+        })
+        .and_then(Value::as_str);
+    let status = if connected {
+        "online"
+    } else if relationship_state == Some("blocked") {
+        "blocked"
+    } else if peer.discovery.is_some() {
+        "discovered"
+    } else {
+        "offline"
+    };
+
+    json!({
+        "id": node_id.clone(),
+        "node_id": node_id,
+        "latency_ms": 0,
+        "status": status,
+        "connected": connected,
+        "source_kind": source_kind,
+        "relationship_state": relationship_state,
+        "address": address,
+        "discovery": peer.discovery,
+        "metadata": peer.metadata,
+        "relationship": peer.relationship,
+    })
 }
 
 async fn build_client_self_payload(
@@ -168,30 +212,75 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
             .cmp(&left.created_at)
             .then_with(|| left.mission_id.cmp(&right.mission_id))
     });
-    missions
+    let publisher_wattswarm_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let mut tasks = Vec::new();
+    for mission in missions
         .into_iter()
         .filter(|mission| mission.status != MissionStatus::Cancelled)
         .take(limit)
-        .map(|mission| {
-            let publisher_network_reward_watt =
-                publisher_network_reward_watt(&mission, &policy);
-            json!({
-                "id": mission.mission_id,
-                "title": mission.title,
-                "domain": mission_domain_label(&mission.domain),
-                "reward_watt": mission.reward.agent_watt,
-                "task_bounty_watt": mission.reward.agent_watt,
-                "executor_bounty_watt": mission.reward.agent_watt,
-                "network_publish_reward_watt": policy.rewards.mission_publish_watt,
-                "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
-                "publisher_network_reward_watt": publisher_network_reward_watt,
-                "status": client_task_status(&mission.status),
-                "publisher_id": mission.publisher,
-                "claimer_id": mission.claimed_by,
-                "created_at": timestamp_to_rfc3339(mission.created_at),
-            })
-        })
-        .collect()
+    {
+        let publisher_network_reward_watt = publisher_network_reward_watt(&mission, &policy);
+        let mut task = json!({
+            "id": mission.mission_id,
+            "task_id": mission.mission_id,
+            "task_type": "wattetheria.mission",
+            "title": mission.title,
+            "domain": mission_domain_label(&mission.domain),
+            "reward_watt": mission.reward.agent_watt,
+            "task_bounty_watt": mission.reward.agent_watt,
+            "executor_bounty_watt": mission.reward.agent_watt,
+            "network_publish_reward_watt": policy.rewards.mission_publish_watt,
+            "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
+            "publisher_network_reward_watt": publisher_network_reward_watt,
+            "status": client_task_status(&mission.status),
+            "publisher_id": mission.publisher,
+            "claimer_id": mission.claimed_by,
+            "created_at": timestamp_to_rfc3339(mission.created_at),
+        });
+        if let Some(node_id) = publisher_wattswarm_node_id.as_deref()
+            && let Some(contract) =
+                build_client_task_contract_payload(state, &mission, node_id).await
+            && let Some(object) = task.as_object_mut()
+        {
+            if let Some(inputs) = contract.get("inputs") {
+                for key in [
+                    "publisher_agent_did",
+                    "publisher_wattswarm_node_id",
+                    "swarm_scope",
+                    "mission_feed_key",
+                    "mission_scope_hint",
+                    "reward",
+                    "payload",
+                ] {
+                    if let Some(value) = inputs.get(key) {
+                        object.insert(key.to_string(), value.clone());
+                    }
+                }
+            }
+            object.insert("task_contract".to_string(), contract);
+        }
+        tasks.push(task);
+    }
+    tasks
+}
+
+async fn build_client_task_contract_payload(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    publisher_wattswarm_node_id: &str,
+) -> Option<Value> {
+    let contract = state
+        .swarm_bridge
+        .sample_task_contract(&mission.mission_id)
+        .await
+        .ok()?;
+    let contract = mission_task_contract(
+        contract,
+        mission,
+        &state.agent_did,
+        publisher_wattswarm_node_id,
+    );
+    serde_json::to_value(contract).ok()
 }
 
 fn publisher_network_reward_watt(mission: &CivilMission, policy: &EconomicPolicy) -> i64 {

@@ -403,10 +403,10 @@ async fn commit_transition_mission(
             crate::routes::missions::mission_claim(
                 State(state),
                 commit_headers,
-                Json(MissionClaimBody {
+                Json(MissionClaimBody::local(
                     mission_id,
-                    agent_did: mission_agent_did_for_commit(&body, &default_agent_did),
-                }),
+                    mission_agent_did_for_commit(&body, &default_agent_did),
+                )),
             )
             .await
         }
@@ -415,10 +415,10 @@ async fn commit_transition_mission(
             crate::routes::missions::mission_complete(
                 State(state),
                 commit_headers,
-                Json(MissionClaimBody {
+                Json(MissionClaimBody::local(
                     mission_id,
-                    agent_did: mission_agent_did_for_commit(&body, &default_agent_did),
-                }),
+                    mission_agent_did_for_commit(&body, &default_agent_did),
+                )),
             )
             .await
         }
@@ -440,7 +440,12 @@ async fn commit_transition_mission(
             crate::routes::missions::mission_settle(
                 State(state),
                 commit_headers,
-                Json(MissionSettleBody { mission_id }),
+                Json(MissionSettleBody {
+                    mission_id,
+                    task_id: None,
+                    agent_did: None,
+                    candidate_id: None,
+                }),
             )
             .await
         }
@@ -488,10 +493,10 @@ async fn commit_task_result_settle_mission(
         let response = crate::routes::missions::mission_claim(
             State(state.clone()),
             commit_headers.clone(),
-            Json(MissionClaimBody {
-                mission_id: mission_id.clone(),
-                agent_did: agent_did.clone(),
-            }),
+            Json(MissionClaimBody::local(
+                mission_id.clone(),
+                agent_did.clone(),
+            )),
         )
         .await;
         if !response.status().is_success() {
@@ -502,10 +507,7 @@ async fn commit_task_result_settle_mission(
         let response = crate::routes::missions::mission_complete(
             State(state.clone()),
             commit_headers.clone(),
-            Json(MissionClaimBody {
-                mission_id: mission_id.clone(),
-                agent_did,
-            }),
+            Json(MissionClaimBody::local(mission_id.clone(), agent_did)),
         )
         .await;
         if !response.status().is_success() {
@@ -515,7 +517,12 @@ async fn commit_task_result_settle_mission(
     crate::routes::missions::mission_settle(
         State(state),
         commit_headers,
-        Json(MissionSettleBody { mission_id }),
+        Json(MissionSettleBody {
+            mission_id,
+            task_id: None,
+            agent_did: None,
+            candidate_id: None,
+        }),
     )
     .await
 }

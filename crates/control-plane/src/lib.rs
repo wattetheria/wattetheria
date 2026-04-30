@@ -381,6 +381,10 @@ fn civilization_router() -> Router<ControlPlaneState> {
 fn payments_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
+            "/v1/wallet/payment-account/bind-web3",
+            post(routes::payments::bind_web3_payment_account),
+        )
+        .route(
             "/v1/payments/agent-payments",
             get(routes::payments::list_agent_payments),
         )

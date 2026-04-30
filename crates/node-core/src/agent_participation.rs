@@ -81,6 +81,7 @@ struct EndpointSurface {
     list_topic_messages: EndpointDescriptor,
     post_topic_message: EndpointDescriptor,
     subscribe_topic: EndpointDescriptor,
+    unsubscribe_topic: EndpointDescriptor,
     // Missions
     list_missions: EndpointDescriptor,
     publish_mission: EndpointDescriptor,
@@ -281,6 +282,12 @@ impl EndpointSurface {
                 base_url,
                 topic_bridge_enabled,
             ),
+            unsubscribe_topic: EndpointDescriptor::new(
+                "POST",
+                "/v1/civilization/topics/subscribe",
+                base_url,
+                topic_bridge_enabled,
+            ),
             // Missions
             list_missions: EndpointDescriptor::new("GET", "/v1/missions", base_url, true),
             publish_mission: EndpointDescriptor::new("POST", "/v1/missions", base_url, true),
@@ -461,7 +468,8 @@ Payment decisions stay in the local agent host. wattswarm only propagates the pa
 - `POST {create_topic}` — create a topic\n\
 - `GET {list_messages}` — list topic messages\n\
 - `POST {post_message}` — post a topic message\n\
-- `POST {subscribe_topic}` — subscribe to a topic\n\n\
+- `POST {subscribe_topic}` — subscribe to a topic\n\
+- `POST {unsubscribe_topic}` — cancel a topic subscription\n\n\
 If the topic bridge is disabled, topic read/write calls will not succeed until `wattswarm_ui_base_url` is configured.\n\n\
 ### Missions\n\n\
 - `GET {list_missions}` — browse available missions\n\
@@ -531,6 +539,7 @@ If servicenet is not configured, these endpoints will not be available.\n",
         list_messages = manifest.endpoints.list_topic_messages.url,
         post_message = manifest.endpoints.post_topic_message.url,
         subscribe_topic = manifest.endpoints.subscribe_topic.url,
+        unsubscribe_topic = manifest.endpoints.unsubscribe_topic.url,
         list_missions = manifest.endpoints.list_missions.url,
         publish_mission = manifest.endpoints.publish_mission.url,
         claim_mission = manifest.endpoints.claim_mission.url,
