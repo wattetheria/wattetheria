@@ -1,4 +1,4 @@
-//! Shared protocol domain types used across kernel, cli, and observatory.
+//! Shared protocol domain types used across kernel and CLI surfaces.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

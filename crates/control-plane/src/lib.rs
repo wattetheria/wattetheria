@@ -1,6 +1,7 @@
 mod agent_attach;
 mod auth;
 mod autonomy;
+mod diagnostics;
 mod gateway_dispatch;
 pub mod social_host;
 mod swarm_sync;
@@ -12,6 +13,7 @@ pub mod routes {
     pub(crate) mod client_swarm;
     pub(crate) mod console;
     pub(crate) mod core;
+    pub(crate) mod diagnostics;
     pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod identity;
@@ -130,6 +132,14 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/client/rpc-logs",
             get(routes::client_api::client_rpc_logs),
+        )
+        .route(
+            "/v1/client/diagnostics",
+            get(routes::diagnostics::client_diagnostics),
+        )
+        .route(
+            "/v1/client/wattswarm-diagnostics",
+            get(routes::diagnostics::client_wattswarm_diagnostics),
         )
         .route("/v1/client/tasks", get(routes::client_api::client_tasks))
         .route(

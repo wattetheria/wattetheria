@@ -6,7 +6,7 @@ DIST_DIR="$ROOT_DIR/dist"
 mkdir -p "$DIST_DIR"
 
 cd "$ROOT_DIR"
-cargo build --release -p wattetheria-kernel -p wattetheria-client-cli -p wattetheria-observatory
+cargo build --release -p wattetheria-kernel -p wattetheria-client-cli
 
 OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH_NAME="$(uname -m)"
@@ -15,7 +15,6 @@ mkdir -p "$PKG_DIR/bin"
 
 cp target/release/wattetheria-kernel "$PKG_DIR/bin/"
 cp target/release/wattetheria-client-cli "$PKG_DIR/bin/"
-cp target/release/wattetheria-observatory "$PKG_DIR/bin/"
 cp README.md "$PKG_DIR/"
 cp docker-compose.release.yml "$PKG_DIR/"
 cp .env.release "$PKG_DIR/"

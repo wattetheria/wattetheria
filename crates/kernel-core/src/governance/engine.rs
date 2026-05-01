@@ -947,7 +947,7 @@ mod tests {
             .enter_custody(
                 "planet-r",
                 "neutral administration",
-                Some("observatory".to_string()),
+                Some("neutral-custodian".to_string()),
             )
             .unwrap();
         assert_eq!(custody.government_status, GovernmentStatus::Custody);

@@ -38,10 +38,11 @@ use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::verify_payload;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
-    SwarmDirectMessageCommand, SwarmNetworkStatusView, SwarmPeerDmMessageView,
-    SwarmPeerDmThreadView, SwarmPeerRelationshipView, SwarmPeerView,
-    SwarmRelationshipActionCommand, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
-    SwarmTaskProposeCandidateCommand, SwarmTopicCursorView, SwarmTopicMessageView,
+    SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
+    SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
+    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
+    SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
+    SwarmTopicCursorView, SwarmTopicMessageView,
 };
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::open_local_wallet;
@@ -596,6 +597,19 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn peers(&self) -> anyhow::Result<Vec<SwarmPeerView>> {
         Ok(self.peers.clone())
+    }
+
+    async fn diagnostics(
+        &self,
+        _query: SwarmDiagnosticsQuery,
+    ) -> anyhow::Result<SwarmDiagnosticsSnapshot> {
+        Ok(SwarmDiagnosticsSnapshot {
+            ok: true,
+            generated_at: "1970-01-01T00:00:00Z".to_owned(),
+            network_service_started: false,
+            snapshot: None,
+            diagnostics: Vec::new(),
+        })
     }
 
     async fn list_peer_relationships(&self) -> anyhow::Result<Vec<SwarmPeerRelationshipView>> {
@@ -1386,6 +1400,7 @@ async fn complete_and_settle_mission(
 mod agent_event_tests;
 mod civilization_tests;
 mod client_tests;
+mod diagnostics_tests;
 mod galaxy_tests;
 mod mcp_tests;
 mod organization_tests;

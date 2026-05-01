@@ -15,13 +15,11 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY apps/wattetheria-cli/Cargo.toml apps/wattetheria-cli/Cargo.toml
 COPY apps/wattetheria-kernel/Cargo.toml apps/wattetheria-kernel/Cargo.toml
-COPY apps/wattetheria-observatory/Cargo.toml apps/wattetheria-observatory/Cargo.toml
 COPY crates/conformance/Cargo.toml crates/conformance/Cargo.toml
 COPY crates/control-plane/Cargo.toml crates/control-plane/Cargo.toml
 COPY crates/gateway-contract/Cargo.toml crates/gateway-contract/Cargo.toml
 COPY crates/kernel-core/Cargo.toml crates/kernel-core/Cargo.toml
 COPY crates/node-core/Cargo.toml crates/node-core/Cargo.toml
-COPY crates/observatory-core/Cargo.toml crates/observatory-core/Cargo.toml
 COPY crates/social/Cargo.toml crates/social/Cargo.toml
 
 # Replace local path dependencies with git sources for Docker builds.
@@ -48,23 +46,19 @@ RUN sed -i \
 RUN mkdir -p \
     apps/wattetheria-cli/src \
     apps/wattetheria-kernel/src \
-    apps/wattetheria-observatory/src \
     crates/conformance/src \
     crates/control-plane/src \
     crates/gateway-contract/src \
     crates/kernel-core/src \
     crates/node-core/src \
-    crates/observatory-core/src \
     crates/social/src \
     && printf "fn main() {}\n" > apps/wattetheria-cli/src/main.rs \
     && printf "fn main() {}\n" > apps/wattetheria-kernel/src/main.rs \
-    && printf "fn main() {}\n" > apps/wattetheria-observatory/src/main.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/conformance/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/control-plane/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/gateway-contract/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/kernel-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/node-core/src/lib.rs \
-    && printf "pub fn _planner_stub() {}\n" > crates/observatory-core/src/lib.rs \
     && printf "pub fn _planner_stub() {}\n" > crates/social/src/lib.rs
 
 RUN cargo chef prepare --recipe-path recipe.json
@@ -79,7 +73,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
     fi \
     && cargo chef cook --release --recipe-path recipe.json \
-    -p wattetheria-kernel -p wattetheria-observatory \
+    -p wattetheria-kernel \
     && rm -f /root/.gitconfig
 
 FROM chef AS builder
@@ -120,7 +114,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ -f /run/secrets/github_token ]; then \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
     fi \
-    && cargo build --release -p wattetheria-kernel -p wattetheria-observatory \
+    && cargo build --release -p wattetheria-kernel \
     && rm -f /root/.gitconfig
 
 FROM debian:bookworm-slim
@@ -134,17 +128,14 @@ RUN useradd --create-home --uid 10001 wattetheria
 WORKDIR /app
 
 COPY --from=builder /app/target/release/wattetheria-kernel /app/target/release/wattetheria-kernel
-COPY --from=builder /app/target/release/wattetheria-observatory /app/target/release/wattetheria-observatory
 COPY --from=builder /app/scripts/docker-kernel-entrypoint.sh /app/scripts/docker-kernel-entrypoint.sh
-COPY --from=builder /app/scripts/docker-observatory-entrypoint.sh /app/scripts/docker-observatory-entrypoint.sh
 
 RUN mkdir -p /var/lib/wattetheria \
-    && chmod +x /app/scripts/docker-kernel-entrypoint.sh /app/scripts/docker-observatory-entrypoint.sh \
+    && chmod +x /app/scripts/docker-kernel-entrypoint.sh \
     && chown -R wattetheria:wattetheria /var/lib/wattetheria /app
 
 USER wattetheria
 
 EXPOSE 7777
-EXPOSE 8787
 
 ENTRYPOINT ["/app/scripts/docker-kernel-entrypoint.sh"]

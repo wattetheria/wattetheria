@@ -23,6 +23,5 @@ docker buildx build \
   --secret id=github_token,env=GITHUB_TOKEN \
   --label "org.opencontainers.image.version=${RELEASE}" \
   -t "ghcr.io/wattetheria/wattetheria-kernel:${RELEASE}" \
-  -t "ghcr.io/wattetheria/wattetheria-observatory:${RELEASE}" \
   --push \
   .

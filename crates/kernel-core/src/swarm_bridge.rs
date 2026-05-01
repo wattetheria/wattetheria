@@ -61,6 +61,32 @@ pub struct SwarmNetworkStatusView {
     pub peer_protocol_distribution: BTreeMap<String, u64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmDiagnosticsQuery {
+    pub limit: Option<usize>,
+    pub level: Option<String>,
+    pub component: Option<String>,
+    pub category: Option<String>,
+    pub phase: Option<String>,
+    pub event_id: Option<String>,
+    pub object_id: Option<String>,
+    pub source_node_id: Option<String>,
+    pub search: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmDiagnosticsSnapshot {
+    #[serde(default)]
+    pub ok: bool,
+    pub generated_at: String,
+    #[serde(default)]
+    pub network_service_started: bool,
+    #[serde(default)]
+    pub snapshot: Option<Value>,
+    #[serde(default)]
+    pub diagnostics: Vec<Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SwarmRelationshipAction {
@@ -250,6 +276,10 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         Err(anyhow!("wattswarm peers are not configured"))
+    }
+
+    async fn diagnostics(&self, _query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
+        Err(anyhow!("wattswarm diagnostics are not configured"))
     }
 
     async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
@@ -453,6 +483,10 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         self.topic_api()?.peers().await
+    }
+
+    async fn diagnostics(&self, query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
+        self.topic_api()?.diagnostics(query).await
     }
 
     async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {
@@ -707,6 +741,18 @@ impl HttpWattswarmApi {
             .json::<PeersListResponse>()
             .await?;
         Ok(wattswarm_peer_views(response))
+    }
+
+    async fn diagnostics(&self, query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
+        self.client
+            .get(format!("{}/api/diagnostics", self.base_url))
+            .query(&query)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmDiagnosticsSnapshot>()
+            .await
+            .context("decode wattswarm diagnostics snapshot")
     }
 
     async fn list_peer_relationships(&self) -> Result<Vec<SwarmPeerRelationshipView>> {

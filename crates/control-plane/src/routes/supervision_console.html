@@ -336,6 +336,14 @@
       align-items: end;
     }
 
+    .log-toolbar {
+      display: grid;
+      gap: 0.65rem;
+      grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(120px, 0.7fr)) minmax(88px, 0.35fr) repeat(2, minmax(110px, 0.38fr));
+      align-items: end;
+      margin-bottom: 0.85rem;
+    }
+
     label {
       display: grid;
       gap: 0.35rem;
@@ -410,6 +418,50 @@
       display: grid;
       gap: 0.8rem;
       grid-template-columns: minmax(280px, 1.4fr) repeat(3, minmax(180px, 0.8fr));
+    }
+
+    .diagnostic-summary {
+      grid-template-columns: repeat(6, minmax(140px, 1fr));
+      margin-bottom: 0.85rem;
+    }
+
+    .log-tabs {
+      display: flex;
+      gap: 0.45rem;
+      flex-wrap: wrap;
+      margin: 0.75rem 0 0.85rem;
+    }
+
+    .log-tab {
+      min-height: 2.15rem;
+      background: var(--surface-alt);
+      color: var(--ink);
+    }
+
+    .log-tab.active {
+      background: var(--teal-dark);
+      color: #fff;
+    }
+
+    .mini-card {
+      border: 2px solid var(--line);
+      background: var(--surface-alt);
+      padding: 0.65rem;
+      min-width: 0;
+    }
+
+    .mini-label {
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .mini-value {
+      margin-top: 0.25rem;
+      font-weight: 850;
+      overflow-wrap: anywhere;
     }
 
     .metric-card {
@@ -781,6 +833,20 @@
       overflow-wrap: anywhere;
     }
 
+    .row-meta {
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.65rem;
+      font-size: 0.76rem;
+      margin-top: 0.35rem;
+      overflow-wrap: anywhere;
+    }
+
+    .row-details {
+      margin-top: 0.55rem;
+    }
+
     .empty {
       color: var(--muted);
       background: var(--surface-alt);
@@ -822,7 +888,7 @@
         margin-top: 0;
       }
 
-      .toolbar, .summary, .content-grid, .columns, .wallet-fields {
+      .toolbar, .log-toolbar, .summary, .content-grid, .columns, .wallet-fields {
         grid-template-columns: 1fr;
       }
 
@@ -876,7 +942,7 @@
 
       <div class="sidebar-footer">
         <a href="#logs" data-view="logs">Raw Snapshot</a>
-        <a id="side-open-swarm-console" href="http://127.0.0.1:7788/console" target="_blank" rel="noopener noreferrer">Open Swarm</a>
+        <a id="side-open-swarm-console" href="http://127.0.0.1:7788" target="_blank" rel="noopener noreferrer">Open Swarm</a>
       </div>
     </aside>
 
@@ -890,7 +956,7 @@
           </p>
         </div>
         <div style="display:grid; gap:0.55rem; justify-items:end;">
-          <a id="open-swarm-console" class="action-link" href="http://127.0.0.1:7788/console" target="_blank" rel="noopener noreferrer">Open Swarm Console</a>
+          <a id="open-swarm-console" class="action-link" href="http://127.0.0.1:7788" target="_blank" rel="noopener noreferrer">Open Swarm Console</a>
           <div id="last-refresh" class="timestamp">Not refreshed</div>
         </div>
       </header>
@@ -1074,12 +1140,101 @@
 
         <section class="view-page" data-page="logs" hidden>
           <article class="panel">
-            <h2>Recent Events</h2>
-            <div id="rpc-list" class="list"></div>
-          </article>
-          <article class="panel">
-            <h2>Raw Snapshot</h2>
-            <pre id="raw-snapshot" class="code">No snapshot loaded.</pre>
+            <h2>Wattetheria Node Logs</h2>
+            <div class="summary diagnostic-summary">
+              <div class="mini-card">
+                <div class="mini-label">Product Logs</div>
+                <div id="local-log-count" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">MCP Calls</div>
+                <div id="mcp-log-count" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Agent Callbacks</div>
+                <div id="callback-log-count" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Event Bus</div>
+                <div id="event-bus-log-count" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Errors</div>
+                <div id="local-log-errors" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Last Event</div>
+                <div id="local-log-last" class="mini-value">-</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Swarm Service</div>
+                <div id="swarm-diag-service" class="mini-value">unknown</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Swarm Peers</div>
+                <div id="swarm-diag-connected" class="mini-value">0</div>
+              </div>
+              <div class="mini-card">
+                <div class="mini-label">Swarm Scopes</div>
+                <div id="swarm-diag-scopes" class="mini-value">0</div>
+              </div>
+            </div>
+            <div class="log-toolbar">
+              <label>
+                Search
+                <input id="diagnostic-search" placeholder="task, event, peer, topic">
+              </label>
+              <label>
+                Source
+                <select id="diagnostic-source">
+                  <option value="">All</option>
+                  <option value="wattetheria">Wattetheria</option>
+                  <option value="wattswarm">Wattswarm</option>
+                </select>
+              </label>
+              <label>
+                Level
+                <select id="diagnostic-level">
+                  <option value="">All</option>
+                  <option value="debug">Debug</option>
+                  <option value="info">Info</option>
+                  <option value="warn">Warning</option>
+                  <option value="error">Error</option>
+                </select>
+              </label>
+              <label>
+                Component
+                <input id="diagnostic-component" placeholder="all">
+              </label>
+              <label>
+                Category
+                <input id="diagnostic-category" placeholder="all">
+              </label>
+              <label>
+                Object ID
+                <input id="diagnostic-object-id" placeholder="task/topic/event">
+              </label>
+              <label>
+                Source Node
+                <input id="diagnostic-source-node-id" placeholder="peer id">
+              </label>
+              <label>
+                Lines
+                <input id="diagnostic-limit" type="number" min="10" max="1000" value="100">
+              </label>
+              <button id="refresh-diagnostics" type="button">Refresh</button>
+              <button id="export-diagnostics" class="secondary" type="button">Export</button>
+            </div>
+            <div class="log-tabs" role="tablist" aria-label="Log source filters">
+              <button class="log-tab active" type="button" data-log-mode="all">All</button>
+              <button class="log-tab" type="button" data-log-mode="wattetheria">Wattetheria</button>
+              <button class="log-tab" type="button" data-log-mode="mcp">MCP Tools</button>
+              <button class="log-tab" type="button" data-log-mode="callbacks">Agent Callbacks</button>
+              <button class="log-tab" type="button" data-log-mode="eventbus">Event Bus</button>
+              <button class="log-tab" type="button" data-log-mode="wattswarm">Wattswarm</button>
+              <button class="log-tab" type="button" data-log-mode="errors">Errors</button>
+            </div>
+            <div id="diagnostic-list" class="list"></div>
           </article>
         </section>
 
@@ -1123,6 +1278,9 @@
     const identitiesByPublicId = new Map();
     let connectedWeb3Wallet = null;
     let currentWalletOperator = null;
+    let lastDiagnosticEntries = [];
+    let lastDiagnosticPayload = null;
+    let activeLogMode = "all";
 
     const stablecoinContracts = {
       "0x1": [
@@ -1200,7 +1358,7 @@
     function syncSwarmConsoleLink() {
       const protocol = window.location.protocol === "https:" ? "https:" : "http:";
       const host = window.location.hostname || "127.0.0.1";
-      const href = `${protocol}//${host}:7788/console`;
+      const href = `${protocol}//${host}:7788`;
       qs("open-swarm-console").href = href;
       qs("side-open-swarm-console").href = href;
     }
@@ -1464,6 +1622,7 @@
         const localSocial = await loadLocalSocialPayload(publicId, limit);
         Object.assign(payload, localSocial);
         renderSnapshot(payload);
+        await refreshDiagnostics(limit);
         lastRefreshEl.textContent = `Refreshed ${new Date().toLocaleString()}`;
         setStatus(`Node console refreshed for ${publicId}.`);
       } catch (error) {
@@ -1520,9 +1679,74 @@
       renderTopicMessages(payload);
       renderWallet(operator);
       renderPeers(payload);
-      renderOrganizations(payload);
-      renderRpcLogs(payload);
-      qs("raw-snapshot").textContent = JSON.stringify(payload, null, 2);
+        renderOrganizations(payload);
+    }
+
+    function diagnosticQuery(limitOverride) {
+      const params = new URLSearchParams();
+      const search = qs("diagnostic-search").value.trim();
+      const level = qs("diagnostic-level").value.trim();
+      const component = qs("diagnostic-component").value.trim();
+      const category = qs("diagnostic-category").value.trim();
+      const objectId = qs("diagnostic-object-id").value.trim();
+      const sourceNodeId = qs("diagnostic-source-node-id").value.trim();
+      const limit = limitOverride || qs("diagnostic-limit").value || limitEl.value || "100";
+      params.set("limit", String(limit));
+      if (search) params.set("search", search);
+      if (level) params.set("level", level);
+      if (component) params.set("component", component);
+      if (category) params.set("category", category);
+      if (objectId) params.set("object_id", objectId);
+      if (sourceNodeId) params.set("source_node_id", sourceNodeId);
+      return params;
+    }
+
+    async function refreshDiagnostics(limitOverride) {
+      const query = diagnosticQuery(limitOverride).toString();
+      const [localResult, swarmResult] = await Promise.allSettled([
+        fetchJson(`/v1/client/diagnostics?${query}`, { auth: true }),
+        fetchJson(`/v1/client/wattswarm-diagnostics?${query}`, { auth: true }),
+      ]);
+      const localPayload = localResult.status === "fulfilled"
+        ? localResult.value
+        : { generated_at: new Date().toISOString(), entries: [], error: localResult.reason?.message || "local diagnostics unavailable" };
+      const swarmPayload = swarmResult.status === "fulfilled"
+        ? swarmResult.value
+        : { ok: false, generated_at: new Date().toISOString(), network_service_started: false, snapshot: null, diagnostics: [], error: swarmResult.reason?.message || "swarm diagnostics unavailable" };
+      lastDiagnosticPayload = { local: localPayload, swarm: swarmPayload };
+      lastDiagnosticEntries = mergeDiagnosticEntries(localPayload, swarmPayload);
+      renderDiagnostics(lastDiagnosticPayload, lastDiagnosticEntries);
+      return lastDiagnosticEntries;
+    }
+
+    function mergeDiagnosticEntries(localPayload, swarmPayload) {
+      const localRows = safeArray(localPayload.entries).map((row) => ({
+        ...row,
+        source: "wattetheria",
+        source_label: "WATTETHERIA",
+        timestamp_sort: Date.parse(row.timestamp || row.generated_at || 0) || 0,
+      }));
+      const swarmRows = safeArray(swarmPayload.diagnostics).map((row) => ({
+        ...row,
+        source: "wattswarm",
+        source_label: "WATTSWARM",
+        timestamp_sort: Number(row.timestamp_ms || 0) || Date.parse(row.timestamp || row.generated_at || 0) || 0,
+      }));
+      return [...localRows, ...swarmRows].sort((a, b) => b.timestamp_sort - a.timestamp_sort);
+    }
+
+    function exportDiagnostics() {
+      const rows = lastDiagnosticEntries.length ? lastDiagnosticEntries : [];
+      const body = rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : "");
+      const blob = new Blob([body], { type: "application/x-ndjson" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `wattetheria-node-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     }
 
     function nearbyStatus(row) {
@@ -1969,6 +2193,87 @@
       `);
     }
 
+    function diagnosticIsError(row) {
+      const text = `${row.level || ""} ${row.status || ""}`.toLowerCase();
+      return text.includes("error") || text.includes("fail") || text.includes("warn");
+    }
+
+    function diagnosticIsMcpTool(row) {
+      return row.source === "wattetheria"
+        && (row.component === "wattetheria.mcp" || row.category === "tool_call");
+    }
+
+    function diagnosticIsAgentCallback(row) {
+      const phase = String(row.phase || "");
+      return row.source === "wattetheria"
+        && row.category === "agent_event"
+        && (phase.startsWith("callback.") || phase.startsWith("decision."));
+    }
+
+    function diagnosticIsEventBus(row) {
+      return row.source === "wattetheria"
+        && (row.component === "wattetheria.event_bus" || row.category === "agent_action_commit");
+    }
+
+    function filteredDiagnosticEntries(entries) {
+      const explicitSource = qs("diagnostic-source").value.trim();
+      return safeArray(entries).filter((row) => {
+        if (explicitSource && row.source !== explicitSource) return false;
+        if (activeLogMode === "wattetheria" && row.source !== "wattetheria") return false;
+        if (activeLogMode === "mcp" && !diagnosticIsMcpTool(row)) return false;
+        if (activeLogMode === "callbacks" && !diagnosticIsAgentCallback(row)) return false;
+        if (activeLogMode === "eventbus" && !diagnosticIsEventBus(row)) return false;
+        if (activeLogMode === "wattswarm" && row.source !== "wattswarm") return false;
+        if (activeLogMode === "errors" && !diagnosticIsError(row)) return false;
+        return true;
+      });
+    }
+
+    function renderDiagnostics(payload, entries) {
+      const local = payload?.local || {};
+      const swarm = payload?.swarm || {};
+      const snapshot = swarm && swarm.snapshot ? swarm.snapshot : {};
+      const localRows = safeArray(local.entries);
+      qs("local-log-count").textContent = valueOrDash(localRows.length);
+      qs("mcp-log-count").textContent = valueOrDash(localRows.filter((row) => diagnosticIsMcpTool({ ...row, source: "wattetheria" })).length);
+      qs("callback-log-count").textContent = valueOrDash(localRows.filter((row) => diagnosticIsAgentCallback({ ...row, source: "wattetheria" })).length);
+      qs("event-bus-log-count").textContent = valueOrDash(localRows.filter((row) => diagnosticIsEventBus({ ...row, source: "wattetheria" })).length);
+      qs("local-log-errors").textContent = valueOrDash(localRows.filter(diagnosticIsError).length);
+      qs("local-log-last").textContent = localRows.length ? compactId(localRows[0].phase || localRows[0].message || "-", 24) : "-";
+      qs("swarm-diag-service").textContent = swarm && swarm.network_service_started ? "running" : "stopped";
+      qs("swarm-diag-connected").textContent = valueOrDash(snapshot.connected_peer_count || 0);
+      qs("swarm-diag-scopes").textContent = valueOrDash(safeArray(snapshot.subscribed_scopes).length);
+      const visibleEntries = filteredDiagnosticEntries(entries);
+      renderList("diagnostic-list", visibleEntries, "No logs recorded for the current filters.", (row) => {
+        const meta = [
+          row.source_label,
+          row.component,
+          row.category,
+          row.phase,
+          row.scope_hint ? `scope ${row.scope_hint}` : "",
+          row.object_id ? `object ${row.object_id}` : "",
+          row.event_id ? `event ${compactId(row.event_id, 18)}` : "",
+          row.source_node_id ? `from ${compactId(row.source_node_id, 18)}` : "",
+        ].filter(Boolean);
+        const timestamp = row.timestamp_ms || row.timestamp || row.generated_at;
+        return `
+          <div class="row">
+            <div class="row-head">
+              <div class="row-title">${escapeHtml(row.message || row.phase || "diagnostic")}</div>
+              ${pill(row.source_label || row.source || "log", row.source)}
+              ${pill(row.level || "info", row.status || row.level)}
+            </div>
+            <div class="row-body">${escapeHtml(formatTime(timestamp))}</div>
+            <div class="row-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
+            <details class="row-details">
+              <summary>JSON</summary>
+              <pre class="code">${escapeHtml(JSON.stringify(row, null, 2))}</pre>
+            </details>
+          </div>
+        `;
+      });
+    }
+
     async function loadBrainConfig() {
       if (!tokenEl.value.trim()) {
         document.getElementById("brain-config-status").textContent = "Control token required.";
@@ -2027,6 +2332,19 @@
     document.getElementById("load-identities").addEventListener("click", loadIdentities);
     document.getElementById("refresh").addEventListener("click", refreshConsole);
     document.getElementById("save-settings").addEventListener("click", saveSettings);
+    document.getElementById("refresh-diagnostics").addEventListener("click", () => {
+      refreshDiagnostics().catch((error) => setStatus(error.message, true));
+    });
+    document.getElementById("export-diagnostics").addEventListener("click", exportDiagnostics);
+    document.querySelectorAll("[data-log-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeLogMode = button.dataset.logMode || "all";
+        document.querySelectorAll("[data-log-mode]").forEach((item) => {
+          item.classList.toggle("active", item === button);
+        });
+        renderDiagnostics(lastDiagnosticPayload || { local: {}, swarm: {} }, lastDiagnosticEntries);
+      });
+    });
     document.querySelectorAll("[data-view]").forEach((link) => {
       link.addEventListener("click", (event) => {
         event.preventDefault();

@@ -55,24 +55,6 @@ services:
       - watt-internal
     entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
 
-  observatory:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      secrets:
-        - github_token
-    container_name: wattetheria-observatory
-    restart: unless-stopped
-    depends_on:
-      - kernel
-    environment:
-      PORT: 8787
-    ports:
-      - "${WATTETHERIA_OBSERVATORY_PORT:-8780}:8787"
-    networks:
-      - watt-internal
-    entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
-
   # --------------- wattswarm ---------------
 
   wattswarm-postgres:

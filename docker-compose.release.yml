@@ -57,19 +57,6 @@ services:
       - watt-internal
     entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
 
-  observatory:
-    image: ${WATTETHERIA_OBSERVATORY_IMAGE:-wattetheria/wattetheria-observatory:latest}
-    restart: unless-stopped
-    depends_on:
-      - kernel
-    environment:
-      PORT: 8787
-    ports:
-      - "${WATTETHERIA_OBSERVATORY_BIND_HOST:-127.0.0.1}:${WATTETHERIA_OBSERVATORY_PORT:-8780}:8787"
-    networks:
-      - watt-internal
-    entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
-
   wattswarm-postgres:
     image: postgres:16
     restart: unless-stopped

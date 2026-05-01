@@ -126,6 +126,48 @@ async fn mcp_tools_list_surfaces_manifest_availability_metadata() {
 }
 
 #[tokio::test]
+async fn mcp_tools_call_writes_product_diagnostics() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "client_export",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+
+    let entries = crate::diagnostics::list_diagnostics(
+        &state.data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            component: Some("wattetheria.mcp".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.phase == "tool.call.received"
+                && entry.details["tool_name"].as_str() == Some("client_export"))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.phase == "tool.call.succeeded"
+                && entry.details["tool_name"].as_str() == Some("client_export"))
+    );
+}
+
+#[tokio::test]
 async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 

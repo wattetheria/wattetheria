@@ -22,22 +22,6 @@ services:
       start_period: 10s
     entrypoint: ["/app/scripts/docker-kernel-entrypoint.sh"]
 
-  observatory:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      secrets:
-        - github_token
-    container_name: wattetheria-observatory
-    restart: unless-stopped
-    depends_on:
-      - kernel
-    environment:
-      PORT: 8787
-    ports:
-      - "${WATTETHERIA_OBSERVATORY_PORT:-8780}:8787"
-    entrypoint: ["/app/scripts/docker-observatory-entrypoint.sh"]
-
 volumes:
   wattetheria_state:
 

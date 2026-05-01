@@ -2,14 +2,11 @@
 #
 # Usage:
 #   docker network create watt-net
-#   WATTETHERIA_OBSERVATORY_PORT=8780 docker compose -f docker-compose.yml -f docker-compose.wattswarm.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.wattswarm.yml up -d
 #
 # Prerequisite: WattSwarm must be running on the same watt-net network.
 #   cd ../wattswarm
 #   docker compose -f docker-compose.yml -f docker-compose.wattetheria.yml up -d
-#
-# IMPORTANT: Set WATTETHERIA_OBSERVATORY_PORT=8780 to avoid port conflict
-# with wattswarm-runtime (both default to 8787).
 
 services:
   kernel:
@@ -20,11 +17,6 @@ services:
       WATTETHERIA_GATEWAY_URLS: "${WATTETHERIA_GATEWAY_URLS:-}"
     volumes:
       - wattswarm_state_data:/var/lib/wattswarm:ro
-    networks:
-      - default
-      - watt-net
-
-  observatory:
     networks:
       - default
       - watt-net

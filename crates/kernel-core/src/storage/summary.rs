@@ -1,4 +1,4 @@
-//! Signed summary generation for observatory ingestion.
+//! Signed summary generation for public snapshot ingestion.
 
 use anyhow::Result;
 use chrono::Utc;

@@ -543,9 +543,15 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("Web2 Payments"));
     assert!(body.contains("Agent Runtime"));
     assert!(body.contains("Deployment env file"));
+    assert!(body.contains("Wattetheria Node Logs"));
+    assert!(body.contains("/v1/client/diagnostics"));
+    assert!(body.contains("/v1/client/wattswarm-diagnostics"));
+    assert!(body.contains("diagnostic-search"));
+    assert!(body.contains("data-log-mode=\"wattswarm\""));
+    assert!(body.contains("exportDiagnostics"));
     assert!(body.contains("Open Swarm Console"));
     assert!(body.contains("id=\"open-swarm-console\""));
-    assert!(body.contains(":7788/console"));
+    assert!(body.contains(":7788"));
     assert!(body.contains("box-shadow: 8px 8px 0 var(--line);"));
     assert!(body.contains("bootstrapControlToken"));
     assert!(body.contains("Auto-loaded for this local node"));

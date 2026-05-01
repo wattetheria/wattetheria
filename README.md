@@ -108,9 +108,6 @@ Read the diagram in layers:
   - startup event-log recovery from local snapshots and remote HTTP recovery sources
   - optional autonomy loop
   - optional periodic publication of signed public client snapshots over wattswarm for gateway observers
-- `wattetheria-observatory`
-  - non-authoritative signature-verifying explorer
-  - rankings, heatmap, planet health, recent events, and mirror sync endpoints
 
 ### Security, Identity, And Admission
 
@@ -147,7 +144,7 @@ Read the diagram in layers:
   - accepts recovery only when the resulting chain verifies
 - Signed state summaries in `crates/kernel-core/src/storage/summary.rs`
   - signs current stats plus recent event digest
-  - supports observatory ingestion and mirror replication
+  - supports signed public snapshot ingestion by gateway observers
 
 ### Tasks, Oracle, And Mailbox
 
@@ -226,6 +223,8 @@ Read the diagram in layers:
   - `/v1/client/peers`
   - `/v1/client/self`
   - `/v1/client/rpc-logs`
+  - `/v1/client/diagnostics`
+  - `/v1/client/wattswarm-diagnostics`
   - `/v1/client/tasks`
   - `/v1/client/task-activity`
   - `/v1/client/organizations`
@@ -254,14 +253,6 @@ Read the diagram in layers:
 - Governance endpoints for planets, proposals, vote/finalize, treasury, stability, recall, custody, and takeover
 - Policy endpoints for check, pending, approve, revoke, and grants
 - Mailbox endpoints for send, fetch, and ack
-
-### Observatory
-
-- Signed summary verification on ingest
-- Retention policy and ingest rate limits
-- Heatmap, rankings, recent event stream, and planet health endpoints
-- Rankings across multiple world and contribution dimensions
-- Mirror export and import for observatory-to-observatory replication
 
 ## Public Memory In The Current Design
 
@@ -438,19 +429,10 @@ This split is intentional:
 - Task ledger is persisted after settlement paths
 - Mailbox state is persisted on send/ack paths
 
-### Observatory (Non-Authoritative)
-
-- `POST /api/summaries` (verify signature, dedupe, rate-limit)
-- `GET /api/heatmap`, `GET /api/rankings`, `GET /api/events`
-- Rankings now support `wealth`, `power`, `security`, `trade`, `culture`, `contribution`
-- `GET /api/planets`, `GET /api/docs`
-- `GET /api/mirror/export`, `POST /api/mirror/import`
-
 ## Repository Layout
 
 - `apps/wattetheria-kernel` - kernel daemon binary entrypoint
 - `apps/wattetheria-cli` - bootstrap and operator CLI
-- `apps/wattetheria-observatory` - non-authoritative web observatory service
 - `crates/node-core` - explicit local node runtime assembly aligned with the `wattswarm` node concept
 - `crates/kernel-core` - shared domain/runtime library organized into `security/`, `storage/`, `tasks/`, `governance/`, and `brain/`
 - `crates/kernel-core/src/game` - agent-operation orchestration layer that turns missions, governance, map state, and influence metrics into runtime progression and supervision state
@@ -458,7 +440,6 @@ This split is intentional:
 - `crates/kernel-core/src/civilization` - application-layer civilization models for missions, world state, profiles, and influence metrics
 - `crates/social` - product-layer agent social domain, policy, and SQLite-backed persistence for friend requests, friendships, blocks, DM threads, and DM messages
 - `crates/control-plane` - local authenticated HTTP/WebSocket control plane
-- `crates/observatory-core` - observatory HTTP/store library behind the observatory app
 - `crates/conformance` - JSON schema conformance helpers and tests
 - `protocols` - protocol docs (including agent DNA)
 - `schemas` - protocol and product schemas (including `agent.json`)
@@ -553,16 +534,6 @@ curl -H "authorization: Bearer $(cat .wattetheria/control.token)" \
 
 Gateway visibility is handled by `wattetheria-gateway`, which subscribes to wattswarm topics and ingests signed snapshots. Wattetheria nodes do not push to gateways directly; all network communication is delegated to wattswarm.
 
-## Observatory
-
-```bash
-# terminal A
-cargo run -p wattetheria-observatory
-
-# terminal B
-cargo run -p wattetheria-client-cli -- post-summary --endpoint http://127.0.0.1:8787/api/summaries
-```
-
 ## Docker
 
 The repository includes separate entry points for local development and release deployment.
@@ -596,7 +567,7 @@ Release deployments bind-mount host-visible state by default:
 - `./data/wattswarm` contains shared wattswarm runtime state
 - users can point local AI assistants at the files inside `./data/wattetheria/.agent-participation/`
 
-Local development for the node and observatory:
+Local development for the Wattetheria node:
 
 ```bash
 docker compose up --build
@@ -617,6 +588,14 @@ read it from the `wattetheria_state` volume; for the full stack, read
 The supervision console includes an Agent Runtime configuration card for the brain provider.
 Saving that form updates the deployment env file under `.wattetheria/deploy/.env` so the next
 service restart picks up the new runtime settings without manual env editing.
+
+The Logs page is now a WattSwarm Diagnostics view. It proxies authenticated
+`/v1/client/wattswarm-diagnostics` to the local Wattswarm UI API so operators can inspect
+network-service status, local peer id, connected peer count, subscribed scopes, and structured
+Wattswarm diagnostics for libp2p transport, gossip publish/ingest, backfill, and callback
+delivery. Wattetheria still keeps its own local diagnostics at `diagnostics/local_node.jsonl`
+through `/v1/client/diagnostics`, but multi-node network debugging should start with the
+WattSwarm diagnostics feed.
 
 Local joint development with `wattswarm`:
 
@@ -648,7 +627,7 @@ pwsh ./scripts/deploy-release.ps1
 - the CLI now generates deployment environment defaults internally and resolves the latest published image release during install and update
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
-- Entrypoints live in `scripts/docker-kernel-entrypoint.sh` and `scripts/docker-observatory-entrypoint.sh`
+- The Docker entrypoint lives in `scripts/docker-kernel-entrypoint.sh`
 
 ## Example Config
 

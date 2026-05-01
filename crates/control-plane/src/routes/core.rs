@@ -5,10 +5,12 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, extract::ws::WebSocket};
 use chrono::Utc;
 use serde_json::{Value, json};
+use std::time::Instant;
 
 use crate::agent_attach::{AgentAttachStatus, read_status, write_status};
 use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
+use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::identity_context_value;
 use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
@@ -107,6 +109,123 @@ fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did:
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
         .unwrap_or_else(|| default_agent_did.to_owned())
+}
+
+fn agent_action_commit_object(body: &AgentActionCommitBody) -> (&'static str, Option<String>) {
+    if let Some(mission_id) = mission_id_for_commit(body) {
+        return ("mission", Some(mission_id));
+    }
+    [
+        ("task", "/task_id"),
+        ("task", "/task_inputs/task_id"),
+        ("topic", "/topic_id"),
+        ("topic", "/feed_key"),
+        ("payment", "/payment_id"),
+        ("message", "/message_id"),
+    ]
+    .into_iter()
+    .find_map(|(kind, pointer)| {
+        payload_string(&body.decision.payload, pointer)
+            .or_else(|| payload_string(&body.event.payload, pointer))
+            .map(|value| (kind, Some(value)))
+    })
+    .unwrap_or(("agent_event", Some(body.event.event_id.clone())))
+}
+
+struct AgentActionCommitDiagnosticContext {
+    event_id: String,
+    event_type: String,
+    source_kind: String,
+    source_node_id: Option<String>,
+    requires_commit: bool,
+    target_agent_id: Option<String>,
+    decision_id: String,
+    action: String,
+    decision_route: String,
+    object_kind: &'static str,
+    object_id: Option<String>,
+}
+
+impl AgentActionCommitDiagnosticContext {
+    fn from_body(body: &AgentActionCommitBody) -> Self {
+        let (object_kind, object_id) = agent_action_commit_object(body);
+        Self {
+            event_id: body.event.event_id.clone(),
+            event_type: body.event.event_type.clone(),
+            source_kind: body.event.source_kind.clone(),
+            source_node_id: body.event.source_node_id.clone(),
+            requires_commit: body.event.requires_commit,
+            target_agent_id: body.event.target_agent_id.clone(),
+            decision_id: body.decision.decision_id.clone(),
+            action: body.decision.action.clone(),
+            decision_route: body.decision.route.clone(),
+            object_kind,
+            object_id,
+        }
+    }
+}
+
+struct AgentActionCommitDiagnosticEvent {
+    level: &'static str,
+    phase: &'static str,
+    status: &'static str,
+    message: String,
+    route_label: Option<&'static str>,
+    duration_ms: Option<u128>,
+    status_code: Option<u16>,
+}
+
+fn record_agent_action_commit_diagnostic(
+    state: &ControlPlaneState,
+    context: &AgentActionCommitDiagnosticContext,
+    event: AgentActionCommitDiagnosticEvent,
+) {
+    record_diagnostic(
+        &state.data_dir,
+        DiagnosticEvent::new(
+            event.level,
+            "wattetheria.event_bus",
+            "agent_action_commit",
+            event.phase,
+            event.status,
+            event.message,
+        )
+        .event_id(Some(context.event_id.clone()))
+        .source_node_id(context.source_node_id.clone())
+        .object(context.object_kind, context.object_id.clone())
+        .details(json!({
+            "event_id": context.event_id,
+            "event_type": context.event_type,
+            "source_kind": context.source_kind,
+            "requires_commit": context.requires_commit,
+            "target_agent_id": context.target_agent_id,
+            "decision_id": context.decision_id,
+            "action": context.action,
+            "decision_route": context.decision_route,
+            "route_label": event.route_label,
+            "duration_ms": event.duration_ms,
+            "status_code": event.status_code,
+        })),
+    );
+}
+
+fn agent_action_commit_route_label(event_type: &str, action: &str) -> &'static str {
+    match (event_type, action) {
+        ("friend_request", "accept" | "reject" | "block") => "friend_request",
+        ("dm_received", "reply" | "block" | "ignore") => "dm_received",
+        (
+            "payment_request" | "payment_update",
+            "authorize" | "reject" | "submit" | "settle" | "cancel",
+        ) => "payment_action",
+        ("topic_message_requires_reply", "reply") => "topic_reply",
+        (
+            "topic_message_requires_reply",
+            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+        ) => "unsupported_topic_mission",
+        (_, "publish_mission") => "mission_publish",
+        (_, "claim_mission" | "complete_mission" | "settle_mission") => "mission_transition",
+        _ => "unsupported",
+    }
 }
 
 async fn commit_friend_request(
@@ -536,22 +655,14 @@ pub(crate) async fn health(State(state): State<ControlPlaneState>) -> impl IntoR
     }))
 }
 
-pub(crate) async fn agent_action_commit(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Json(body): Json<AgentActionCommitBody>,
+async fn dispatch_agent_action_commit(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+    event_type: &str,
+    action: &str,
 ) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let commit_headers =
-        forwarded_agent_commit_headers(&auth, &body.event.event_id, &body.decision.decision_id);
-
-    match (
-        body.event.event_type.as_str(),
-        body.decision.action.as_str(),
-    ) {
+    match (event_type, action) {
         ("friend_request", "accept" | "reject" | "block") => {
             commit_friend_request(state, commit_headers, body).await
         }
@@ -577,13 +688,107 @@ pub(crate) async fn agent_action_commit(
             StatusCode::BAD_REQUEST,
             Json(json!({
                 "error": "unsupported agent action commit",
-                "event_type": body.event.event_type,
-                "action": body.decision.action,
-                "route": body.decision.route,
+                "event_type": event_type,
+                "action": action,
             })),
         )
             .into_response(),
     }
+}
+
+pub(crate) async fn agent_action_commit(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<AgentActionCommitBody>,
+) -> Response {
+    let started_at = Instant::now();
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let commit_headers =
+        forwarded_agent_commit_headers(&auth, &body.event.event_id, &body.decision.decision_id);
+    let diagnostic_context = AgentActionCommitDiagnosticContext::from_body(&body);
+    record_agent_action_commit_diagnostic(
+        &state,
+        &diagnostic_context,
+        AgentActionCommitDiagnosticEvent {
+            level: "info",
+            phase: "agent_action.commit.received",
+            status: "accepted",
+            message: format!(
+                "agent action commit received: {} -> {}",
+                body.event.event_type, body.decision.action
+            ),
+            route_label: None,
+            duration_ms: None,
+            status_code: None,
+        },
+    );
+
+    let event_type = body.event.event_type.clone();
+    let action = body.decision.action.clone();
+    let route_label = agent_action_commit_route_label(&event_type, &action);
+    record_agent_action_commit_diagnostic(
+        &state,
+        &diagnostic_context,
+        AgentActionCommitDiagnosticEvent {
+            level: if route_label == "unsupported" || route_label == "unsupported_topic_mission" {
+                "warn"
+            } else {
+                "info"
+            },
+            phase: "agent_action.commit.routed",
+            status: route_label,
+            message: format!(
+                "agent action commit routed: {} -> {}",
+                body.event.event_type, body.decision.action
+            ),
+            route_label: Some(route_label),
+            duration_ms: None,
+            status_code: None,
+        },
+    );
+
+    let response =
+        dispatch_agent_action_commit(state.clone(), commit_headers, body, &event_type, &action)
+            .await;
+    let status_code = response.status();
+    record_agent_action_commit_diagnostic(
+        &state,
+        &diagnostic_context,
+        AgentActionCommitDiagnosticEvent {
+            level: if status_code.is_success() {
+                "info"
+            } else {
+                "error"
+            },
+            phase: if status_code.is_success() {
+                "agent_action.commit.completed"
+            } else {
+                "agent_action.commit.failed"
+            },
+            status: if status_code.is_success() {
+                "ok"
+            } else {
+                "error"
+            },
+            message: format!(
+                "agent action commit {}: {} -> {}",
+                if status_code.is_success() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                diagnostic_context.event_type,
+                diagnostic_context.action
+            ),
+            route_label: Some(route_label),
+            duration_ms: Some(started_at.elapsed().as_millis()),
+            status_code: Some(status_code.as_u16()),
+        },
+    );
+    response
 }
 
 pub(crate) async fn state_view(

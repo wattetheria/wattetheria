@@ -201,7 +201,6 @@ if (-not $envMap.Contains("WATTSWARM_PG_PASSWORD") -or
 if ($ReleaseTag) {
   $imageKeys = @(
     "WATTETHERIA_KERNEL_IMAGE",
-    "WATTETHERIA_OBSERVATORY_IMAGE",
     "WATTSWARM_KERNEL_IMAGE",
     "WATTSWARM_RUNTIME_IMAGE",
     "WATTSWARM_WORKER_IMAGE"
@@ -245,24 +244,18 @@ if (-not $SkipHealthChecks) {
   $kernelPort = Get-EnvValue -Map $envMap -Key "WATTETHERIA_CONTROL_PLANE_PORT" -DefaultValue "7777"
   $uiHost = Get-EnvValue -Map $envMap -Key "WATTSWARM_UI_BIND_HOST" -DefaultValue "127.0.0.1"
   $uiPort = Get-EnvValue -Map $envMap -Key "WATTSWARM_UI_PORT" -DefaultValue "7788"
-  $observatoryHost = Get-EnvValue -Map $envMap -Key "WATTETHERIA_OBSERVATORY_BIND_HOST" -DefaultValue "127.0.0.1"
-  $observatoryPort = Get-EnvValue -Map $envMap -Key "WATTETHERIA_OBSERVATORY_PORT" -DefaultValue "8780"
 
   Wait-HttpOk -Name "kernel health" -Url "http://${kernelHost}:${kernelPort}/v1/health"
   Wait-HttpOk -Name "wattswarm ui" -Url "http://${uiHost}:${uiPort}/"
-  Wait-HttpOk -Name "observatory health" -Url "http://${observatoryHost}:${observatoryPort}/healthz"
 }
 
 $kernelHost = Get-EnvValue -Map $envMap -Key "WATTETHERIA_CONTROL_PLANE_BIND_HOST" -DefaultValue "127.0.0.1"
 $kernelPort = Get-EnvValue -Map $envMap -Key "WATTETHERIA_CONTROL_PLANE_PORT" -DefaultValue "7777"
 $uiHost = Get-EnvValue -Map $envMap -Key "WATTSWARM_UI_BIND_HOST" -DefaultValue "127.0.0.1"
 $uiPort = Get-EnvValue -Map $envMap -Key "WATTSWARM_UI_PORT" -DefaultValue "7788"
-$observatoryHost = Get-EnvValue -Map $envMap -Key "WATTETHERIA_OBSERVATORY_BIND_HOST" -DefaultValue "127.0.0.1"
-$observatoryPort = Get-EnvValue -Map $envMap -Key "WATTETHERIA_OBSERVATORY_PORT" -DefaultValue "8780"
 
 Write-Host ""
 Write-Host "Deployment complete."
 Write-Host "Kernel:      http://${kernelHost}:${kernelPort}"
 Write-Host "Wattswarm UI:http://${uiHost}:${uiPort}"
-Write-Host "Observatory: http://${observatoryHost}:${observatoryPort}"
 Write-Host "Env file:    $EnvFile"

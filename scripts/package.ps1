@@ -5,7 +5,7 @@ $DistDir = Join-Path $RootDir "dist"
 New-Item -ItemType Directory -Path $DistDir -Force | Out-Null
 
 Set-Location $RootDir
-cargo build --release -p wattetheria-kernel -p wattetheria-client-cli -p wattetheria-observatory
+cargo build --release -p wattetheria-kernel -p wattetheria-client-cli
 
 $osName = "windows"
 $archName = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else { "x86" }
@@ -16,7 +16,6 @@ New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 
 Copy-Item "target/release/wattetheria-kernel.exe" (Join-Path $binDir "wattetheria-kernel.exe") -Force
 Copy-Item "target/release/wattetheria-client-cli.exe" (Join-Path $binDir "wattetheria-client-cli.exe") -Force
-Copy-Item "target/release/wattetheria-observatory.exe" (Join-Path $binDir "wattetheria-observatory.exe") -Force
 Copy-Item "README.md" (Join-Path $pkgDir "README.md") -Force
 Copy-Item "docker-compose.release.yml" (Join-Path $pkgDir "docker-compose.release.yml") -Force
 Copy-Item ".env.release" (Join-Path $pkgDir ".env.release") -Force

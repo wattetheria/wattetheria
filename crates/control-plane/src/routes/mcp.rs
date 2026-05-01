@@ -6,9 +6,11 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::Path;
+use std::time::Instant;
 use tower::ServiceExt;
 
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
+use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::resolve_identity_context;
 use crate::state::ControlPlaneState;
 
@@ -159,6 +161,19 @@ async fn call_tool(
             .into_response()
     })?;
     let Some(tool) = agent_tools().iter().find(|tool| tool.name == name) else {
+        record_mcp_tool_diagnostic(
+            state,
+            &json!({}),
+            McpToolDiagnosticEvent {
+                tool_name: &name,
+                level: "warn",
+                phase: "tool.call.failed",
+                status: "unknown_tool",
+                message: format!("MCP tool {name} is unknown"),
+                duration_ms: None,
+                result_kind: "validation",
+            },
+        );
         return Ok(tool_error(
             &json!({"error": format!("unknown tool: {name}")}),
         ));
@@ -169,20 +184,194 @@ async fn call_tool(
         .or_else(|| params.get("input").cloned())
         .unwrap_or_else(|| json!({}));
     if !arguments.is_object() {
+        record_mcp_tool_diagnostic(
+            state,
+            &arguments,
+            McpToolDiagnosticEvent {
+                tool_name: tool.name,
+                level: "warn",
+                phase: "tool.call.failed",
+                status: "invalid_arguments",
+                message: format!("MCP tool {} received invalid arguments", tool.name),
+                duration_ms: None,
+                result_kind: "validation",
+            },
+        );
         return Ok(tool_error(
             &json!({"error": "tool arguments must be a JSON object"}),
         ));
     }
 
+    let started_at = Instant::now();
+    record_mcp_tool_diagnostic(
+        state,
+        &arguments,
+        McpToolDiagnosticEvent {
+            tool_name: tool.name,
+            level: "info",
+            phase: "tool.call.received",
+            status: "accepted",
+            message: format!("MCP tool {} call received", tool.name),
+            duration_ms: None,
+            result_kind: "request",
+        },
+    );
+
     if tool.name == "list_missions" {
-        return Ok(network_mission_market_result(state, &arguments).await);
+        let result = network_mission_market_result(state, &arguments).await;
+        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
+        return Ok(result);
     }
     if tool.name == "list_topics" {
-        return Ok(network_topic_market_result(state, &arguments).await);
+        let result = network_topic_market_result(state, &arguments).await;
+        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
+        return Ok(result);
     }
 
-    let response = dispatch_loopback_tool(state.clone(), auth, tool, &arguments).await?;
-    Ok(response_to_tool_result(response).await)
+    let response = match dispatch_loopback_tool(state.clone(), auth, tool, &arguments).await {
+        Ok(response) => response,
+        Err(response) => {
+            record_mcp_tool_diagnostic(
+                state,
+                &arguments,
+                McpToolDiagnosticEvent {
+                    tool_name: tool.name,
+                    level: "error",
+                    phase: "tool.call.failed",
+                    status: "loopback_error",
+                    message: format!("MCP tool {} loopback dispatch failed", tool.name),
+                    duration_ms: Some(started_at.elapsed().as_millis()),
+                    result_kind: "http",
+                },
+            );
+            return Err(response);
+        }
+    };
+    let result = response_to_tool_result(response).await;
+    record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
+    Ok(result)
+}
+
+fn record_mcp_tool_result(
+    state: &ControlPlaneState,
+    tool_name: &str,
+    arguments: &Value,
+    result: &Value,
+    started_at: Instant,
+) {
+    let is_error = result
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    record_mcp_tool_diagnostic(
+        state,
+        arguments,
+        McpToolDiagnosticEvent {
+            tool_name,
+            level: if is_error { "error" } else { "info" },
+            phase: if is_error {
+                "tool.call.failed"
+            } else {
+                "tool.call.succeeded"
+            },
+            status: if is_error { "error" } else { "ok" },
+            message: format!(
+                "MCP tool {tool_name} {}",
+                if is_error { "failed" } else { "succeeded" }
+            ),
+            duration_ms: Some(started_at.elapsed().as_millis()),
+            result_kind: "tool_result",
+        },
+    );
+}
+
+struct McpToolDiagnosticEvent<'a> {
+    tool_name: &'a str,
+    level: &'static str,
+    phase: &'static str,
+    status: &'static str,
+    message: String,
+    duration_ms: Option<u128>,
+    result_kind: &'static str,
+}
+
+fn record_mcp_tool_diagnostic(
+    state: &ControlPlaneState,
+    arguments: &Value,
+    event: McpToolDiagnosticEvent<'_>,
+) {
+    let (object_kind, object_id) = mcp_tool_object(arguments);
+    record_diagnostic(
+        &state.data_dir,
+        DiagnosticEvent::new(
+            event.level,
+            "wattetheria.mcp",
+            "tool_call",
+            event.phase,
+            event.status,
+            event.message,
+        )
+        .object(object_kind.unwrap_or("mcp_tool"), object_id)
+        .details(json!({
+            "tool_name": event.tool_name,
+            "duration_ms": event.duration_ms,
+            "result_kind": event.result_kind,
+            "argument_keys": mcp_argument_keys(arguments),
+            "identifiers": mcp_argument_identifiers(arguments),
+        })),
+    );
+}
+
+fn mcp_tool_object(arguments: &Value) -> (Option<&'static str>, Option<String>) {
+    [
+        ("mission", "mission_id"),
+        ("task", "task_id"),
+        ("topic", "topic_id"),
+        ("topic", "feed_key"),
+        ("payment", "payment_id"),
+        ("message", "message_id"),
+        ("friend", "counterpart_public_id"),
+        ("subnet", "subnet_id"),
+    ]
+    .into_iter()
+    .find_map(|(kind, key)| {
+        arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| (Some(kind), Some(value.to_owned())))
+    })
+    .unwrap_or((None, None))
+}
+
+fn mcp_argument_keys(arguments: &Value) -> Vec<String> {
+    arguments
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn mcp_argument_identifiers(arguments: &Value) -> Map<String, Value> {
+    let mut identifiers = Map::new();
+    for key in [
+        "mission_id",
+        "task_id",
+        "topic_id",
+        "feed_key",
+        "scope_hint",
+        "mission_scope_hint",
+        "payment_id",
+        "message_id",
+        "counterpart_public_id",
+        "subnet_id",
+        "agent_did",
+    ] {
+        if let Some(value) = arguments.get(key) {
+            identifiers.insert(key.to_owned(), value.clone());
+        }
+    }
+    identifiers
 }
 
 async fn network_topic_market_result(state: &ControlPlaneState, arguments: &Value) -> Value {
