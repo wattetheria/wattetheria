@@ -96,6 +96,7 @@ async fn network_projection_session(state: ControlPlaneState, grpc_endpoint: &st
         feed_key: String::new(),
         scope_hint: String::new(),
         subscriber_node_id: String::new(),
+        network_id: String::new(),
     });
     let mut stream = client
         .stream_network_projection(request)
@@ -179,6 +180,7 @@ async fn task_run_projection_session(state: ControlPlaneState, grpc_endpoint: &s
         feed_key: String::new(),
         scope_hint: String::new(),
         subscriber_node_id: String::new(),
+        network_id: String::new(),
     });
     let mut stream = client
         .stream_task_run_projection(request)
@@ -213,6 +215,7 @@ async fn social_projection_session(state: ControlPlaneState, grpc_endpoint: &str
         feed_key: String::new(),
         scope_hint: String::new(),
         subscriber_node_id: String::new(),
+        network_id: String::new(),
     });
     let mut stream = client
         .stream_social_projection(request)
@@ -311,6 +314,7 @@ async fn topic_projection_session(
         feed_key: topic.feed_key.clone(),
         scope_hint: topic.scope_hint.clone(),
         subscriber_node_id: String::new(),
+        network_id: topic.network_id.clone().unwrap_or_default(),
     });
     let mut stream = client
         .stream_topic_activity(request)
@@ -422,7 +426,11 @@ fn persist_projection_frame(local_db: &LocalDb, kind: &str, payload: &Value) {
             match serde_json::from_value::<SwarmTopicActivitySnapshot>(payload.clone()) {
                 Ok(snapshot) => {
                     if let Err(error) = local_db.save_domain(
-                        &topic_activity_cache_domain(&snapshot.feed_key, &snapshot.scope_hint),
+                        &topic_activity_cache_domain(
+                            Some(snapshot.network_id.as_str()),
+                            &snapshot.feed_key,
+                            &snapshot.scope_hint,
+                        ),
                         &snapshot,
                     ) {
                         warn!("persist wattswarm topic activity cache failed: {error:#}");
@@ -465,11 +473,12 @@ pub(crate) async fn save_cached_task_run_projection(
 
 pub(crate) async fn load_cached_topic_activity(
     local_db: &Arc<LocalDb>,
+    network_id: Option<&str>,
     feed_key: &str,
     scope_hint: &str,
 ) -> Option<SwarmTopicActivitySnapshot> {
     let db = local_db.clone();
-    let domain = topic_activity_cache_domain(feed_key, scope_hint);
+    let domain = topic_activity_cache_domain(network_id, feed_key, scope_hint);
     tokio::task::spawn_blocking(
         move || match db.load_domain_if_fresh(&domain, CACHE_MAX_AGE_SEC) {
             Ok(value) => value,
@@ -483,12 +492,29 @@ pub(crate) async fn load_cached_topic_activity(
     .unwrap_or(None)
 }
 
-fn topic_activity_cache_domain(feed_key: &str, scope_hint: &str) -> String {
-    format!("wattswarm.sync.cache.topic_activity::{feed_key}::{scope_hint}")
+fn topic_activity_cache_domain(
+    network_id: Option<&str>,
+    feed_key: &str,
+    scope_hint: &str,
+) -> String {
+    match network_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(network_id) => {
+            format!("wattswarm.sync.cache.topic_activity::{network_id}::{feed_key}::{scope_hint}")
+        }
+        None => format!("wattswarm.sync.cache.topic_activity::{feed_key}::{scope_hint}"),
+    }
 }
 
 fn topic_stream_key(topic: &TopicProfile) -> String {
-    format!("{}::{}", topic.feed_key, topic.scope_hint)
+    match topic
+        .network_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(network_id) => format!("{network_id}::{}::{}", topic.feed_key, topic.scope_hint),
+        None => format!("{}::{}", topic.feed_key, topic.scope_hint),
+    }
 }
 
 fn is_retryable_status(error: &anyhow::Error) -> bool {
@@ -509,6 +535,7 @@ mod tests {
     fn topic_stream_key_uses_feed_and_scope() {
         let topic = TopicProfile {
             topic_id: "topic-1".to_string(),
+            network_id: None,
             feed_key: "guild.chat".to_string(),
             scope_hint: "guild:defi".to_string(),
             display_name: "DeFi Guild".to_string(),
@@ -545,6 +572,7 @@ mod tests {
         let snapshot = SwarmTopicActivitySnapshot {
             generated_at: 42,
             subscriber_node_id: "node-1".to_string(),
+            network_id: "net".to_string(),
             feed_key: "guild.chat".to_string(),
             scope_hint: "guild:defi".to_string(),
             messages: vec![SwarmTopicMessageView {
@@ -566,12 +594,12 @@ mod tests {
             }),
         };
         db.save_domain(
-            &topic_activity_cache_domain("guild.chat", "guild:defi"),
+            &topic_activity_cache_domain(Some("net"), "guild.chat", "guild:defi"),
             &snapshot,
         )
         .expect("save topic activity");
         assert_eq!(
-            load_cached_topic_activity(&db, "guild.chat", "guild:defi").await,
+            load_cached_topic_activity(&db, Some("net"), "guild.chat", "guild:defi").await,
             Some(snapshot)
         );
     }

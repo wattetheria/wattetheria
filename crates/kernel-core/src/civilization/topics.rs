@@ -19,6 +19,8 @@ pub enum TopicProjectionKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopicProfile {
     pub topic_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub display_name: String,
@@ -37,6 +39,7 @@ pub struct TopicProfile {
 
 #[derive(Debug, Clone)]
 pub struct TopicCreateSpec {
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub display_name: String,
@@ -79,7 +82,7 @@ impl TopicRegistry {
     }
 
     pub fn upsert_topic(&mut self, spec: TopicCreateSpec) -> TopicProfile {
-        let topic_id = topic_id_for(&spec.feed_key, &spec.scope_hint);
+        let topic_id = topic_id_for(spec.network_id.as_deref(), &spec.feed_key, &spec.scope_hint);
         let now = Utc::now().timestamp();
         let created_at = self
             .topics
@@ -87,6 +90,7 @@ impl TopicRegistry {
             .map_or(now, |topic| topic.created_at);
         let profile = TopicProfile {
             topic_id: topic_id.clone(),
+            network_id: spec.network_id,
             feed_key: spec.feed_key,
             scope_hint: spec.scope_hint,
             display_name: spec.display_name,
@@ -118,16 +122,20 @@ impl TopicRegistry {
     #[must_use]
     pub fn list_filtered(
         &self,
+        network_id: Option<&str>,
         projection_kind: Option<&TopicProjectionKind>,
         organization_id: Option<&str>,
         mission_id: Option<&str>,
         include_inactive: bool,
     ) -> Vec<TopicProfile> {
+        let network_id = normalized_network_id(network_id);
         self.topics
             .values()
             .filter(|topic| include_inactive || topic.active)
             .filter(|topic| {
-                projection_kind.is_none_or(|kind| &topic.projection_kind == kind)
+                network_id
+                    .is_none_or(|id| normalized_network_id(topic.network_id.as_deref()) == Some(id))
+                    && projection_kind.is_none_or(|kind| &topic.projection_kind == kind)
                     && organization_id.is_none_or(|id| topic.organization_id.as_deref() == Some(id))
                     && mission_id.is_none_or(|id| topic.mission_id.as_deref() == Some(id))
             })
@@ -137,8 +145,15 @@ impl TopicRegistry {
 }
 
 #[must_use]
-pub fn topic_id_for(feed_key: &str, scope_hint: &str) -> String {
-    format!("{}@{}", feed_key.trim(), scope_hint.trim())
+pub fn topic_id_for(network_id: Option<&str>, feed_key: &str, scope_hint: &str) -> String {
+    match normalized_network_id(network_id) {
+        Some(network_id) => format!("{}@{}@{}", network_id, feed_key.trim(), scope_hint.trim()),
+        None => format!("{}@{}", feed_key.trim(), scope_hint.trim()),
+    }
+}
+
+fn normalized_network_id(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -153,6 +168,7 @@ mod tests {
         let mut registry = TopicRegistry::default();
 
         let topic = registry.upsert_topic(TopicCreateSpec {
+            network_id: Some("mainnet:test".to_string()),
             feed_key: "crew.chat".to_string(),
             scope_hint: "group:crew-7".to_string(),
             display_name: "Crew Seven".to_string(),
@@ -173,12 +189,45 @@ mod tests {
             "Crew Seven"
         );
         assert_eq!(
+            loaded.get(&topic.topic_id).unwrap().network_id.as_deref(),
+            Some("mainnet:test")
+        );
+        assert_eq!(topic.topic_id, "mainnet:test@crew.chat@group:crew-7");
+        let subnet_topic = registry.upsert_topic(TopicCreateSpec {
+            network_id: Some("subnet:alpha".to_string()),
+            feed_key: "crew.chat".to_string(),
+            scope_hint: "group:crew-7".to_string(),
+            display_name: "Crew Seven Subnet".to_string(),
+            summary: None,
+            projection_kind: TopicProjectionKind::WorkingGroup,
+            organization_id: Some("org-7".to_string()),
+            mission_id: None,
+            participant_public_ids: Vec::new(),
+            created_by_public_id: "captain-aurora".to_string(),
+            why_this_exists: None,
+            active: true,
+        });
+        assert_ne!(topic.topic_id, subnet_topic.topic_id);
+        assert_eq!(
+            registry
+                .list_filtered(
+                    Some("mainnet:test"),
+                    Some(&TopicProjectionKind::WorkingGroup),
+                    Some("org-7"),
+                    None,
+                    false
+                )
+                .len(),
+            1
+        );
+        assert_eq!(
             loaded.get(&topic.topic_id).unwrap().participant_public_ids,
             vec!["captain-aurora".to_string()]
         );
         assert_eq!(
             loaded
                 .list_filtered(
+                    Some("mainnet:test"),
                     Some(&TopicProjectionKind::WorkingGroup),
                     Some("org-7"),
                     None,

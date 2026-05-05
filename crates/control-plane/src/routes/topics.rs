@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::json;
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::topics::TopicCreateSpec;
+use wattetheria_kernel::civilization::topics::{TopicCreateSpec, TopicProfile};
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{identity_context_response, resolve_identity_context};
@@ -29,6 +29,20 @@ struct TopicMessageView {
     created_at: u64,
 }
 
+fn normalized_network_id(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+async fn resolve_network_id(
+    state: &ControlPlaneState,
+    requested: Option<&str>,
+) -> anyhow::Result<String> {
+    match normalized_network_id(requested) {
+        Some(network_id) => Ok(network_id.to_owned()),
+        None => state.swarm_bridge.current_network_id().await,
+    }
+}
+
 pub(crate) async fn list_topics(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -40,6 +54,7 @@ pub(crate) async fn list_topics(
     };
     let topics = state.topic_registry.lock().await;
     let mut items = topics.list_filtered(
+        normalized_network_id(query.network_id.as_deref()),
         query.projection_kind.as_ref(),
         query.organization_id.as_deref(),
         query.mission_id.as_deref(),
@@ -89,9 +104,19 @@ pub(crate) async fn create_topic(
             .into_response();
     };
     let controller_id = context.public_memory_owner.controller.clone();
+    let network_id = match resolve_network_id(&state, body.network_id.as_deref()).await {
+        Ok(network_id) => network_id,
+        Err(error) => return internal_error(&error),
+    };
     if let Err(error) = state
         .swarm_bridge
-        .subscribe_topic(&controller_id, &body.feed_key, &body.scope_hint, true)
+        .subscribe_topic(
+            Some(&network_id),
+            &controller_id,
+            &body.feed_key,
+            &body.scope_hint,
+            true,
+        )
         .await
     {
         return internal_error(&error);
@@ -99,37 +124,24 @@ pub(crate) async fn create_topic(
     if let Some(initial_message) = body.initial_message.clone()
         && let Err(error) = state
             .swarm_bridge
-            .post_topic_message(&body.feed_key, &body.scope_hint, initial_message, None)
+            .post_topic_message(
+                Some(&network_id),
+                &body.feed_key,
+                &body.scope_hint,
+                initial_message,
+                None,
+            )
             .await
     {
         return internal_error(&error);
     }
 
-    let topic = {
-        let mut topics = state.topic_registry.lock().await;
-        let topic = topics.upsert_topic(TopicCreateSpec {
-            feed_key: body.feed_key,
-            scope_hint: body.scope_hint,
-            display_name: body.display_name,
-            summary: body.summary,
-            projection_kind: body.projection_kind,
-            organization_id: body.organization_id,
-            mission_id: body.mission_id,
-            participant_public_ids: body.participant_public_ids,
-            created_by_public_id: public_id.clone(),
-            why_this_exists: body.why_this_exists,
-            active: true,
-        });
-        if let Err(error) = state.local_db.save_domain(
-            wattetheria_kernel::local_db::domain::TOPIC_REGISTRY,
-            &*topics,
-        ) {
-            return internal_error(&error);
-        }
-        topic
+    let topic = match persist_created_topic(&state, body, &public_id, &network_id).await {
+        Ok(topic) => topic,
+        Err(error) => return internal_error(&error),
     };
 
-    let payload = json!({"topic": topic.clone(), "public_id": public_id});
+    let payload = json!({"topic": topic.clone(), "public_id": public_id, "network_id": network_id});
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.created".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -157,6 +169,34 @@ pub(crate) async fn create_topic(
     .into_response()
 }
 
+async fn persist_created_topic(
+    state: &ControlPlaneState,
+    body: TopicCreateBody,
+    public_id: &str,
+    network_id: &str,
+) -> anyhow::Result<TopicProfile> {
+    let mut topics = state.topic_registry.lock().await;
+    let topic = topics.upsert_topic(TopicCreateSpec {
+        network_id: Some(network_id.to_owned()),
+        feed_key: body.feed_key,
+        scope_hint: body.scope_hint,
+        display_name: body.display_name,
+        summary: body.summary,
+        projection_kind: body.projection_kind,
+        organization_id: body.organization_id,
+        mission_id: body.mission_id,
+        participant_public_ids: body.participant_public_ids,
+        created_by_public_id: public_id.to_owned(),
+        why_this_exists: body.why_this_exists,
+        active: true,
+    });
+    state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::TOPIC_REGISTRY,
+        &*topics,
+    )?;
+    Ok(topic)
+}
+
 pub(crate) async fn topic_messages(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -167,9 +207,14 @@ pub(crate) async fn topic_messages(
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let network_id = match resolve_network_id(&state, query.network_id.as_deref()).await {
+        Ok(network_id) => network_id,
+        Err(error) => return internal_error(&error),
+    };
     let messages = match state
         .swarm_bridge
         .list_topic_messages(
+            Some(&network_id),
             &query.feed_key,
             &query.scope_hint,
             limit,
@@ -183,7 +228,11 @@ pub(crate) async fn topic_messages(
     };
     let cursor = match state
         .swarm_bridge
-        .topic_cursor(&query.feed_key, query.subscriber_id.as_deref())
+        .topic_cursor(
+            Some(&network_id),
+            &query.feed_key,
+            query.subscriber_id.as_deref(),
+        )
         .await
     {
         Ok(cursor) => cursor,
@@ -230,6 +279,7 @@ pub(crate) async fn topic_messages(
     });
 
     Json(json!({
+        "network_id": network_id,
         "feed_key": query.feed_key,
         "scope_hint": query.scope_hint,
         "cursor": cursor,
@@ -249,9 +299,14 @@ pub(crate) async fn subscribe_topic(
     };
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
     let controller_id = context.public_memory_owner.controller.clone();
+    let network_id = match resolve_network_id(&state, body.network_id.as_deref()).await {
+        Ok(network_id) => network_id,
+        Err(error) => return internal_error(&error),
+    };
     if let Err(error) = state
         .swarm_bridge
         .subscribe_topic(
+            Some(&network_id),
             &controller_id,
             &body.feed_key,
             &body.scope_hint,
@@ -264,6 +319,7 @@ pub(crate) async fn subscribe_topic(
 
     let payload = json!({
         "controller_id": controller_id,
+        "network_id": network_id,
         "feed_key": body.feed_key,
         "scope_hint": body.scope_hint,
         "active": body.active,
@@ -300,9 +356,14 @@ pub(crate) async fn post_topic_message(
         Err(response) => return response,
     };
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
+    let network_id = match resolve_network_id(&state, body.network_id.as_deref()).await {
+        Ok(network_id) => network_id,
+        Err(error) => return internal_error(&error),
+    };
     if let Err(error) = state
         .swarm_bridge
         .post_topic_message(
+            Some(&network_id),
             &body.feed_key,
             &body.scope_hint,
             body.content.clone(),
@@ -315,6 +376,7 @@ pub(crate) async fn post_topic_message(
 
     let payload = json!({
         "controller_id": context.public_memory_owner.controller,
+        "network_id": network_id,
         "feed_key": body.feed_key,
         "scope_hint": body.scope_hint,
         "reply_to_message_id": body.reply_to_message_id,

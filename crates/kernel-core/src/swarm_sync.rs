@@ -48,6 +48,7 @@ pub struct SwarmRunEventsSnapshot {
 pub struct SwarmTopicActivitySnapshot {
     pub generated_at: u64,
     pub subscriber_node_id: String,
+    pub network_id: String,
     pub feed_key: String,
     pub scope_hint: String,
     pub messages: Vec<SwarmTopicMessageView>,

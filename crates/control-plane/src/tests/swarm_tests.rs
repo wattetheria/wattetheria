@@ -187,6 +187,77 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
     );
 }
 
+#[tokio::test]
+async fn claim_network_mission_rejects_expired_task_contract_before_swarm_claim() {
+    let (dir, app, token, _, state) = build_test_app(20);
+    let mut contract = state
+        .swarm_bridge
+        .sample_task_contract("mission-expired")
+        .await
+        .unwrap();
+    contract.task_type = "wattetheria.mission".to_string();
+    contract.expiry_ms = 1;
+    contract.inputs = json!({
+        "kind": "wattetheria_mission",
+        "mission_id": "mission-expired",
+        "publisher": "publisher-public",
+        "publisher_agent_did": "did:agent:publisher",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "swarm_scope": {"kind": "node", "id": "publisher-node"},
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "node:publisher-node",
+        "reward": {"agent_watt": 10},
+        "payload": {"work": "deliver"}
+    });
+    let gateway_task = json!({
+        "id": "mission-expired",
+        "task_id": "mission-expired",
+        "task_type": "wattetheria.mission",
+        "title": "Expired remote mission",
+        "status": "published",
+        "source_node_id": "publisher-node",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "node:publisher-node",
+        "task_contract": contract,
+    });
+    let gateway_app = Router::new().route(
+        "/api/tasks",
+        get(move || {
+            let gateway_task = gateway_task.clone();
+            async move { Json(json!([gateway_task])) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+    std::fs::write(
+        dir.path().join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+
+    let response = authed_post_json(
+        app,
+        &token,
+        "/v1/missions/claim",
+        json!({
+            "mission_id": "mission-expired",
+            "agent_did": state.agent_did
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["error"].as_str(),
+        Some("network mission claim task_contract has expired")
+    );
+    assert_eq!(response["expired"].as_bool(), Some(true));
+    assert_eq!(response["expiry_ms"].as_u64(), Some(1));
+}
+
 async fn seed_gateway_remote_mission(
     data_dir: &std::path::Path,
     state: &ControlPlaneState,
@@ -409,6 +480,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
         &token,
         "/v1/civilization/topics",
         json!({
+            "network_id": "mainnet:test",
             "feed_key": "crew.chat",
             "scope_hint": "group:crew-7",
             "display_name": "Crew Seven",
@@ -421,7 +493,11 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     .await;
     assert_eq!(
         created["topic"]["topic_id"].as_str(),
-        Some("crew.chat@group:crew-7")
+        Some("mainnet:test@crew.chat@group:crew-7")
+    );
+    assert_eq!(
+        created["topic"]["network_id"].as_str(),
+        Some("mainnet:test")
     );
 
     let topics_json = authed_get_json(app.clone(), &token, "/v1/civilization/topics").await;
@@ -430,10 +506,15 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     let messages_json = authed_get_json(
         app,
         &token,
-        "/v1/civilization/topics/messages?feed_key=crew.chat&scope_hint=group:crew-7",
+        "/v1/civilization/topics/messages?network_id=mainnet:test&feed_key=crew.chat&scope_hint=group:crew-7",
     )
     .await;
+    assert_eq!(messages_json["network_id"].as_str(), Some("mainnet:test"));
     assert_eq!(messages_json["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        messages_json["messages"][0]["network_id"].as_str(),
+        Some("mainnet:test")
+    );
     assert_eq!(
         messages_json["messages"][0]["author_public_id"].as_str(),
         Some(created["topic"]["created_by_public_id"].as_str().unwrap())
@@ -441,7 +522,8 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
 
     let subscriptions = bridge.subscriptions.lock().await;
     assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0].1, "crew.chat");
+    assert_eq!(subscriptions[0].0.as_deref(), Some("mainnet:test"));
+    assert_eq!(subscriptions[0].2, "crew.chat");
     drop(subscriptions);
     assert_eq!(bridge.messages.lock().await.len(), 1);
 }

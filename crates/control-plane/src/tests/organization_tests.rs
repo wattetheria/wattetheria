@@ -529,20 +529,33 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("Wattetheria Node Console"));
     assert!(body.contains("/v1/civilization/identities"));
     assert!(body.contains("/v1/client/export"));
+    assert!(body.contains("node_limit"));
+    assert!(body.contains("Nodes"));
     assert!(body.contains("identityRecordPublicIdentity"));
+    assert!(body.contains("isAgentIdentityRecord"));
+    assert!(
+        body.contains("publicId.startsWith(&quot;agent-&quot;)")
+            || body.contains("publicId.startsWith(\"agent-\")")
+    );
     assert!(body.contains("record?.identity"));
     assert!(body.contains("Friend Requests"));
     assert!(body.contains("DM Messages"));
+    assert!(body.contains("Expires"));
     assert!(body.contains("id=\"overview-nearby\""));
     assert!(body.contains("Overview nearby agents"));
     assert!(body.contains("overview-nearby-count"));
+    assert!(body.contains("diagnosticContextSummary"));
+    assert!(body.contains("diagnosticNodeId"));
+    assert!(body.contains("network connection established"));
+    assert!(body.contains("remote_addr"));
     assert!(body.contains("WATT Balance"));
     assert!(body.contains("Web3 Settlement Wallet"));
     assert!(body.contains("Connect Web3 Wallet"));
     assert!(body.contains("/v1/wallet/payment-account/bind-web3"));
     assert!(body.contains("Web2 Payments"));
     assert!(body.contains("Agent Runtime"));
-    assert!(body.contains("Deployment env file"));
+    assert!(!body.contains("Deployment env file"));
+    assert!(!body.contains("/var/lib/wattetheria/deploy/.env"));
     assert!(body.contains("Wattetheria Node Logs"));
     assert!(body.contains("/v1/client/diagnostics"));
     assert!(body.contains("/v1/client/wattswarm-diagnostics"));
@@ -558,4 +571,5 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("normalizeToken"));
     assert!(body.contains("wallet_bound_agent_did"));
     assert!(body.contains("public_topic_messages"));
+    assert!(!body.to_lowercase().contains("peer"));
 }

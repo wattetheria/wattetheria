@@ -406,6 +406,19 @@ async fn commit_topic_reply(
                 .get("public_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+            network_id: body
+                .decision
+                .payload
+                .get("network_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    body.event
+                        .payload
+                        .get("network_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                }),
             feed_key,
             scope_hint,
             content,

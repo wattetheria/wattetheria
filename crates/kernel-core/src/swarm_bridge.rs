@@ -229,6 +229,7 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn subscribe_topic(
         &self,
+        _network_id: Option<&str>,
         _subscriber_id: &str,
         _feed_key: &str,
         _scope_hint: &str,
@@ -239,6 +240,7 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn post_topic_message(
         &self,
+        _network_id: Option<&str>,
         _feed_key: &str,
         _scope_hint: &str,
         _content: Value,
@@ -249,6 +251,7 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn list_topic_messages(
         &self,
+        _network_id: Option<&str>,
         _feed_key: &str,
         _scope_hint: &str,
         _limit: usize,
@@ -260,6 +263,7 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn topic_cursor(
         &self,
+        _network_id: Option<&str>,
         _feed_key: &str,
         _subscriber_id: Option<&str>,
     ) -> Result<Option<SwarmTopicCursorView>> {
@@ -268,6 +272,10 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
         Err(anyhow!("wattswarm network status is not configured"))
+    }
+
+    async fn current_network_id(&self) -> Result<String> {
+        Err(anyhow!("wattswarm current network ID is not configured"))
     }
 
     async fn local_node_id(&self) -> Result<String> {
@@ -371,6 +379,7 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn topic_activity_snapshot(
         &self,
+        _network_id: Option<&str>,
         _feed_key: &str,
         _scope_hint: &str,
         _limit: usize,
@@ -422,30 +431,39 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn subscribe_topic(
         &self,
+        network_id: Option<&str>,
         subscriber_id: &str,
         feed_key: &str,
         scope_hint: &str,
         active: bool,
     ) -> Result<()> {
         self.topic_api()?
-            .subscribe_topic(subscriber_id, feed_key, scope_hint, active)
+            .subscribe_topic(network_id, subscriber_id, feed_key, scope_hint, active)
             .await
     }
 
     async fn post_topic_message(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         content: Value,
         reply_to_message_id: Option<String>,
     ) -> Result<()> {
         self.topic_api()?
-            .post_topic_message(feed_key, scope_hint, content, reply_to_message_id)
+            .post_topic_message(
+                network_id,
+                feed_key,
+                scope_hint,
+                content,
+                reply_to_message_id,
+            )
             .await
     }
 
     async fn list_topic_messages(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         limit: usize,
@@ -454,6 +472,7 @@ impl SwarmBridge for HybridSwarmBridge {
     ) -> Result<Vec<SwarmTopicMessageView>> {
         self.topic_api()?
             .list_topic_messages(
+                network_id,
                 feed_key,
                 scope_hint,
                 limit,
@@ -465,16 +484,21 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn topic_cursor(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         subscriber_id: Option<&str>,
     ) -> Result<Option<SwarmTopicCursorView>> {
         self.topic_api()?
-            .topic_cursor(feed_key, subscriber_id)
+            .topic_cursor(network_id, feed_key, subscriber_id)
             .await
     }
 
     async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
         self.topic_api()?.network_status().await
+    }
+
+    async fn current_network_id(&self) -> Result<String> {
+        self.topic_api()?.current_network_id().await
     }
 
     async fn local_node_id(&self) -> Result<String> {
@@ -580,13 +604,14 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn topic_activity_snapshot(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         limit: usize,
         subscriber_node_id: Option<&str>,
     ) -> Result<SwarmTopicActivitySnapshot> {
         self.topic_api()?
-            .topic_activity_snapshot(feed_key, scope_hint, limit, subscriber_node_id)
+            .topic_activity_snapshot(network_id, feed_key, scope_hint, limit, subscriber_node_id)
             .await
     }
 
@@ -627,6 +652,7 @@ impl HttpWattswarmApi {
 
     async fn subscribe_topic(
         &self,
+        network_id: Option<&str>,
         subscriber_id: &str,
         feed_key: &str,
         scope_hint: &str,
@@ -635,6 +661,7 @@ impl HttpWattswarmApi {
         self.client
             .post(format!("{}/api/topic/subscriptions", self.base_url))
             .json(&json!({
+                "network_id": network_id,
                 "subscriber_node_id": subscriber_id,
                 "feed_key": feed_key,
                 "scope_hint": scope_hint,
@@ -648,6 +675,7 @@ impl HttpWattswarmApi {
 
     async fn post_topic_message(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         content: Value,
@@ -656,6 +684,7 @@ impl HttpWattswarmApi {
         self.client
             .post(format!("{}/api/topic/messages", self.base_url))
             .json(&json!({
+                "network_id": network_id,
                 "feed_key": feed_key,
                 "scope_hint": scope_hint,
                 "content": content,
@@ -669,6 +698,7 @@ impl HttpWattswarmApi {
 
     async fn list_topic_messages(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         limit: usize,
@@ -679,6 +709,7 @@ impl HttpWattswarmApi {
             .client
             .get(format!("{}/api/topic/messages", self.base_url))
             .query(&TopicMessagesQuery {
+                network_id: network_id.map(ToOwned::to_owned),
                 feed_key: feed_key.to_owned(),
                 scope_hint: scope_hint.to_owned(),
                 limit,
@@ -695,6 +726,7 @@ impl HttpWattswarmApi {
 
     async fn topic_cursor(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         subscriber_id: Option<&str>,
     ) -> Result<Option<SwarmTopicCursorView>> {
@@ -702,6 +734,7 @@ impl HttpWattswarmApi {
             .client
             .get(format!("{}/api/topic/cursor", self.base_url))
             .query(&TopicCursorQuery {
+                network_id: network_id.map(ToOwned::to_owned),
                 feed_key: feed_key.to_owned(),
                 subscriber_node_id: subscriber_id.map(ToOwned::to_owned),
             })
@@ -720,6 +753,28 @@ impl HttpWattswarmApi {
             mode: response.mode,
             peer_protocol_distribution: response.peer_protocol_distribution,
         })
+    }
+
+    async fn current_network_id(&self) -> Result<String> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/wattetheria/network/snapshot",
+                self.base_url
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<NetworkSnapshotResponse>()
+            .await
+            .context("decode wattswarm network snapshot")?;
+        let network_id = response.network_id.trim();
+        if network_id.is_empty() {
+            return Err(anyhow!(
+                "wattswarm network snapshot did not include network_id"
+            ));
+        }
+        Ok(network_id.to_owned())
     }
 
     async fn local_node_id(&self) -> Result<String> {
@@ -1007,6 +1062,7 @@ impl HttpWattswarmApi {
 
     async fn topic_activity_snapshot(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         limit: usize,
@@ -1015,6 +1071,7 @@ impl HttpWattswarmApi {
         self.client
             .get(format!("{}/api/wattetheria/topic/activity", self.base_url))
             .query(&TopicActivitySnapshotQuery {
+                network_id: network_id.map(ToOwned::to_owned),
                 feed_key: feed_key.to_owned(),
                 scope_hint: scope_hint.to_owned(),
                 limit,
@@ -1058,6 +1115,7 @@ struct TaskSampleQuery {
 
 #[derive(Debug, Serialize)]
 struct TopicMessagesQuery {
+    network_id: Option<String>,
     feed_key: String,
     scope_hint: String,
     limit: usize,
@@ -1067,6 +1125,7 @@ struct TopicMessagesQuery {
 
 #[derive(Debug, Serialize)]
 struct TopicCursorQuery {
+    network_id: Option<String>,
     feed_key: String,
     subscriber_node_id: Option<String>,
 }
@@ -1084,6 +1143,7 @@ struct RunEventsSnapshotQuery {
 
 #[derive(Debug, Serialize)]
 struct TopicActivitySnapshotQuery {
+    network_id: Option<String>,
     feed_key: String,
     scope_hint: String,
     limit: usize,
@@ -1109,6 +1169,11 @@ struct TopicMessagesResponse {
 #[derive(Debug, Deserialize)]
 struct TopicCursorResponse {
     cursor: Option<SwarmTopicCursorView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NetworkSnapshotResponse {
+    network_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1277,11 +1342,11 @@ mod tests {
                 "node_id": "peer-a",
                 "connected": true,
                 "discovery": {
-                    "listen_addr": "/ip4/203.0.113.10/tcp/4001",
+                    "endpoint_id": "iroh-endpoint-a",
                     "source_kind": "bootstrap"
                 },
                 "metadata": {
-                    "observed_addr": "/ip4/198.51.100.2/tcp/4001",
+                    "endpoint_id": "iroh-endpoint-a",
                     "handshake_status": "identified"
                 },
                 "relationship": {

@@ -66,8 +66,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS cacher
 
 COPY --from=planner /app/recipe.json /app/recipe.json
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=secret,id=github_token \
     if [ -f /run/secrets/github_token ]; then \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
@@ -108,8 +108,8 @@ RUN --mount=type=secret,id=github_token \
       -o /tmp/wattetheria_sync.proto
 
 ENV WATTSWARM_SYNC_PROTO=/tmp/wattetheria_sync.proto
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=secret,id=github_token \
     if [ -f /run/secrets/github_token ]; then \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \

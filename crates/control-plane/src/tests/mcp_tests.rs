@@ -377,9 +377,9 @@ async fn mcp_unsubscribe_topic_uses_current_local_public_identity_and_deactivate
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     let subscriptions = bridge.subscriptions.lock().await;
     assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0].1, "codex_topic_smoke_test");
-    assert_eq!(subscriptions[0].2, "global");
-    assert!(!subscriptions[0].3);
+    assert_eq!(subscriptions[0].2, "codex_topic_smoke_test");
+    assert_eq!(subscriptions[0].3, "global");
+    assert!(!subscriptions[0].4);
 }
 
 #[tokio::test]
@@ -607,6 +607,64 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     assert_eq!(missions[0]["source_node_id"].as_str(), Some("node-beta"));
     assert_eq!(missions[0]["status"].as_str(), Some("published"));
     assert_gateway_claim_route(&missions[0], "mission-gateway-2", "node-beta");
+}
+
+#[tokio::test]
+async fn mcp_list_missions_marks_expired_gateway_tasks_not_claim_ready() {
+    let gateway_app = axum::Router::new().route(
+        "/api/tasks",
+        axum::routing::get(|| async {
+            axum::Json(json!([
+                {
+                    "id": "mission-expired",
+                    "title": "Expired Gateway Mission",
+                    "status": "published",
+                    "source_node_id": "node-expired",
+                    "task_contract": {
+                        "task_id": "mission-expired",
+                        "expiry_ms": 1
+                    }
+                }
+            ]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+
+    let (dir, app, token, _policy, _state) = build_test_app(100);
+    std::fs::write(
+        dir.path().join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_missions",
+                "arguments": {"limit": 10}
+            }
+        }),
+    )
+    .await;
+
+    let mission = &response["result"]["structuredContent"]["missions"][0];
+    assert_eq!(mission["status"].as_str(), Some("expired"));
+    assert_eq!(mission["expired"].as_bool(), Some(true));
+    assert_eq!(mission["expiry_ms"].as_u64(), Some(1));
+    assert_eq!(mission["claim_route"]["claim_ready"].as_bool(), Some(false));
+    assert_eq!(
+        mission["claim_route"]["claim_block_reason"].as_str(),
+        Some("task_expired")
+    );
 }
 
 fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) {

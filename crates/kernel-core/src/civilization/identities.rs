@@ -140,10 +140,7 @@ impl PublicIdentityRegistry {
         if let Some(identity) = self.identities.get(&public_id) {
             return Ok(identity.clone());
         }
-        // Existing active identity bound to this agent_did.
-        if let Some(identity) = self.active_for_agent_did(agent_did)
-            && !is_legacy_default_identity(&identity, agent_did)
-        {
+        if let Some(identity) = self.active_for_agent_did(agent_did) {
             return Ok(identity);
         }
         self.upsert(
@@ -283,12 +280,6 @@ fn did_suffix(agent_did: &str, len: usize) -> String {
         .collect()
 }
 
-fn is_legacy_default_identity(identity: &PublicIdentity, agent_did: &str) -> bool {
-    identity.agent_did.as_deref() == Some(agent_did)
-        && identity.public_id.starts_with("citizen-")
-        && identity.display_name.starts_with("Citizen-")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,29 +300,6 @@ mod tests {
         assert_eq!(embedded_fp, expected_fp);
         assert!(public.public_id.starts_with("agent-"));
         assert!(public.display_name.starts_with("Agent-"));
-    }
-
-    #[test]
-    fn ensure_default_replaces_legacy_citizen_identity() {
-        let identity = Identity::new_random();
-        let mut registry = PublicIdentityRegistry::default();
-        let fingerprint = public_key_fingerprint(&identity.public_key).unwrap();
-        let legacy_public_id = build_scoped_public_id("citizen-legacy", &fingerprint);
-        registry
-            .upsert(
-                &legacy_public_id,
-                "Citizen-legacy".to_string(),
-                Some(identity.agent_did.clone()),
-                true,
-            )
-            .unwrap();
-
-        let public = registry
-            .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did))
-            .unwrap();
-
-        assert!(public.public_id.starts_with("agent-"));
-        assert!(registry.get(&legacy_public_id).is_some());
     }
 
     #[test]

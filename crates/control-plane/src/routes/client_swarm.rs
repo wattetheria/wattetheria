@@ -32,6 +32,7 @@ struct ClientTopicMessageView {
 #[derive(Debug, Clone, Serialize)]
 struct ClientHiveView {
     topic_id: String,
+    network_id: Option<String>,
     feed_key: String,
     scope_hint: String,
     display_name: String,
@@ -108,14 +109,25 @@ async fn topic_activity_or_empty(
     state: &ControlPlaneState,
     topic: &TopicProfile,
 ) -> Option<SwarmTopicActivitySnapshot> {
-    if let Some(snapshot) =
-        load_cached_topic_activity(&state.local_db, &topic.feed_key, &topic.scope_hint).await
+    if let Some(snapshot) = load_cached_topic_activity(
+        &state.local_db,
+        topic.network_id.as_deref(),
+        &topic.feed_key,
+        &topic.scope_hint,
+    )
+    .await
     {
         return Some(snapshot);
     }
     state
         .swarm_bridge
-        .topic_activity_snapshot(&topic.feed_key, &topic.scope_hint, 25, None)
+        .topic_activity_snapshot(
+            topic.network_id.as_deref(),
+            &topic.feed_key,
+            &topic.scope_hint,
+            25,
+            None,
+        )
         .await
         .ok()
 }
@@ -214,11 +226,11 @@ fn dm_threads_by_counterpart(threads: &[Value]) -> std::collections::BTreeMap<St
 
 fn peer_status(
     state: &ControlPlaneState,
-    peer_ids: &std::collections::BTreeSet<String>,
+    connected_node_ids: &std::collections::BTreeSet<String>,
     remote_node_id: Option<&str>,
 ) -> &'static str {
     remote_node_id.map_or("unknown", |controller_id| {
-        if controller_id == state.agent_did || peer_ids.contains(controller_id) {
+        if controller_id == state.agent_did || connected_node_ids.contains(controller_id) {
             "online"
         } else {
             "offline"
@@ -263,6 +275,7 @@ pub(crate) async fn build_hives_payload(
             });
         items.push(json!(ClientHiveView {
             topic_id: topic.topic_id,
+            network_id: topic.network_id,
             feed_key: topic.feed_key,
             scope_hint: topic.scope_hint,
             display_name: topic.display_name,
@@ -341,7 +354,7 @@ async fn build_conversations_payload(
     query: &ClientIdentityQuery,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    let peer_ids = state
+    let connected_node_ids = state
         .swarm_bridge
         .peers()
         .await
@@ -378,7 +391,7 @@ async fn build_conversations_payload(
                 .map(ToOwned::to_owned),
             counterpart_status: peer_status(
                 state,
-                &peer_ids,
+                &connected_node_ids,
                 thread.get("remote_node_id").and_then(Value::as_str),
             ),
             session_state: thread
@@ -428,7 +441,7 @@ async fn build_friends_payload(
         .into_iter()
         .map(|identity| (identity.public_id.clone(), identity))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let peer_ids = state
+    let connected_node_ids = state
         .swarm_bridge
         .peers()
         .await
@@ -469,7 +482,7 @@ async fn build_friends_payload(
             .get(&edge.counterpart_public_id)
             .and_then(|binding| binding.controller_node_id.as_deref())
             .map_or("unknown", |controller_id| {
-                if controller_id == state.agent_did || peer_ids.contains(controller_id) {
+                if controller_id == state.agent_did || connected_node_ids.contains(controller_id) {
                     "online"
                 } else {
                     "offline"
@@ -577,7 +590,13 @@ pub(crate) async fn client_topic_messages(
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let cached_snapshot = if query.before_created_at.is_none() && query.before_message_id.is_none()
     {
-        load_cached_topic_activity(&state.local_db, &query.feed_key, &query.scope_hint).await
+        load_cached_topic_activity(
+            &state.local_db,
+            query.network_id.as_deref(),
+            &query.feed_key,
+            &query.scope_hint,
+        )
+        .await
     } else {
         None
     };
@@ -594,6 +613,7 @@ pub(crate) async fn client_topic_messages(
         let messages = match state
             .swarm_bridge
             .list_topic_messages(
+                query.network_id.as_deref(),
                 &query.feed_key,
                 &query.scope_hint,
                 limit,
@@ -607,7 +627,11 @@ pub(crate) async fn client_topic_messages(
         };
         let cursor = match state
             .swarm_bridge
-            .topic_cursor(&query.feed_key, query.subscriber_id.as_deref())
+            .topic_cursor(
+                query.network_id.as_deref(),
+                &query.feed_key,
+                query.subscriber_id.as_deref(),
+            )
             .await
         {
             Ok(cursor) => cursor,
@@ -636,6 +660,7 @@ pub(crate) async fn client_topic_messages(
     });
 
     Json(json!({
+        "network_id": query.network_id,
         "feed_key": query.feed_key,
         "scope_hint": query.scope_hint,
         "cursor": cursor,

@@ -532,6 +532,7 @@ pub struct MailboxAckBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TopicsQuery {
+    pub network_id: Option<String>,
     pub organization_id: Option<String>,
     pub mission_id: Option<String>,
     pub projection_kind: Option<TopicProjectionKind>,
@@ -541,6 +542,7 @@ pub struct TopicsQuery {
 #[derive(Debug, Deserialize)]
 pub struct TopicCreateBody {
     pub public_id: Option<String>,
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub display_name: String,
@@ -556,6 +558,7 @@ pub struct TopicCreateBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TopicMessagesQuery {
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub limit: Option<usize>,
@@ -567,6 +570,7 @@ pub struct TopicMessagesQuery {
 #[derive(Debug, Deserialize)]
 pub struct TopicSubscriptionBody {
     pub public_id: Option<String>,
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub active: bool,
@@ -575,6 +579,7 @@ pub struct TopicSubscriptionBody {
 #[derive(Debug, Deserialize)]
 pub struct TopicMessageBody {
     pub public_id: Option<String>,
+    pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
     pub content: Value,
@@ -644,6 +649,7 @@ pub struct ClientLeaderboardQuery {
 pub struct ClientExportQuery {
     pub agent_did: Option<String>,
     pub public_id: Option<String>,
+    pub node_limit: Option<usize>,
     pub peer_limit: Option<usize>,
     pub task_limit: Option<usize>,
     pub organization_limit: Option<usize>,

@@ -177,7 +177,7 @@ Read the diagram in layers:
 - Strategy directives, bootstrap state, and role-aware progression for agent operation
 - World zones, official map state, travel context, and dynamic world events
 - Missions, organizations, governance-linked coordination, and influence metrics
-- Topic-backed emergent coordination surfaces on top of `wattswarm`
+- Topic-backed emergent coordination surfaces on top of `wattswarm`, keyed by Wattswarm `network_id + feed_key + scope_hint` when querying or streaming topic activity
 - Agent social state in internal `crates/social`, including friend requests, friendships, blocks, DM threads, DM messages, and outbound policy checks
 - Emergency evaluation and event-driven pressure signals for mission generation
 - System-generated world events driven by governance instability and unresolved frontier pressure
@@ -591,8 +591,8 @@ service restart picks up the new runtime settings without manual env editing.
 
 The Logs page is now a WattSwarm Diagnostics view. It proxies authenticated
 `/v1/client/wattswarm-diagnostics` to the local Wattswarm UI API so operators can inspect
-network-service status, local peer id, connected peer count, subscribed scopes, and structured
-Wattswarm diagnostics for libp2p transport, gossip publish/ingest, backfill, and callback
+network-service status, local node id, connected node count, subscribed scopes, and structured
+Wattswarm diagnostics for Iroh transport, gossip publish/ingest, backfill, and callback
 delivery. Wattetheria still keeps its own local diagnostics at `diagnostics/local_node.jsonl`
 through `/v1/client/diagnostics`, but multi-node network debugging should start with the
 WattSwarm diagnostics feed.

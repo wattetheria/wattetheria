@@ -29,11 +29,11 @@ async fn client_api_routes_align_with_client_dtos() {
             node_id: "peer-a".to_string(),
             connected: Some(true),
             discovery: Some(json!({
-                "listen_addr": "/ip4/203.0.113.10/tcp/4001",
+                "endpoint_id": "iroh-endpoint-a",
                 "source_kind": "bootstrap"
             })),
             metadata: Some(json!({
-                "observed_addr": "/ip4/198.51.100.2/tcp/4001",
+                "endpoint_id": "iroh-endpoint-a",
                 "handshake_status": "identified"
             })),
             relationship: Some(json!({
@@ -107,10 +107,7 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(peers_json[0]["connected"].as_bool(), Some(true));
     assert_eq!(peers_json[0]["source_kind"].as_str(), Some("bootstrap"));
     assert_eq!(peers_json[0]["relationship_state"].as_str(), Some("friend"));
-    assert_eq!(
-        peers_json[0]["address"].as_str(),
-        Some("/ip4/198.51.100.2/tcp/4001")
-    );
+    assert_eq!(peers_json[0]["endpoint"].as_str(), Some("iroh-endpoint-a"));
     assert!(peers_json[0].get("lat").is_none());
     assert!(peers_json[0].get("lng").is_none());
 
@@ -607,6 +604,7 @@ async fn client_export_excludes_local_friends_and_dm() {
     {
         let mut topics = state.topic_registry.lock().await;
         topics.upsert_topic(wattetheria_kernel::civilization::topics::TopicCreateSpec {
+            network_id: None,
             feed_key: "hive.general".to_string(),
             scope_hint: "org:crew".to_string(),
             display_name: "Crew Hive".to_string(),
@@ -711,7 +709,7 @@ async fn client_export_is_public_and_signed() {
 
     let export_json = public_get_json(
             app,
-            &format!("/v1/client/export?public_id={captain}&peer_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
+            &format!("/v1/client/export?public_id={captain}&node_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
         )
         .await;
     assert_eq!(
@@ -722,9 +720,9 @@ async fn client_export_is_public_and_signed() {
         export_json["payload"]["network_status"]["total_nodes"].as_u64(),
         Some(2)
     );
-    assert_eq!(export_json["payload"]["peers"].as_array().unwrap().len(), 1);
-    assert!(export_json["payload"]["peers"][0].get("lat").is_none());
-    assert!(export_json["payload"]["peers"][0].get("lng").is_none());
+    assert_eq!(export_json["payload"]["nodes"].as_array().unwrap().len(), 1);
+    assert!(export_json["payload"]["nodes"][0].get("lat").is_none());
+    assert!(export_json["payload"]["nodes"][0].get("lng").is_none());
     let verified = verify_payload(
         &export_json["payload"],
         export_json["signature"].as_str().unwrap(),
@@ -782,6 +780,12 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
         task["task_contract"]["inputs"]["mission_id"].as_str(),
         Some(mission_id)
     );
+    assert_eq!(
+        task["expiry_ms"].as_u64(),
+        task["task_contract"]["expiry_ms"].as_u64()
+    );
+    assert_eq!(task["expired"].as_bool(), Some(false));
+    assert!(task["expires_at"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -848,7 +852,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
         &state,
         &ClientExportQuery {
             public_id: Some(captain),
-            peer_limit: Some(1),
+            node_limit: Some(1),
             task_limit: Some(5),
             organization_limit: Some(5),
             rpc_log_limit: Some(5),

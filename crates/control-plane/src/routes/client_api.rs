@@ -41,6 +41,7 @@ pub struct PublicClientSnapshot {
     pub node_id: String,
     pub public_key: String,
     pub network_status: Value,
+    pub nodes: Vec<Value>,
     pub peers: Vec<Value>,
     pub operator: Value,
     pub rpc_logs: Vec<Value>,
@@ -107,16 +108,11 @@ fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
         .as_ref()
         .and_then(|value| value.get("relationship_state"))
         .and_then(Value::as_str);
-    let address = peer
+    let endpoint = peer
         .metadata
         .as_ref()
-        .and_then(|value| value.get("observed_addr"))
-        .or_else(|| {
-            peer.discovery
-                .as_ref()
-                .and_then(|value| value.get("listen_addr"))
-        })
-        .and_then(Value::as_str);
+        .and_then(iroh_endpoint_id)
+        .or_else(|| peer.discovery.as_ref().and_then(iroh_endpoint_id));
     let status = if connected {
         "online"
     } else if relationship_state == Some("blocked") {
@@ -135,11 +131,36 @@ fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
         "connected": connected,
         "source_kind": source_kind,
         "relationship_state": relationship_state,
-        "address": address,
+        "endpoint": endpoint,
         "discovery": peer.discovery,
         "metadata": peer.metadata,
         "relationship": peer.relationship,
     })
+}
+
+fn iroh_endpoint_id(value: &Value) -> Option<&str> {
+    value
+        .get("endpoint_id")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("local_iroh_endpoint_id").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("metadata")
+                .and_then(|metadata| metadata.get("endpoint_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("extra")
+                .and_then(|extra| extra.get("endpoint_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("transports")
+                .and_then(Value::as_array)
+                .and_then(|transports| transports.iter().find_map(iroh_endpoint_id))
+        })
 }
 
 async fn build_client_self_payload(
@@ -220,6 +241,7 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
         .take(limit)
     {
         let publisher_network_reward_watt = publisher_network_reward_watt(&mission, &policy);
+        let base_status = client_task_status(&mission.status);
         let mut task = json!({
             "id": mission.mission_id,
             "task_id": mission.mission_id,
@@ -232,7 +254,7 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
             "network_publish_reward_watt": policy.rewards.mission_publish_watt,
             "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
             "publisher_network_reward_watt": publisher_network_reward_watt,
-            "status": client_task_status(&mission.status),
+            "status": base_status,
             "publisher_id": mission.publisher,
             "claimer_id": mission.claimed_by,
             "created_at": timestamp_to_rfc3339(mission.created_at),
@@ -255,6 +277,17 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
                     if let Some(value) = inputs.get(key) {
                         object.insert(key.to_string(), value.clone());
                     }
+                }
+            }
+            if let Some(expiry_ms) = contract.get("expiry_ms").and_then(Value::as_u64) {
+                object.insert("expiry_ms".to_string(), Value::Number(expiry_ms.into()));
+                if let Some(expires_at) = timestamp_millis_to_rfc3339(expiry_ms) {
+                    object.insert("expires_at".to_string(), Value::String(expires_at));
+                }
+                let expired = expiry_ms <= Utc::now().timestamp_millis().max(0).cast_unsigned();
+                object.insert("expired".to_string(), Value::Bool(expired));
+                if expired && client_status_allows_expiry(base_status) {
+                    object.insert("status".to_string(), Value::String("expired".to_owned()));
                 }
             }
             object.insert("task_contract".to_string(), contract);
@@ -851,13 +884,19 @@ async fn build_public_client_snapshot(
                     "runs": Vec::<Value>::new(),
                 })
             });
+    let node_limit = query
+        .node_limit
+        .or(query.peer_limit)
+        .unwrap_or(25)
+        .clamp(1, 200);
+    let nodes = build_client_peers_payload(state, node_limit).await?;
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
         node_id: state.agent_did.clone(),
         public_key: state.identity.public_key.clone(),
         network_status: build_client_network_status_payload(state).await?,
-        peers: build_client_peers_payload(state, query.peer_limit.unwrap_or(25).clamp(1, 200))
-            .await?,
+        nodes: nodes.clone(),
+        peers: nodes,
         operator: build_client_self_payload(state, identity_query).await?,
         rpc_logs: build_client_rpc_logs_payload(
             state,
@@ -896,6 +935,12 @@ fn timestamp_to_rfc3339(timestamp: i64) -> String {
         .map_or_else(|| Utc::now().to_rfc3339(), |dt| dt.to_rfc3339())
 }
 
+fn timestamp_millis_to_rfc3339(timestamp_ms: u64) -> Option<String> {
+    Utc.timestamp_millis_opt(i64::try_from(timestamp_ms).ok()?)
+        .single()
+        .map(|dt| dt.to_rfc3339())
+}
+
 fn mission_domain_label(domain: &MissionDomain) -> &'static str {
     match domain {
         MissionDomain::Wealth => "wealth",
@@ -913,6 +958,10 @@ fn client_task_status(status: &MissionStatus) -> &'static str {
         MissionStatus::Completed => "completed",
         MissionStatus::Settled | MissionStatus::Cancelled => "settled",
     }
+}
+
+fn client_status_allows_expiry(status: &str) -> bool {
+    matches!(status, "published" | "claimed")
 }
 
 fn organization_client_status(active: bool, active_member_count: usize) -> &'static str {

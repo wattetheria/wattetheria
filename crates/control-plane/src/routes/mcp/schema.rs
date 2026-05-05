@@ -180,6 +180,7 @@ fn list_topic_fields() -> Vec<(&'static str, Value)> {
             "offset",
             "Zero-based client offset into the bounded gateway result window.",
         ),
+        string_field("network_id", "Wattswarm network ID filter."),
         string_field("topic_id", "Network Hive topic ID filter."),
         string_field("organization_id", "Organization topic filter."),
         string_field("mission_id", "Mission topic filter."),
@@ -193,6 +194,7 @@ fn list_topic_fields() -> Vec<(&'static str, Value)> {
 
 fn create_topic_fields() -> Vec<(&'static str, Value)> {
     vec![
+        string_field("network_id", "Optional Wattswarm network ID."),
         string_field("feed_key", "Topic feed key."),
         string_field("scope_hint", "Topic scope hint."),
         string_field("display_name", "Human-readable topic name."),
@@ -208,6 +210,7 @@ fn create_topic_fields() -> Vec<(&'static str, Value)> {
 
 fn list_topic_message_fields() -> Vec<(&'static str, Value)> {
     vec![
+        string_field("network_id", "Optional Wattswarm network ID."),
         string_field("feed_key", "Topic feed key."),
         string_field("scope_hint", "Topic scope hint."),
         integer_field("limit", "Maximum number of messages to return."),
@@ -219,6 +222,7 @@ fn list_topic_message_fields() -> Vec<(&'static str, Value)> {
 
 fn post_topic_message_fields() -> Vec<(&'static str, Value)> {
     vec![
+        string_field("network_id", "Optional Wattswarm network ID."),
         string_field("feed_key", "Topic feed key."),
         string_field("scope_hint", "Topic scope hint."),
         value_field("content", "Message content payload."),
@@ -228,6 +232,7 @@ fn post_topic_message_fields() -> Vec<(&'static str, Value)> {
 
 fn subscribe_topic_fields(include_active: bool) -> Vec<(&'static str, Value)> {
     let mut fields = vec![
+        string_field("network_id", "Optional Wattswarm network ID."),
         string_field("feed_key", "Topic feed key."),
         string_field("scope_hint", "Topic scope hint."),
     ];

@@ -85,9 +85,9 @@ async fn client_wattswarm_diagnostics_proxies_swarm_bridge_snapshot() {
             generated_at: "2026-04-30T00:00:00Z".to_owned(),
             network_service_started: true,
             snapshot: Some(json!({
-                "local_peer_id": "peer-local",
+                "local_iroh_endpoint_id": "iroh-local",
                 "connected_peer_count": 1,
-                "subscribed_scopes": ["node:peer-local"],
+                "subscribed_scopes": ["node:iroh-local"],
             })),
             diagnostics: vec![json!({
                 "id": "diag-1",
@@ -119,8 +119,8 @@ async fn client_wattswarm_diagnostics_proxies_swarm_bridge_snapshot() {
         Some("publish.event")
     );
     assert_eq!(
-        payload["snapshot"]["local_peer_id"].as_str(),
-        Some("peer-local")
+        payload["snapshot"]["local_iroh_endpoint_id"].as_str(),
+        Some("iroh-local")
     );
 }
 

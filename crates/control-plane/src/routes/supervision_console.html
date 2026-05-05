@@ -917,8 +917,8 @@
           <span id="side-network" class="status-value">Unknown</span>
         </div>
         <div class="status-row">
-          <span class="status-label">Peers</span>
-          <span id="side-peers" class="status-value">0</span>
+          <span class="status-label">Nodes</span>
+          <span id="side-nodes" class="status-value">0</span>
         </div>
         <div class="status-row">
           <span class="status-label">Runtime</span>
@@ -977,7 +977,7 @@
             <article class="panel metric-card network">
               <h2>Network</h2>
               <div id="network-status" class="big">-</div>
-              <div id="network-detail" class="subtle">Peer data not loaded.</div>
+              <div id="network-detail" class="subtle">Node data not loaded.</div>
             </article>
             <article class="panel metric-card">
               <h2>Node</h2>
@@ -1025,8 +1025,8 @@
         <section class="view-page" data-page="swarm" hidden>
           <section class="content-grid">
             <article class="panel">
-              <h2>Peers</h2>
-              <div id="peers-list" class="list"></div>
+              <h2>Nodes</h2>
+              <div id="nodes-list" class="list"></div>
             </article>
             <article class="panel">
               <h2>Topics</h2>
@@ -1081,9 +1081,8 @@
           <article class="panel config-panel">
             <h2>Agent Runtime</h2>
             <p class="config-intro">
-              Update the node's agent runtime connection here. Save writes the runtime
-              settings into the deployment env file so the next restart uses the new
-              endpoint without manual env editing.
+              Update the node's agent runtime connection here. Save applies the runtime
+              settings so the next restart uses the new endpoint without manual env editing.
             </p>
             <div class="config-grid">
               <section class="config-section">
@@ -1133,7 +1132,6 @@
             </div>
             <div class="config-meta">
               <div><strong>Current runtime:</strong> <span id="brain-provider-label">-</span></div>
-              <div><strong>Deployment env file:</strong> <span id="brain-env-path">-</span></div>
             </div>
           </article>
         </section>
@@ -1171,7 +1169,7 @@
                 <div id="swarm-diag-service" class="mini-value">unknown</div>
               </div>
               <div class="mini-card">
-                <div class="mini-label">Swarm Peers</div>
+                <div class="mini-label">Swarm Nodes</div>
                 <div id="swarm-diag-connected" class="mini-value">0</div>
               </div>
               <div class="mini-card">
@@ -1182,7 +1180,7 @@
             <div class="log-toolbar">
               <label>
                 Search
-                <input id="diagnostic-search" placeholder="task, event, peer, topic">
+                <input id="diagnostic-search" placeholder="task, event, node, topic">
               </label>
               <label>
                 Source
@@ -1216,7 +1214,7 @@
               </label>
               <label>
                 Source Node
-                <input id="diagnostic-source-node-id" placeholder="peer id">
+                <input id="diagnostic-source-node-id" placeholder="node id">
               </label>
               <label>
                 Lines
@@ -1494,6 +1492,12 @@
       return publicIdentity?.display_name || identityRecordPublicId(record) || "Unnamed identity";
     }
 
+    function isAgentIdentityRecord(record) {
+      const publicIdentity = identityRecordPublicIdentity(record);
+      const publicId = identityRecordPublicId(record);
+      return publicIdentity?.active !== false && publicId.startsWith("agent-");
+    }
+
     function pill(text, className = "") {
       return `<span class="pill ${String(className || "").toLowerCase()}">${escapeHtml(valueOrDash(text))}</span>`;
     }
@@ -1570,7 +1574,7 @@
       setStatus("Loading local identities...");
       try {
         const payload = await fetchJson("/v1/civilization/identities", { auth: true });
-        const identities = safeArray(payload.public_identities);
+        const identities = safeArray(payload.public_identities).filter(isAgentIdentityRecord);
         publicIdEl.innerHTML = "";
         identitiesByPublicId.clear();
         for (const record of identities) {
@@ -1611,7 +1615,7 @@
       try {
         const query = new URLSearchParams({
           public_id: publicId,
-          peer_limit: String(limit),
+          node_limit: String(limit),
           task_limit: String(limit),
           organization_limit: String(limit),
           rpc_log_limit: String(limit),
@@ -1662,12 +1666,12 @@
         ? `${valueOrDash(payment.account_kind || payment.kind)} ${compactId(payment.address || payment.account_id || payment.payment_account_ref)}`
         : "No active payment account";
       qs("network-status").textContent = valueOrDash(network.status || operator.status);
-      qs("network-detail").textContent = `${safeArray(payload.peers).length} peers | ${valueOrDash(operator.coordinate_source)} geo`;
+      qs("network-detail").textContent = `${safeArray(payload.nodes).length} nodes | ${valueOrDash(operator.coordinate_source)} geo`;
       qs("node-id").textContent = compactId(payload.node_id);
       qs("node-detail").textContent = `Generated ${formatTime(payload.generated_at)} | public key ${compactId(payload.public_key)}`;
       qs("side-identity").textContent = compactId(operator.display_name || operator.id || "Not loaded", 20);
       qs("side-network").textContent = valueOrDash(network.status || operator.status || "unknown");
-      qs("side-peers").textContent = String(safeArray(payload.peers).length);
+      qs("side-nodes").textContent = String(safeArray(payload.nodes).length);
 
       renderNearby(payload);
       renderKpis(payload);
@@ -1678,7 +1682,7 @@
       renderTopics(payload);
       renderTopicMessages(payload);
       renderWallet(operator);
-      renderPeers(payload);
+      renderNodes(payload);
         renderOrganizations(payload);
     }
 
@@ -1764,26 +1768,20 @@
       if (row.kind === "friend" && status === "online") return 10;
       if (row.last_message_at) return 20;
       if (status === "pending") return 30;
-      if (row.kind === "peer" && status === "online") return 40;
-      if (row.kind === "peer") return 50;
+      if (row.kind === "node" && status === "online") return 40;
+      if (row.kind === "node") return 50;
       if (row.kind === "friend") return 60;
       return 70;
     }
 
-    function peerRelationshipState(peer) {
-      return peer.relationship_state
-        || at(peer, ["relationship", "relationship_state"])
-        || at(peer, ["relationship", "last_action"]);
+    function nodeRelationshipState(node) {
+      return node.relationship_state
+        || at(node, ["relationship", "relationship_state"])
+        || at(node, ["relationship", "last_action"]);
     }
 
     function buildNearbyRows(payload) {
       const rows = [];
-      const peerByNode = new Map();
-      for (const peer of safeArray(payload.peers)) {
-        const nodeId = peer.node_id || peer.id || peer.peer_id;
-        if (nodeId) peerByNode.set(nodeId, peer);
-      }
-
       const seen = new Set();
       for (const friend of safeArray(payload.local_client_friends)) {
         const key = friend.public_id || friend.counterpart_public_id;
@@ -1805,7 +1803,7 @@
       for (const relationship of safeArray(payload.friend_relationships)) {
         const publicId = relationship.counterpart_public_id || relationship.public_id;
         const remoteNodeId = relationship.remote_node_id;
-        const key = publicId ? `public:${publicId}` : `node:${remoteNodeId}`;
+        const key = publicId ? `public:${publicId}` : (remoteNodeId ? `node:${remoteNodeId}` : "");
         if (!key || seen.has(key)) continue;
         seen.add(key);
         rows.push({
@@ -1817,22 +1815,6 @@
           pending_outbound: relationship.pending_outbound,
           detail: remoteNodeId ? compactId(remoteNodeId, 24) : compactId(publicId, 24),
           updated_at: relationship.updated_at,
-        });
-      }
-
-      for (const peer of safeArray(payload.peers)) {
-        const nodeId = peer.node_id || peer.id || peer.peer_id;
-        if (!nodeId || seen.has(`node:${nodeId}`)) continue;
-        const relationshipState = peerRelationshipState(peer);
-        rows.push({
-          key: `node:${nodeId}`,
-          kind: relationshipState === "friend" ? "friend" : "peer",
-          name: nodeId,
-          status: peer.status || relationshipState || (peer.connected ? "online" : "discovered"),
-          connected: peer.connected,
-          relationship_state: relationshipState,
-          source_kind: peer.source_kind || at(peer, ["discovery", "source_kind"]),
-          detail: peer.address || peer.source_kind || at(peer, ["metadata", "handshake_status"]) || "peer",
         });
       }
 
@@ -1891,6 +1873,7 @@
         { label: "Network Reward", render: (row) => escapeHtml(signedWatt(row.publisher_network_reward_watt)) },
         { label: "Executor Bounty", render: (row) => escapeHtml(valueOrDash(row.executor_bounty_watt ?? row.task_bounty_watt ?? row.reward_watt)) },
         { label: "Created", render: (row) => escapeHtml(formatTime(row.created_at)) },
+        { label: "Expires", render: (row) => escapeHtml(formatTime(row.expires_at ?? row.expiry_ms ?? row.task_contract?.expires_at ?? row.task_contract?.expiry_ms)) },
       ], rows, "No missions recorded.");
     }
 
@@ -2156,14 +2139,14 @@
       bindWalletControls();
     }
 
-    function renderPeers(payload) {
-      renderList("peers-list", safeArray(payload.peers), "No peers visible.", (row) => `
+    function renderNodes(payload) {
+      renderList("nodes-list", safeArray(payload.nodes), "No nodes visible.", (row) => `
         <div class="row">
           <div class="row-head">
-            <div class="row-title">${escapeHtml(compactId(row.node_id || row.peer_id || row.id, 24))}</div>
-            ${pill(row.status || peerRelationshipState(row) || "peer", row.status || peerRelationshipState(row))}
+            <div class="row-title">${escapeHtml(compactId(row.node_id || row.id, 24))}</div>
+            ${pill(row.status || nodeRelationshipState(row) || "node", row.status || nodeRelationshipState(row))}
           </div>
-          <div class="row-body">${escapeHtml(valueOrDash(row.address || at(row, ["discovery", "listen_addr"]) || at(row, ["metadata", "observed_addr"]) || row.endpoint || row.region))}</div>
+          <div class="row-body">${escapeHtml(valueOrDash(row.endpoint || at(row, ["metadata", "endpoint_id"]) || at(row, ["metadata", "local_iroh_endpoint_id"]) || at(row, ["discovery", "endpoint_id"]) || row.region))}</div>
           <div class="subtle">${escapeHtml(valueOrDash(row.source_kind || at(row, ["discovery", "source_kind"])))} | ${escapeHtml(valueOrDash(at(row, ["metadata", "handshake_status"]) || (row.connected ? "connected" : "not connected")))}</div>
         </div>
       `);
@@ -2215,6 +2198,42 @@
         && (row.component === "wattetheria.event_bus" || row.category === "agent_action_commit");
     }
 
+    function diagnosticDetails(row) {
+      return row && row.details && typeof row.details === "object" && !Array.isArray(row.details)
+        ? row.details
+        : {};
+    }
+
+    function diagnosticNodeId(row) {
+      if (!row) return "";
+      if (row.object_kind === "node" && row.object_id) return row.object_id;
+      if (row.category === "transport" && row.object_id) return row.object_id;
+      return row.source_node_id || "";
+    }
+
+    function diagnosticTitle(row) {
+      const phase = String(row.phase || "");
+      if (row.source === "wattswarm" && phase === "connection.established") return "network connection established";
+      if (row.source === "wattswarm" && phase === "connection.closed") return "network connection closed";
+      if (row.source === "wattswarm" && phase === "handshake.rejected") return "network handshake rejected";
+      return row.message || row.phase || "diagnostic";
+    }
+
+    function diagnosticContextSummary(row) {
+      const details = diagnosticDetails(row);
+      const items = [];
+      const nodeId = diagnosticNodeId(row);
+      if (nodeId) items.push(`node ${compactId(nodeId, 28)}`);
+      if (details.remote_addr) items.push(`remote ${details.remote_addr}`);
+      if (details.remaining_established != null) items.push(`remaining ${details.remaining_established}`);
+      if (details.endpoint_url) items.push(`callback ${details.endpoint_url}`);
+      if (details.event_type) items.push(`event type ${details.event_type}`);
+      if (details.feed_key) items.push(`feed ${details.feed_key}`);
+      if (details.events_applied != null) items.push(`events ${details.events_applied}`);
+      if (row.scope_hint) items.push(`scope ${row.scope_hint}`);
+      return items.join(" | ");
+    }
+
     function filteredDiagnosticEntries(entries) {
       const explicitSource = qs("diagnostic-source").value.trim();
       return safeArray(entries).filter((row) => {
@@ -2241,29 +2260,31 @@
       qs("local-log-errors").textContent = valueOrDash(localRows.filter(diagnosticIsError).length);
       qs("local-log-last").textContent = localRows.length ? compactId(localRows[0].phase || localRows[0].message || "-", 24) : "-";
       qs("swarm-diag-service").textContent = swarm && swarm.network_service_started ? "running" : "stopped";
-      qs("swarm-diag-connected").textContent = valueOrDash(snapshot.connected_peer_count || 0);
+      qs("swarm-diag-connected").textContent = valueOrDash(snapshot.connected_node_count || snapshot.known_iroh_contacts || 0);
       qs("swarm-diag-scopes").textContent = valueOrDash(safeArray(snapshot.subscribed_scopes).length);
       const visibleEntries = filteredDiagnosticEntries(entries);
       renderList("diagnostic-list", visibleEntries, "No logs recorded for the current filters.", (row) => {
+        const details = diagnosticDetails(row);
+        const contextSummary = diagnosticContextSummary(row);
         const meta = [
           row.source_label,
           row.component,
           row.category,
           row.phase,
-          row.scope_hint ? `scope ${row.scope_hint}` : "",
-          row.object_id ? `object ${row.object_id}` : "",
+          row.object_kind && row.object_id ? `${row.object_kind} ${compactId(row.object_id, 24)}` : "",
           row.event_id ? `event ${compactId(row.event_id, 18)}` : "",
-          row.source_node_id ? `from ${compactId(row.source_node_id, 18)}` : "",
+          row.source_node_id && row.source_node_id !== row.object_id ? `from ${compactId(row.source_node_id, 18)}` : "",
+          details.author_node_id ? `author ${compactId(details.author_node_id, 18)}` : "",
         ].filter(Boolean);
         const timestamp = row.timestamp_ms || row.timestamp || row.generated_at;
         return `
           <div class="row">
             <div class="row-head">
-              <div class="row-title">${escapeHtml(row.message || row.phase || "diagnostic")}</div>
+              <div class="row-title">${escapeHtml(diagnosticTitle(row))}</div>
               ${pill(row.source_label || row.source || "log", row.source)}
               ${pill(row.level || "info", row.status || row.level)}
             </div>
-            <div class="row-body">${escapeHtml(formatTime(timestamp))}</div>
+            <div class="row-body">${escapeHtml(formatTime(timestamp))}${contextSummary ? ` | ${escapeHtml(contextSummary)}` : ""}</div>
             <div class="row-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
             <details class="row-details">
               <summary>JSON</summary>
@@ -2292,7 +2313,6 @@
           runtimeLabel = data.label || kind;
         }
         document.getElementById("brain-provider-label").textContent = runtimeLabel;
-        document.getElementById("brain-env-path").textContent = data.env_path || "-";
         document.getElementById("side-runtime").textContent = runtimeLabel;
         document.getElementById("brain-config-status").textContent = "";
         document.getElementById("brain-config-status").className = "status-text";
@@ -2321,7 +2341,6 @@
           : "Error";
         document.getElementById("brain-config-status").className = data.ok ? "status-text ok" : "status-text error";
         document.getElementById("brain-provider-label").textContent = data.label || "";
-        document.getElementById("brain-env-path").textContent = data.env_path || "-";
         document.getElementById("side-runtime").textContent = data.label || kind;
       } catch (err) {
         document.getElementById("brain-config-status").textContent = "Save failed: " + err.message;

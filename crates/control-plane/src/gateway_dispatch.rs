@@ -501,13 +501,13 @@ mod tests {
     }
 
     #[test]
-    fn citizen_published_missions_do_not_use_publisher_as_organization_scope() {
+    fn agent_published_missions_do_not_use_publisher_as_organization_scope() {
         let event = StreamEvent {
             kind: "mission.published".to_string(),
             timestamp: 1_710_000_000,
             payload: json!({
                 "mission_id": "mission-1",
-                "publisher": "Citizen-citizen-b2HM",
+                "publisher": "Agent-agent-b2HM",
             }),
         };
         let plan = plan_stream_event(&event).expect("mission plan");

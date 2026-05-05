@@ -467,12 +467,14 @@ fn scoped_id(slug: &str, agent_did: &str) -> String {
     build_scoped_public_id(slug, &fp)
 }
 
+type TopicSubscriptionRecord = (Option<String>, String, String, String, bool);
+
 struct MockSwarmBridge {
     local_node_id: String,
     agent_stats: BTreeMap<String, AgentStats>,
     network_status: SwarmNetworkStatusView,
     peers: Vec<SwarmPeerView>,
-    subscriptions: Mutex<Vec<(String, String, String, bool)>>,
+    subscriptions: Mutex<Vec<TopicSubscriptionRecord>>,
     messages: Mutex<Vec<SwarmTopicMessageView>>,
     relationship_views: Mutex<Vec<SwarmPeerRelationshipView>>,
     relationship_commands: Mutex<Vec<SwarmRelationshipActionCommand>>,
@@ -518,12 +520,14 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn subscribe_topic(
         &self,
+        network_id: Option<&str>,
         subscriber_id: &str,
         feed_key: &str,
         scope_hint: &str,
         active: bool,
     ) -> anyhow::Result<()> {
         self.subscriptions.lock().await.push((
+            network_id.map(ToOwned::to_owned),
             subscriber_id.to_string(),
             feed_key.to_string(),
             scope_hint.to_string(),
@@ -534,6 +538,7 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn post_topic_message(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         content: Value,
@@ -543,7 +548,10 @@ impl SwarmBridge for MockSwarmBridge {
         let next_id = messages.len() + 1;
         messages.push(SwarmTopicMessageView {
             message_id: format!("msg-{next_id}"),
-            network_id: format!("local:{}", self.local_node_id),
+            network_id: network_id.map_or_else(
+                || format!("local:{}", self.local_node_id),
+                ToOwned::to_owned,
+            ),
             feed_key: feed_key.to_string(),
             scope_hint: scope_hint.to_string(),
             author_node_id: self.local_node_id.clone(),
@@ -556,6 +564,7 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn list_topic_messages(
         &self,
+        network_id: Option<&str>,
         feed_key: &str,
         scope_hint: &str,
         limit: usize,
@@ -567,7 +576,11 @@ impl SwarmBridge for MockSwarmBridge {
             .lock()
             .await
             .iter()
-            .filter(|message| message.feed_key == feed_key && message.scope_hint == scope_hint)
+            .filter(|message| {
+                network_id.is_none_or(|network_id| message.network_id == network_id)
+                    && message.feed_key == feed_key
+                    && message.scope_hint == scope_hint
+            })
             .take(limit)
             .cloned()
             .collect())
@@ -575,6 +588,7 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn topic_cursor(
         &self,
+        _network_id: Option<&str>,
         feed_key: &str,
         subscriber_id: Option<&str>,
     ) -> anyhow::Result<Option<SwarmTopicCursorView>> {
@@ -589,6 +603,10 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn network_status(&self) -> anyhow::Result<SwarmNetworkStatusView> {
         Ok(self.network_status.clone())
+    }
+
+    async fn current_network_id(&self) -> anyhow::Result<String> {
+        Ok(format!("local:{}", self.local_node_id))
     }
 
     async fn local_node_id(&self) -> anyhow::Result<String> {
@@ -736,7 +754,7 @@ impl SwarmBridge for MockSwarmBridge {
                 da_quorum_threshold: 1,
             },
             task_mode: wattswarm_protocol::types::TaskMode::OneShot,
-            expiry_ms: 86_400_000,
+            expiry_ms: chrono::Utc::now().timestamp_millis().max(0).cast_unsigned() + 86_400_000,
             evidence_policy: wattswarm_protocol::types::EvidencePolicy {
                 max_inline_evidence_bytes: 65_536,
                 max_inline_media_bytes: 0,
