@@ -377,6 +377,29 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     assert_eq!(mission["publisher"].as_str(), Some(local_public_id));
     assert_eq!(mission["publisher_kind"].as_str(), Some("player"));
+    let mission_id = mission["mission_id"].as_str().expect("mission id");
+    assert_eq!(mission["task_id"].as_str(), Some(mission_id));
+    assert_eq!(mission["task_type"].as_str(), Some("wattetheria.mission"));
+    assert_eq!(
+        mission["mission_scope_hint"].as_str(),
+        Some(format!("group:{mission_id}").as_str())
+    );
+    assert_eq!(
+        mission["swarm_scope"],
+        json!({"kind": "group", "id": mission_id})
+    );
+    assert_eq!(
+        mission["task_contract"]["task_id"].as_str(),
+        Some(mission_id)
+    );
+    assert_eq!(
+        mission["task_contract"]["inputs"]["swarm_scope"],
+        json!({"kind": "group", "id": mission_id})
+    );
+    assert_eq!(
+        mission["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
+        mission["mission_scope_hint"].as_str()
+    );
 }
 
 #[tokio::test]

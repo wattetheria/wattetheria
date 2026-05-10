@@ -437,6 +437,39 @@ fn mission_announce_command(
     }
 }
 
+fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskContract>) -> Value {
+    let mut payload = serde_json::to_value(mission).unwrap_or(Value::Null);
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+    let Some(contract) = task_contract else {
+        return payload;
+    };
+    object.insert(
+        "task_id".to_string(),
+        Value::String(contract.task_id.clone()),
+    );
+    object.insert(
+        "task_type".to_string(),
+        Value::String(contract.task_type.clone()),
+    );
+    object.insert(
+        "task_contract".to_string(),
+        serde_json::to_value(contract).unwrap_or(Value::Null),
+    );
+    for key in [
+        "publisher_wattswarm_node_id",
+        "mission_feed_key",
+        "mission_scope_hint",
+        "swarm_scope",
+    ] {
+        if let Some(value) = contract.inputs.get(key) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    payload
+}
+
 fn network_mission_announce_command(
     route: &NetworkMissionClaimRoute,
     contract: &TaskContract,
@@ -680,6 +713,7 @@ pub(crate) async fn mission_publish(
     if let Err(error) = refresh_known_wallet_balances(&state).await {
         return internal_error(&error);
     }
+    let mut published_task_contract = None;
     if agent_commit_context_from_headers(&headers).is_none() {
         let publisher_wattswarm_node_id = match state.swarm_bridge.local_node_id().await {
             Ok(node_id) => node_id,
@@ -698,6 +732,7 @@ pub(crate) async fn mission_publish(
             ),
             Err(error) => return internal_error(&error),
         };
+        published_task_contract = Some(contract.clone());
         if let Err(error) = state.swarm_bridge.submit_task(contract).await {
             return internal_error(&error);
         }
@@ -714,7 +749,7 @@ pub(crate) async fn mission_publish(
         }
     }
 
-    let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let payload = mission_gateway_payload(&mission, published_task_contract.as_ref());
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.published".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -736,7 +771,6 @@ pub(crate) async fn mission_publish(
         details: Some(payload.clone()),
     });
 
-    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -745,12 +779,12 @@ pub(crate) async fn mission_publish(
             target_id: Some(mission.mission_id.clone()),
             actor_agent_did: None,
             request_json: &json!({"title": body.title, "publisher": body.publisher}),
-            response_json: &response_json,
+            response_json: &payload,
         },
     ) {
         return internal_error(&error);
     }
-    (StatusCode::CREATED, Json(response_json)).into_response()
+    (StatusCode::CREATED, Json(payload)).into_response()
 }
 
 pub(crate) async fn mission_claim(
