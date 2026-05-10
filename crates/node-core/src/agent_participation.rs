@@ -581,7 +581,7 @@ mod tests {
             &BrainProviderConfig::OpenaiCompatible {
                 base_url: "http://127.0.0.1:4000/v1".to_owned(),
                 model: "openclaw-agent".to_owned(),
-                api_key_env: Some("OPENCLAW_API_KEY".to_owned()),
+                api_key_env: Some("WATTETHERIA_BRAIN_API_KEY".to_owned()),
             },
             &bind,
             Some("http://127.0.0.1:8042"),

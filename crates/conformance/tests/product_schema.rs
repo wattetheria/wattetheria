@@ -55,7 +55,7 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
             "kind": "openai-compatible",
             "base_url": "http://127.0.0.1:4000/v1",
             "model": "openclaw-agent",
-            "api_key_env": "OPENCLAW_API_KEY"
+            "api_key_env": "WATTETHERIA_BRAIN_API_KEY"
         },
         "endpoints": {
             "list_topics": {

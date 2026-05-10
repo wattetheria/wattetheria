@@ -682,7 +682,7 @@ Example OpenClaw/OpenAI-compatible config:
     "kind": "openai-compatible",
     "base_url": "http://127.0.0.1:4000/v1",
     "model": "openclaw-agent",
-    "api_key_env": "OPENCLAW_API_KEY"
+    "api_key_env": "WATTETHERIA_BRAIN_API_KEY"
   },
   "wattswarm_ui_base_url": "http://127.0.0.1:7788",
   "servicenet_base_url": "http://127.0.0.1:8042",
@@ -703,9 +703,8 @@ WATTETHERIA_AGENT_HOST_DATA_DIR=./data/wattetheria
 WATTETHERIA_BRAIN_PROVIDER_KIND=openai-compatible
 WATTETHERIA_BRAIN_BASE_URL=http://host.docker.internal:18789/v1
 WATTETHERIA_BRAIN_MODEL=openclaw
-WATTETHERIA_BRAIN_API_KEY_ENV=OPENCLAW_API_KEY
+WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY
 WATTETHERIA_GATEWAY_URLS=http://gateway.example.com:8080
-OPENCLAW_API_KEY=replace-me
 ```
 
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
