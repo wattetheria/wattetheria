@@ -594,7 +594,13 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
                     "title": "Gateway Mission One",
                     "status": "published",
                     "source_node_id": "node-alpha",
-                    "task_contract": {"task_id": "mission-gateway-1"}
+                    "mission_scope_hint": "group:mission-gateway-1",
+                    "task_contract": {
+                        "task_id": "mission-gateway-1",
+                        "inputs": {
+                            "swarm_scope": {"kind": "group", "id": "mission-gateway-1"}
+                        }
+                    }
                 },
                 {
                     "task_id": "not-a-mission",
@@ -606,7 +612,13 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
                     "title": "Gateway Mission Two",
                     "status": "published",
                     "source_node_id": "node-beta",
-                    "task_contract": {"task_id": "mission-gateway-2"}
+                    "mission_scope_hint": "group:mission-gateway-2",
+                    "task_contract": {
+                        "task_id": "mission-gateway-2",
+                        "inputs": {
+                            "swarm_scope": {"kind": "group", "id": "mission-gateway-2"}
+                        }
+                    }
                 },
                 {
                     "id": "mission-gateway-settled",
@@ -736,7 +748,7 @@ async fn mcp_list_missions_marks_expired_gateway_tasks_not_claim_ready() {
 }
 
 fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) {
-    let scope_hint = format!("node:{node_id}");
+    let scope_hint = format!("group:{mission_id}");
     assert_eq!(
         mission["publisher_wattswarm_node_id"].as_str(),
         Some(node_id)
@@ -751,7 +763,7 @@ fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) 
     );
     assert_eq!(
         mission["swarm_scope"],
-        json!({"kind": "node", "id": node_id})
+        json!({"kind": "group", "id": mission_id})
     );
     assert_eq!(mission["claim_route"]["task_id"].as_str(), Some(mission_id));
     assert_eq!(

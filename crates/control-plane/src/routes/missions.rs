@@ -362,12 +362,16 @@ fn publisher_node_scope_hint(publisher_wattswarm_node_id: &str) -> String {
     format!("node:{publisher_wattswarm_node_id}")
 }
 
+fn mission_task_scope_hint(task_id: &str) -> String {
+    format!("group:{task_id}")
+}
+
 fn mission_task_inputs(
     mission: &CivilMission,
     publisher_agent_did: &str,
     publisher_wattswarm_node_id: &str,
 ) -> Value {
-    let mission_scope_hint = publisher_node_scope_hint(publisher_wattswarm_node_id);
+    let mission_scope_hint = mission_task_scope_hint(&mission.mission_id);
     json!({
         "kind": "wattetheria_mission",
         "mission_id": mission.mission_id,
@@ -376,8 +380,8 @@ fn mission_task_inputs(
         "publisher_agent_did": publisher_agent_did,
         "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
         "swarm_scope": {
-            "kind": "node",
-            "id": publisher_wattswarm_node_id,
+            "kind": "group",
+            "id": mission.mission_id,
         },
         "mission_feed_key": MISSION_FEED_KEY,
         "mission_scope_hint": mission_scope_hint,
@@ -410,7 +414,7 @@ fn mission_announce_command(
     publisher_agent_did: &str,
     publisher_wattswarm_node_id: &str,
 ) -> SwarmTaskAnnounceCommand {
-    let mission_scope_hint = publisher_node_scope_hint(publisher_wattswarm_node_id);
+    let mission_scope_hint = mission_task_scope_hint(&mission.mission_id);
     SwarmTaskAnnounceCommand {
         task_id: mission.mission_id.clone(),
         announcement_id: None,
@@ -1175,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn mission_task_inputs_are_node_scoped_to_publisher_wattswarm_node() {
+    fn mission_task_inputs_are_group_scoped_to_mission_task() {
         let mission = sample_mission();
         let inputs = mission_task_inputs(&mission, "did:agent:publisher", "node-publisher");
 
@@ -1195,22 +1199,22 @@ mod tests {
         );
         assert_eq!(
             inputs["swarm_scope"],
-            json!({"kind": "node", "id": "node-publisher"})
+            json!({"kind": "group", "id": mission.mission_id})
         );
         assert_eq!(inputs["mission_feed_key"].as_str(), Some(MISSION_FEED_KEY));
         assert_eq!(
             inputs["mission_scope_hint"].as_str(),
-            Some("node:node-publisher")
+            Some(format!("group:{}", mission.mission_id).as_str())
         );
     }
 
     #[test]
-    fn mission_announce_uses_same_node_scope_as_contract_inputs() {
+    fn mission_announce_uses_same_group_scope_as_contract_inputs() {
         let mission = sample_mission();
         let command = mission_announce_command(&mission, "did:agent:publisher", "node-publisher");
 
         assert_eq!(command.feed_key, MISSION_FEED_KEY);
-        assert_eq!(command.scope_hint, "node:node-publisher");
+        assert_eq!(command.scope_hint, format!("group:{}", mission.mission_id));
         assert_eq!(
             command.summary["publisher_wattswarm_node_id"].as_str(),
             Some("node-publisher")

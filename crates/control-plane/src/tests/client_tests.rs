@@ -773,7 +773,7 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
     );
     assert_eq!(
         task["mission_scope_hint"].as_str(),
-        Some(format!("node:{}", state.agent_did).as_str())
+        Some(format!("group:{mission_id}").as_str())
     );
     assert_eq!(task["task_contract"]["task_id"].as_str(), Some(mission_id));
     assert_eq!(

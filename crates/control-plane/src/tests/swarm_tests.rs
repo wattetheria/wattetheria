@@ -159,7 +159,7 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
     assert_eq!(response["task_id"].as_str(), Some("mission-remote-1"));
     assert_eq!(
         response["mission_scope_hint"].as_str(),
-        Some("node:publisher-node")
+        Some("group:mission-remote-1")
     );
     assert_eq!(
         response["publisher_wattswarm_node_id"].as_str(),
@@ -183,7 +183,7 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
     );
     assert_eq!(
         response["task_announcement_sync"]["scope_hint"].as_str(),
-        Some("node:publisher-node")
+        Some("group:mission-remote-1")
     );
 }
 
@@ -203,9 +203,9 @@ async fn claim_network_mission_rejects_expired_task_contract_before_swarm_claim(
         "publisher": "publisher-public",
         "publisher_agent_did": "did:agent:publisher",
         "publisher_wattswarm_node_id": "publisher-node",
-        "swarm_scope": {"kind": "node", "id": "publisher-node"},
+        "swarm_scope": {"kind": "group", "id": "mission-expired"},
         "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": "node:publisher-node",
+        "mission_scope_hint": "group:mission-expired",
         "reward": {"agent_watt": 10},
         "payload": {"work": "deliver"}
     });
@@ -218,7 +218,7 @@ async fn claim_network_mission_rejects_expired_task_contract_before_swarm_claim(
         "source_node_id": "publisher-node",
         "publisher_wattswarm_node_id": "publisher-node",
         "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": "node:publisher-node",
+        "mission_scope_hint": "group:mission-expired",
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
@@ -275,9 +275,9 @@ async fn seed_gateway_remote_mission(
         "publisher": "publisher-public",
         "publisher_agent_did": "did:agent:publisher",
         "publisher_wattswarm_node_id": "publisher-node",
-        "swarm_scope": {"kind": "node", "id": "publisher-node"},
+        "swarm_scope": {"kind": "group", "id": mission_id},
         "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": "node:publisher-node",
+        "mission_scope_hint": format!("group:{mission_id}"),
         "reward": {"agent_watt": 10},
         "payload": {"work": "deliver"}
     });
@@ -299,7 +299,7 @@ async fn seed_gateway_remote_mission(
         "source_node_id": "publisher-node",
         "publisher_wattswarm_node_id": "publisher-node",
         "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": "node:publisher-node",
+        "mission_scope_hint": format!("group:{mission_id}"),
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
@@ -336,7 +336,7 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
             "claim_route": {
                 "task_id": "mission-remote-2",
                 "mission_feed_key": "wattetheria.missions",
-                "mission_scope_hint": "node:publisher-node",
+                "mission_scope_hint": "group:mission-remote-2",
                 "publisher_wattswarm_node_id": "publisher-node"
             },
             "result": {"delivered": true}
@@ -356,7 +356,7 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
     );
     assert_eq!(
         response["mission_scope_hint"].as_str(),
-        Some("node:publisher-node")
+        Some("group:mission-remote-2")
     );
     assert_eq!(
         response["publisher_wattswarm_node_id"].as_str(),
@@ -376,7 +376,7 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
     );
     assert_eq!(
         response["task_announcement_sync"]["scope_hint"].as_str(),
-        Some("node:publisher-node")
+        Some("group:mission-remote-2")
     );
 }
 
