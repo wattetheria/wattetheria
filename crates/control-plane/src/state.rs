@@ -232,7 +232,7 @@ pub struct NodeGeoLocation {
     pub source: GeoSource,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GeoSource {
     #[serde(rename = "ip_api")]
     IpApi,
@@ -243,21 +243,7 @@ pub enum GeoSource {
 }
 
 impl NodeGeoLocation {
-    pub async fn load_or_fetch(data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
-        let cache_path = data_dir.join("geo_location.json");
-        if let Some(cached) = read_cached_geo(&cache_path) {
-            info!(
-                lat = cached.lat,
-                lng = cached.lng,
-                "loaded cached geo location"
-            );
-            return Arc::new(Self {
-                lat: cached.lat,
-                lng: cached.lng,
-                source: GeoSource::Cached,
-            });
-        }
-
+    pub async fn load_or_fetch(_data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
         match fetch_geo_from_ip_api().await {
             Ok(geo) => {
                 info!(
@@ -265,7 +251,6 @@ impl NodeGeoLocation {
                     lng = geo.lng,
                     "resolved geo location via ip-api.com"
                 );
-                let _ = persist_geo(&cache_path, &geo);
                 Arc::new(geo)
             }
             Err(error) => {
@@ -280,21 +265,7 @@ impl NodeGeoLocation {
         }
     }
 
-    pub fn load_or_fetch_blocking(data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
-        let cache_path = data_dir.join("geo_location.json");
-        if let Some(cached) = read_cached_geo(&cache_path) {
-            info!(
-                lat = cached.lat,
-                lng = cached.lng,
-                "loaded cached geo location"
-            );
-            return Arc::new(Self {
-                lat: cached.lat,
-                lng: cached.lng,
-                source: GeoSource::Cached,
-            });
-        }
-
+    pub fn load_or_fetch_blocking(_data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
         match fetch_geo_from_ip_api_blocking() {
             Ok(geo) => {
                 info!(
@@ -302,7 +273,6 @@ impl NodeGeoLocation {
                     lng = geo.lng,
                     "resolved geo location via ip-api.com"
                 );
-                let _ = persist_geo(&cache_path, &geo);
                 Arc::new(geo)
             }
             Err(error) => {
@@ -366,19 +336,6 @@ fn fetch_geo_from_ip_api_blocking() -> anyhow::Result<NodeGeoLocation> {
         lng: lon,
         source: GeoSource::IpApi,
     })
-}
-
-fn read_cached_geo(path: &std::path::Path) -> Option<NodeGeoLocation> {
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn persist_geo(path: &std::path::Path, geo: &NodeGeoLocation) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(geo)?)?;
-    Ok(())
 }
 
 use anyhow::Context as _;
@@ -780,6 +737,8 @@ pub struct RelationshipBody {
 pub struct AgentRelationshipActionBody {
     pub public_id: Option<String>,
     pub counterpart_public_id: String,
+    #[serde(default)]
+    pub remote_node_id: Option<String>,
     pub action: SwarmRelationshipAction,
     #[serde(default)]
     pub message: Option<Value>,

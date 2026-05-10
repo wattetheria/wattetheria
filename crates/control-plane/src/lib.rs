@@ -47,8 +47,8 @@ pub use routes::client_api::{
     push_signed_public_client_snapshot,
 };
 pub use state::{
-    ClientExportQuery, ControlPlaneState, GatewayEventSequence, NodeGeoLocation, RateLimiter,
-    StreamEvent,
+    ClientExportQuery, ControlPlaneState, GatewayEventSequence, GeoSource, NodeGeoLocation,
+    RateLimiter, StreamEvent,
 };
 pub use swarm_sync::{DEFAULT_WATTSWARM_SYNC_GRPC_PORT, spawn_wattswarm_sync_bridge};
 

@@ -407,6 +407,23 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &["counterpart_public_id", "kind", "active"],
             false,
         )),
+        "request_agent_friend" => Some(tool_schema(
+            tool,
+            &[
+                string_field(
+                    "remote_node_id",
+                    "Discovered Wattswarm/Iroh node ID to send the friend request to.",
+                ),
+                string_field(
+                    "counterpart_public_id",
+                    "Optional counterpart public identity hint; defaults to remote_node_id.",
+                ),
+                value_field("message", "Optional friend request message payload."),
+                value_field("extensions", "Optional signed envelope extension payload."),
+            ],
+            &["remote_node_id"],
+            false,
+        )),
         _ => None,
     }
 }

@@ -24,6 +24,7 @@ const AGENT_PARTICIPATION_MANIFEST_ENDPOINTS: &[&str] = &[
     "settle_mission",
     "list_friends",
     "upsert_friend",
+    "request_agent_friend",
     "send_message",
     "fetch_messages",
     "ack_message",
@@ -168,6 +169,70 @@ async fn mcp_tools_call_writes_product_diagnostics() {
 }
 
 #[tokio::test]
+async fn mcp_request_agent_friend_sends_relationship_action_to_remote_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "remote_node_id": "nearby-node-1",
+                    "message": {
+                        "kind": "friend_request",
+                        "text": "hello nearby node"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, "nearby-node-1");
+    assert_eq!(
+        serde_json::to_value(&command.action).unwrap().as_str(),
+        Some("request")
+    );
+    assert_eq!(
+        command.agent_envelope.capability.as_deref(),
+        Some("social.friend.request")
+    );
+    assert!(
+        command
+            .agent_envelope
+            .message
+            .get("source_public_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("target_public_id")
+            .and_then(Value::as_str),
+        Some("nearby-node-1")
+    );
+}
+
+#[tokio::test]
 async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
@@ -222,6 +287,9 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_schema_omits(unsubscribe_topic, &["public_id", "active"]);
     let upsert_friend = find_tool(tools, "upsert_friend");
     assert_schema_omits(upsert_friend, &["public_id"]);
+    let request_agent_friend = find_tool(tools, "request_agent_friend");
+    assert_schema_requires(request_agent_friend, &["remote_node_id"]);
+    assert_schema_omits(request_agent_friend, &["public_id", "action"]);
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
     assert_schema_requires(settle_payment, &["payment_id", "settlement_receipt"]);

@@ -11,7 +11,8 @@ use crate::auth::{authorize, internal_error};
 use crate::social_host::{
     SocialCounterpartTarget, SocialLocalContext, build_signed_agent_envelope,
     capability_for_relationship_action, counterpart_public_id_for_remote_node,
-    load_social_identity_maps, resolve_social_counterpart_target, resolve_social_local_context,
+    load_social_identity_maps, resolve_social_counterpart_target,
+    resolve_social_counterpart_target_by_remote_node, resolve_social_local_context,
     with_social_defaults,
 };
 use crate::state::{
@@ -1484,16 +1485,31 @@ async fn handle_agent_relationship_action(
         public_id: local_public_id,
         agent_id: local_agent_id,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let SocialCounterpartTarget {
-        counterpart_public_id,
-        remote_node,
-        target_agent,
-    } = match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+    let remote_node_id = body
+        .remote_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let counterpart = match match remote_node_id {
+        Some(remote_node_id) => resolve_social_counterpart_target_by_remote_node(
+            &state,
+            remote_node_id,
+            Some(body.counterpart_public_id.clone()),
+        )
+        .await
+        .map_err(|error| error.to_string()),
+        None => resolve_social_counterpart_target(&state, &body.counterpart_public_id).await,
+    } {
         Ok(counterpart) => counterpart,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
         }
     };
+    let SocialCounterpartTarget {
+        counterpart_public_id,
+        remote_node,
+        target_agent,
+    } = counterpart;
     let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
     if body.action == SwarmRelationshipAction::Request {

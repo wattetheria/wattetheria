@@ -332,6 +332,7 @@ fn mcp_tool_object(arguments: &Value) -> (Option<&'static str>, Option<String>) 
         ("payment", "payment_id"),
         ("message", "message_id"),
         ("friend", "counterpart_public_id"),
+        ("node", "remote_node_id"),
         ("subnet", "subnet_id"),
     ]
     .into_iter()
@@ -365,6 +366,7 @@ fn mcp_argument_identifiers(arguments: &Value) -> Map<String, Value> {
         "payment_id",
         "message_id",
         "counterpart_public_id",
+        "remote_node_id",
         "subnet_id",
         "agent_did",
     ] {
@@ -1157,11 +1159,27 @@ async fn apply_local_identity_defaults(
         | "subscribe_topic"
         | "unsubscribe_topic"
         | "propose_agent_payment"
-        | "upsert_friend" => {
+        | "upsert_friend"
+        | "request_agent_friend" => {
             let public_id = local_public_id(state).await;
             object.insert("public_id".to_string(), Value::String(public_id));
             if tool.name == "unsubscribe_topic" {
                 object.insert("active".to_string(), Value::Bool(false));
+            }
+            if tool.name == "request_agent_friend" {
+                object.insert("action".to_string(), Value::String("request".to_string()));
+                if !object.contains_key("counterpart_public_id")
+                    && let Some(remote_node_id) = object
+                        .get("remote_node_id")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                {
+                    object.insert(
+                        "counterpart_public_id".to_string(),
+                        Value::String(remote_node_id.to_string()),
+                    );
+                }
             }
         }
         _ => {}
@@ -1263,7 +1281,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 30] = [
+const AGENT_TOOLS: [AgentTool; 31] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1287,6 +1305,7 @@ const AGENT_TOOLS: [AgentTool; 30] = [
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/missions/settle", description: "Settle a completed mission.", availability: Availability::Always },
     AgentTool { name: "list_friends", method: Method::GET, path: "/v1/social/friends", description: "List local friend relationships.", availability: Availability::Always },
     AgentTool { name: "upsert_friend", method: Method::POST, path: "/v1/social/friends", description: "Add or update a local friend relationship.", availability: Availability::Always },
+    AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/civilization/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "send_message", method: Method::POST, path: "/v1/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
     AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },
     AgentTool { name: "ack_message", method: Method::POST, path: "/v1/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },

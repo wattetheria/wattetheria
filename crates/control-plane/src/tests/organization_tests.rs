@@ -544,6 +544,8 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("id=\"overview-nearby\""));
     assert!(body.contains("Overview nearby agents"));
     assert!(body.contains("overview-nearby-count"));
+    assert!(body.contains("safeArray(payload.nodes).concat(safeArray(payload.peers))"));
+    assert!(body.contains("kind: \"node\""));
     assert!(body.contains("diagnosticContextSummary"));
     assert!(body.contains("diagnosticNodeId"));
     assert!(body.contains("network connection established"));
@@ -571,5 +573,4 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("normalizeToken"));
     assert!(body.contains("wallet_bound_agent_did"));
     assert!(body.contains("public_topic_messages"));
-    assert!(!body.to_lowercase().contains("peer"));
 }

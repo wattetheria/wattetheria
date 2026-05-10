@@ -1783,38 +1783,25 @@
     function buildNearbyRows(payload) {
       const rows = [];
       const seen = new Set();
-      for (const friend of safeArray(payload.local_client_friends)) {
-        const key = friend.public_id || friend.counterpart_public_id;
-        if (!key) continue;
-        seen.add(`public:${key}`);
-        rows.push({
-          key: `public:${key}`,
-          kind: "friend",
-          name: friend.display_name || friend.counterpart_display_name || key,
-          status: friend.status || (friend.active === false ? "offline" : "friend"),
-          relationship_kind: friend.relationship_kind,
-          last_message_text: friend.last_message_text,
-          last_message_at: friend.last_message_at,
-          dm_thread_id: friend.dm_thread_id,
-          detail: friend.last_message_text || compactId(key, 24),
-        });
-      }
-
-      for (const relationship of safeArray(payload.friend_relationships)) {
-        const publicId = relationship.counterpart_public_id || relationship.public_id;
-        const remoteNodeId = relationship.remote_node_id;
-        const key = publicId ? `public:${publicId}` : (remoteNodeId ? `node:${remoteNodeId}` : "");
-        if (!key || seen.has(key)) continue;
+      for (const node of safeArray(payload.nodes).concat(safeArray(payload.peers))) {
+        const nodeId = node.node_id || node.id;
+        if (!nodeId) continue;
+        const key = `node:${nodeId}`;
+        if (seen.has(key)) continue;
         seen.add(key);
+        const relationshipState = nodeRelationshipState(node);
+        const sourceKind = node.source_kind || at(node, ["discovery", "source_kind"]);
+        const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
         rows.push({
           key,
-          kind: relationship.pending_inbound || relationship.pending_outbound ? "request" : "friend",
-          name: relationship.counterpart_display_name || publicId || remoteNodeId,
-          status: relationship.relationship_state || relationship.relationship_kind,
-          pending_inbound: relationship.pending_inbound,
-          pending_outbound: relationship.pending_outbound,
-          detail: remoteNodeId ? compactId(remoteNodeId, 24) : compactId(publicId, 24),
-          updated_at: relationship.updated_at,
+          kind: "node",
+          name: node.display_name || node.name || nodeId,
+          status: node.status || relationshipState || (node.connected ? "online" : "discovered"),
+          connected: node.connected,
+          relationship_state: relationshipState,
+          source_kind: sourceKind,
+          detail: sourceKind || (endpoint ? `endpoint ${compactId(endpoint, 24)}` : compactId(nodeId, 24)),
+          updated_at: node.updated_at || at(node, ["discovery", "updated_at"]) || at(node, ["metadata", "last_identified_at"]),
         });
       }
 
