@@ -174,17 +174,10 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
         Some("mission-remote-1")
     );
     assert_eq!(
-        response["task_announcement_sync"]["task_id"].as_str(),
-        Some("mission-remote-1")
-    );
-    assert_eq!(
-        response["task_announcement_sync"]["feed_key"].as_str(),
-        Some("wattetheria.missions")
-    );
-    assert_eq!(
-        response["task_announcement_sync"]["scope_hint"].as_str(),
+        response["task_contract_sync"]["scope_hint"].as_str(),
         Some("group:mission-remote-1")
     );
+    assert!(response.get("task_announcement_sync").is_none());
 }
 
 #[tokio::test]
@@ -371,13 +364,10 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
         Some("mission-remote-2")
     );
     assert_eq!(
-        response["task_announcement_sync"]["task_id"].as_str(),
-        Some("mission-remote-2")
-    );
-    assert_eq!(
-        response["task_announcement_sync"]["scope_hint"].as_str(),
+        response["task_contract_sync"]["scope_hint"].as_str(),
         Some("group:mission-remote-2")
     );
+    assert!(response.get("task_announcement_sync").is_none());
 }
 
 #[tokio::test]

@@ -330,6 +330,10 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm task submit is not configured"))
     }
 
+    async fn import_task_contract(&self, _contract: TaskContract) -> Result<Value> {
+        Err(anyhow!("wattswarm task contract import is not configured"))
+    }
+
     async fn announce_task(&self, _command: SwarmTaskAnnounceCommand) -> Result<Value> {
         Err(anyhow!("wattswarm task announce is not configured"))
     }
@@ -553,6 +557,10 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn submit_task(&self, contract: TaskContract) -> Result<Value> {
         self.topic_api()?.submit_task(contract).await
+    }
+
+    async fn import_task_contract(&self, contract: TaskContract) -> Result<Value> {
+        self.topic_api()?.import_task_contract(contract).await
     }
 
     async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> Result<Value> {
@@ -933,6 +941,18 @@ impl HttpWattswarmApi {
         Err(anyhow!(
             "wattswarm task submit failed with status {status}: {body}"
         ))
+    }
+
+    async fn import_task_contract(&self, contract: TaskContract) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/import-contract", self.base_url))
+            .json(&json!({ "contract": contract }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task contract import response")
     }
 
     async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> Result<Value> {

@@ -318,32 +318,21 @@ async fn network_task_contract_for_action(
     Ok(contract)
 }
 
-async fn sync_network_task_contract_and_announce(
+async fn import_network_task_contract(
     state: &ControlPlaneState,
-    route: &NetworkMissionClaimRoute,
     contract: TaskContract,
-) -> Result<(String, Value, Value), Response> {
+) -> Result<(String, Value), Response> {
     let subscriber_node_id = state
         .swarm_bridge
         .local_node_id()
         .await
         .map_err(|error| internal_error(&error))?;
-    let task_announcement = network_mission_announce_command(route, &contract);
     let task_contract_sync = state
         .swarm_bridge
-        .submit_task(contract)
+        .import_task_contract(contract)
         .await
         .map_err(|error| internal_error(&error))?;
-    let task_announcement_sync = state
-        .swarm_bridge
-        .announce_task(task_announcement)
-        .await
-        .map_err(|error| internal_error(&error))?;
-    Ok((
-        subscriber_node_id,
-        task_contract_sync,
-        task_announcement_sync,
-    ))
+    Ok((subscriber_node_id, task_contract_sync))
 }
 
 fn mission_task_output_schema() -> Value {
@@ -468,42 +457,6 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
         }
     }
     payload
-}
-
-fn network_mission_announce_command(
-    route: &NetworkMissionClaimRoute,
-    contract: &TaskContract,
-) -> SwarmTaskAnnounceCommand {
-    let inputs = contract.inputs.as_object();
-    SwarmTaskAnnounceCommand {
-        task_id: route.task_id.clone(),
-        announcement_id: Some(format!("wattetheria-route-{}", route.task_id)),
-        feed_key: route.mission_feed_key.clone(),
-        scope_hint: route.mission_scope_hint.clone(),
-        summary: json!({
-            "kind": "wattetheria_mission",
-            "mission_id": inputs
-                .and_then(|value| value.get("mission_id"))
-                .and_then(Value::as_str)
-                .unwrap_or(route.task_id.as_str()),
-            "title": inputs
-                .and_then(|value| value.get("title"))
-                .cloned()
-                .unwrap_or(Value::Null),
-            "publisher": inputs
-                .and_then(|value| value.get("publisher"))
-                .cloned()
-                .unwrap_or(Value::Null),
-            "publisher_agent_did": inputs
-                .and_then(|value| value.get("publisher_agent_did"))
-                .cloned()
-                .unwrap_or(Value::Null),
-            "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id.clone(),
-            "mission_feed_key": route.mission_feed_key.clone(),
-            "mission_scope_hint": route.mission_scope_hint.clone(),
-        }),
-        detail_ref: None,
-    }
 }
 
 fn mission_complete_command(
@@ -824,8 +777,8 @@ async fn claim_network_mission(
         Ok(contract) => contract,
         Err(response) => return response,
     };
-    let (subscriber_node_id, task_contract_sync, task_announcement_sync) =
-        match sync_network_task_contract_and_announce(&state, &route, contract).await {
+    let (subscriber_node_id, task_contract_sync) =
+        match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -854,7 +807,6 @@ async fn claim_network_mission(
         "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
         "subscriber_node_id": subscriber_node_id,
         "task_contract_sync": task_contract_sync,
-        "task_announcement_sync": task_announcement_sync,
         "swarm_claim": swarm_claim,
     });
 
@@ -910,8 +862,8 @@ async fn complete_network_mission(
         Ok(contract) => contract,
         Err(response) => return response,
     };
-    let (subscriber_node_id, task_contract_sync, task_announcement_sync) =
-        match sync_network_task_contract_and_announce(&state, &route, contract).await {
+    let (subscriber_node_id, task_contract_sync) =
+        match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
             Err(response) => return response,
         };
@@ -933,7 +885,6 @@ async fn complete_network_mission(
         "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
         "subscriber_node_id": subscriber_node_id,
         "task_contract_sync": task_contract_sync,
-        "task_announcement_sync": task_announcement_sync,
         "swarm_candidate": swarm_candidate,
     });
 

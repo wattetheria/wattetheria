@@ -777,6 +777,30 @@ impl SwarmBridge for MockSwarmBridge {
         }))
     }
 
+    async fn import_task_contract(&self, contract: TaskContract) -> anyhow::Result<Value> {
+        let scope_hint = contract
+            .inputs
+            .get("swarm_scope")
+            .and_then(|value| {
+                value.as_str().map(ToOwned::to_owned).or_else(|| {
+                    let scope = value.as_object()?;
+                    let kind = scope.get("kind")?.as_str()?;
+                    let id = scope.get("id").and_then(Value::as_str).unwrap_or_default();
+                    Some(if id.is_empty() {
+                        kind.to_owned()
+                    } else {
+                        format!("{kind}:{id}")
+                    })
+                })
+            })
+            .map_or(Value::Null, Value::String);
+        Ok(json!({
+            "ok": true,
+            "task_id": contract.task_id,
+            "scope_hint": scope_hint,
+        }))
+    }
+
     async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> anyhow::Result<Value> {
         Ok(json!({
             "ok": true,
