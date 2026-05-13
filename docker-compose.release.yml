@@ -41,7 +41,7 @@ services:
       WATTETHERIA_AUTONOMY_INTERVAL_SEC: ${WATTETHERIA_AUTONOMY_INTERVAL_SEC:-30}
     volumes:
       - ${WATTETHERIA_HOST_STATE_DIR:-./data/wattetheria}:/var/lib/wattetheria
-      - ${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var/lib/wattswarm
+      - ${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var/lib/wattswarm:ro
     ports:
       - "${WATTETHERIA_CONTROL_PLANE_BIND_HOST:-127.0.0.1}:${WATTETHERIA_CONTROL_PLANE_PORT:-7777}:7777"
     healthcheck:

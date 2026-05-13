@@ -21,9 +21,8 @@ use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
-    GeoSource, NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event,
-    push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
-    spawn_wattswarm_sync_bridge,
+    NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
+    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
@@ -299,59 +298,8 @@ async fn build_control_state(
         rate_limiter: Arc::new(RateLimiter::new(cli.control_plane_rate_limit, 60)),
         stream_tx,
         gateway_event_seq: GatewayEventSequence::load_or_seed(&cli.data_dir),
-        geo_location: {
-            let geo_location =
-                NodeGeoLocation::load_or_fetch(&cli.data_dir, &identity.agent_did).await;
-            sync_gateway_config_geo_location(
-                cli.gateway_config_path.as_deref(),
-                geo_location.as_ref(),
-            );
-            geo_location
-        },
+        geo_location: NodeGeoLocation::load_or_fetch(&cli.data_dir, &identity.agent_did).await,
     }
-}
-
-fn sync_gateway_config_geo_location(path: Option<&Path>, geo: &NodeGeoLocation) {
-    if geo.source != GeoSource::IpApi {
-        return;
-    }
-    let Some(path) = path else {
-        return;
-    };
-    if let Err(error) = update_gateway_config_geo_location(path, geo) {
-        warn!(
-            path = %path.display(),
-            %error,
-            "failed to sync automatic geo location into gateway config"
-        );
-    }
-}
-
-fn update_gateway_config_geo_location(path: &Path, geo: &NodeGeoLocation) -> Result<bool> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| format!("read gateway config {}", path.display()));
-        }
-    };
-    let mut payload: serde_json::Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("parse gateway config {}", path.display()))?;
-    let object = payload
-        .as_object_mut()
-        .with_context(|| format!("gateway config {} must be a JSON object", path.display()))?;
-    let latitude_changed =
-        object.get("latitude").and_then(serde_json::Value::as_f64) != Some(geo.lat);
-    let longitude_changed =
-        object.get("longitude").and_then(serde_json::Value::as_f64) != Some(geo.lng);
-    if !latitude_changed && !longitude_changed {
-        return Ok(false);
-    }
-    object.insert("latitude".to_owned(), serde_json::json!(geo.lat));
-    object.insert("longitude".to_owned(), serde_json::json!(geo.lng));
-    std::fs::write(path, serde_json::to_vec_pretty(&payload)?)
-        .with_context(|| format!("write gateway config {}", path.display()))?;
-    Ok(true)
 }
 
 fn brain_provider_label(config: &BrainProviderConfig) -> String {
@@ -815,12 +763,10 @@ mod tests {
     use super::{
         CORE_AGENT_EXECUTOR_NAME, Cli, derive_grpc_endpoint_from_ui_base, register_executor_once,
         resolve_gateway_urls, resolve_wattswarm_executor_registration,
-        update_gateway_config_geo_location,
     };
     use axum::{Json, Router, routing::post};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
-    use wattetheria_control_plane::{GeoSource, NodeGeoLocation};
     use wattetheria_kernel::brain::BrainProviderConfig;
 
     #[test]
@@ -995,46 +941,6 @@ mod tests {
         assert_eq!(
             resolve_gateway_urls(&cli),
             vec!["http://primary-gateway:8080".to_owned()]
-        );
-    }
-
-    #[test]
-    fn update_gateway_config_geo_location_preserves_gateway_config_fields() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("startup_config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_vec(&json!({
-                "display_name": "Node Agent",
-                "network_mode": "wan",
-                "gateway_urls": ["https://gateway.wattetheria.com"],
-                "latitude": 1.0,
-                "longitude": 2.0
-            }))
-            .expect("serialize config"),
-        )
-        .expect("write config");
-
-        let changed = update_gateway_config_geo_location(
-            &config_path,
-            &NodeGeoLocation {
-                lat: 37.0,
-                lng: -122.0,
-                source: GeoSource::IpApi,
-            },
-        )
-        .expect("update geo");
-
-        assert!(changed);
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(&config_path).expect("read config"))
-                .expect("parse saved config");
-        assert_eq!(saved["latitude"].as_f64(), Some(37.0));
-        assert_eq!(saved["longitude"].as_f64(), Some(-122.0));
-        assert_eq!(saved["network_mode"].as_str(), Some("wan"));
-        assert_eq!(
-            saved["gateway_urls"][0].as_str(),
-            Some("https://gateway.wattetheria.com")
         );
     }
 

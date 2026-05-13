@@ -708,11 +708,10 @@ WATTETHERIA_GATEWAY_URLS=http://gateway.example.com:8080
 ```
 
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
-kernel container. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel now falls back to `gateway_urls`
-saved by the Wattswarm startup UI in that file. Wattetheria also resolves coarse node geo location
-at startup and syncs the resulting `latitude` / `longitude` into that mounted startup config so
-Wattswarm can publish nearby-discovery coordinates without exposing editable geo fields in the
-startup UI.
+kernel container as read-only. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel falls back to
+`gateway_urls` saved by the Wattswarm startup UI in that file. Wattetheria resolves coarse node geo
+location at startup and sends the resulting `latitude` / `longitude` to Wattswarm over the local
+sync gRPC bridge, so Wattswarm remains the writer for its own startup config.
 
 When Wattetheria registers `core-agent` with Wattswarm, it keeps the brain/runtime
 `base_url` pointed at the OpenAI-compatible gateway for `/execute` work and exposes a

@@ -30,7 +30,7 @@ pub mod proto {
 }
 
 use proto::wattetheria_sync_service_client::WattetheriaSyncServiceClient;
-use proto::{ProjectionFrame, ProjectionStreamRequest};
+use proto::{ProjectionFrame, ProjectionStreamRequest, UpdateStartupGeoRequest};
 
 const DEFAULT_POLL_INTERVAL_MS: u64 = 1_000;
 const DEFAULT_STREAM_LIMIT: u32 = 50;
@@ -51,6 +51,10 @@ pub fn spawn_wattswarm_sync_bridge(
         .map(|endpoint| endpoint.trim().to_string())
         .filter(|endpoint| !endpoint.is_empty())?;
     Some(tokio::spawn(async move {
+        let startup_geo_task = tokio::spawn(run_startup_geo_sync_until_done(
+            state.clone(),
+            grpc_endpoint.clone(),
+        ));
         let network_task = tokio::spawn(run_network_projection_stream(
             state.clone(),
             grpc_endpoint.clone(),
@@ -64,7 +68,13 @@ pub fn spawn_wattswarm_sync_bridge(
             grpc_endpoint.clone(),
         ));
         let topic_task = tokio::spawn(run_topic_projection_supervisor(state, grpc_endpoint));
-        let _ = tokio::join!(network_task, task_run_task, social_task, topic_task);
+        let _ = tokio::join!(
+            startup_geo_task,
+            network_task,
+            task_run_task,
+            social_task,
+            topic_task
+        );
     }))
 }
 
@@ -76,6 +86,60 @@ async fn connect_client(grpc_endpoint: &str) -> Result<WattetheriaSyncServiceCli
         .await
         .with_context(|| format!("connect wattswarm sync gRPC endpoint {grpc_endpoint}"))?;
     Ok(WattetheriaSyncServiceClient::new(channel))
+}
+
+async fn sync_wattswarm_startup_geo_once(
+    grpc_endpoint: Option<String>,
+    geo: &crate::state::NodeGeoLocation,
+) -> Result<bool> {
+    if geo.source != crate::state::GeoSource::IpApi {
+        return Ok(false);
+    }
+    let Some(grpc_endpoint) = grpc_endpoint
+        .map(|endpoint| endpoint.trim().to_string())
+        .filter(|endpoint| !endpoint.is_empty())
+    else {
+        return Ok(false);
+    };
+    let mut client = connect_client(&grpc_endpoint).await?;
+    let response = client
+        .update_startup_geo(Request::new(startup_geo_request(geo)))
+        .await
+        .context("update wattswarm startup geo")?;
+    Ok(response.into_inner().updated)
+}
+
+fn startup_geo_request(geo: &crate::state::NodeGeoLocation) -> UpdateStartupGeoRequest {
+    UpdateStartupGeoRequest {
+        latitude: geo.lat,
+        longitude: geo.lng,
+    }
+}
+
+async fn run_startup_geo_sync_until_done(state: ControlPlaneState, grpc_endpoint: String) {
+    if state.geo_location.source != crate::state::GeoSource::IpApi {
+        return;
+    }
+    loop {
+        match sync_wattswarm_startup_geo_once(
+            Some(grpc_endpoint.clone()),
+            state.geo_location.as_ref(),
+        )
+        .await
+        {
+            Ok(updated) => {
+                debug!(
+                    updated,
+                    "synced automatic geo location into wattswarm startup config"
+                );
+                return;
+            }
+            Err(error) => {
+                debug!("wattswarm startup geo sync will retry: {error:#}");
+            }
+        }
+        sleep(Duration::from_secs(RECONNECT_DELAY_SEC)).await;
+    }
 }
 
 async fn run_network_projection_stream(state: ControlPlaneState, grpc_endpoint: String) {
@@ -551,6 +615,18 @@ mod tests {
             updated_at: 0,
         };
         assert_eq!(topic_stream_key(&topic), "guild.chat::guild:defi");
+    }
+
+    #[test]
+    fn startup_geo_request_only_contains_coordinates() {
+        let request = startup_geo_request(&crate::state::NodeGeoLocation {
+            lat: -33.8399,
+            lng: 151.0583,
+            source: crate::state::GeoSource::IpApi,
+        });
+
+        assert!((request.latitude - -33.8399).abs() < f64::EPSILON);
+        assert!((request.longitude - 151.0583).abs() < f64::EPSILON);
     }
 
     #[tokio::test]
