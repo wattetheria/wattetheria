@@ -16,7 +16,7 @@ services:
       WATTETHERIA_GATEWAY_CONFIG_PATH: "/var/lib/wattswarm/startup_config.json"
       WATTETHERIA_GATEWAY_URLS: "${WATTETHERIA_GATEWAY_URLS:-}"
     volumes:
-      - wattswarm_state_data:/var/lib/wattswarm:ro
+      - wattswarm_state_data:/var/lib/wattswarm
     networks:
       - default
       - watt-net

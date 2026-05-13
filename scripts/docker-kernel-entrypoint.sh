@@ -59,7 +59,7 @@ if [ -n "${WATTETHERIA_SERVICENET_BASE_URL:-}" ]; then
   set -- "$@" --servicenet-base-url "${WATTETHERIA_SERVICENET_BASE_URL}"
 fi
 
-if [ -n "${WATTETHERIA_GATEWAY_CONFIG_PATH:-}" ] && [ -f "${WATTETHERIA_GATEWAY_CONFIG_PATH}" ]; then
+if [ -n "${WATTETHERIA_GATEWAY_CONFIG_PATH:-}" ]; then
   set -- "$@" --gateway-config-path "${WATTETHERIA_GATEWAY_CONFIG_PATH}"
 fi
 
