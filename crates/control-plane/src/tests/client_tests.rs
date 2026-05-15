@@ -780,12 +780,9 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
         task["task_contract"]["inputs"]["mission_id"].as_str(),
         Some(mission_id)
     );
-    assert_eq!(
-        task["expiry_ms"].as_u64(),
-        task["task_contract"]["expiry_ms"].as_u64()
-    );
-    assert_eq!(task["expired"].as_bool(), Some(false));
-    assert!(task["expires_at"].as_str().is_some());
+    assert!(task.get("expiry_ms").is_none());
+    assert!(task.get("expires_at").is_none());
+    assert!(task.get("expired").is_none());
 }
 
 #[tokio::test]

@@ -3,7 +3,6 @@ use axum::body::{Body, to_bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -459,7 +458,7 @@ async fn network_mission_market_payload(
         .filter(|task| {
             status_filter
                 .as_ref()
-                .is_none_or(|status| gateway_task_effective_status(task).as_deref() == Some(status))
+                .is_none_or(|status| gateway_task_status(task).as_deref() == Some(status))
         })
         .collect::<Vec<_>>();
     let page = all_missions
@@ -661,15 +660,6 @@ fn gateway_task_status(task: &Value) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn gateway_task_effective_status(task: &Value) -> Option<String> {
-    let status = gateway_task_status(task);
-    if gateway_task_expired(task) && status_allows_expiry(status.as_deref()) {
-        Some("expired".to_string())
-    } else {
-        status
-    }
-}
-
 fn normalize_mission_status_filter(status: String) -> String {
     if status == "open" {
         "published".to_string()
@@ -680,16 +670,13 @@ fn normalize_mission_status_filter(status: String) -> String {
 
 fn normalize_gateway_mission(mut task: Value) -> Value {
     let claim_route = gateway_mission_claim_route(&task);
-    let status = gateway_task_effective_status(&task);
+    let status = gateway_task_status(&task);
     let mission_id = task
         .get("mission_id")
         .or_else(|| task.get("id"))
         .or_else(|| task.get("task_id"))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
-    let expiry_ms = gateway_task_expiry_ms(&task);
-    let expires_at = expiry_ms.and_then(epoch_ms_to_rfc3339);
-    let expired = gateway_task_expired(&task);
     let Some(object) = task.as_object_mut() else {
         return task;
     };
@@ -704,17 +691,6 @@ fn normalize_gateway_mission(mut task: Value) -> Value {
     if let Some(status) = status {
         object.insert("status".to_string(), Value::String(status));
     }
-    if let Some(expiry_ms) = expiry_ms {
-        object
-            .entry("expiry_ms".to_string())
-            .or_insert_with(|| Value::Number(expiry_ms.into()));
-    }
-    if let Some(expires_at) = expires_at {
-        object
-            .entry("expires_at".to_string())
-            .or_insert_with(|| Value::String(expires_at));
-    }
-    object.insert("expired".to_string(), Value::Bool(expired));
     if let Some(route) = claim_route.as_object() {
         for key in [
             "publisher_wattswarm_node_id",
@@ -785,15 +761,11 @@ fn gateway_mission_claim_route(task: &Value) -> Value {
     });
     let task_contract_available =
         gateway_task_value(task, &[&["task_contract"], &["contract"]]).is_some();
-    let expired = gateway_task_expired(task);
     let claim_ready = task_id.is_some()
         && publisher_wattswarm_node_id.is_some()
         && mission_scope_hint.is_some()
         && swarm_scope.is_some()
-        && task_contract_available
-        && !expired;
-    let claim_block_reason = if expired { Some("task_expired") } else { None };
-    let expiry_ms = gateway_task_expiry_ms(task);
+        && task_contract_available;
 
     json!({
         "task_id": task_id,
@@ -804,70 +776,7 @@ fn gateway_mission_claim_route(task: &Value) -> Value {
         "swarm_scope": swarm_scope,
         "task_contract_available": task_contract_available,
         "claim_ready": claim_ready,
-        "claim_block_reason": claim_block_reason,
-        "expiry_ms": expiry_ms,
-        "expires_at": expiry_ms.and_then(epoch_ms_to_rfc3339),
-        "expired": expired,
     })
-}
-
-fn gateway_task_expired(task: &Value) -> bool {
-    gateway_task_expiry_ms(task).is_some_and(|expiry_ms| expiry_ms <= now_epoch_ms())
-}
-
-fn gateway_task_expiry_ms(task: &Value) -> Option<u64> {
-    gateway_task_value(
-        task,
-        &[
-            &["expiry_ms"],
-            &["expires_at_ms"],
-            &["task_contract", "expiry_ms"],
-            &["contract", "expiry_ms"],
-        ],
-    )
-    .and_then(value_to_epoch_ms)
-    .or_else(|| {
-        gateway_task_string(
-            task,
-            &[
-                &["expires_at"],
-                &["task_contract", "expires_at"],
-                &["contract", "expires_at"],
-            ],
-        )
-        .and_then(|value| parse_epoch_ms_string(&value))
-    })
-}
-
-fn value_to_epoch_ms(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(parse_epoch_ms_string))
-}
-
-fn parse_epoch_ms_string(value: &str) -> Option<u64> {
-    value.trim().parse::<u64>().ok().or_else(|| {
-        chrono::DateTime::parse_from_rfc3339(value)
-            .ok()
-            .map(|datetime| datetime.timestamp_millis().max(0).cast_unsigned())
-    })
-}
-
-fn epoch_ms_to_rfc3339(epoch_ms: u64) -> Option<String> {
-    Utc.timestamp_millis_opt(i64::try_from(epoch_ms).ok()?)
-        .single()
-        .map(|datetime| datetime.to_rfc3339())
-}
-
-fn now_epoch_ms() -> u64 {
-    Utc::now().timestamp_millis().max(0).cast_unsigned()
-}
-
-fn status_allows_expiry(status: Option<&str>) -> bool {
-    matches!(
-        status.unwrap_or("published"),
-        "open" | "published" | "claimed" | "queued" | "pending" | "reserved"
-    )
 }
 
 fn gateway_task_string(task: &Value, paths: &[&[&str]]) -> Option<String> {

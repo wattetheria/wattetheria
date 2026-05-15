@@ -2,7 +2,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -24,6 +24,7 @@ use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
 const GATEWAY_CONTRACT_FETCH_LIMIT: usize = 200;
+pub(crate) const MISSION_TASK_NO_EXPIRY_MS: u64 = u64::MAX;
 
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
@@ -201,17 +202,6 @@ fn validate_network_task_contract(
     Ok(())
 }
 
-fn network_task_contract_expired(contract: &TaskContract) -> bool {
-    contract.expiry_ms <= Utc::now().timestamp_millis().max(0).cast_unsigned()
-}
-
-fn network_task_contract_expires_at(contract: &TaskContract) -> Option<String> {
-    chrono::Utc
-        .timestamp_millis_opt(i64::try_from(contract.expiry_ms).ok()?)
-        .single()
-        .map(|datetime| datetime.to_rfc3339())
-}
-
 async fn gateway_network_task_contract(
     state: &ControlPlaneState,
     task_id: &str,
@@ -301,20 +291,6 @@ async fn network_task_contract_for_action(
     if let Err(error) = validate_network_task_contract(&contract, route, body) {
         return Err((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
     }
-    if network_task_contract_expired(&contract) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!("network mission {action} task_contract has expired"),
-                "action": action,
-                "task_id": route.task_id,
-                "expiry_ms": contract.expiry_ms,
-                "expires_at": network_task_contract_expires_at(&contract),
-                "expired": true,
-            })),
-        )
-            .into_response());
-    }
     Ok(contract)
 }
 
@@ -395,6 +371,7 @@ pub(crate) fn mission_task_contract(
     contract.inputs =
         mission_task_inputs(mission, publisher_agent_did, publisher_wattswarm_node_id);
     contract.output_schema = mission_task_output_schema();
+    contract.expiry_ms = MISSION_TASK_NO_EXPIRY_MS;
     contract
 }
 

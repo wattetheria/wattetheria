@@ -279,17 +279,6 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
                     }
                 }
             }
-            if let Some(expiry_ms) = contract.get("expiry_ms").and_then(Value::as_u64) {
-                object.insert("expiry_ms".to_string(), Value::Number(expiry_ms.into()));
-                if let Some(expires_at) = timestamp_millis_to_rfc3339(expiry_ms) {
-                    object.insert("expires_at".to_string(), Value::String(expires_at));
-                }
-                let expired = expiry_ms <= Utc::now().timestamp_millis().max(0).cast_unsigned();
-                object.insert("expired".to_string(), Value::Bool(expired));
-                if expired && client_status_allows_expiry(base_status) {
-                    object.insert("status".to_string(), Value::String("expired".to_owned()));
-                }
-            }
             object.insert("task_contract".to_string(), contract);
         }
         tasks.push(task);
@@ -935,12 +924,6 @@ fn timestamp_to_rfc3339(timestamp: i64) -> String {
         .map_or_else(|| Utc::now().to_rfc3339(), |dt| dt.to_rfc3339())
 }
 
-fn timestamp_millis_to_rfc3339(timestamp_ms: u64) -> Option<String> {
-    Utc.timestamp_millis_opt(i64::try_from(timestamp_ms).ok()?)
-        .single()
-        .map(|dt| dt.to_rfc3339())
-}
-
 fn mission_domain_label(domain: &MissionDomain) -> &'static str {
     match domain {
         MissionDomain::Wealth => "wealth",
@@ -958,10 +941,6 @@ fn client_task_status(status: &MissionStatus) -> &'static str {
         MissionStatus::Completed => "completed",
         MissionStatus::Settled | MissionStatus::Cancelled => "settled",
     }
-}
-
-fn client_status_allows_expiry(status: &str) -> bool {
-    matches!(status, "published" | "claimed")
 }
 
 fn organization_client_status(active: bool, active_member_count: usize) -> &'static str {
