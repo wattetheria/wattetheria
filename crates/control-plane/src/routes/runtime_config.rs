@@ -36,11 +36,17 @@ fn bad_request(message: impl Into<String>) -> Response {
 }
 
 fn deploy_env_path(data_dir: &Path) -> PathBuf {
+    deploy_env_path_from_config(
+        data_dir,
+        std::env::var("WATTETHERIA_RUNTIME_ENV_FILE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn deploy_env_path_from_config(data_dir: &Path, configured: Option<&str>) -> PathBuf {
     let deploy_dir = data_dir.join("deploy");
-    let configured = std::env::var("WATTETHERIA_RUNTIME_ENV_FILE")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
+    let configured = configured.map(str::trim).filter(|value| !value.is_empty());
     match configured {
         Some(path) => {
             let path = PathBuf::from(path);
@@ -194,4 +200,28 @@ pub(crate) async fn brain_config_put(
         "restart_required": true,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deploy_env_path_defaults_to_data_dir_deploy_env() {
+        assert_eq!(
+            deploy_env_path_from_config(Path::new("/var/lib/wattetheria"), None),
+            PathBuf::from("/var/lib/wattetheria/deploy/.env")
+        );
+    }
+
+    #[test]
+    fn deploy_env_path_preserves_absolute_runtime_env_file() {
+        assert_eq!(
+            deploy_env_path_from_config(
+                Path::new("/var/lib/wattetheria"),
+                Some("/var/lib/wattetheria-deploy/.env"),
+            ),
+            PathBuf::from("/var/lib/wattetheria-deploy/.env")
+        );
+    }
 }

@@ -185,8 +185,13 @@ if ($ForceRefreshEnv -or -not (Test-Path $EnvFile)) {
 }
 
 $envMap = Read-EnvFile -Path $EnvFile
-Set-EnvValue -Path $EnvFile -Key "WATTETHERIA_RUNTIME_ENV_FILE" -Value (Split-Path -Leaf $EnvFile)
-$envMap["WATTETHERIA_RUNTIME_ENV_FILE"] = Split-Path -Leaf $EnvFile
+$envFileName = Split-Path -Leaf $EnvFile
+Set-EnvValue -Path $EnvFile -Key "WATTETHERIA_COMPOSE_ENV_FILE" -Value $envFileName
+Set-EnvValue -Path $EnvFile -Key "WATTETHERIA_DEPLOY_DIR" -Value "."
+Set-EnvValue -Path $EnvFile -Key "WATTETHERIA_RUNTIME_ENV_FILE" -Value "/var/lib/wattetheria-deploy/$envFileName"
+$envMap["WATTETHERIA_COMPOSE_ENV_FILE"] = $envFileName
+$envMap["WATTETHERIA_DEPLOY_DIR"] = "."
+$envMap["WATTETHERIA_RUNTIME_ENV_FILE"] = "/var/lib/wattetheria-deploy/$envFileName"
 
 $passwordPlaceholder = "replace-with-strong-password"
 if (-not $envMap.Contains("WATTSWARM_PG_PASSWORD") -or

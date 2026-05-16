@@ -586,8 +586,9 @@ read it from the `wattetheria_state` volume; for the full stack, read
 `./data/wattetheria/control.token`.
 
 The supervision console includes an Agent Runtime configuration card for the brain provider.
-Saving that form updates the deployment env file under `.wattetheria/deploy/.env` so the next
-service restart picks up the new runtime settings without manual env editing.
+Saving that form updates the deployment env file under `.wattetheria/deploy/.env` through the
+container's `/var/lib/wattetheria-deploy` mount, so the next service restart picks up the new
+runtime settings without manual env editing.
 
 The Logs page is now a WattSwarm Diagnostics view. It proxies authenticated
 `/v1/client/wattswarm-diagnostics` to the local Wattswarm UI API so operators can inspect
