@@ -13,6 +13,7 @@ services:
     environment:
       WATTETHERIA_WATTSWARM_UI_BASE_URL: "http://wattswarm-kernel:7788"
       WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT: "http://wattswarm-kernel:7791"
+      WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL: "${WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL:-http://wattetheria-kernel:7777}"
       WATTETHERIA_GATEWAY_CONFIG_PATH: "/var/lib/wattswarm/startup_config.json"
       WATTETHERIA_GATEWAY_URLS: "${WATTETHERIA_GATEWAY_URLS:-}"
     volumes:

@@ -39,6 +39,10 @@ if [ -n "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT:-}" ]; then
   set -- "$@" --wattswarm-sync-grpc-endpoint "${WATTETHERIA_WATTSWARM_SYNC_GRPC_ENDPOINT}"
 fi
 
+if [ -n "${WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL:-}" ]; then
+  set -- "$@" --wattswarm-agent-event-callback-base-url "${WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL}"
+fi
+
 if [ -n "${WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT:-}" ]; then
   set -- "$@" --agent-control-plane-endpoint "${WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT}"
 fi

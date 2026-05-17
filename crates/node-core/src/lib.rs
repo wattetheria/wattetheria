@@ -575,18 +575,14 @@ fn resolve_wattswarm_executor_registration(
     brain_config: &BrainProviderConfig,
 ) -> Option<WattswarmExecutorRegistration> {
     let wattswarm_ui_base_url = cli
-        .agent_wattswarm_ui_base_url
+        .wattswarm_ui_base_url
         .as_deref()
-        .or(cli.wattswarm_ui_base_url.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
+        .or(cli.agent_wattswarm_ui_base_url.as_deref())
+        .and_then(trim_base_url)?;
     let executor_base_url = resolve_executor_base_url(brain_config)?;
     let agent_event_callback_base_url = resolve_agent_event_callback_base_url(cli);
     Some(WattswarmExecutorRegistration {
-        endpoint_url: format!(
-            "{}/api/executors/add",
-            wattswarm_ui_base_url.trim_end_matches('/')
-        ),
+        endpoint_url: format!("{wattswarm_ui_base_url}/api/executors/add"),
         executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
         executor_base_url,
         agent_event_callback_base_url: agent_event_callback_base_url.clone(),
@@ -603,6 +599,11 @@ fn resolve_wattswarm_executor_registration(
     })
 }
 
+fn trim_base_url(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 fn resolve_executor_base_url(brain_config: &BrainProviderConfig) -> Option<String> {
     match brain_config {
         BrainProviderConfig::Rules => None,
@@ -615,8 +616,14 @@ fn resolve_executor_base_url(brain_config: &BrainProviderConfig) -> Option<Strin
 }
 
 fn resolve_agent_event_callback_base_url(cli: &Cli) -> String {
-    cli.agent_control_plane_endpoint
-        .clone()
+    cli.wattswarm_agent_event_callback_base_url
+        .as_deref()
+        .and_then(trim_base_url)
+        .or_else(|| {
+            cli.agent_control_plane_endpoint
+                .as_deref()
+                .and_then(trim_base_url)
+        })
         .unwrap_or_else(|| format!("http://{}", cli.control_plane_bind))
 }
 
@@ -789,6 +796,7 @@ mod tests {
             control_plane_bind: "127.0.0.1:7777".to_owned(),
             wattswarm_ui_base_url: Some("http://127.0.0.1:7788".to_owned()),
             wattswarm_sync_grpc_endpoint: None,
+            wattswarm_agent_event_callback_base_url: None,
             agent_control_plane_endpoint: None,
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,
@@ -816,10 +824,13 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
-            wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
+            wattswarm_ui_base_url: Some("http://wattswarm-kernel:7788/".to_owned()),
             wattswarm_sync_grpc_endpoint: None,
-            agent_control_plane_endpoint: None,
-            agent_wattswarm_ui_base_url: None,
+            wattswarm_agent_event_callback_base_url: Some(
+                " http://wattetheria-kernel:7777/ ".to_owned(),
+            ),
+            agent_control_plane_endpoint: Some("http://127.0.0.1:7777".to_owned()),
+            agent_wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             servicenet_base_url: None,
@@ -846,9 +857,59 @@ mod tests {
         assert_eq!(registration.executor_name, CORE_AGENT_EXECUTOR_NAME);
         assert_eq!(
             registration.endpoint_url,
-            "http://127.0.0.1:7788/api/executors/add"
+            "http://wattswarm-kernel:7788/api/executors/add"
         );
         assert_eq!(registration.executor_base_url, "http://127.0.0.1:8787/v1");
+        assert_eq!(
+            registration.agent_event_callback_base_url,
+            "http://wattetheria-kernel:7777"
+        );
+        assert_eq!(
+            registration.commit_plane_endpoint,
+            "http://wattetheria-kernel:7777"
+        );
+    }
+
+    #[test]
+    fn resolve_wattswarm_executor_registration_falls_back_to_agent_wattswarm_url() {
+        let cli = Cli {
+            data_dir: ".wattetheria".into(),
+            recovery_sources: Vec::new(),
+            control_plane_bind: "127.0.0.1:7777".to_owned(),
+            wattswarm_ui_base_url: None,
+            wattswarm_sync_grpc_endpoint: None,
+            wattswarm_agent_event_callback_base_url: None,
+            agent_control_plane_endpoint: Some("http://127.0.0.1:7777".to_owned()),
+            agent_wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
+            agent_wattswarm_sync_grpc_endpoint: None,
+            agent_host_data_dir: None,
+            servicenet_base_url: None,
+            gateway_urls: Vec::new(),
+            gateway_config_path: None,
+            gateway_snapshot_interval_sec: 45,
+            control_plane_rate_limit: 60,
+            brain_provider_kind: "openai-compatible".to_owned(),
+            brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+            brain_model: "model".to_owned(),
+            brain_api_key_env: None,
+            autonomy_enabled: false,
+            autonomy_interval_sec: 30,
+        };
+
+        let registration = resolve_wattswarm_executor_registration(
+            &cli,
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+                model: "model".to_owned(),
+                api_key_env: None,
+            },
+        )
+        .expect("registration");
+
+        assert_eq!(
+            registration.endpoint_url,
+            "http://127.0.0.1:7788/api/executors/add"
+        );
         assert_eq!(
             registration.agent_event_callback_base_url,
             "http://127.0.0.1:7777"
@@ -877,6 +938,7 @@ mod tests {
             control_plane_bind: "127.0.0.1:7777".to_owned(),
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
+            wattswarm_agent_event_callback_base_url: None,
             agent_control_plane_endpoint: None,
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,
@@ -921,6 +983,7 @@ mod tests {
             control_plane_bind: "127.0.0.1:7777".to_owned(),
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
+            wattswarm_agent_event_callback_base_url: None,
             agent_control_plane_endpoint: None,
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,

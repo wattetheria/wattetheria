@@ -16,6 +16,8 @@ pub struct Cli {
     #[arg(long)]
     pub wattswarm_sync_grpc_endpoint: Option<String>,
     #[arg(long)]
+    pub wattswarm_agent_event_callback_base_url: Option<String>,
+    #[arg(long)]
     pub agent_control_plane_endpoint: Option<String>,
     #[arg(long)]
     pub agent_wattswarm_ui_base_url: Option<String>,

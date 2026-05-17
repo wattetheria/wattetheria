@@ -194,6 +194,8 @@ struct OpenAiCompatibleBrain {
     api_key_env: Option<String>,
 }
 
+const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
+
 #[async_trait]
 impl BrainProvider for OllamaBrain {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport> {
@@ -313,9 +315,7 @@ async fn openai_compatible_generate(
             "response_format": {"type": "json_object"}
         }));
 
-    if let Some(env_name) = &provider.api_key_env
-        && let Ok(token) = std::env::var(env_name)
-    {
+    if let Ok(token) = std::env::var(openai_compatible_api_key_env(provider)) {
         request = request.bearer_auth(token);
     }
 
@@ -328,6 +328,15 @@ async fn openai_compatible_generate(
         .as_str()
         .map(ToString::to_string)
         .context("openai-compatible response missing content")
+}
+
+fn openai_compatible_api_key_env(provider: &OpenAiCompatibleBrain) -> &str {
+    provider
+        .api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV)
 }
 
 async fn parse_human_report_or_fallback(raw: &str, report: &Value) -> Result<HumanReport> {
@@ -428,5 +437,33 @@ mod tests {
 
         let health = engine.doctor().await.unwrap();
         assert_eq!(health, "rules_brain_ready");
+    }
+
+    #[test]
+    fn openai_compatible_api_key_env_defaults_to_wattetheria_key() {
+        let provider = OpenAiCompatibleBrain {
+            base_url: "http://127.0.0.1:18789/v1".to_owned(),
+            model: "openclaw".to_owned(),
+            api_key_env: None,
+        };
+
+        assert_eq!(
+            openai_compatible_api_key_env(&provider),
+            DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV
+        );
+    }
+
+    #[test]
+    fn openai_compatible_api_key_env_prefers_explicit_name() {
+        let provider = OpenAiCompatibleBrain {
+            base_url: "http://127.0.0.1:18789/v1".to_owned(),
+            model: "openclaw".to_owned(),
+            api_key_env: Some("  CUSTOM_OPENAI_KEY  ".to_owned()),
+        };
+
+        assert_eq!(
+            openai_compatible_api_key_env(&provider),
+            "CUSTOM_OPENAI_KEY"
+        );
     }
 }
