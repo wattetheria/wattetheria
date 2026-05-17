@@ -1,6 +1,6 @@
 {
   "name": "wattetheria",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Wattetheria deployment CLI",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -8,6 +8,7 @@
   "files": [
     "bin/",
     "lib/",
+    ".env.release",
     "docker-compose.release.yml",
     "README.md",
     "LICENSE"

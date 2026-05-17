@@ -29,9 +29,14 @@ require_file "$ENV_FILE"
 
 require_text "$COMPOSE_FILE" "WATTETHERIA_GATEWAY_URLS" "kernel must accept explicit gateway URLs"
 require_text "$COMPOSE_FILE" "WATTETHERIA_GATEWAY_CONFIG_PATH" "kernel must read the Wattswarm startup config"
+require_text "$COMPOSE_FILE" "WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS" "Wattswarm kernel must receive the Iroh data plane startup timeout"
 require_text "$COMPOSE_FILE" "/var/lib/wattswarm/startup_config.json" "gateway config path must point at the mounted Wattswarm state"
 require_text "$COMPOSE_FILE" '${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var/lib/wattswarm:ro' "kernel must mount Wattswarm state read-only"
 require_text "$ENV_FILE" "WATTSWARM_HOST_STATE_DIR=./data/wattswarm" "release env template must define the Wattswarm host state directory"
+require_text "$ENV_FILE" "WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL=http://kernel:7777" "release env template must define the internal agent event callback base URL"
+require_text "$ENV_FILE" "WATTETHERIA_BRAIN_API_KEY=" "release env template must include the concrete brain API key value slot"
+require_text "$ENV_FILE" "WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS=120000" "release env template must define the Iroh data plane startup timeout"
+require_text "$ENV_FILE" "WATTETHERIA_GATEWAY_CONFIG_PATH=/var/lib/wattswarm/startup_config.json" "release env template must expose the gateway config path"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null

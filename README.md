@@ -625,7 +625,7 @@ pwsh ./scripts/deploy-release.ps1
 - `docker-compose.yml` is the local `wattetheria`-only development stack
 - `docker-compose.full.yml` is the local joint development stack for `wattetheria` + `wattswarm`
 - `docker-compose.release.yml` is the image-based release deployment asset used by the CLI and fallback scripts
-- the CLI now generates deployment environment defaults internally and resolves the latest published image release during install and update
+- `.env.release` is the single release environment template; the CLI reads it when generating or merging deployment `.env` files and resolves the latest published image release during install and update
 - `scripts/deploy-release.ps1` is a cross-platform fallback deployment entry point
 - this repository does not include `wattetheria-gateway`; gateway is a separate project and deployment unit
 - The Docker entrypoint lives in `scripts/docker-kernel-entrypoint.sh`
@@ -710,6 +710,8 @@ WATTETHERIA_BRAIN_MODEL=openclaw
 WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY
 WATTETHERIA_BRAIN_API_KEY=<secret>
 WATTETHERIA_GATEWAY_URLS=http://gateway.example.com:8080
+WATTETHERIA_GATEWAY_CONFIG_PATH=/var/lib/wattswarm/startup_config.json
+WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS=120000
 ```
 
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the

@@ -24,6 +24,7 @@ use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
 const GATEWAY_CONTRACT_FETCH_LIMIT: usize = 200;
+const NETWORK_CLAIM_AUDIT_LOOKBACK: usize = 500;
 pub(crate) const MISSION_TASK_NO_EXPIRY_MS: u64 = u64::MAX;
 
 struct CommitResponseArgs<'a> {
@@ -39,6 +40,7 @@ struct NetworkMissionClaimRoute {
     mission_feed_key: String,
     mission_scope_hint: String,
     publisher_wattswarm_node_id: Option<String>,
+    status: Option<String>,
 }
 
 fn mission_stream_kind(action: &str) -> &'static str {
@@ -59,6 +61,114 @@ fn mission_signed_event_kind(action: &str) -> &'static str {
 
 fn mission_execution_id(mission_id: &str, agent_did: &str) -> String {
     format!("wattetheria:{mission_id}:{agent_did}")
+}
+
+fn mission_already_claimed_response(
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+    execution_id: &str,
+    detail: impl Into<String>,
+) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "ok": false,
+            "error": "mission already claimed",
+            "code": "mission_already_claimed",
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "agent_did": agent_did,
+            "execution_id": execution_id,
+            "claim_status": "already_claimed",
+            "detail": detail.into(),
+        })),
+    )
+        .into_response()
+}
+
+fn mission_not_claimable_response(
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+    execution_id: &str,
+    status: &str,
+) -> Response {
+    let normalized = status.trim().to_ascii_lowercase();
+    if normalized == "claimed" {
+        return mission_already_claimed_response(
+            mission_id,
+            task_id,
+            agent_did,
+            execution_id,
+            "Gateway reports this mission is already claimed.",
+        );
+    }
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "ok": false,
+            "error": "mission is not claimable",
+            "code": "mission_not_claimable",
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "agent_did": agent_did,
+            "execution_id": execution_id,
+            "claim_status": normalized,
+            "detail": "Gateway reports this mission is not open for claims.",
+        })),
+    )
+        .into_response()
+}
+
+fn network_claim_status_allows_claim(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "published" | "open"
+    )
+}
+
+fn network_claim_already_recorded(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+) -> anyhow::Result<bool> {
+    Ok(state
+        .audit_log
+        .list_recent(NETWORK_CLAIM_AUDIT_LOOKBACK)?
+        .into_iter()
+        .any(|entry| {
+            entry.action == "mission.claim.network"
+                && entry.status == "ok"
+                && entry.subject.as_deref() == Some(mission_id)
+                && entry.reason.as_deref() == Some(agent_did)
+                && entry
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("task_id"))
+                    .and_then(Value::as_str)
+                    == Some(task_id)
+        }))
+}
+
+fn network_claim_error_response(
+    body: &MissionClaimBody,
+    route: &NetworkMissionClaimRoute,
+    execution_id: &str,
+    error: &anyhow::Error,
+) -> Response {
+    let message = error.to_string();
+    if message.contains("lease conflict") {
+        return mission_already_claimed_response(
+            &body.mission_id,
+            &route.task_id,
+            &body.agent_did,
+            execution_id,
+            "Wattswarm rejected the claim because another active lease already exists for this task and role.",
+        );
+    }
+    internal_error(error)
 }
 
 fn mission_candidate_id(mission_id: &str, agent_did: &str) -> String {
@@ -111,6 +221,7 @@ fn network_claim_route(body: &MissionClaimBody) -> Result<NetworkMissionClaimRou
         mission_feed_key,
         mission_scope_hint,
         publisher_wattswarm_node_id,
+        status: claim_route_string(body, "status"),
     })
 }
 
@@ -143,6 +254,7 @@ fn network_claim_route_from_gateway_task(
     let publisher_wattswarm_node_id = gateway_task_string(task, "publisher_wattswarm_node_id");
     let mission_feed_key = gateway_task_string(task, "mission_feed_key")
         .unwrap_or_else(|| MISSION_FEED_KEY.to_owned());
+    let status = gateway_task_string(task, "status").or_else(|| gateway_task_string(task, "state"));
     let mission_scope_hint = gateway_task_string(task, "mission_scope_hint")
         .or_else(|| {
             publisher_wattswarm_node_id
@@ -159,6 +271,7 @@ fn network_claim_route_from_gateway_task(
         mission_feed_key,
         mission_scope_hint,
         publisher_wattswarm_node_id,
+        status,
     })
 }
 
@@ -779,6 +892,32 @@ async fn claim_network_mission(
         Ok(route) => route,
         Err(response) => return response,
     };
+    let execution_id = mission_execution_id(&route.task_id, &body.agent_did);
+    if let Some(status) = route.status.as_deref()
+        && !network_claim_status_allows_claim(status)
+    {
+        return mission_not_claimable_response(
+            &body.mission_id,
+            &route.task_id,
+            &body.agent_did,
+            &execution_id,
+            status,
+        );
+    }
+    match network_claim_already_recorded(&state, &body.mission_id, &route.task_id, &body.agent_did)
+    {
+        Ok(true) => {
+            return mission_already_claimed_response(
+                &body.mission_id,
+                &route.task_id,
+                &body.agent_did,
+                &execution_id,
+                "This Wattetheria node already submitted a network claim for this mission and agent.",
+            );
+        }
+        Ok(false) => {}
+        Err(error) => return internal_error(&error),
+    }
     let contract = match network_task_contract_for_action(&state, &route, &body, "claim").await {
         Ok(contract) => contract,
         Err(response) => return response,
@@ -788,19 +927,18 @@ async fn claim_network_mission(
             Ok(value) => value,
             Err(response) => return response,
         };
-    let execution_id = mission_execution_id(&route.task_id, &body.agent_did);
     let swarm_claim = match state
         .swarm_bridge
         .claim_task(SwarmTaskClaimCommand {
             task_id: route.task_id.clone(),
             role: ClaimRole::Propose,
-            execution_id,
+            execution_id: execution_id.clone(),
             lease_ms: None,
         })
         .await
     {
         Ok(value) => value,
-        Err(error) => return internal_error(&error),
+        Err(error) => return network_claim_error_response(&body, &route, &execution_id, &error),
     };
     let response_json = json!({
         "ok": true,

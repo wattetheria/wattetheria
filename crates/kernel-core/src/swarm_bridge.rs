@@ -968,15 +968,24 @@ impl HttpWattswarmApi {
     }
 
     async fn claim_task(&self, command: SwarmTaskClaimCommand) -> Result<Value> {
-        self.client
+        let response = self
+            .client
             .post(format!("{}/api/task/claim", self.base_url))
             .json(&command)
             .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
+            .await?;
+        let status = response.status();
+        let body = response
+            .text()
             .await
-            .context("decode wattswarm task claim response")
+            .context("read wattswarm task claim response")?;
+        if status.is_success() {
+            return serde_json::from_str::<Value>(&body)
+                .context("decode wattswarm task claim response");
+        }
+        Err(anyhow!(
+            "wattswarm task claim failed with status {status}: {body}"
+        ))
     }
 
     async fn propose_task_candidate(

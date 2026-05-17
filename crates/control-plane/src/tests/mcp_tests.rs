@@ -712,6 +712,133 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     assert_gateway_claim_route(&missions[0], "mission-gateway-2", "node-beta");
 }
 
+#[tokio::test]
+async fn mcp_claim_mission_reports_duplicate_network_claim() {
+    let (dir, app, token, _policy, state) = build_test_app(100);
+    let mission_id = "mission-mcp-duplicate-claim";
+    let agent_did = state.agent_did.clone();
+    seed_mcp_gateway_remote_mission(dir.path(), &state, mission_id).await;
+
+    let first = mcp_claim_mission(app.clone(), &token, mission_id, &agent_did).await;
+    assert_eq!(first["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        first["result"]["structuredContent"]["status"].as_str(),
+        Some("network_claim_submitted")
+    );
+
+    let second = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
+    assert_eq!(second["result"]["isError"].as_bool(), Some(true));
+    let content = &second["result"]["structuredContent"];
+    assert_eq!(content["code"].as_str(), Some("mission_already_claimed"));
+    assert_eq!(content["claim_status"].as_str(), Some("already_claimed"));
+    assert_eq!(content["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(content["task_id"].as_str(), Some(mission_id));
+    assert_eq!(content["agent_did"].as_str(), Some(agent_did.as_str()));
+    assert_eq!(second["result"]["_meta"]["httpStatus"].as_u64(), Some(409));
+}
+
+#[tokio::test]
+async fn mcp_claim_mission_reports_gateway_claimed_status() {
+    let (dir, app, token, _policy, state) = build_test_app(100);
+    let mission_id = "mission-mcp-gateway-claimed";
+    let agent_did = state.agent_did.clone();
+    seed_mcp_gateway_remote_mission_with_status(dir.path(), &state, mission_id, "claimed").await;
+
+    let response = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["code"].as_str(), Some("mission_already_claimed"));
+    assert_eq!(content["claim_status"].as_str(), Some("already_claimed"));
+    assert_eq!(content["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(
+        response["result"]["_meta"]["httpStatus"].as_u64(),
+        Some(409)
+    );
+}
+
+async fn mcp_claim_mission(app: Router, token: &str, mission_id: &str, agent_did: &str) -> Value {
+    mcp_request(
+        app,
+        token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "claim_mission",
+                "arguments": {
+                    "mission_id": mission_id,
+                    "agent_did": agent_did
+                }
+            }
+        }),
+    )
+    .await
+}
+
+async fn seed_mcp_gateway_remote_mission(
+    data_dir: &std::path::Path,
+    state: &ControlPlaneState,
+    mission_id: &str,
+) {
+    seed_mcp_gateway_remote_mission_with_status(data_dir, state, mission_id, "published").await;
+}
+
+async fn seed_mcp_gateway_remote_mission_with_status(
+    data_dir: &std::path::Path,
+    state: &ControlPlaneState,
+    mission_id: &str,
+    status: &str,
+) {
+    let mut contract = state
+        .swarm_bridge
+        .sample_task_contract(mission_id)
+        .await
+        .unwrap();
+    contract.task_type = "wattetheria.mission".to_string();
+    contract.inputs = json!({
+        "kind": "wattetheria_mission",
+        "mission_id": mission_id,
+        "publisher": "publisher-public",
+        "publisher_agent_did": "did:agent:publisher",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "swarm_scope": {"kind": "group", "id": mission_id},
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": format!("group:{mission_id}"),
+        "reward": {"agent_watt": 10},
+        "payload": {"work": "deliver"}
+    });
+    let gateway_task = json!({
+        "id": mission_id,
+        "task_id": mission_id,
+        "task_type": "wattetheria.mission",
+        "title": "Remote mission",
+        "status": status,
+        "source_node_id": "publisher-node",
+        "publisher_wattswarm_node_id": "publisher-node",
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": format!("group:{mission_id}"),
+        "task_contract": contract,
+    });
+    let gateway_app = Router::new().route(
+        "/api/tasks",
+        get(move || {
+            let gateway_task = gateway_task.clone();
+            async move { Json(json!([gateway_task])) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, gateway_app).await.unwrap();
+    });
+    std::fs::write(
+        data_dir.join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+}
+
 fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) {
     let scope_hint = format!("group:{mission_id}");
     assert_eq!(
