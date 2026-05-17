@@ -408,6 +408,12 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
     let Some(object) = payload.as_object_mut() else {
         return payload;
     };
+    object
+        .entry("task_id".to_string())
+        .or_insert_with(|| Value::String(mission.mission_id.clone()));
+    object
+        .entry("task_type".to_string())
+        .or_insert_with(|| Value::String("wattetheria.mission".to_string()));
     let Some(contract) = task_contract else {
         return payload;
     };
@@ -434,6 +440,29 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
         }
     }
     payload
+}
+
+async fn mission_gateway_payload_with_current_contract(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+) -> Value {
+    let task_contract = match state.swarm_bridge.local_node_id().await {
+        Ok(publisher_wattswarm_node_id) => state
+            .swarm_bridge
+            .sample_task_contract(&mission.mission_id)
+            .await
+            .ok()
+            .map(|contract| {
+                mission_task_contract(
+                    contract,
+                    mission,
+                    &state.agent_did,
+                    &publisher_wattswarm_node_id,
+                )
+            }),
+        Err(_) => None,
+    };
+    mission_gateway_payload(mission, task_contract.as_ref())
 }
 
 fn mission_complete_command(
@@ -970,7 +999,7 @@ async fn transition_mission(
         return internal_error(&error);
     }
 
-    let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
     let _ = state.stream_tx.send(StreamEvent {
         kind: mission_stream_kind(action).to_string(),
         timestamp: Utc::now().timestamp(),
@@ -992,7 +1021,7 @@ async fn transition_mission(
         details: Some(payload.clone()),
     });
 
-    let response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let response_json = payload.clone();
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -1067,7 +1096,7 @@ pub(crate) async fn mission_settle(
         return internal_error(&error);
     }
 
-    let payload = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.settled".to_string(),
         timestamp: Utc::now().timestamp(),

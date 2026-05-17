@@ -786,6 +786,115 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
 }
 
 #[tokio::test]
+async fn mission_lifecycle_events_keep_network_task_projection_shape() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let created = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions",
+        json!({
+            "title": "Network lifecycle",
+            "description": "Keep gateway lifecycle payloads complete",
+            "publisher": "publisher-public",
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 10,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"cargo": "ore"}
+        }),
+    )
+    .await;
+    let mission_id = created["mission_id"].as_str().unwrap();
+    let agent_did = "agent-worker";
+
+    let mut events = state.stream_tx.subscribe();
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/claim",
+        json!({"mission_id": mission_id, "agent_did": agent_did}),
+    )
+    .await;
+    let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("claim event timeout")
+        .expect("claim event");
+    assert_eq!(claimed.kind, "mission.claimed");
+    assert_mission_gateway_projection_payload(&claimed.payload, mission_id, "claimed", agent_did);
+
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/missions/complete",
+        json!({"mission_id": mission_id, "agent_did": agent_did}),
+    )
+    .await;
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("complete event timeout")
+        .expect("complete event");
+    assert_eq!(completed.kind, "mission.completed");
+    assert_mission_gateway_projection_payload(
+        &completed.payload,
+        mission_id,
+        "completed",
+        agent_did,
+    );
+    assert_eq!(completed.payload["completed_by"].as_str(), Some(agent_did));
+
+    let _ = authed_post_json(
+        app,
+        &token,
+        "/v1/missions/settle",
+        json!({"mission_id": mission_id}),
+    )
+    .await;
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("settle event timeout")
+        .expect("settle event");
+    assert_eq!(settled.kind, "mission.settled");
+    assert_mission_gateway_projection_payload(&settled.payload, mission_id, "settled", agent_did);
+    assert!(settled.payload["settled_at"].as_i64().is_some());
+}
+
+fn assert_mission_gateway_projection_payload(
+    payload: &Value,
+    mission_id: &str,
+    status: &str,
+    claimed_by: &str,
+) {
+    assert_eq!(payload["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(payload["task_id"].as_str(), Some(mission_id));
+    assert_eq!(payload["task_type"].as_str(), Some("wattetheria.mission"));
+    assert_eq!(payload["status"].as_str(), Some(status));
+    assert_eq!(payload["claimed_by"].as_str(), Some(claimed_by));
+    assert_eq!(
+        payload["publisher_wattswarm_node_id"].as_str(),
+        payload["task_contract"]["inputs"]["publisher_wattswarm_node_id"].as_str()
+    );
+    assert_eq!(
+        payload["mission_scope_hint"].as_str(),
+        Some(format!("group:{mission_id}").as_str())
+    );
+    assert_eq!(
+        payload["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
+        Some(format!("group:{mission_id}").as_str())
+    );
+    assert_eq!(
+        payload["swarm_scope"],
+        json!({
+            "kind": "group",
+            "id": mission_id,
+        })
+    );
+}
+
+#[tokio::test]
 async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();

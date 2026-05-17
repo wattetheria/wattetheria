@@ -147,6 +147,104 @@ fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
     }
 }
 
+fn mission_id_from_event(event: &AgentEventEnvelope) -> Option<String> {
+    [
+        "/mission_id",
+        "/task_id",
+        "/task_inputs/mission_id",
+        "/candidate_output/mission_id",
+    ]
+    .into_iter()
+    .find_map(|path| {
+        event
+            .payload
+            .pointer(path)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
+    let paths: &[&str] = match event.event_type.as_str() {
+        "task_claim_received" => &["/claimer_agent_did", "/claimer_node_id", "/agent_did"],
+        "task_result_received" => &[
+            "/candidate_output/agent_did",
+            "/agent_did",
+            "/claimer_agent_did",
+            "/claimer_node_id",
+        ],
+        _ => &["/agent_did"],
+    };
+    paths
+        .iter()
+        .find_map(|path| {
+            event
+                .payload
+                .pointer(path)
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| event.source_node_id.clone())
+}
+
+fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
+    payload
+        .get(key)
+        .and_then(Value::as_bool)
+        .or_else(|| payload.pointer(&format!("/{key}")).and_then(Value::as_bool))
+}
+
+fn ensure_mission_payload_fields(
+    event: &AgentEventEnvelope,
+    resolution: &mut AgentEventResolution,
+) {
+    if !resolution.payload.is_object() {
+        resolution.payload = json!({});
+    }
+    let Some(payload) = resolution.payload.as_object_mut() else {
+        return;
+    };
+    if !payload.contains_key("mission_id")
+        && let Some(mission_id) = mission_id_from_event(event)
+    {
+        payload.insert("mission_id".to_string(), Value::String(mission_id));
+    }
+    if !payload.contains_key("agent_did")
+        && let Some(agent_did) = agent_did_from_event(event)
+    {
+        payload.insert("agent_did".to_string(), Value::String(agent_did));
+    }
+}
+
+fn normalize_mission_resolution(
+    event: &AgentEventEnvelope,
+    mut resolution: AgentEventResolution,
+) -> AgentEventResolution {
+    if !is_mission_event(event) {
+        return resolution;
+    }
+    match (event.event_type.as_str(), resolution.action.as_deref()) {
+        ("task_claim_received", Some("decide_claim"))
+            if payload_bool(&resolution.payload, "approved") == Some(true) =>
+        {
+            resolution.action = Some("claim_mission".to_string());
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
+        ("task_result_received", Some("accept_result")) => {
+            resolution.action = Some("settle_mission".to_string());
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
+        ("task_claim_received", Some("claim_mission"))
+        | ("task_result_received", Some("complete_mission" | "settle_mission")) => {
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
+        _ => {}
+    }
+    resolution
+}
+
 fn agent_event_object_id(event: &AgentEventEnvelope) -> Option<String> {
     [
         "task_id",
@@ -404,9 +502,10 @@ fn response_from_resolution(
     resolution: Option<AgentEventResolution>,
     acked_at: u64,
 ) -> Response {
-    let Some(resolution) = resolution else {
+    let Some(mut resolution) = resolution else {
         return no_decision_response(state, event, acked_at);
     };
+    resolution = normalize_mission_resolution(event, resolution);
     let Some(action) = resolution.action.clone() else {
         return no_action_response(state, event, &resolution, acked_at);
     };

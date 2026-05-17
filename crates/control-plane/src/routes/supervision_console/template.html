@@ -199,7 +199,7 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                 <div class="field-stack">
                   <div>
                     <label class="field-label" for="brain-openai-base-url">Base URL</label>
-                    <input id="brain-openai-base-url" class="field-input" placeholder="http://127.0.0.1:18789/v1">
+                    <input id="brain-openai-base-url" class="field-input" placeholder="http://host.docker.internal:8642/v1">
                   </div>
                   <div>
                     <label class="field-label" for="brain-openai-model">Model</label>
@@ -207,7 +207,7 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                   </div>
                   <div>
                     <label class="field-label" for="brain-api-key-env">API Key Env Var</label>
-                    <input id="brain-api-key-env" class="field-input" placeholder="optional">
+                    <input id="brain-api-key-env" class="field-input" placeholder="WATTETHERIA_BRAIN_API_KEY">
                   </div>
                 </div>
               </section>
@@ -220,11 +220,11 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                     <span class="runtime-example-code">https://api.provider.example/v1</span>
                   </li>
                   <li>
-                    OpenClaw runtime
-                    <span class="runtime-example-code">http://127.0.0.1:18789/v1</span>
+                    Local runtime from Docker
+                    <span class="runtime-example-code">http://host.docker.internal:8642/v1</span>
                   </li>
                   <li>
-                    Local LLM server
+                    Host process without Docker
                     <span class="runtime-example-code">http://127.0.0.1:1234/v1</span>
                   </li>
                   <li>

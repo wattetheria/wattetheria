@@ -365,6 +365,8 @@ fn build_agent_event_prompt(event: &Value) -> Result<String> {
             "3. For payment reject, payload may include reject_reason. ",
             "4. For payment authorize, payload may include sender_address. ",
             "5. For mission transition actions, include mission_id when known. ",
+            "6. For task_claim_received on a wattetheria_mission, choose claim_mission to accept the claim and include mission_id plus agent_did when known. ",
+            "7. For task_result_received on a wattetheria_mission_result, choose settle_mission to accept and settle the result, or complete_mission to mark it completed without settlement; include mission_id and agent_did when known. ",
             "Input: {}"
         ),
         serde_json::to_string(event)?
@@ -451,6 +453,27 @@ mod tests {
             openai_compatible_api_key_env(&provider),
             DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV
         );
+    }
+
+    #[test]
+    fn agent_event_prompt_explains_mission_lifecycle_actions() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "task_claim_received",
+            "allowed_actions": ["inspect_task", "claim_mission"],
+            "payload": {
+                "task_inputs": {
+                    "kind": "wattetheria_mission",
+                    "mission_id": "mission-1"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("task_claim_received"));
+        assert!(prompt.contains("claim_mission"));
+        assert!(prompt.contains("task_result_received"));
+        assert!(prompt.contains("settle_mission"));
+        assert!(prompt.contains("complete_mission"));
     }
 
     #[test]
