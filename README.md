@@ -714,6 +714,10 @@ WATTETHERIA_GATEWAY_CONFIG_PATH=/var/lib/wattswarm/startup_config.json
 WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS=120000
 ```
 
+The supervision runtime page asks for the concrete API key value. Saving that form writes
+`WATTETHERIA_BRAIN_API_KEY=<secret>` and keeps
+`WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY` as the internal runtime indirection.
+
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
 kernel container as read-only. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel falls back to
 `gateway_urls` saved by the Wattswarm startup UI in that file. Wattetheria resolves coarse node geo

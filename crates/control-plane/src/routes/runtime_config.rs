@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
 
+const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
+const ENV_BRAIN_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY_ENV";
+const ENV_BRAIN_API_KEY: &str = "WATTETHERIA_BRAIN_API_KEY";
+
 pub(crate) fn brain_provider_label(
     config: &wattetheria_kernel::brain::BrainProviderConfig,
 ) -> String {
@@ -73,9 +77,70 @@ fn upsert_env_line(lines: &mut Vec<String>, key: &str, value: &str) {
     lines.push(replacement);
 }
 
+fn env_line_value(lines: &[String], key: &str) -> Option<String> {
+    lines.iter().find_map(|line| {
+        let (existing_key, value) = line.split_once('=')?;
+        if existing_key.trim() == key {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn brain_api_key_present(
+    env_path: &Path,
+    config: &wattetheria_kernel::brain::BrainProviderConfig,
+) -> bool {
+    let wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible { api_key_env, .. } =
+        config
+    else {
+        return false;
+    };
+    let key_name = api_key_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV);
+    if std::env::var(key_name)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return true;
+    }
+    let Ok(raw) = fs::read_to_string(env_path) else {
+        return false;
+    };
+    let lines = raw.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    env_line_value(&lines, key_name).is_some_and(|value| !value.trim().is_empty())
+}
+
+fn normalize_brain_config_request(mut body: Value) -> anyhow::Result<(Value, Option<String>)> {
+    let api_key = body
+        .as_object_mut()
+        .and_then(|object| object.remove("api_key"))
+        .and_then(|value| value.as_str().map(str::trim).map(str::to_string))
+        .filter(|value| !value.is_empty());
+    if body
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "openai-compatible")
+    {
+        let object = body
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("brain config body must be a JSON object"))?;
+        object.insert(
+            "api_key_env".to_string(),
+            Value::String(DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV.to_string()),
+        );
+    }
+    Ok((body, api_key))
+}
+
 fn persist_brain_config_to_env(
     env_path: &Path,
     config: &wattetheria_kernel::brain::BrainProviderConfig,
+    api_key: Option<&str>,
 ) -> anyhow::Result<()> {
     if let Some(parent) = env_path.parent() {
         fs::create_dir_all(parent)?;
@@ -119,7 +184,10 @@ fn persist_brain_config_to_env(
     );
     upsert_env_line(&mut lines, "WATTETHERIA_BRAIN_BASE_URL", &base_url);
     upsert_env_line(&mut lines, "WATTETHERIA_BRAIN_MODEL", &model);
-    upsert_env_line(&mut lines, "WATTETHERIA_BRAIN_API_KEY_ENV", &api_key_env);
+    upsert_env_line(&mut lines, ENV_BRAIN_API_KEY_ENV, &api_key_env);
+    if let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
+        upsert_env_line(&mut lines, ENV_BRAIN_API_KEY, api_key);
+    }
     let rendered = if lines.is_empty() {
         String::new()
     } else {
@@ -155,11 +223,13 @@ pub(crate) async fn brain_config_get(
     let config = state.brain_config.read().await.clone();
     let label = brain_provider_label(&config);
     let env_path = deploy_env_path(&state.data_dir);
+    let has_api_key = brain_api_key_present(&env_path, &config);
     Json(json!({
         "ok": true,
         "config": config,
         "label": label,
         "env_path": env_path.display().to_string(),
+        "has_api_key": has_api_key,
     }))
     .into_response()
 }
@@ -173,6 +243,10 @@ pub(crate) async fn brain_config_put(
         Ok(token) => token,
         Err(response) => return response,
     };
+    let (body, api_key) = match normalize_brain_config_request(body) {
+        Ok(normalized) => normalized,
+        Err(error) => return bad_request(format!("invalid brain config: {error}")),
+    };
     let config: wattetheria_kernel::brain::BrainProviderConfig = match serde_json::from_value(body)
     {
         Ok(config) => config,
@@ -182,13 +256,14 @@ pub(crate) async fn brain_config_put(
     let label = brain_provider_label(&config);
     let env_path = deploy_env_path(&state.data_dir);
 
-    if let Err(error) = persist_brain_config_to_env(&env_path, &config) {
+    if let Err(error) = persist_brain_config_to_env(&env_path, &config, api_key.as_deref()) {
         return internal_error(&error);
     }
     if let Err(error) = persist_brain_config_to_json(&state.data_dir, &config) {
         return internal_error(&error);
     }
 
+    let has_api_key = brain_api_key_present(&env_path, &config);
     *state.brain_config.write().await = config;
     *state.brain_engine.write().await = engine;
 
@@ -197,6 +272,7 @@ pub(crate) async fn brain_config_put(
         "status": "updated",
         "label": label,
         "env_path": env_path.display().to_string(),
+        "has_api_key": has_api_key,
         "restart_required": true,
     }))
     .into_response()

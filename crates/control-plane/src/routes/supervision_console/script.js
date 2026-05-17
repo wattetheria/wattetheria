@@ -1029,7 +1029,11 @@
         if (kind === "openai-compatible") {
           document.getElementById("brain-openai-base-url").value = cfg.base_url || "";
           document.getElementById("brain-openai-model").value = cfg.model || "";
-          document.getElementById("brain-api-key-env").value = (cfg.api_key_env || "");
+          const apiKeyInput = document.getElementById("brain-api-key");
+          apiKeyInput.value = "";
+          apiKeyInput.placeholder = data.has_api_key
+            ? "Configured - enter a new key to replace"
+            : "Enter API key";
           runtimeLabel = data.label || kind;
         }
         document.getElementById("brain-provider-label").textContent = runtimeLabel;
@@ -1047,8 +1051,8 @@
       const body = { kind };
       body.base_url = document.getElementById("brain-openai-base-url").value.trim();
       body.model = document.getElementById("brain-openai-model").value.trim();
-      const keyEnv = document.getElementById("brain-api-key-env").value.trim();
-      if (keyEnv) body.api_key_env = keyEnv;
+      const apiKey = document.getElementById("brain-api-key").value.trim();
+      if (apiKey) body.api_key = apiKey;
       try {
         const data = await fetchJson("/v1/brain/config", {
           method: "PUT",
@@ -1062,6 +1066,13 @@
         document.getElementById("brain-config-status").className = data.ok ? "status-text ok" : "status-text error";
         document.getElementById("brain-provider-label").textContent = data.label || "";
         document.getElementById("side-runtime").textContent = data.label || kind;
+        if (data.ok) {
+          const apiKeyInput = document.getElementById("brain-api-key");
+          apiKeyInput.value = "";
+          apiKeyInput.placeholder = data.has_api_key
+            ? "Configured - enter a new key to replace"
+            : "Enter API key";
+        }
       } catch (err) {
         document.getElementById("brain-config-status").textContent = "Save failed: " + err.message;
         document.getElementById("brain-config-status").className = "status-text error";

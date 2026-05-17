@@ -59,7 +59,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
                     "kind": "openai-compatible",
                     "base_url": "http://127.0.0.1:18789/v1",
                     "model": "openclaw",
-                    "api_key_env": "WATTETHERIA_BRAIN_API_KEY"
+                    "api_key": "secret-runtime-key"
                 })
                 .to_string(),
             ))
@@ -79,6 +79,8 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     assert!(env_body.contains("WATTETHERIA_BRAIN_BASE_URL=http://127.0.0.1:18789/v1"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_MODEL=openclaw"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY=secret-runtime-key"));
+    assert!(!env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=secret-runtime-key"));
     assert!(!env_body.lines().any(|line| line.starts_with("OPENCLAW_")));
 
     let loaded = authed_get_json(app.clone(), &token, "/v1/brain/config").await;
@@ -90,6 +92,8 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
         loaded["env_path"].as_str(),
         Some(env_path.to_string_lossy().as_ref())
     );
+    assert_eq!(loaded["has_api_key"].as_bool(), Some(true));
+    assert!(loaded["config"].get("api_key").is_none());
 }
 
 #[tokio::test]
