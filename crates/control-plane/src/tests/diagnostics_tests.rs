@@ -175,6 +175,30 @@ async fn agent_event_callback_writes_diagnostics() {
             .iter()
             .any(|entry| entry.phase == "callback.responded")
     );
+    let received = entries
+        .iter()
+        .find(|entry| entry.phase == "callback.received")
+        .expect("callback.received diagnostic");
+    assert_eq!(
+        received.details["payload"]["callback_request"]["event"]["event_id"].as_str(),
+        Some("evt-task-claim")
+    );
+    assert_eq!(
+        received.details["payload"]["brain_input"]["event_type"].as_str(),
+        Some("task_claim_received")
+    );
+    let responded = entries
+        .iter()
+        .find(|entry| entry.phase == "callback.responded")
+        .expect("callback.responded diagnostic");
+    assert_eq!(
+        responded.details["payload"]["callback_response"]["ok"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        responded.details["payload"]["callback_response"]["detail"].as_str(),
+        Some("no decision for task_claim_received")
+    );
     assert!(
         entries
             .iter()

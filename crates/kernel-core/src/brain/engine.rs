@@ -195,6 +195,7 @@ struct OpenAiCompatibleBrain {
 }
 
 const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
+const OPENAI_COMPATIBLE_TRACE_BODY_LIMIT: usize = 16_384;
 
 #[async_trait]
 impl BrainProvider for OllamaBrain {
@@ -300,34 +301,79 @@ async fn openai_compatible_generate(
     provider: &OpenAiCompatibleBrain,
     prompt: &str,
 ) -> Result<String> {
-    let mut request = reqwest::Client::new()
-        .post(format!(
-            "{}/chat/completions",
-            provider.base_url.trim_end_matches('/')
-        ))
-        .json(&json!({
-            "model": provider.model,
-            "messages": [
-                {"role":"system", "content":"You are a strict JSON generator."},
-                {"role":"user", "content": prompt}
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"}
-        }));
+    let url = format!(
+        "{}/chat/completions",
+        provider.base_url.trim_end_matches('/')
+    );
+    let request_body = json!({
+        "model": provider.model,
+        "messages": [
+            {"role":"system", "content":"You are a strict JSON generator."},
+            {"role":"user", "content": prompt}
+        ],
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"}
+    });
+    let request_body_text =
+        diagnostic_json_snippet(&request_body, OPENAI_COMPATIBLE_TRACE_BODY_LIMIT);
+    let mut request = reqwest::Client::new().post(&url).json(&request_body);
 
     if let Ok(token) = std::env::var(openai_compatible_api_key_env(provider)) {
         request = request.bearer_auth(token);
     }
 
-    let response = request.send().await.context("call openai-compatible")?;
-    let payload: Value = response
-        .json()
+    let response = request
+        .send()
         .await
-        .context("parse openai-compatible response")?;
+        .with_context(|| format!("call openai-compatible url={url} request={request_body_text}"))?;
+    let status = response.status();
+    let response_body = response.text().await.with_context(|| {
+        format!("read openai-compatible response body url={url} status={status}")
+    })?;
+    let response_body_text =
+        diagnostic_text_snippet(&response_body, OPENAI_COMPATIBLE_TRACE_BODY_LIMIT);
+
+    if !status.is_success() {
+        anyhow::bail!(
+            "openai-compatible status {status}: url={url} request={request_body_text} response_body={response_body_text}"
+        );
+    }
+
+    let payload: Value = serde_json::from_str(&response_body).with_context(|| {
+        format!(
+            "parse openai-compatible response url={url} status={status} request={request_body_text} response_body={response_body_text}"
+        )
+    })?;
     payload["choices"][0]["message"]["content"]
         .as_str()
         .map(ToString::to_string)
-        .context("openai-compatible response missing content")
+        .with_context(|| {
+            format!(
+                "openai-compatible response missing content: url={url} status={status} request={request_body_text} response_body={response_body_text}"
+            )
+        })
+}
+
+fn diagnostic_json_snippet(value: &Value, limit: usize) -> String {
+    match serde_json::to_string(value) {
+        Ok(text) => diagnostic_text_snippet(&text, limit),
+        Err(error) => format!("<failed to serialize diagnostic json: {error}>"),
+    }
+}
+
+fn diagnostic_text_snippet(value: &str, limit: usize) -> String {
+    if value.len() <= limit {
+        return value.to_owned();
+    }
+    let mut end = limit;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}...<truncated {} bytes>",
+        &value[..end],
+        value.len() - end
+    )
 }
 
 fn openai_compatible_api_key_env(provider: &OpenAiCompatibleBrain) -> &str {

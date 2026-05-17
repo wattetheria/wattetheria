@@ -302,29 +302,32 @@ fn record_agent_event_diagnostic(
 fn record_agent_callback_responded(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
-    ok: bool,
-    detail: &str,
-    decision: Option<&AgentDecisionEnvelope>,
+    response: &AgentEventCallbackResponse,
 ) {
+    let detail = response
+        .detail
+        .as_deref()
+        .unwrap_or("agent event callback response");
     record_agent_event_diagnostic(
         state,
         event,
-        if ok { "info" } else { "warn" },
+        if response.ok { "info" } else { "warn" },
         "callback.responded",
-        if ok { "ok" } else { "error" },
+        if response.ok { "ok" } else { "error" },
         format!("agent event callback responded: {}", event.event_type),
         &json!({
-            "ok": ok,
+            "ok": response.ok,
             "detail": detail,
             "event_type": event.event_type,
             "requires_commit": event.requires_commit,
-            "decision": decision.map(|decision| json!({
+            "decision": response.decision.as_ref().map(|decision| json!({
                 "decision_id": decision.decision_id,
                 "action": decision.action,
                 "route": decision.route,
                 "reason": decision.reason,
                 "payload": decision.payload,
             })),
+            "callback_response": response,
         }),
     );
 }
@@ -344,14 +347,14 @@ fn no_decision_response(
         &event.payload,
     );
     let detail = format!("no decision for {}", event.event_type);
-    record_agent_callback_responded(state, event, true, &detail, None);
-    Json(AgentEventCallbackResponse {
+    let response = AgentEventCallbackResponse {
         ok: true,
         acked_at: Some(acked_at),
         detail: Some(detail),
         decision: None,
-    })
-    .into_response()
+    };
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
 }
 
 fn no_action_response(
@@ -374,14 +377,14 @@ fn no_action_response(
         &details,
     );
     let detail = format!("no action selected for {}", event.event_type);
-    record_agent_callback_responded(state, event, true, &detail, None);
-    Json(AgentEventCallbackResponse {
+    let response = AgentEventCallbackResponse {
         ok: true,
         acked_at: Some(acked_at),
         detail: Some(detail),
         decision: None,
-    })
-    .into_response()
+    };
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
 }
 
 fn unsupported_route_response(
@@ -409,14 +412,14 @@ fn unsupported_route_response(
         "unsupported action {action} for event_type {}",
         event.event_type
     );
-    record_agent_callback_responded(state, event, false, &detail, None);
-    Json(AgentEventCallbackResponse {
+    let response = AgentEventCallbackResponse {
         ok: false,
         acked_at: Some(acked_at),
         detail: Some(detail),
         decision: None,
-    })
-    .into_response()
+    };
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
 }
 
 fn disallowed_action_response(
@@ -445,14 +448,14 @@ fn disallowed_action_response(
         "action {action} not in allowed_actions for {}",
         event.event_type
     );
-    record_agent_callback_responded(state, event, false, &detail, None);
-    Json(AgentEventCallbackResponse {
+    let response = AgentEventCallbackResponse {
         ok: false,
         acked_at: Some(acked_at),
         detail: Some(detail),
         decision: None,
-    })
-    .into_response()
+    };
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
 }
 
 fn selected_action_response(
@@ -486,14 +489,14 @@ fn selected_action_response(
         payload: resolution.payload.clone(),
     };
     let detail = format!("selected {action} for {}", event.event_type);
-    record_agent_callback_responded(state, event, true, &detail, Some(&decision));
-    Json(AgentEventCallbackResponse {
+    let response = AgentEventCallbackResponse {
         ok: true,
         acked_at: Some(acked_at),
         detail: Some(detail),
         decision: Some(decision),
-    })
-    .into_response()
+    };
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
 }
 
 fn response_from_resolution(
@@ -524,7 +527,9 @@ pub(crate) async fn callback(
 ) -> Response {
     let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
     let mut event = body.event;
+    let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(&mut event);
+    let input = build_brain_event_input(&state, &event);
     record_agent_event_diagnostic(
         &state,
         &event,
@@ -532,9 +537,12 @@ pub(crate) async fn callback(
         "callback.received",
         "accepted",
         format!("agent event callback received: {}", event.event_type),
-        &event.payload,
+        &json!({
+            "callback_request": callback_request,
+            "normalized_event": &event,
+            "brain_input": &input,
+        }),
     );
-    let input = build_brain_event_input(&state, &event);
     let resolution = match state
         .brain_engine
         .read()
@@ -544,24 +552,28 @@ pub(crate) async fn callback(
     {
         Ok(resolution) => resolution,
         Err(error) => {
+            let detail = format!("agent event decision failed: {error:#}");
+            let response = AgentEventCallbackResponse {
+                ok: false,
+                acked_at: Some(acked_at),
+                detail: Some(detail.clone()),
+                decision: None,
+            };
             record_agent_event_diagnostic(
                 &state,
                 &event,
                 "error",
                 "decision.failed",
                 "error",
-                format!("agent event decision failed: {error:#}"),
-                &event.payload,
+                detail.clone(),
+                &json!({
+                    "error": detail,
+                    "brain_input": input,
+                    "callback_response": response,
+                }),
             );
-            let detail = format!("agent event decision failed: {error:#}");
-            record_agent_callback_responded(&state, &event, false, &detail, None);
-            return Json(AgentEventCallbackResponse {
-                ok: false,
-                acked_at: Some(acked_at),
-                detail: Some(detail),
-                decision: None,
-            })
-            .into_response();
+            record_agent_callback_responded(&state, &event, &response);
+            return Json(response).into_response();
         }
     };
     response_from_resolution(&state, &event, resolution, acked_at)
