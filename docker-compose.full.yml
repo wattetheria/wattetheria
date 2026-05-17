@@ -159,6 +159,12 @@ services:
       WATTSWARM_WORKER_CONCURRENCY: ${WATTSWARM_WORKER_CONCURRENCY:-16}
       WATTSWARM_WORKER_POLL_MS: ${WATTSWARM_WORKER_POLL_MS:-250}
       WATTSWARM_WORKER_LEASE_MS: ${WATTSWARM_WORKER_LEASE_MS:-30000}
+      # Worker shares state_dir with wattswarm-kernel; kernel owns the iroh data
+      # plane (gossip, backfill, agent-event delivery). Disabling P2P here keeps
+      # the worker from trying to start a second iroh stack and contending on
+      # iroh-blobs/blobs.db's exclusive flock, which would otherwise stall the
+      # kernel's network bridge for the configured startup timeout.
+      WATTSWARM_P2P_ENABLED: "false"
     volumes:
       - ./.wattswarm-docker:/var/lib/wattswarm
     networks:
