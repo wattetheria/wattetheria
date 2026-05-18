@@ -1,5 +1,28 @@
 use super::*;
 use axum::http::Request;
+use std::path::Path;
+
+fn assert_claim_brain_actions(data_dir: &Path, event_id: &str, expected_actions: &[&str]) {
+    let entries = crate::diagnostics::list_diagnostics(
+        data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            event_id: Some(event_id.to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let received = entries
+        .iter()
+        .find(|entry| entry.phase == "callback.received")
+        .expect("callback.received diagnostic");
+    let actions = received.details["payload"]["brain_input"]["allowed_actions"]
+        .as_array()
+        .expect("brain allowed actions")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(actions, expected_actions);
+}
 
 #[tokio::test]
 async fn agent_events_route_translates_openai_compatible_reply_into_structured_decision() {
@@ -332,6 +355,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
         ..state
     };
+    let data_dir = state.data_dir.clone();
     let app = app(state);
 
     let response = request_json(
@@ -385,6 +409,8 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
         response["decision"]["payload"]["agent_did"].as_str(),
         Some("claimer-node")
     );
+
+    assert_claim_brain_actions(&data_dir, "evt-task-claim", &["decide_claim"]);
 
     server.abort();
 }

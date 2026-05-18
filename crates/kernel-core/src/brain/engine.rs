@@ -411,7 +411,7 @@ fn build_agent_event_prompt(event: &Value) -> Result<String> {
             "3. For payment reject, payload may include reject_reason. ",
             "4. For payment authorize, payload may include sender_address. ",
             "5. For mission transition actions, include mission_id when known. ",
-            "6. For task_claim_received on a wattetheria_mission, choose claim_mission to accept the claim and include mission_id plus agent_did when known. ",
+            "6. For task_claim_received on a wattetheria_mission, choose decide_claim only. Set payload.approved=true to accept the claim or payload.approved=false to reject it; include mission_id and claimer_node_id or agent_did when known. Do not return claim_mission because it is an internal commit action. ",
             "7. For task_result_received on a wattetheria_mission_result, choose settle_mission to accept and settle the result, or complete_mission to mark it completed without settlement; include mission_id and agent_did when known. ",
             "Input: {}"
         ),
@@ -505,7 +505,7 @@ mod tests {
     fn agent_event_prompt_explains_mission_lifecycle_actions() {
         let prompt = build_agent_event_prompt(&json!({
             "event_type": "task_claim_received",
-            "allowed_actions": ["inspect_task", "claim_mission"],
+            "allowed_actions": ["decide_claim"],
             "payload": {
                 "task_inputs": {
                     "kind": "wattetheria_mission",
@@ -516,7 +516,9 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("task_claim_received"));
-        assert!(prompt.contains("claim_mission"));
+        assert!(prompt.contains("choose decide_claim only"));
+        assert!(prompt.contains("payload.approved=true"));
+        assert!(prompt.contains("Do not return claim_mission"));
         assert!(prompt.contains("task_result_received"));
         assert!(prompt.contains("settle_mission"));
         assert!(prompt.contains("complete_mission"));

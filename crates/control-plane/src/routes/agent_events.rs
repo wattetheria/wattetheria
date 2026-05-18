@@ -133,12 +133,16 @@ fn push_allowed_action(event: &mut AgentEventEnvelope, action: &str) {
     }
 }
 
+fn set_allowed_actions(event: &mut AgentEventEnvelope, actions: &[&str]) {
+    event.allowed_actions = actions.iter().map(|action| (*action).to_owned()).collect();
+}
+
 fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
     if !is_mission_event(event) {
         return;
     }
     match event.event_type.as_str() {
-        "task_claim_received" => push_allowed_action(event, "claim_mission"),
+        "task_claim_received" => set_allowed_actions(event, &["decide_claim"]),
         "task_result_received" => {
             push_allowed_action(event, "complete_mission");
             push_allowed_action(event, "settle_mission");
@@ -243,6 +247,27 @@ fn normalize_mission_resolution(
         _ => {}
     }
     resolution
+}
+
+fn internal_mission_action_allowed(
+    event: &AgentEventEnvelope,
+    original_action: Option<&str>,
+    normalized_action: &str,
+) -> bool {
+    is_mission_event(event)
+        && matches!(
+            (
+                event.event_type.as_str(),
+                original_action,
+                normalized_action
+            ),
+            ("task_claim_received", Some("decide_claim"), "claim_mission")
+                | (
+                    "task_result_received",
+                    Some("accept_result"),
+                    "settle_mission"
+                )
+        )
 }
 
 fn agent_event_object_id(event: &AgentEventEnvelope) -> Option<String> {
@@ -508,6 +533,7 @@ fn response_from_resolution(
     let Some(mut resolution) = resolution else {
         return no_decision_response(state, event, acked_at);
     };
+    let original_action = resolution.action.clone();
     resolution = normalize_mission_resolution(event, resolution);
     let Some(action) = resolution.action.clone() else {
         return no_action_response(state, event, &resolution, acked_at);
@@ -515,7 +541,9 @@ fn response_from_resolution(
     let Some(route) = map_route(&event.event_type, &action) else {
         return unsupported_route_response(state, event, &action, &resolution, acked_at);
     };
-    if !event.allowed_actions.iter().any(|a| a == &action) {
+    if !event.allowed_actions.iter().any(|a| a == &action)
+        && !internal_mission_action_allowed(event, original_action.as_deref(), &action)
+    {
         return disallowed_action_response(state, event, &action, &resolution, acked_at);
     }
     selected_action_response(state, event, &action, route, &resolution, acked_at)

@@ -341,12 +341,29 @@ pub(crate) fn build_signed_agent_envelope(
     message: Value,
     extensions: Option<Value>,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
+    build_signed_agent_envelope_with_optional_target(
+        state,
+        source_agent_id,
+        Some(target_agent_id),
+        capability,
+        message,
+        extensions,
+    )
+}
+
+pub(crate) fn build_signed_agent_envelope_with_optional_target(
+    state: &ControlPlaneState,
+    source_agent_id: String,
+    target_agent_id: Option<String>,
+    capability: &str,
+    message: Value,
+    extensions: Option<Value>,
+) -> anyhow::Result<SwarmAgentEnvelope> {
     let protocol = "google_a2a".to_string();
     let message_json = serde_json::to_string(&message)?;
     let extensions_json = extensions.as_ref().map(serde_json::to_string).transpose()?;
     let capability = Some(capability.to_string());
     let source_agent_id = Some(source_agent_id);
-    let target_agent_id = Some(target_agent_id);
     let unsigned = SignedAgentEnvelopePayload {
         protocol: &protocol,
         source_agent_id: source_agent_id.as_ref(),

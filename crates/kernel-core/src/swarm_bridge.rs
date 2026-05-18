@@ -188,6 +188,7 @@ pub struct SwarmAgentPaymentCommand {
     pub remote_node_id: String,
     pub message_kind: String,
     pub payment: Value,
+    pub agent_envelope: SwarmAgentEnvelope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -200,15 +201,18 @@ pub struct SwarmTaskAnnounceCommand {
     pub summary: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail_ref: Option<ArtifactRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmTaskClaimCommand {
     pub task_id: String,
     pub role: ClaimRole,
     pub execution_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_ms: Option<u64>,
+    pub agent_envelope: SwarmAgentEnvelope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -221,6 +225,7 @@ pub struct SwarmTaskProposeCandidateCommand {
     pub evidence_inline: Vec<InlineEvidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<ArtifactRef>,
+    pub agent_envelope: SwarmAgentEnvelope,
 }
 
 #[async_trait]
@@ -351,7 +356,12 @@ pub trait SwarmBridge: Send + Sync {
         ))
     }
 
-    async fn accept_and_finalize_task(&self, _task_id: &str, _candidate_id: &str) -> Result<Value> {
+    async fn accept_and_finalize_task(
+        &self,
+        _task_id: &str,
+        _candidate_id: &str,
+        _agent_envelope: Option<SwarmAgentEnvelope>,
+    ) -> Result<Value> {
         Err(anyhow!("wattswarm task accept result is not configured"))
     }
 
@@ -578,9 +588,14 @@ impl SwarmBridge for HybridSwarmBridge {
         self.topic_api()?.propose_task_candidate(command).await
     }
 
-    async fn accept_and_finalize_task(&self, task_id: &str, candidate_id: &str) -> Result<Value> {
+    async fn accept_and_finalize_task(
+        &self,
+        task_id: &str,
+        candidate_id: &str,
+        agent_envelope: Option<SwarmAgentEnvelope>,
+    ) -> Result<Value> {
         self.topic_api()?
-            .accept_and_finalize_task(task_id, candidate_id)
+            .accept_and_finalize_task(task_id, candidate_id, agent_envelope)
             .await
     }
 
@@ -1003,12 +1018,18 @@ impl HttpWattswarmApi {
             .context("decode wattswarm task candidate proposal response")
     }
 
-    async fn accept_and_finalize_task(&self, task_id: &str, candidate_id: &str) -> Result<Value> {
+    async fn accept_and_finalize_task(
+        &self,
+        task_id: &str,
+        candidate_id: &str,
+        agent_envelope: Option<SwarmAgentEnvelope>,
+    ) -> Result<Value> {
         self.client
             .post(format!("{}/api/task/accept-result", self.base_url))
             .json(&json!({
                 "task_id": task_id,
                 "candidate_id": candidate_id,
+                "agent_envelope": agent_envelope,
             }))
             .send()
             .await?

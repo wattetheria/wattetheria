@@ -834,6 +834,7 @@ impl SwarmBridge for MockSwarmBridge {
         &self,
         task_id: &str,
         candidate_id: &str,
+        _agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> anyhow::Result<Value> {
         if self.fail_accept_and_finalize {
             return Err(anyhow::anyhow!("mock task finalize failure"));

@@ -616,7 +616,7 @@ async fn commit_task_result_settle_mission(
     if let (Some(task_id), Some(candidate_id)) = (&task_id, &candidate_id)
         && let Err(error) = state
             .swarm_bridge
-            .accept_and_finalize_task(task_id, candidate_id)
+            .accept_and_finalize_task(task_id, candidate_id, None)
             .await
     {
         return internal_error(&error);

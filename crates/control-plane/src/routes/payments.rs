@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
-use crate::social_host::{resolve_social_counterpart_target, resolve_social_local_context};
+use crate::social_host::{
+    build_signed_agent_envelope, resolve_social_counterpart_target, resolve_social_local_context,
+};
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
     AgentPaymentSettleBody, AgentPaymentsQuery, ControlPlaneState, StreamEvent,
@@ -814,6 +816,19 @@ async fn send_payment_message(
     counterpart: &crate::social_host::SocialCounterpartTarget,
     message: &PaymentAgentMessage,
 ) -> anyhow::Result<Value> {
+    let local = resolve_social_local_context(state, None).await;
+    let agent_envelope = build_signed_agent_envelope(
+        state,
+        local.agent_id,
+        counterpart.target_agent.clone(),
+        "payment.agent_message",
+        json!({
+            "message_kind": message.kind.as_str(),
+            "payment": message.payment,
+            "counterpart_public_id": counterpart.counterpart_public_id,
+        }),
+        None,
+    )?;
     state
         .swarm_bridge
         .publish_agent_payment_message(SwarmAgentPaymentCommand {
@@ -821,6 +836,7 @@ async fn send_payment_message(
             message_kind: message.kind.as_str().to_string(),
             payment: serde_json::to_value(&message.payment)
                 .context("serialize payment transaction")?,
+            agent_envelope,
         })
         .await
 }
