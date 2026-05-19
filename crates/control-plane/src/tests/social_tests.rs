@@ -58,7 +58,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let relationship_response = authed_post_json(
         app.clone(),
         &token,
-        "/v1/civilization/agent-friends",
+        "/v1/wattetheria/social/agent-friends",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -121,7 +121,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let dm_response = authed_post_json(
         app.clone(),
         &token,
-        "/v1/civilization/agent-dm/messages",
+        "/v1/wattetheria/social/agent-dm/messages",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -175,7 +175,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let relationship_items = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(relationship_items.as_array().unwrap().len(), 1);
@@ -187,7 +187,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let thread_items = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/threads?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(thread_items.as_array().unwrap().len(), 1);
@@ -199,7 +199,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     let message_items = authed_get_json(
         app,
         &token,
-        &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/messages?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(message_items.as_array().unwrap().len(), 1);
@@ -265,7 +265,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
     let response = authed_post_json(
         app.clone(),
         &token,
-        "/v1/payments/agent-payments/propose",
+        "/v1/wattetheria/payments/agent-payments/propose",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -305,6 +305,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_payment_authorize_signs_with_active_payment_account() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -362,7 +363,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
     let proposed = authed_post_json(
         app.clone(),
         &token,
-        "/v1/payments/agent-payments/propose",
+        "/v1/wattetheria/payments/agent-payments/propose",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -382,7 +383,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
     let authorized = authed_post_json(
         app.clone(),
         &token,
-        &format!("/v1/payments/agent-payments/{payment_id}/authorize"),
+        &format!("/v1/wattetheria/payments/agent-payments/{payment_id}/authorize"),
         json!({}),
     )
     .await;
@@ -402,6 +403,172 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
         payment_commands[1].payment["sender_address"].as_str(),
         Some(sender_address.as_str())
     );
+    drop(payment_commands);
+
+    let proposed_mismatch = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/payments/agent-payments/propose",
+        json!({
+            "public_id": local_public_id,
+            "counterpart_public_id": remote_public_id,
+            "amount": "3000000",
+            "currency": "USDT",
+            "rail": "x402",
+            "layer": "web3",
+            "network": "base-sepolia",
+        }),
+    )
+    .await;
+    let mismatch_payment_id = proposed_mismatch["payment"]["payment_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mismatch_status = authed_post(
+        app,
+        &token,
+        &format!("/v1/wattetheria/payments/agent-payments/{mismatch_payment_id}/authorize"),
+        json!({"sender_address": "0x0000000000000000000000000000000000000000"}),
+    )
+    .await;
+    assert_eq!(mismatch_status, StatusCode::FORBIDDEN);
+
+    let ledger = state.payment_ledger.lock().await;
+    assert_eq!(
+        ledger.get(&mismatch_payment_id).unwrap().status,
+        wattetheria_kernel::payments::PaymentStatus::Proposed
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
+        local_node_id: identity.agent_did.clone(),
+        agent_stats: BTreeMap::new(),
+        network_status: SwarmNetworkStatusView {
+            running: true,
+            mode: "network".to_string(),
+            peer_protocol_distribution: BTreeMap::new(),
+        },
+        peers: Vec::new(),
+        subscriptions: Mutex::new(Vec::new()),
+        messages: Mutex::new(Vec::new()),
+        relationship_views: Mutex::new(Vec::new()),
+        relationship_commands: Mutex::new(Vec::new()),
+        dm_threads: Mutex::new(Vec::new()),
+        dm_messages: Mutex::new(BTreeMap::new()),
+        dm_commands: Mutex::new(Vec::new()),
+        payment_commands: Mutex::new(Vec::new()),
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Borealis".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooRemotePeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    let sender_address = seed_active_payment_account(&state);
+
+    let proposed = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/payments/agent-payments/propose",
+        json!({
+            "public_id": local_public_id,
+            "counterpart_public_id": remote_public_id,
+            "amount": "2500000",
+            "currency": "USDT",
+            "rail": "x402",
+            "layer": "web3",
+            "network": "base-sepolia",
+        }),
+    )
+    .await;
+    let payment_id = proposed["payment"]["payment_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let authorized = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/payments/agent-payments/{payment_id}/authorize"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(authorized["status"].as_str(), Some("authorized"));
+
+    let invalid_status = authed_post(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/payments/agent-payments/{payment_id}/settle"),
+        json!({
+            "settlement_receipt": {
+                "success": true,
+                "payer": sender_address,
+                "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+                "network": "base-sepolia",
+                "amount": "1"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(invalid_status, StatusCode::BAD_REQUEST);
+    {
+        let ledger = state.payment_ledger.lock().await;
+        assert_eq!(
+            ledger.get(&payment_id).unwrap().status,
+            wattetheria_kernel::payments::PaymentStatus::Authorized
+        );
+    }
+
+    let settled = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/payments/agent-payments/{payment_id}/settle"),
+        json!({
+            "settlement_receipt": {
+                "success": true,
+                "payer": sender_address,
+                "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+                "network": "eip155:84532",
+                "amount": "2500000"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(settled["status"].as_str(), Some("settled"));
+
+    let payment_commands = bridge.payment_commands.lock().await;
+    assert_eq!(payment_commands.len(), 3);
+    assert_eq!(payment_commands[2].message_kind, "payment_settled");
 }
 
 #[tokio::test]
@@ -494,7 +661,7 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
     let payments = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/payments/agent-payments?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/payments/agent-payments?public_id={local_public_id}"),
     )
     .await;
 
@@ -657,7 +824,7 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
     let proposed = authed_post_json(
         app.clone(),
         &token,
-        "/v1/payments/agent-payments/propose",
+        "/v1/wattetheria/payments/agent-payments/propose",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -845,7 +1012,7 @@ async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
     let status = authed_post(
         app,
         &token,
-        "/v1/civilization/agent-friends",
+        "/v1/wattetheria/social/agent-friends",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -932,7 +1099,7 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
     let status = authed_post(
         app,
         &token,
-        "/v1/civilization/agent-dm/messages",
+        "/v1/wattetheria/social/agent-dm/messages",
         json!({
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
@@ -983,9 +1150,13 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             initiated_by: "remote".to_string(),
             agent_envelope: Some(SwarmAgentEnvelope {
                 protocol: "google_a2a".to_string(),
+                transport_profile: None,
                 source_agent_id: Some(remote_identity.agent_did.clone()),
                 target_agent_id: Some(identity.agent_did.clone()),
+                source_node_id: None,
+                target_node_id: None,
                 capability: Some("social.friend.accept".to_string()),
+                source_agent_card: None,
                 message: json!({
                     "request_id": "req-inbound-1",
                     "correlation_id": "corr-inbound-1"
@@ -1022,9 +1193,13 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                 a2a_protocol: "google_a2a".to_string(),
                 agent_envelope: Some(SwarmAgentEnvelope {
                     protocol: "google_a2a".to_string(),
+                    transport_profile: None,
                     source_agent_id: Some(remote_identity.agent_did.clone()),
                     target_agent_id: Some(identity.agent_did.clone()),
+                    source_node_id: None,
+                    target_node_id: None,
                     capability: Some("social.dm.send".to_string()),
+                    source_agent_card: None,
                     message: json!({
                         "thread_id": transport_thread_id,
                         "message_id": "dm-msg-1"
@@ -1073,7 +1248,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let relationship_items = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(relationship_items.as_array().unwrap().len(), 1);
@@ -1085,7 +1260,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let thread_items = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/threads?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(thread_items.as_array().unwrap().len(), 1);
@@ -1093,7 +1268,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let message_items = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/messages?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(message_items.as_array().unwrap().len(), 1);
@@ -1139,7 +1314,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let relationship_items_after_cache = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-friends?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(relationship_items_after_cache.as_array().unwrap().len(), 1);
@@ -1147,7 +1322,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let thread_items_after_cache = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/civilization/agent-dm/threads?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/threads?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(thread_items_after_cache.as_array().unwrap().len(), 1);
@@ -1155,7 +1330,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let message_items_after_cache = authed_get_json(
         app,
         &token,
-        &format!("/v1/civilization/agent-dm/messages?public_id={local_public_id}"),
+        &format!("/v1/wattetheria/social/agent-dm/messages?public_id={local_public_id}"),
     )
     .await;
     assert_eq!(message_items_after_cache.as_array().unwrap().len(), 1);

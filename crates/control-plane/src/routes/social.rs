@@ -9,9 +9,10 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::social_host::{
-    SocialCounterpartTarget, SocialLocalContext, build_signed_agent_envelope,
-    capability_for_relationship_action, counterpart_public_id_for_remote_node,
-    load_social_identity_maps, resolve_social_counterpart_target,
+    SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
+    build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
+    counterpart_public_id_for_remote_node, load_social_identity_maps,
+    resolve_social_counterpart_target, resolve_social_counterpart_target_by_agent_did,
     resolve_social_counterpart_target_by_remote_node, resolve_social_local_context,
     with_social_defaults,
 };
@@ -888,18 +889,24 @@ async fn send_signed_relationship_action_command(
     state: &ControlPlaneState,
     args: SignedRelationshipActionArgs,
 ) -> anyhow::Result<Value> {
-    let agent_envelope = build_signed_agent_envelope(
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let remote_node_id = args.remote_node_id;
+    let agent_envelope = build_signed_agent_envelope_for_nodes(
         state,
-        args.local_agent_id,
-        args.target_agent_id,
-        &args.capability,
-        args.message,
-        args.extensions,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: args.local_agent_id,
+            target_agent_id: Some(args.target_agent_id),
+            source_node_id: local_node_id,
+            target_node_id: Some(remote_node_id.clone()),
+            capability: args.capability,
+            message: args.message,
+            extensions: args.extensions,
+        },
     )?;
     state
         .swarm_bridge
         .send_peer_relationship_action(SwarmRelationshipActionCommand {
-            remote_node_id: args.remote_node_id,
+            remote_node_id,
             action: args.action,
             agent_envelope,
         })
@@ -915,13 +922,18 @@ async fn send_signed_direct_message_command(
     message: Value,
     extensions: Option<Value>,
 ) -> anyhow::Result<(Value, Value, Option<String>)> {
-    let agent_envelope = build_signed_agent_envelope(
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let agent_envelope = build_signed_agent_envelope_for_nodes(
         state,
-        local_agent_id,
-        target_agent_id,
-        "social.dm.send",
-        message,
-        extensions,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: local_agent_id,
+            target_agent_id: Some(target_agent_id),
+            source_node_id: local_node_id,
+            target_node_id: Some(remote_node_id.clone()),
+            capability: "social.dm.send".to_string(),
+            message,
+            extensions,
+        },
     )?;
     let agent_envelope_json = serde_json::to_value(&agent_envelope).unwrap_or(Value::Null);
     let agent_signature = agent_envelope.signature.clone();
@@ -1475,6 +1487,51 @@ pub(crate) async fn agent_relationship_action(
     handle_agent_relationship_action(state, headers, body, auth).await
 }
 
+async fn resolve_agent_relationship_counterpart(
+    state: &ControlPlaneState,
+    body: &AgentRelationshipActionBody,
+) -> Result<SocialCounterpartTarget, String> {
+    let remote_node_id = body
+        .remote_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let target_agent_did = body
+        .target_agent_did
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let counterpart_public_id = body
+        .counterpart_public_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    match (target_agent_did, remote_node_id, counterpart_public_id) {
+        (Some(target_agent_did), _, _) => {
+            resolve_social_counterpart_target_by_agent_did(
+                state,
+                target_agent_did,
+                counterpart_public_id.map(ToOwned::to_owned),
+            )
+            .await
+        }
+        (None, Some(remote_node_id), _) => resolve_social_counterpart_target_by_remote_node(
+            state,
+            remote_node_id,
+            counterpart_public_id.map(ToOwned::to_owned),
+        )
+        .await
+        .map_err(|error| error.to_string()),
+        (None, None, Some(counterpart_public_id)) => {
+            resolve_social_counterpart_target(state, counterpart_public_id).await
+        }
+        (None, None, None) => Err(
+            "remote_node_id, target_agent_did, or counterpart_public_id is required".to_string(),
+        ),
+    }
+}
+
 async fn handle_agent_relationship_action(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -1485,21 +1542,7 @@ async fn handle_agent_relationship_action(
         public_id: local_public_id,
         agent_id: local_agent_id,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let remote_node_id = body
-        .remote_node_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let counterpart = match match remote_node_id {
-        Some(remote_node_id) => resolve_social_counterpart_target_by_remote_node(
-            &state,
-            remote_node_id,
-            Some(body.counterpart_public_id.clone()),
-        )
-        .await
-        .map_err(|error| error.to_string()),
-        None => resolve_social_counterpart_target(&state, &body.counterpart_public_id).await,
-    } {
+    let counterpart = match resolve_agent_relationship_counterpart(&state, &body).await {
         Ok(counterpart) => counterpart,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
@@ -1510,6 +1553,9 @@ async fn handle_agent_relationship_action(
         remote_node,
         target_agent,
     } = counterpart;
+    let request_counterpart_public_id = body
+        .counterpart_public_id
+        .unwrap_or_else(|| counterpart_public_id.clone());
     let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
     if body.action == SwarmRelationshipAction::Request {
@@ -1560,7 +1606,7 @@ async fn handle_agent_relationship_action(
             remote_node_id: remote_node,
             action: body.action,
             capability,
-            request_counterpart_public_id: body.counterpart_public_id,
+            request_counterpart_public_id,
             message,
             response_json,
         },

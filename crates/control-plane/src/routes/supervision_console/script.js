@@ -354,7 +354,7 @@
           rpc_log_limit: String(limit),
           leaderboard_limit: "20"
         });
-        const signed = await fetchJson(`/v1/client/export?${query.toString()}`);
+        const signed = await fetchJson(`/v1/wattetheria/client/export?${query.toString()}`);
         const payload = signed.payload || signed;
         const localSocial = await loadLocalSocialPayload(publicId, limit);
         Object.assign(payload, localSocial);
@@ -373,8 +373,8 @@
         limit: String(limit),
       });
       const [relationshipsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
-        fetchJson(`/v1/civilization/agent-friends?${query.toString()}`, { auth: true }),
-        fetchJson(`/v1/civilization/agent-dm/messages?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/wattetheria/social/agent-friends?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/wattetheria/social/agent-dm/messages?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/client/friends?${query.toString()}`, { auth: true }),
       ]);
       const relationships = relationshipsResult.status === "fulfilled" ? relationshipsResult.value : [];
@@ -776,7 +776,7 @@
         }),
         auth: true,
       });
-      setStatus(`Bound Web3 wallet ${compactId(data.active_payment_account?.address || address, 28)}.`);
+      setStatus(`Bound receive address ${compactId(data.active_payment_account?.address || address, 28)}.`);
       await refreshConsole();
     }
 
@@ -813,7 +813,7 @@
         </section>
         <section class="wallet-section web3">
           <div class="wallet-section-head">
-            <div class="wallet-section-title">Web3 Settlement Wallet</div>
+            <div class="wallet-section-title">Web3 Settlement Address</div>
             ${pill(payment ? "bound" : "unbound", payment ? "ready" : "pending")}
           </div>
           ${walletSummaryRows([
@@ -821,6 +821,8 @@
             ["Address", activeAddress || "none"],
             ["Rail", payment?.rail || "x402"],
             ["Network", activeNetwork || "none"],
+            ["Custody", payment?.custody || "watch_only"],
+            ["Can Sign", payment?.can_sign ? "yes" : "no"],
           ])}
           <div class="wallet-fields">
             <label>
@@ -838,10 +840,10 @@
           </div>
           <div class="wallet-actions">
             <button id="connect-web3-wallet" type="button">Connect Web3 Wallet</button>
-            <button id="bind-web3-wallet" class="secondary" type="button">Bind Wallet</button>
+            <button id="bind-web3-wallet" class="secondary" type="button">Bind Receive Address</button>
             <button id="refresh-web3-balances" class="secondary" type="button">Refresh Balances</button>
           </div>
-          <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No Web3 wallet bound.")}</div>
+          <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No receive address bound.")}</div>
           <div id="web3-token-balances" class="wallet-token-grid"></div>
         </section>
         <section class="wallet-section web2">

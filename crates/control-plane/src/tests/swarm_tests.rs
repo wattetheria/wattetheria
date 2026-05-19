@@ -19,7 +19,7 @@ async fn supervision_home_and_my_views_work() {
     let my_missions_json = authed_get_json(
         app.clone(),
         &token,
-        &format!("/v1/missions/my?public_id={captain}"),
+        &format!("/v1/wattetheria/missions/my?public_id={captain}"),
     )
     .await;
     assert_client_mission_travel_views(&supervision_json, &my_missions_json);
@@ -146,7 +146,7 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
     let response = authed_post_json(
         app,
         &token,
-        "/v1/missions/claim",
+        "/v1/wattetheria/missions/mission-remote-1/claim",
         json!({
             "mission_id": "mission-remote-1",
             "agent_did": agent_did
@@ -225,7 +225,7 @@ async fn seed_gateway_remote_mission(
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
-        "/api/tasks",
+        "/v1/wattetheria/missions",
         get(move || {
             let gateway_task = gateway_task.clone();
             async move { Json(json!([gateway_task])) }
@@ -251,7 +251,7 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
     let response = authed_post_json(
         app,
         &token,
-        "/v1/missions/complete",
+        "/v1/wattetheria/missions/mission-remote-2/complete",
         json!({
             "mission_id": "mission-remote-2",
             "agent_did": agent_did,
@@ -306,7 +306,7 @@ async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
     let mission = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Publisher mission",
             "description": "Validate direct settlement finalization",
@@ -327,7 +327,7 @@ async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
     let _claimed = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/claim",
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
         json!({
             "mission_id": mission_id,
             "agent_did": agent_did,
@@ -337,7 +337,7 @@ async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
     let _completed = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/complete",
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
         json!({
             "mission_id": mission_id,
             "agent_did": agent_did,
@@ -348,7 +348,7 @@ async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
     let settled = authed_post_json(
         app,
         &token,
-        "/v1/missions/settle",
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
         json!({
             "mission_id": mission_id,
         }),
@@ -397,7 +397,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     let created = authed_post_json(
         app.clone(),
         &token,
-        "/v1/civilization/topics",
+        "/v1/wattetheria/hives",
         json!({
             "network_id": "mainnet:test",
             "feed_key": "crew.chat",
@@ -411,21 +411,18 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     )
     .await;
     assert_eq!(
-        created["topic"]["topic_id"].as_str(),
+        created["hive"]["topic_id"].as_str(),
         Some("mainnet:test@crew.chat@group:crew-7")
     );
-    assert_eq!(
-        created["topic"]["network_id"].as_str(),
-        Some("mainnet:test")
-    );
+    assert_eq!(created["hive"]["network_id"].as_str(), Some("mainnet:test"));
 
-    let topics_json = authed_get_json(app.clone(), &token, "/v1/civilization/topics").await;
-    assert_eq!(topics_json["topics"].as_array().unwrap().len(), 1);
+    let hives_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/hives").await;
+    assert_eq!(hives_json["hives"].as_array().unwrap().len(), 1);
 
     let messages_json = authed_get_json(
         app,
         &token,
-        "/v1/civilization/topics/messages?network_id=mainnet:test&feed_key=crew.chat&scope_hint=group:crew-7",
+        "/v1/wattetheria/hives/mainnet:test@crew.chat@group:crew-7/messages?network_id=mainnet:test",
     )
     .await;
     assert_eq!(messages_json["network_id"].as_str(), Some("mainnet:test"));
@@ -436,7 +433,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     );
     assert_eq!(
         messages_json["messages"][0]["author_public_id"].as_str(),
-        Some(created["topic"]["created_by_public_id"].as_str().unwrap())
+        Some(created["hive"]["created_by_public_id"].as_str().unwrap())
     );
 
     let subscriptions = bridge.subscriptions.lock().await;

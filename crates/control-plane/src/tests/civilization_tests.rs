@@ -28,7 +28,7 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/v1/missions")
+                .uri("/v1/wattetheria/missions")
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(publish_body.to_string()))
@@ -42,16 +42,13 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
             .unwrap();
     let mission_id = publish_json["mission_id"].as_str().unwrap().to_string();
 
-    for (uri, agent_did) in [
-        ("/v1/missions/claim", "agent-enforcer"),
-        ("/v1/missions/complete", "agent-enforcer"),
-    ] {
+    for (action, agent_did) in [("claim", "agent-enforcer"), ("complete", "agent-enforcer")] {
         let resp = app
             .clone()
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri(uri)
+                    .uri(format!("/v1/wattetheria/missions/{mission_id}/{action}"))
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(axum::body::Body::from(
@@ -73,7 +70,7 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/v1/missions/settle")
+                .uri(format!("/v1/wattetheria/missions/{mission_id}/settle"))
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
@@ -89,7 +86,7 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
         .clone()
         .oneshot(
             axum::http::Request::builder()
-                .uri("/v1/missions?status=settled")
+                .uri("/v1/wattetheria/missions?status=settled")
                 .header("authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -196,7 +193,7 @@ async fn civilization_briefing_and_generated_galaxy_events_work() {
             StatusCode::OK,
         ),
         (
-            "/v1/missions",
+            "/v1/wattetheria/missions",
             json!({
                 "title": "Defend gate",
                 "description": "Interdict raiders",

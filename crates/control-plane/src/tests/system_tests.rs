@@ -338,7 +338,7 @@ async fn mailbox_send_fetch_ack_persists() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/v1/mailbox/messages")
+                .uri("/v1/wattetheria/mailbox/messages")
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
@@ -363,7 +363,7 @@ async fn mailbox_send_fetch_ack_persists() {
         .clone()
         .oneshot(
             axum::http::Request::builder()
-                .uri("/v1/mailbox/messages?subnet_id=planet-b")
+                .uri("/v1/wattetheria/mailbox/messages?subnet_id=planet-b")
                 .header("authorization", format!("Bearer {token}"))
                 .body(axum::body::Body::empty())
                 .unwrap(),
@@ -381,7 +381,7 @@ async fn mailbox_send_fetch_ack_persists() {
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
-                .uri("/v1/mailbox/ack")
+                .uri("/v1/wattetheria/mailbox/ack")
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(

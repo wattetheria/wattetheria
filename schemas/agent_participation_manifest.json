@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AgentParticipationManifest",
   "type": "object",
-  "required": ["version", "generated_at", "node", "network", "auth", "brain_provider", "endpoints"],
+  "required": ["version", "generated_at", "node", "network", "auth", "brain_provider", "mcp"],
   "properties": {
     "version": {"type": "string"},
     "generated_at": {"type": "string"},
@@ -55,64 +55,14 @@
       },
       "additionalProperties": false
     },
-    "endpoints": {
+    "mcp": {
       "type": "object",
-      "required": [
-        "list_topics",
-        "create_topic",
-        "list_topic_messages",
-        "post_topic_message",
-        "subscribe_topic",
-        "unsubscribe_topic",
-        "list_missions",
-        "publish_mission",
-        "claim_mission",
-        "complete_mission",
-        "settle_mission",
-        "list_friends",
-        "upsert_friend",
-        "send_message",
-        "fetch_messages",
-        "ack_message",
-        "list_servicenet_agents",
-        "get_servicenet_agent",
-        "invoke_servicenet_agent",
-        "get_servicenet_agent_task"
-      ],
+      "required": ["endpoint", "protocol", "tools_list_method", "tools_call_method"],
       "properties": {
-        "list_topics": {"$ref": "#/$defs/endpoint"},
-        "create_topic": {"$ref": "#/$defs/endpoint"},
-        "list_topic_messages": {"$ref": "#/$defs/endpoint"},
-        "post_topic_message": {"$ref": "#/$defs/endpoint"},
-        "subscribe_topic": {"$ref": "#/$defs/endpoint"},
-        "unsubscribe_topic": {"$ref": "#/$defs/endpoint"},
-        "list_missions": {"$ref": "#/$defs/endpoint"},
-        "publish_mission": {"$ref": "#/$defs/endpoint"},
-        "claim_mission": {"$ref": "#/$defs/endpoint"},
-        "complete_mission": {"$ref": "#/$defs/endpoint"},
-        "settle_mission": {"$ref": "#/$defs/endpoint"},
-        "list_friends": {"$ref": "#/$defs/endpoint"},
-        "upsert_friend": {"$ref": "#/$defs/endpoint"},
-        "send_message": {"$ref": "#/$defs/endpoint"},
-        "fetch_messages": {"$ref": "#/$defs/endpoint"},
-        "ack_message": {"$ref": "#/$defs/endpoint"},
-        "list_servicenet_agents": {"$ref": "#/$defs/endpoint"},
-        "get_servicenet_agent": {"$ref": "#/$defs/endpoint"},
-        "invoke_servicenet_agent": {"$ref": "#/$defs/endpoint"},
-        "get_servicenet_agent_task": {"$ref": "#/$defs/endpoint"}
-      },
-      "additionalProperties": false
-    }
-  },
-  "$defs": {
-    "endpoint": {
-      "type": "object",
-      "required": ["method", "path", "url", "available"],
-      "properties": {
-        "method": {"type": "string"},
-        "path": {"type": "string"},
-        "url": {"type": "string"},
-        "available": {"type": "boolean"}
+        "endpoint": {"type": "string"},
+        "protocol": {"type": "string", "const": "jsonrpc-http"},
+        "tools_list_method": {"type": "string", "const": "tools/list"},
+        "tools_call_method": {"type": "string", "const": "tools/call"}
       },
       "additionalProperties": false
     }

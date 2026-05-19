@@ -525,12 +525,18 @@ pub struct TopicMessagesQuery {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TopicSubscriptionBody {
+pub struct HiveMessagesQuery {
+    pub network_id: Option<String>,
+    pub limit: Option<usize>,
+    pub before_created_at: Option<u64>,
+    pub before_message_id: Option<String>,
+    pub subscriber_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HiveSubscriptionBody {
     pub public_id: Option<String>,
     pub network_id: Option<String>,
-    pub feed_key: String,
-    pub scope_hint: String,
-    pub active: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +545,14 @@ pub struct TopicMessageBody {
     pub network_id: Option<String>,
     pub feed_key: String,
     pub scope_hint: String,
+    pub content: Value,
+    pub reply_to_message_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HiveMessageBody {
+    pub public_id: Option<String>,
+    pub network_id: Option<String>,
     pub content: Value,
     pub reply_to_message_id: Option<String>,
 }
@@ -736,9 +750,12 @@ pub struct RelationshipBody {
 #[derive(Debug, Deserialize)]
 pub struct AgentRelationshipActionBody {
     pub public_id: Option<String>,
-    pub counterpart_public_id: String,
+    #[serde(default)]
+    pub counterpart_public_id: Option<String>,
     #[serde(default)]
     pub remote_node_id: Option<String>,
+    #[serde(default)]
+    pub target_agent_did: Option<String>,
     pub action: SwarmRelationshipAction,
     #[serde(default)]
     pub message: Option<Value>,

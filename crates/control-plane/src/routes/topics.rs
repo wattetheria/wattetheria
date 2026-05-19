@@ -1,18 +1,18 @@
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::topics::{TopicCreateSpec, TopicProfile};
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{identity_context_response, resolve_identity_context};
 use crate::state::{
-    ControlPlaneState, StreamEvent, TopicCreateBody, TopicMessageBody, TopicMessagesQuery,
-    TopicSubscriptionBody, TopicsQuery,
+    ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody, StreamEvent,
+    TopicCreateBody, TopicMessageBody, TopicsQuery,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +33,16 @@ fn normalized_network_id(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
+fn hive_profile_payload(topic: &TopicProfile) -> Value {
+    let mut value = serde_json::to_value(topic).unwrap_or_else(|_| json!({}));
+    if let Value::Object(object) = &mut value {
+        object
+            .entry("hive_id".to_string())
+            .or_insert_with(|| Value::String(topic.topic_id.clone()));
+    }
+    value
+}
+
 async fn resolve_network_id(
     state: &ControlPlaneState,
     requested: Option<&str>,
@@ -43,7 +53,7 @@ async fn resolve_network_id(
     }
 }
 
-pub(crate) async fn list_topics(
+pub(crate) async fn list_hives(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Query(query): Query<TopicsQuery>,
@@ -65,8 +75,8 @@ pub(crate) async fn list_topics(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "topic".to_string(),
-        action: "topic.list.query".to_string(),
+        category: "hive".to_string(),
+        action: "hive.list.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: None,
@@ -76,10 +86,12 @@ pub(crate) async fn list_topics(
         details: Some(json!({"count": items.len()})),
     });
 
-    Json(json!({"topics": items})).into_response()
+    let hives = items.iter().map(hive_profile_payload).collect::<Vec<_>>();
+
+    Json(json!({"hives": hives})).into_response()
 }
 
-pub(crate) async fn create_topic(
+pub(crate) async fn create_hive(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Json(body): Json<TopicCreateBody>,
@@ -141,22 +153,23 @@ pub(crate) async fn create_topic(
         Err(error) => return internal_error(&error),
     };
 
-    let payload = json!({"topic": topic.clone(), "public_id": public_id, "network_id": network_id});
+    let hive_payload = hive_profile_payload(&topic);
+    let payload = json!({"hive": hive_payload, "topic": topic.clone(), "public_id": public_id, "network_id": network_id});
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.created".to_string(),
         timestamp: Utc::now().timestamp(),
         payload: payload.clone(),
     });
-    let _ = state.append_signed_event("CIVILIZATION_TOPIC_CREATED", payload.clone());
+    let _ = state.append_signed_event("WATTETHERIA_HIVE_CREATED", payload.clone());
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "topic".to_string(),
-        action: "topic.create".to_string(),
+        category: "hive".to_string(),
+        action: "hive.create".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
         subject: Some(topic.topic_id.clone()),
-        capability: Some("civilization.topic.create".to_string()),
+        capability: Some("wattetheria.hive.create".to_string()),
         reason: None,
         duration_ms: None,
         details: Some(payload),
@@ -164,7 +177,7 @@ pub(crate) async fn create_topic(
 
     Json(json!({
         "identity": identity_context_response(&context),
-        "topic": topic,
+        "hive": hive_profile_payload(&topic),
     }))
     .into_response()
 }
@@ -197,26 +210,28 @@ async fn persist_created_topic(
     Ok(topic)
 }
 
-pub(crate) async fn topic_messages(
+pub(crate) async fn hive_messages(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Query(query): Query<TopicMessagesQuery>,
+    Path(hive_id): Path<String>,
+    Query(query): Query<HiveMessagesQuery>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let network_id = match resolve_network_id(&state, query.network_id.as_deref()).await {
-        Ok(network_id) => network_id,
-        Err(error) => return internal_error(&error),
-    };
+    let (hive, network_id) =
+        match resolve_hive_profile(&state, &hive_id, query.network_id.as_deref()).await {
+            Ok(resolved) => resolved,
+            Err(response) => return response,
+        };
     let messages = match state
         .swarm_bridge
         .list_topic_messages(
             Some(&network_id),
-            &query.feed_key,
-            &query.scope_hint,
+            &hive.feed_key,
+            &hive.scope_hint,
             limit,
             query.before_created_at,
             query.before_message_id.clone(),
@@ -230,7 +245,7 @@ pub(crate) async fn topic_messages(
         .swarm_bridge
         .topic_cursor(
             Some(&network_id),
-            &query.feed_key,
+            &hive.feed_key,
             query.subscriber_id.as_deref(),
         )
         .await
@@ -267,11 +282,11 @@ pub(crate) async fn topic_messages(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "topic".to_string(),
-        action: "topic.messages.query".to_string(),
+        category: "hive".to_string(),
+        action: "hive.messages.query".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(format!("{}@{}", query.feed_key, query.scope_hint)),
+        subject: Some(hive.topic_id.clone()),
         capability: None,
         reason: None,
         duration_ms: None,
@@ -279,19 +294,40 @@ pub(crate) async fn topic_messages(
     });
 
     Json(json!({
+        "hive_id": hive.topic_id,
         "network_id": network_id,
-        "feed_key": query.feed_key,
-        "scope_hint": query.scope_hint,
+        "feed_key": hive.feed_key,
+        "scope_hint": hive.scope_hint,
         "cursor": cursor,
         "messages": views,
     }))
     .into_response()
 }
 
-pub(crate) async fn subscribe_topic(
+pub(crate) async fn subscribe_hive(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Json(body): Json<TopicSubscriptionBody>,
+    Path(hive_id): Path<String>,
+    Json(body): Json<HiveSubscriptionBody>,
+) -> Response {
+    update_hive_subscription(state, headers, hive_id, body, true).await
+}
+
+pub(crate) async fn unsubscribe_hive(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(hive_id): Path<String>,
+    Json(body): Json<HiveSubscriptionBody>,
+) -> Response {
+    update_hive_subscription(state, headers, hive_id, body, false).await
+}
+
+async fn update_hive_subscription(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    hive_id: String,
+    body: HiveSubscriptionBody,
+    active: bool,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
@@ -299,30 +335,34 @@ pub(crate) async fn subscribe_topic(
     };
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
     let controller_id = context.public_memory_owner.controller.clone();
-    let network_id = match resolve_network_id(&state, body.network_id.as_deref()).await {
-        Ok(network_id) => network_id,
-        Err(error) => return internal_error(&error),
-    };
+    let (hive, network_id) =
+        match resolve_hive_profile(&state, &hive_id, body.network_id.as_deref()).await {
+            Ok(resolved) => resolved,
+            Err(response) => return response,
+        };
     if let Err(error) = state
         .swarm_bridge
         .subscribe_topic(
             Some(&network_id),
             &controller_id,
-            &body.feed_key,
-            &body.scope_hint,
-            body.active,
+            &hive.feed_key,
+            &hive.scope_hint,
+            active,
         )
         .await
     {
         return internal_error(&error);
     }
 
+    let hive_topic_id = hive.topic_id.clone();
     let payload = json!({
         "controller_id": controller_id,
         "network_id": network_id,
-        "feed_key": body.feed_key,
-        "scope_hint": body.scope_hint,
-        "active": body.active,
+        "hive_id": hive_topic_id,
+        "topic_id": hive.topic_id,
+        "feed_key": hive.feed_key,
+        "scope_hint": hive.scope_hint,
+        "active": active,
     });
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.subscription.updated".to_string(),
@@ -332,11 +372,11 @@ pub(crate) async fn subscribe_topic(
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
-        category: "topic".to_string(),
-        action: "topic.subscription.update".to_string(),
+        category: "hive".to_string(),
+        action: "hive.subscription.update".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: None,
+        subject: Some(hive_id),
         capability: None,
         reason: None,
         duration_ms: None,
@@ -401,4 +441,91 @@ pub(crate) async fn post_topic_message(
     });
 
     Json(json!({"ok": true})).into_response()
+}
+
+pub(crate) async fn post_hive_message(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(hive_id): Path<String>,
+    Json(body): Json<HiveMessageBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
+    let (hive, network_id) =
+        match resolve_hive_profile(&state, &hive_id, body.network_id.as_deref()).await {
+            Ok(resolved) => resolved,
+            Err(response) => return response,
+        };
+    if let Err(error) = state
+        .swarm_bridge
+        .post_topic_message(
+            Some(&network_id),
+            &hive.feed_key,
+            &hive.scope_hint,
+            body.content.clone(),
+            body.reply_to_message_id.clone(),
+        )
+        .await
+    {
+        return internal_error(&error);
+    }
+
+    let hive_topic_id = hive.topic_id.clone();
+    let payload = json!({
+        "controller_id": context.public_memory_owner.controller,
+        "network_id": network_id,
+        "hive_id": hive_topic_id,
+        "topic_id": hive.topic_id,
+        "feed_key": hive.feed_key,
+        "scope_hint": hive.scope_hint,
+        "reply_to_message_id": body.reply_to_message_id,
+    });
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "topic.message.posted".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "hive".to_string(),
+        action: "hive.message.post".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(hive_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(payload),
+    });
+
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn resolve_hive_profile(
+    state: &ControlPlaneState,
+    hive_id: &str,
+    requested_network_id: Option<&str>,
+) -> Result<(TopicProfile, String), Response> {
+    let Some(hive) = state.topic_registry.lock().await.get(hive_id) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "hive not found", "hive_id": hive_id})),
+        )
+            .into_response());
+    };
+    let network_id = match hive
+        .network_id
+        .as_deref()
+        .or_else(|| normalized_network_id(requested_network_id))
+    {
+        Some(network_id) => network_id.to_owned(),
+        None => resolve_network_id(state, None)
+            .await
+            .map_err(|error| internal_error(&error))?,
+    };
+    Ok((hive, network_id))
 }

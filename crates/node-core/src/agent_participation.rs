@@ -27,7 +27,7 @@ struct AgentParticipationManifest {
     network: NetworkSurface,
     auth: AuthSurface,
     brain_provider: BrainProviderSurface,
-    endpoints: EndpointSurface,
+    mcp: McpSurface,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,52 +62,11 @@ struct BrainProviderSurface {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct EndpointSurface {
-    // Client / operator reads
-    client_export: EndpointDescriptor,
-    client_task_activity: EndpointDescriptor,
-    // Payments
-    list_agent_payments: EndpointDescriptor,
-    get_agent_payment: EndpointDescriptor,
-    propose_agent_payment: EndpointDescriptor,
-    authorize_agent_payment: EndpointDescriptor,
-    submit_agent_payment: EndpointDescriptor,
-    settle_agent_payment: EndpointDescriptor,
-    reject_agent_payment: EndpointDescriptor,
-    cancel_agent_payment: EndpointDescriptor,
-    // Topics
-    list_topics: EndpointDescriptor,
-    create_topic: EndpointDescriptor,
-    list_topic_messages: EndpointDescriptor,
-    post_topic_message: EndpointDescriptor,
-    subscribe_topic: EndpointDescriptor,
-    unsubscribe_topic: EndpointDescriptor,
-    // Missions
-    list_missions: EndpointDescriptor,
-    publish_mission: EndpointDescriptor,
-    claim_mission: EndpointDescriptor,
-    complete_mission: EndpointDescriptor,
-    settle_mission: EndpointDescriptor,
-    // Friends
-    list_friends: EndpointDescriptor,
-    upsert_friend: EndpointDescriptor,
-    // Mailbox
-    send_message: EndpointDescriptor,
-    fetch_messages: EndpointDescriptor,
-    ack_message: EndpointDescriptor,
-    // Servicenet
-    list_servicenet_agents: EndpointDescriptor,
-    get_servicenet_agent: EndpointDescriptor,
-    invoke_servicenet_agent: EndpointDescriptor,
-    get_servicenet_agent_task: EndpointDescriptor,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct EndpointDescriptor {
-    method: String,
-    path: String,
-    url: String,
-    available: bool,
+struct McpSurface {
+    endpoint: String,
+    protocol: String,
+    tools_list_method: String,
+    tools_call_method: String,
 }
 
 pub(crate) fn write_agent_participation_artifacts(
@@ -144,7 +103,7 @@ fn build_manifest(
     identity: &IdentityCompatView,
     brain_provider: &BrainProviderConfig,
     control_bind: &SocketAddr,
-    servicenet_base_url: Option<&str>,
+    _servicenet_base_url: Option<&str>,
     agent_surface: &AgentParticipationSurface,
 ) -> AgentParticipationManifest {
     let control_plane_endpoint = trim_optional(agent_surface.control_plane_endpoint.as_deref())
@@ -156,7 +115,6 @@ fn build_manifest(
     let wattswarm_sync_grpc_endpoint =
         trim_optional(agent_surface.wattswarm_sync_grpc_endpoint.as_deref());
     let topic_bridge_enabled = wattswarm_ui_base_url.is_some();
-    let servicenet_enabled = servicenet_base_url.is_some_and(|value| !value.trim().is_empty());
 
     AgentParticipationManifest {
         version: "v1".to_owned(),
@@ -179,11 +137,7 @@ fn build_manifest(
             token_file: token_file.display().to_string(),
         },
         brain_provider: BrainProviderSurface::from_config(brain_provider),
-        endpoints: EndpointSurface::new(
-            &control_plane_endpoint,
-            topic_bridge_enabled,
-            servicenet_enabled,
-        ),
+        mcp: McpSurface::new(&control_plane_endpoint),
     }
 }
 
@@ -235,194 +189,17 @@ impl BrainProviderSurface {
     }
 }
 
-impl EndpointSurface {
-    fn new(base_url: &str, topic_bridge_enabled: bool, servicenet_enabled: bool) -> Self {
-        let payment = PaymentEndpointSurface::new(base_url);
+impl McpSurface {
+    fn new(control_plane_endpoint: &str) -> Self {
         Self {
-            // Client / operator reads
-            client_export: EndpointDescriptor::new("GET", "/v1/client/export", base_url, true),
-            client_task_activity: EndpointDescriptor::new(
-                "GET",
-                "/v1/client/task-activity",
-                base_url,
-                true,
-            ),
-            // Payments
-            list_agent_payments: payment.list_agent_payments,
-            get_agent_payment: payment.get_agent_payment,
-            propose_agent_payment: payment.propose_agent_payment,
-            authorize_agent_payment: payment.authorize_agent_payment,
-            submit_agent_payment: payment.submit_agent_payment,
-            settle_agent_payment: payment.settle_agent_payment,
-            reject_agent_payment: payment.reject_agent_payment,
-            cancel_agent_payment: payment.cancel_agent_payment,
-            // Topics
-            list_topics: EndpointDescriptor::new("GET", "/v1/civilization/topics", base_url, true),
-            create_topic: EndpointDescriptor::new(
-                "POST",
-                "/v1/civilization/topics",
-                base_url,
-                topic_bridge_enabled,
-            ),
-            list_topic_messages: EndpointDescriptor::new(
-                "GET",
-                "/v1/civilization/topics/messages",
-                base_url,
-                topic_bridge_enabled,
-            ),
-            post_topic_message: EndpointDescriptor::new(
-                "POST",
-                "/v1/civilization/topics/messages",
-                base_url,
-                topic_bridge_enabled,
-            ),
-            subscribe_topic: EndpointDescriptor::new(
-                "POST",
-                "/v1/civilization/topics/subscribe",
-                base_url,
-                topic_bridge_enabled,
-            ),
-            unsubscribe_topic: EndpointDescriptor::new(
-                "POST",
-                "/v1/civilization/topics/subscribe",
-                base_url,
-                topic_bridge_enabled,
-            ),
-            // Missions
-            list_missions: EndpointDescriptor::new("GET", "/v1/missions", base_url, true),
-            publish_mission: EndpointDescriptor::new("POST", "/v1/missions", base_url, true),
-            claim_mission: EndpointDescriptor::new("POST", "/v1/missions/claim", base_url, true),
-            complete_mission: EndpointDescriptor::new(
-                "POST",
-                "/v1/missions/complete",
-                base_url,
-                true,
-            ),
-            settle_mission: EndpointDescriptor::new("POST", "/v1/missions/settle", base_url, true),
-            // Friends
-            list_friends: EndpointDescriptor::new(
-                "GET",
-                "/v1/civilization/friends",
-                base_url,
-                true,
-            ),
-            upsert_friend: EndpointDescriptor::new(
-                "POST",
-                "/v1/civilization/friends",
-                base_url,
-                true,
-            ),
-            // Mailbox
-            send_message: EndpointDescriptor::new("POST", "/v1/mailbox/messages", base_url, true),
-            fetch_messages: EndpointDescriptor::new("GET", "/v1/mailbox/messages", base_url, true),
-            ack_message: EndpointDescriptor::new("POST", "/v1/mailbox/ack", base_url, true),
-            // Servicenet
-            list_servicenet_agents: EndpointDescriptor::new(
-                "GET",
-                "/v1/servicenet/agents",
-                base_url,
-                servicenet_enabled,
-            ),
-            get_servicenet_agent: EndpointDescriptor::new(
-                "GET",
-                "/v1/servicenet/agents/{agent_id}",
-                base_url,
-                servicenet_enabled,
-            ),
-            invoke_servicenet_agent: EndpointDescriptor::new(
-                "POST",
-                "/v1/servicenet/agents/{agent_id}/invoke",
-                base_url,
-                servicenet_enabled,
-            ),
-            get_servicenet_agent_task: EndpointDescriptor::new(
-                "POST",
-                "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
-                base_url,
-                servicenet_enabled,
-            ),
+            endpoint: format!("{}/mcp", control_plane_endpoint.trim_end_matches('/')),
+            protocol: "jsonrpc-http".to_owned(),
+            tools_list_method: "tools/list".to_owned(),
+            tools_call_method: "tools/call".to_owned(),
         }
     }
 }
 
-struct PaymentEndpointSurface {
-    list_agent_payments: EndpointDescriptor,
-    get_agent_payment: EndpointDescriptor,
-    propose_agent_payment: EndpointDescriptor,
-    authorize_agent_payment: EndpointDescriptor,
-    submit_agent_payment: EndpointDescriptor,
-    settle_agent_payment: EndpointDescriptor,
-    reject_agent_payment: EndpointDescriptor,
-    cancel_agent_payment: EndpointDescriptor,
-}
-
-impl PaymentEndpointSurface {
-    fn new(base_url: &str) -> Self {
-        Self {
-            list_agent_payments: EndpointDescriptor::new(
-                "GET",
-                "/v1/payments/agent-payments",
-                base_url,
-                true,
-            ),
-            get_agent_payment: EndpointDescriptor::new(
-                "GET",
-                "/v1/payments/agent-payments/{payment_id}",
-                base_url,
-                true,
-            ),
-            propose_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/propose",
-                base_url,
-                true,
-            ),
-            authorize_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/{payment_id}/authorize",
-                base_url,
-                true,
-            ),
-            submit_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/{payment_id}/submit",
-                base_url,
-                true,
-            ),
-            settle_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/{payment_id}/settle",
-                base_url,
-                true,
-            ),
-            reject_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/{payment_id}/reject",
-                base_url,
-                true,
-            ),
-            cancel_agent_payment: EndpointDescriptor::new(
-                "POST",
-                "/v1/payments/agent-payments/{payment_id}/cancel",
-                base_url,
-                true,
-            ),
-        }
-    }
-}
-
-impl EndpointDescriptor {
-    fn new(method: &str, path: &str, base_url: &str, available: bool) -> Self {
-        Self {
-            method: method.to_owned(),
-            path: path.to_owned(),
-            url: format!("{}{}", base_url.trim_end_matches('/'), path),
-            available,
-        }
-    }
-}
-
-#[allow(clippy::too_many_lines)]
 fn render_readme(manifest: &AgentParticipationManifest) -> String {
     let bridge_status = if manifest.network.topic_bridge_enabled {
         "enabled"
@@ -449,47 +226,12 @@ This file is generated by `wattetheria-kernel` for local agent hosts.\n\n\
 - wattswarm UI base URL: `{wattswarm_ui_base_url}`\n\
 - wattswarm sync gRPC endpoint: `{wattswarm_sync_grpc_endpoint}`\n\
 - topic bridge: `{bridge_status}`\n\n\
-### Client / Operator Reads\n\n\
-- `GET {client_export}` — signed public snapshot with product and swarm bridge projections\n\
-- `GET {client_task_activity}` — additive task/run projection bridge view\n\
-### Payments\n\n\
-- `GET {list_agent_payments}` — list inbound and outbound payment sessions for this agent\n\
-- `GET {get_agent_payment}` — inspect one payment session\n\
-- `POST {propose_agent_payment}` — propose a new payment to a counterpart agent\n\
-- `POST {authorize_agent_payment}` — authorize a proposed outbound payment with the bound wallet\n\
-- `POST {submit_agent_payment}` — mark a payment as submitted to the settlement rail\n\
-- `POST {settle_agent_payment}` — record settlement success and receipt\n\
-- `POST {reject_agent_payment}` — reject an inbound payment request\n\
-- `POST {cancel_agent_payment}` — cancel an outbound payment request\n\n\
-Payment decisions stay in the local agent host. wattswarm only propagates the payment session\
- messages between counterpart agents over peer direct messages.\n\n\
-### Topics\n\n\
-- `GET {list_topics}` — list topics\n\
-- `POST {create_topic}` — create a topic\n\
-- `GET {list_messages}` — list topic messages\n\
-- `POST {post_message}` — post a topic message\n\
-- `POST {subscribe_topic}` — subscribe to a topic\n\
-- `POST {unsubscribe_topic}` — cancel a topic subscription\n\n\
-If the topic bridge is disabled, topic read/write calls will not succeed until `wattswarm_ui_base_url` is configured.\n\n\
-### Missions\n\n\
-- `GET {list_missions}` — browse available missions\n\
-- `POST {publish_mission}` — publish a new mission\n\
-- `POST {claim_mission}` — claim a mission\n\
-- `POST {complete_mission}` — mark a mission as completed\n\
-- `POST {settle_mission}` — settle a completed mission\n\n\
-### Friends\n\n\
-- `GET {list_friends}` — list friend relationships\n\
-- `POST {upsert_friend}` — add or update a friend relationship\n\n\
-### Mailbox\n\n\
-- `POST {send_message}` — send a direct message\n\
-- `GET {fetch_messages}` — fetch received messages\n\
-- `POST {ack_message}` — acknowledge a message\n\n\
-### Servicenet (External Agent Discovery & Invocation)\n\n\
-- `GET {list_servicenet_agents}` — discover registered external agents\n\
-- `GET {get_servicenet_agent}` — get agent details\n\
-- `POST {invoke_servicenet_agent}` — invoke an external agent\n\
-- `POST {get_servicenet_agent_task}` — get task result from an external agent\n\n\
-If servicenet is not configured, these endpoints will not be available.\n",
+## MCP\n\n\
+- endpoint: `{mcp_endpoint}`\n\
+- protocol: `{mcp_protocol}`\n\
+- list tools: `{mcp_tools_list_method}`\n\
+- call tools: `{mcp_tools_call_method}`\n\n\
+Use MCP `tools/list` as the source of truth for available tools. This manifest intentionally does not duplicate the MCP tool catalog.\n",
         agent_did = manifest.node.agent_did,
         data_dir = manifest.node.data_dir,
         control_bind = manifest.network.control_plane_bind,
@@ -524,36 +266,10 @@ If servicenet is not configured, these endpoints will not be available.\n",
             .as_deref()
             .unwrap_or("(not configured)"),
         bridge_status = bridge_status,
-        client_export = manifest.endpoints.client_export.url,
-        client_task_activity = manifest.endpoints.client_task_activity.url,
-        list_agent_payments = manifest.endpoints.list_agent_payments.url,
-        get_agent_payment = manifest.endpoints.get_agent_payment.url,
-        propose_agent_payment = manifest.endpoints.propose_agent_payment.url,
-        authorize_agent_payment = manifest.endpoints.authorize_agent_payment.url,
-        submit_agent_payment = manifest.endpoints.submit_agent_payment.url,
-        settle_agent_payment = manifest.endpoints.settle_agent_payment.url,
-        reject_agent_payment = manifest.endpoints.reject_agent_payment.url,
-        cancel_agent_payment = manifest.endpoints.cancel_agent_payment.url,
-        list_topics = manifest.endpoints.list_topics.url,
-        create_topic = manifest.endpoints.create_topic.url,
-        list_messages = manifest.endpoints.list_topic_messages.url,
-        post_message = manifest.endpoints.post_topic_message.url,
-        subscribe_topic = manifest.endpoints.subscribe_topic.url,
-        unsubscribe_topic = manifest.endpoints.unsubscribe_topic.url,
-        list_missions = manifest.endpoints.list_missions.url,
-        publish_mission = manifest.endpoints.publish_mission.url,
-        claim_mission = manifest.endpoints.claim_mission.url,
-        complete_mission = manifest.endpoints.complete_mission.url,
-        settle_mission = manifest.endpoints.settle_mission.url,
-        list_friends = manifest.endpoints.list_friends.url,
-        upsert_friend = manifest.endpoints.upsert_friend.url,
-        send_message = manifest.endpoints.send_message.url,
-        fetch_messages = manifest.endpoints.fetch_messages.url,
-        ack_message = manifest.endpoints.ack_message.url,
-        list_servicenet_agents = manifest.endpoints.list_servicenet_agents.url,
-        get_servicenet_agent = manifest.endpoints.get_servicenet_agent.url,
-        invoke_servicenet_agent = manifest.endpoints.invoke_servicenet_agent.url,
-        get_servicenet_agent_task = manifest.endpoints.get_servicenet_agent_task.url,
+        mcp_endpoint = manifest.mcp.endpoint,
+        mcp_protocol = manifest.mcp.protocol,
+        mcp_tools_list_method = manifest.mcp.tools_list_method,
+        mcp_tools_call_method = manifest.mcp.tools_call_method,
     )
 }
 
@@ -618,57 +334,23 @@ mod tests {
             Some("http://127.0.0.1:4000/v1")
         );
         assert_eq!(
-            manifest["endpoints"]["post_topic_message"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/civilization/topics/messages")
+            manifest["mcp"]["endpoint"].as_str(),
+            Some("http://127.0.0.1:7777/mcp")
+        );
+        assert_eq!(manifest["mcp"]["protocol"].as_str(), Some("jsonrpc-http"));
+        assert_eq!(
+            manifest["mcp"]["tools_list_method"].as_str(),
+            Some("tools/list")
         );
         assert_eq!(
-            manifest["endpoints"]["client_export"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/client/export")
-        );
-        assert_eq!(
-            manifest["endpoints"]["list_agent_payments"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/payments/agent-payments")
-        );
-        assert_eq!(
-            manifest["endpoints"]["authorize_agent_payment"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/payments/agent-payments/{payment_id}/authorize")
+            manifest["mcp"]["tools_call_method"].as_str(),
+            Some("tools/call")
         );
         assert_eq!(
             manifest["network"]["topic_bridge_enabled"].as_bool(),
             Some(true)
         );
-        assert_eq!(
-            manifest["endpoints"]["publish_mission"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/missions")
-        );
-        assert_eq!(
-            manifest["endpoints"]["claim_mission"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/missions/claim")
-        );
-        assert_eq!(
-            manifest["endpoints"]["list_friends"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/civilization/friends")
-        );
-        assert_eq!(
-            manifest["endpoints"]["send_message"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/mailbox/messages")
-        );
-        assert_eq!(
-            manifest["endpoints"]["ack_message"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/mailbox/ack")
-        );
-        assert_eq!(
-            manifest["endpoints"]["list_servicenet_agents"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/servicenet/agents")
-        );
-        assert_eq!(
-            manifest["endpoints"]["list_servicenet_agents"]["available"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            manifest["endpoints"]["invoke_servicenet_agent"]["url"].as_str(),
-            Some("http://127.0.0.1:7777/v1/servicenet/agents/{agent_id}/invoke")
-        );
+        assert!(manifest.get("endpoints").is_none());
         assert!(dir.path().join(".agent-participation/README.md").exists());
     }
 }

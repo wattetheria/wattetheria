@@ -1,5 +1,7 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wattetheria_social::domain::identities::LocalIdentityContext;
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
@@ -11,7 +13,7 @@ use crate::state::ControlPlaneState;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmRelationshipAction,
-    SwarmRelationshipActionCommand,
+    SwarmRelationshipActionCommand, SwarmSourceAgentCard,
 };
 
 #[derive(Debug, Clone)]
@@ -31,14 +33,41 @@ pub(crate) struct SocialCounterpartTarget {
 struct SignedAgentEnvelopePayload<'a> {
     protocol: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    transport_profile: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     source_agent_id: Option<&'a String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_agent_id: Option<&'a String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    source_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     capability: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent_card_hash: Option<&'a String>,
     message_json: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     extensions_json: Option<&'a String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SignedSourceAgentCardPayload<'a> {
+    agent_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<&'a String>,
+    card_hash: &'a str,
+    issued_at: u64,
+}
+
+pub(crate) struct SignedAgentEnvelopeArgs {
+    pub source_agent_id: String,
+    pub target_agent_id: Option<String>,
+    pub source_node_id: Option<String>,
+    pub target_node_id: Option<String>,
+    pub capability: String,
+    pub message: Value,
+    pub extensions: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -120,13 +149,20 @@ impl WattetheriaTransportAdapter {
                 ),
             ],
         );
-        let agent_envelope = build_signed_agent_envelope(
+        let local_node_id = self.state.swarm_bridge.local_node_id().await.ok();
+        let target_agent = counterpart.target_agent.clone();
+        let target_node = counterpart.remote_node.clone();
+        let agent_envelope = build_signed_agent_envelope_for_nodes(
             &self.state,
-            local.agent_id,
-            counterpart.target_agent,
-            capability,
-            message,
-            None,
+            SignedAgentEnvelopeArgs {
+                source_agent_id: local.agent_id,
+                target_agent_id: Some(target_agent),
+                source_node_id: local_node_id,
+                target_node_id: Some(target_node),
+                capability: capability.to_string(),
+                message,
+                extensions: None,
+            },
         )
         .map_err(|error| SocialError::Storage(format!("sign social envelope: {error:#}")))?;
         self.state
@@ -200,13 +236,20 @@ impl TransportPort for WattetheriaTransportAdapter {
                 ("content", content.clone()),
             ],
         );
-        let agent_envelope = build_signed_agent_envelope(
+        let local_node_id = self.state.swarm_bridge.local_node_id().await.ok();
+        let target_agent = counterpart.target_agent.clone();
+        let target_node = counterpart.remote_node.clone();
+        let agent_envelope = build_signed_agent_envelope_for_nodes(
             &self.state,
-            local.agent_id,
-            counterpart.target_agent,
-            "social.dm.send",
-            message,
-            None,
+            SignedAgentEnvelopeArgs {
+                source_agent_id: local.agent_id,
+                target_agent_id: Some(target_agent),
+                source_node_id: local_node_id,
+                target_node_id: Some(target_node),
+                capability: "social.dm.send".to_string(),
+                message,
+                extensions: None,
+            },
         )
         .map_err(|error| SocialError::Storage(format!("sign dm envelope: {error:#}")))?;
         self.state
@@ -321,6 +364,66 @@ pub(crate) async fn resolve_social_counterpart_target_by_remote_node(
     })
 }
 
+pub(crate) async fn resolve_social_counterpart_target_by_agent_did(
+    state: &ControlPlaneState,
+    target_agent_did: &str,
+    counterpart_public_id_hint: Option<String>,
+) -> Result<SocialCounterpartTarget, String> {
+    let target_agent_did = target_agent_did.trim();
+    if target_agent_did.is_empty() {
+        return Err("target_agent_did is required".to_string());
+    }
+
+    let counterpart_public_id_hint = counterpart_public_id_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let identity = if let Some(counterpart_public_id) = counterpart_public_id_hint {
+        let identity = identities.get(counterpart_public_id).ok_or_else(|| {
+            format!("public identity missing for counterpart_public_id {counterpart_public_id}")
+        })?;
+        if !identity.active {
+            return Err(format!(
+                "public identity {counterpart_public_id} is not active"
+            ));
+        }
+        if identity.agent_did.as_deref() != Some(target_agent_did) {
+            return Err("counterpart_public_id does not match target_agent_did".to_string());
+        }
+        identity
+    } else {
+        identities
+            .values()
+            .find(|identity| {
+                identity.active && identity.agent_did.as_deref() == Some(target_agent_did)
+            })
+            .ok_or_else(|| {
+                "target_agent_did is not a known public identity; provide remote_node_id or counterpart_public_id"
+                    .to_string()
+            })?
+    };
+
+    let binding = bindings
+        .get(&identity.public_id)
+        .filter(|binding| binding.active)
+        .ok_or_else(|| {
+            format!(
+                "active controller binding missing for {}",
+                identity.public_id
+            )
+        })?;
+    let remote_node_id = binding
+        .controller_node_id
+        .clone()
+        .ok_or_else(|| format!("controller_node_id missing for {}", identity.public_id))?;
+    Ok(SocialCounterpartTarget {
+        counterpart_public_id: identity.public_id.clone(),
+        remote_node: remote_node_id,
+        target_agent: target_agent_did.to_string(),
+    })
+}
+
 pub(crate) fn counterpart_public_id_for_remote_node(
     bindings: &BTreeMap<String, ControllerBinding>,
     remote_node_id: &str,
@@ -333,53 +436,132 @@ pub(crate) fn counterpart_public_id_for_remote_node(
         .map(|binding| binding.public_id.clone())
 }
 
-pub(crate) fn build_signed_agent_envelope(
-    state: &ControlPlaneState,
-    source_agent_id: String,
-    target_agent_id: String,
-    capability: &str,
-    message: Value,
-    extensions: Option<Value>,
-) -> anyhow::Result<SwarmAgentEnvelope> {
-    build_signed_agent_envelope_with_optional_target(
-        state,
-        source_agent_id,
-        Some(target_agent_id),
-        capability,
-        message,
-        extensions,
-    )
-}
-
 pub(crate) fn build_signed_agent_envelope_with_optional_target(
     state: &ControlPlaneState,
-    source_agent_id: String,
-    target_agent_id: Option<String>,
-    capability: &str,
-    message: Value,
-    extensions: Option<Value>,
+    args: SignedAgentEnvelopeArgs,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     let protocol = "google_a2a".to_string();
-    let message_json = serde_json::to_string(&message)?;
-    let extensions_json = extensions.as_ref().map(serde_json::to_string).transpose()?;
-    let capability = Some(capability.to_string());
-    let source_agent_id = Some(source_agent_id);
+    let transport_profile = Some("wattswarm_mesh".to_string());
+    let message_json = serde_json::to_string(&args.message)?;
+    let extensions_json = args
+        .extensions
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+    let capability = Some(args.capability);
+    let source_agent_id = Some(args.source_agent_id);
+    let source_agent_card = source_agent_id
+        .as_ref()
+        .map(|agent_id| build_source_agent_card(state, agent_id, args.source_node_id.as_ref()))
+        .transpose()?;
     let unsigned = SignedAgentEnvelopePayload {
         protocol: &protocol,
+        transport_profile: transport_profile.as_ref(),
         source_agent_id: source_agent_id.as_ref(),
-        target_agent_id: target_agent_id.as_ref(),
+        target_agent_id: args.target_agent_id.as_ref(),
+        source_node_id: args.source_node_id.as_ref(),
+        target_node_id: args.target_node_id.as_ref(),
         capability: capability.as_ref(),
+        source_agent_card_hash: source_agent_card.as_ref().map(|card| &card.card_hash),
         message_json: &message_json,
         extensions_json: extensions_json.as_ref(),
     };
     let signature = state.sign_payload(&unsigned)?;
     Ok(SwarmAgentEnvelope {
         protocol,
+        transport_profile,
         source_agent_id,
-        target_agent_id,
+        target_agent_id: args.target_agent_id,
+        source_node_id: args.source_node_id,
+        target_node_id: args.target_node_id,
         capability,
-        message,
-        extensions,
+        source_agent_card,
+        message: args.message,
+        extensions: args.extensions,
+        signature: Some(signature),
+    })
+}
+
+pub(crate) fn build_signed_agent_envelope_for_nodes(
+    state: &ControlPlaneState,
+    args: SignedAgentEnvelopeArgs,
+) -> anyhow::Result<SwarmAgentEnvelope> {
+    build_signed_agent_envelope_with_optional_target(state, args)
+}
+
+fn build_source_agent_card(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    node_id: Option<&String>,
+) -> anyhow::Result<SwarmSourceAgentCard> {
+    let issued_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
+    let display_suffix = agent_id
+        .rsplit(':')
+        .next()
+        .unwrap_or(agent_id)
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    let card = serde_json::json!({
+        "protocolVersion": "0.3.0",
+        "name": format!("Wattetheria Agent {display_suffix}"),
+        "description": "Wattetheria node agent participating through Wattswarm mesh.",
+        "preferredTransport": "wattswarm_mesh",
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": [
+            {
+                "id": "task-participation",
+                "name": "Task participation",
+                "description": "Can announce, claim, complete, and review Wattswarm tasks.",
+                "tags": ["task", "claim", "result"]
+            },
+            {
+                "id": "social-direct-message",
+                "name": "Social direct message",
+                "description": "Can send and receive signed peer relationship and direct message events.",
+                "tags": ["social", "dm"]
+            },
+            {
+                "id": "agent-payment",
+                "name": "Agent payment",
+                "description": "Can exchange signed agent payment lifecycle messages.",
+                "tags": ["payment"]
+            }
+        ],
+        "capabilities": {
+            "streaming": false,
+            "pushNotifications": false,
+            "stateTransitionHistory": true
+        },
+        "metadata": {
+            "agent_id": agent_id,
+            "node_id": node_id,
+            "transport_profile": "wattswarm_mesh",
+            "public_key": state.identity.public_key
+        }
+    });
+    let card_hash = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(serde_jcs::to_string(&card)?.as_bytes()))
+    );
+    let unsigned = SignedSourceAgentCardPayload {
+        agent_id,
+        node_id,
+        card_hash: &card_hash,
+        issued_at,
+    };
+    let signature = state.sign_payload(&unsigned)?;
+    Ok(SwarmSourceAgentCard {
+        agent_id: agent_id.to_owned(),
+        node_id: node_id.cloned(),
+        card_hash,
+        issued_at,
+        card,
         signature: Some(signature),
     })
 }

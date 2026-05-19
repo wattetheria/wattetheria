@@ -103,7 +103,7 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
             tool,
             &[value_field(
                 "settlement_receipt",
-                "Settlement success receipt payload.",
+                "Settlement success receipt payload. For x402, include success=true, payer, transaction, network, and amount from PAYMENT-RESPONSE or facilitator settle response.",
             )],
             &["settlement_receipt"],
             false,
@@ -123,35 +123,29 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
 
 fn topic_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "list_topics" => Some(tool_schema(tool, &list_topic_fields(), &[], false)),
-        "create_topic" => Some(tool_schema(
+        "list_hives" => Some(tool_schema(tool, &list_hive_fields(), &[], false)),
+        "create_hive" => Some(tool_schema(
             tool,
-            &create_topic_fields(),
+            &create_hive_fields(),
             &["feed_key", "scope_hint", "display_name", "projection_kind"],
             false,
         )),
-        "list_topic_messages" => Some(tool_schema(
+        "list_hive_messages" => Some(tool_schema(
             tool,
-            &list_topic_message_fields(),
-            &["feed_key", "scope_hint"],
+            &list_hive_message_fields(),
+            &["hive_id"],
             false,
         )),
-        "post_topic_message" => Some(tool_schema(
+        "post_hive_message" => Some(tool_schema(
             tool,
-            &post_topic_message_fields(),
-            &["feed_key", "scope_hint", "content"],
+            &post_hive_message_fields(),
+            &["hive_id", "content"],
             false,
         )),
-        "subscribe_topic" => Some(tool_schema(
+        "subscribe_hive" | "unsubscribe_hive" => Some(tool_schema(
             tool,
-            &subscribe_topic_fields(true),
-            &["feed_key", "scope_hint", "active"],
-            false,
-        )),
-        "unsubscribe_topic" => Some(tool_schema(
-            tool,
-            &subscribe_topic_fields(false),
-            &["feed_key", "scope_hint"],
+            &subscribe_hive_fields(),
+            &["hive_id"],
             false,
         )),
         _ => None,
@@ -173,7 +167,7 @@ fn topic_projection_kind_field(description: &str) -> (&'static str, Value) {
     )
 }
 
-fn list_topic_fields() -> Vec<(&'static str, Value)> {
+fn list_hive_fields() -> Vec<(&'static str, Value)> {
     vec![
         integer_field("limit", "Maximum number of gateway Hives to return."),
         integer_field(
@@ -181,7 +175,7 @@ fn list_topic_fields() -> Vec<(&'static str, Value)> {
             "Zero-based client offset into the bounded gateway result window.",
         ),
         string_field("network_id", "Wattswarm network ID filter."),
-        string_field("topic_id", "Network Hive topic ID filter."),
+        string_field("hive_id", "Network Hive ID filter."),
         string_field("organization_id", "Organization topic filter."),
         string_field("mission_id", "Mission topic filter."),
         topic_projection_kind_field("Topic projection kind filter."),
@@ -192,27 +186,26 @@ fn list_topic_fields() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn create_topic_fields() -> Vec<(&'static str, Value)> {
+fn create_hive_fields() -> Vec<(&'static str, Value)> {
     vec![
         string_field("network_id", "Optional Wattswarm network ID."),
-        string_field("feed_key", "Topic feed key."),
-        string_field("scope_hint", "Topic scope hint."),
-        string_field("display_name", "Human-readable topic name."),
-        string_field("summary", "Optional topic summary."),
-        topic_projection_kind_field("Topic projection kind."),
-        string_field("organization_id", "Organization linked to this topic."),
-        string_field("mission_id", "Mission linked to this topic."),
+        string_field("feed_key", "Underlying Wattswarm topic feed key."),
+        string_field("scope_hint", "Underlying Wattswarm topic scope hint."),
+        string_field("display_name", "Human-readable Hive name."),
+        string_field("summary", "Optional Hive summary."),
+        topic_projection_kind_field("Hive projection kind."),
+        string_field("organization_id", "Organization linked to this Hive."),
+        string_field("mission_id", "Mission linked to this Hive."),
         string_array_field("participant_public_ids", "Initial participant public IDs."),
-        string_field("why_this_exists", "Reason this topic exists."),
-        value_field("initial_message", "Optional first topic message payload."),
+        string_field("why_this_exists", "Reason this Hive exists."),
+        value_field("initial_message", "Optional first Hive message payload."),
     ]
 }
 
-fn list_topic_message_fields() -> Vec<(&'static str, Value)> {
+fn list_hive_message_fields() -> Vec<(&'static str, Value)> {
     vec![
+        string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
-        string_field("feed_key", "Topic feed key."),
-        string_field("scope_hint", "Topic scope hint."),
         integer_field("limit", "Maximum number of messages to return."),
         integer_field("before_created_at", "Cursor timestamp boundary."),
         string_field("before_message_id", "Cursor message ID boundary."),
@@ -220,29 +213,20 @@ fn list_topic_message_fields() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn post_topic_message_fields() -> Vec<(&'static str, Value)> {
+fn post_hive_message_fields() -> Vec<(&'static str, Value)> {
     vec![
+        string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
-        string_field("feed_key", "Topic feed key."),
-        string_field("scope_hint", "Topic scope hint."),
         value_field("content", "Message content payload."),
         string_field("reply_to_message_id", "Message ID this post replies to."),
     ]
 }
 
-fn subscribe_topic_fields(include_active: bool) -> Vec<(&'static str, Value)> {
-    let mut fields = vec![
+fn subscribe_hive_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
-        string_field("feed_key", "Topic feed key."),
-        string_field("scope_hint", "Topic scope hint."),
-    ];
-    if include_active {
-        fields.push(bool_field(
-            "active",
-            "Whether the subscription should be active.",
-        ));
-    }
-    fields
+    ]
 }
 
 fn mission_schema(tool: &AgentTool) -> Option<Value> {
@@ -412,16 +396,20 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &[
                 string_field(
                     "remote_node_id",
-                    "Discovered Wattswarm/Iroh node ID to send the friend request to.",
+                    "Discovered Wattswarm/Iroh node ID fallback when target_agent_did is not available.",
+                ),
+                string_field(
+                    "target_agent_did",
+                    "Target agent DID. Preferred identity input; resolves the remote node from known public identity bindings.",
                 ),
                 string_field(
                     "counterpart_public_id",
-                    "Optional counterpart public identity hint; defaults to remote_node_id.",
+                    "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
                 ),
                 value_field("message", "Optional friend request message payload."),
                 value_field("extensions", "Optional signed envelope extension payload."),
             ],
-            &["remote_node_id"],
+            &[],
             false,
         )),
         _ => None,
@@ -542,10 +530,17 @@ fn tool_schema(
         );
     }
 
-    let required = path_vars
-        .into_iter()
-        .chain(body_required.iter().copied())
-        .collect::<Vec<_>>();
+    let mut required = Vec::new();
+    for var in path_vars {
+        if !required.contains(&var) {
+            required.push(var);
+        }
+    }
+    for &var in body_required {
+        if !required.contains(&var) {
+            required.push(var);
+        }
+    }
 
     json!({
         "type": "object",

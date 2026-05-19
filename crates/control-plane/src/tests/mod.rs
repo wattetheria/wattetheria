@@ -852,14 +852,31 @@ impl SwarmBridge for MockSwarmBridge {
 struct ExpectedSignedAgentEnvelopePayload<'a> {
     protocol: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    transport_profile: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     source_agent_id: Option<&'a String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     target_agent_id: Option<&'a String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    source_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     capability: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent_card_hash: Option<&'a String>,
     message_json: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     extensions_json: Option<&'a String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExpectedSignedSourceAgentCardPayload<'a> {
+    agent_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_id: Option<&'a String>,
+    card_hash: &'a str,
+    issued_at: u64,
 }
 
 fn assert_envelope_signature_valid(envelope: &SwarmAgentEnvelope, public_key_b64: &str) {
@@ -872,9 +889,16 @@ fn assert_envelope_signature_valid(envelope: &SwarmAgentEnvelope, public_key_b64
         .unwrap();
     let payload = ExpectedSignedAgentEnvelopePayload {
         protocol: &envelope.protocol,
+        transport_profile: envelope.transport_profile.as_ref(),
         source_agent_id: envelope.source_agent_id.as_ref(),
         target_agent_id: envelope.target_agent_id.as_ref(),
+        source_node_id: envelope.source_node_id.as_ref(),
+        target_node_id: envelope.target_node_id.as_ref(),
         capability: envelope.capability.as_ref(),
+        source_agent_card_hash: envelope
+            .source_agent_card
+            .as_ref()
+            .map(|card| &card.card_hash),
         message_json: &message_json,
         extensions_json: extensions_json.as_ref(),
     };
@@ -883,6 +907,19 @@ fn assert_envelope_signature_valid(envelope: &SwarmAgentEnvelope, public_key_b64
         verify_payload(&payload, signature, public_key_b64).unwrap(),
         "expected signed envelope to verify"
     );
+    if let Some(card) = &envelope.source_agent_card {
+        let card_payload = ExpectedSignedSourceAgentCardPayload {
+            agent_id: &card.agent_id,
+            node_id: card.node_id.as_ref(),
+            card_hash: &card.card_hash,
+            issued_at: card.issued_at,
+        };
+        let card_signature = card.signature.as_deref().expect("missing card signature");
+        assert!(
+            verify_payload(&card_payload, card_signature, public_key_b64).unwrap(),
+            "expected signed source agent card to verify"
+        );
+    }
 }
 
 async fn bootstrap_broker_identity(app: Router, token: &str, agent_did: &str) -> String {
@@ -954,7 +991,7 @@ async fn publish_trade_mission(app: Router, token: &str, spec: TradeMissionSpec<
     authed_post_json(
         app,
         token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": spec.title,
             "description": spec.description,
@@ -997,21 +1034,21 @@ async fn settle_trade_mission_for_agent(app: Router, token: &str, agent_did: &st
     let _ = authed_post_json(
         app.clone(),
         token,
-        "/v1/missions/claim",
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
     let _ = authed_post_json(
         app.clone(),
         token,
-        "/v1/missions/complete",
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
     let _ = authed_post_json(
         app,
         token,
-        "/v1/missions/settle",
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
         json!({"mission_id": mission_id}),
     )
     .await;
@@ -1398,11 +1435,12 @@ fn assert_game_bootstrap_payload(payload: &Value, expected_public_id: &str) {
 }
 
 async fn claim_mission(app: Router, token: &str, mission_id: &Value, agent_did: &str) {
+    let mission_id = mission_id.as_str().expect("mission id");
     assert_eq!(
         authed_post(
             app,
             token,
-            "/v1/missions/claim",
+            &format!("/v1/wattetheria/missions/{mission_id}/claim"),
             json!({"mission_id": mission_id, "agent_did": agent_did}),
         )
         .await,
@@ -1416,12 +1454,13 @@ async fn complete_and_settle_mission(
     mission_id: &Value,
     agent_did: &str,
 ) {
-    for uri in ["/v1/missions/claim", "/v1/missions/complete"] {
+    let mission_id = mission_id.as_str().expect("mission id");
+    for action in ["claim", "complete"] {
         assert_eq!(
             authed_post(
                 app.clone(),
                 token,
-                uri,
+                &format!("/v1/wattetheria/missions/{mission_id}/{action}"),
                 json!({"mission_id": mission_id, "agent_did": agent_did}),
             )
             .await,
@@ -1432,7 +1471,7 @@ async fn complete_and_settle_mission(
         authed_post(
             app,
             token,
-            "/v1/missions/settle",
+            &format!("/v1/wattetheria/missions/{mission_id}/settle"),
             json!({"mission_id": mission_id}),
         )
         .await,

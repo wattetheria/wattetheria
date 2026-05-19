@@ -185,7 +185,7 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     let mission = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Tune local agent",
             "description": "Run a wallet-bound task.",
@@ -210,21 +210,21 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     let _ = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/claim",
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
     let _ = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/complete",
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
     let _ = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/settle",
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
         json!({"mission_id": mission_id}),
     )
     .await;
@@ -287,6 +287,18 @@ async fn wallet_page_can_bind_external_web3_payment_account() {
         bound["active_payment_account"]["rail"].as_str(),
         Some("x402")
     );
+    assert_eq!(
+        bound["active_payment_account"]["custody"].as_str(),
+        Some("watch_only")
+    );
+    assert_eq!(
+        bound["active_payment_account"]["receive_only"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        bound["active_payment_account"]["can_sign"].as_bool(),
+        Some(false)
+    );
 
     let self_json = authed_get_json(app, &token, "/v1/client/self").await;
     assert_eq!(
@@ -304,7 +316,7 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
     let mission = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Accept remote result",
             "description": "Publisher agent settles after wattswarm result callback.",
@@ -397,7 +409,7 @@ async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() 
     let mission = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Fail path",
             "description": "Task finalize failure must not change mission state.",
@@ -622,7 +634,7 @@ async fn client_export_excludes_local_friends_and_dm() {
 
     let export_json = public_get_json(
             app,
-            &format!("/v1/client/export?public_id={local_public_id}&peer_limit=10&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
+            &format!("/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=10&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
         )
         .await;
     assert!(export_json["payload"]["friend_relationships"].is_null());
@@ -709,7 +721,7 @@ async fn client_export_is_public_and_signed() {
 
     let export_json = public_get_json(
             app,
-            &format!("/v1/client/export?public_id={captain}&node_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
+            &format!("/v1/wattetheria/client/export?public_id={captain}&node_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
         )
         .await;
     assert_eq!(
@@ -738,7 +750,7 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
     let created = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Network cargo",
             "description": "Move cargo for a remote claimer",
@@ -757,7 +769,7 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
     .await;
     let mission_id = created["mission_id"].as_str().unwrap();
 
-    let export_json = public_get_json(app, "/v1/client/export?task_limit=10").await;
+    let export_json = public_get_json(app, "/v1/wattetheria/client/export?task_limit=10").await;
     let task = export_json["payload"]["tasks"]
         .as_array()
         .unwrap()
@@ -791,7 +803,7 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let created = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions",
+        "/v1/wattetheria/missions",
         json!({
             "title": "Network lifecycle",
             "description": "Keep gateway lifecycle payloads complete",
@@ -815,7 +827,7 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let _ = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/claim",
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
@@ -829,7 +841,7 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let _ = authed_post_json(
         app.clone(),
         &token,
-        "/v1/missions/complete",
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
         json!({"mission_id": mission_id, "agent_did": agent_did}),
     )
     .await;
@@ -849,7 +861,7 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let _ = authed_post_json(
         app,
         &token,
-        "/v1/missions/settle",
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
         json!({"mission_id": mission_id}),
     )
     .await;

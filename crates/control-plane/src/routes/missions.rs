@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -11,7 +11,7 @@ use crate::routes::mcp::{
     fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
 };
 use crate::routes::reward_view::refresh_known_wallet_balances;
-use crate::social_host::build_signed_agent_envelope_with_optional_target;
+use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
     StreamEvent, agent_commit_context_from_headers,
@@ -188,16 +188,22 @@ fn task_agent_envelope(
     state: &ControlPlaneState,
     source_agent_id: &str,
     target_agent_id: Option<String>,
+    source_node_id: Option<String>,
+    target_node_id: Option<String>,
     capability: &str,
     message: Value,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
-    build_signed_agent_envelope_with_optional_target(
+    build_signed_agent_envelope_for_nodes(
         state,
-        source_agent_id.to_owned(),
-        target_agent_id,
-        capability,
-        message,
-        None,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: source_agent_id.to_owned(),
+            target_agent_id,
+            source_node_id,
+            target_node_id,
+            capability: capability.to_string(),
+            message,
+            extensions: None,
+        },
     )
 }
 
@@ -686,6 +692,8 @@ async fn publish_mission_task_to_swarm(
         state,
         &state.agent_did,
         None,
+        Some(publisher_wattswarm_node_id.clone()),
+        None,
         "task.announce",
         json!({
             "task_id": mission.mission_id,
@@ -714,11 +722,14 @@ fn network_claim_agent_envelope(
     route: &NetworkMissionClaimRoute,
     body: &MissionClaimBody,
     execution_id: &str,
+    source_node_id: Option<String>,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     task_agent_envelope(
         state,
         &body.agent_did,
         publisher_agent_did_from_claim(body),
+        source_node_id,
+        route.publisher_wattswarm_node_id.clone(),
         "task.claim",
         json!({
             "task_id": route.task_id,
@@ -783,10 +794,13 @@ async fn finalize_mission_task_before_settle(
         .as_deref()
         .or(mission.completed_by.as_deref())
         .map(ToOwned::to_owned);
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
     let agent_envelope = match task_agent_envelope(
         state,
         &state.agent_did,
         target_agent_did.clone(),
+        local_node_id,
+        None,
         "task.result.finalize",
         json!({
             "task_id": task_id,
@@ -884,6 +898,39 @@ pub(crate) async fn mission_list(
     Json(missions).into_response()
 }
 
+pub(crate) async fn mission_get(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let mission = state.mission_board.lock().await.get(&mission_id);
+    let Some(mission) = mission else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "mission not found", "mission_id": mission_id})),
+        )
+            .into_response();
+    };
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: "mission.get".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(mission.mission_id.clone()),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: None,
+    });
+    Json(mission).into_response()
+}
+
 pub(crate) async fn mission_publish(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -972,12 +1019,53 @@ pub(crate) async fn mission_claim(
     transition_mission(state, headers, body, "claim").await
 }
 
+pub(crate) async fn mission_claim_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let body = match mission_claim_body_with_path_id(body, mission_id) {
+        Ok(body) => body,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    mission_claim(State(state), headers, Json(body)).await
+}
+
 pub(crate) async fn mission_complete(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Json(body): Json<MissionClaimBody>,
 ) -> Response {
     transition_mission(state, headers, body, "complete").await
+}
+
+pub(crate) async fn mission_complete_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let body = match mission_claim_body_with_path_id(body, mission_id) {
+        Ok(body) => body,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    mission_complete(State(state), headers, Json(body)).await
+}
+
+fn mission_claim_body_with_path_id(
+    mut value: Value,
+    mission_id: String,
+) -> Result<MissionClaimBody, String> {
+    let Some(object) = value.as_object_mut() else {
+        return Err("mission request body must be a JSON object".to_string());
+    };
+    object.insert("mission_id".to_string(), Value::String(mission_id));
+    serde_json::from_value(value).map_err(|error| format!("invalid mission request body: {error}"))
 }
 
 async fn claim_network_mission(
@@ -1032,7 +1120,13 @@ async fn claim_network_mission(
             Ok(value) => value,
             Err(response) => return response,
         };
-    let agent_envelope = match network_claim_agent_envelope(&state, &route, &body, &execution_id) {
+    let agent_envelope = match network_claim_agent_envelope(
+        &state,
+        &route,
+        &body,
+        &execution_id,
+        Some(subscriber_node_id.clone()),
+    ) {
         Ok(envelope) => envelope,
         Err(error) => return internal_error(&error),
     };
@@ -1125,6 +1219,8 @@ async fn complete_network_mission(
         &state,
         &body.agent_did,
         publisher_agent_did_from_claim(&body),
+        Some(subscriber_node_id.clone()),
+        route.publisher_wattswarm_node_id.clone(),
         "task.result.propose",
         json!({
             "task_id": route.task_id,
@@ -1179,12 +1275,15 @@ async fn dispatch_local_mission_transition_to_swarm(
     mission: &CivilMission,
     agent_did: &str,
 ) -> anyhow::Result<Value> {
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
     match action {
         "claim" => {
             let agent_envelope = task_agent_envelope(
                 state,
                 agent_did,
                 Some(state.agent_did.clone()),
+                local_node_id.clone(),
+                None,
                 "task.claim",
                 json!({
                     "task_id": mission.mission_id,
@@ -1209,6 +1308,8 @@ async fn dispatch_local_mission_transition_to_swarm(
                 state,
                 agent_did,
                 Some(state.agent_did.clone()),
+                local_node_id,
+                None,
                 "task.result.propose",
                 json!({
                     "task_id": mission.mission_id,
@@ -1430,6 +1531,32 @@ pub(crate) async fn mission_settle(
         return internal_error(&error);
     }
     Json(response_json).into_response()
+}
+
+pub(crate) async fn mission_settle_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let body = match mission_settle_body_with_path_id(body, mission_id) {
+        Ok(body) => body,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
+    mission_settle(State(state), headers, Json(body)).await
+}
+
+fn mission_settle_body_with_path_id(
+    mut value: Value,
+    mission_id: String,
+) -> Result<MissionSettleBody, String> {
+    let Some(object) = value.as_object_mut() else {
+        return Err("mission request body must be a JSON object".to_string());
+    };
+    object.insert("mission_id".to_string(), Value::String(mission_id));
+    serde_json::from_value(value).map_err(|error| format!("invalid mission request body: {error}"))
 }
 
 #[cfg(test)]

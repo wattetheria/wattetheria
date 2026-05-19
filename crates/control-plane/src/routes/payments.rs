@@ -11,14 +11,19 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::social_host::{
-    build_signed_agent_envelope, resolve_social_counterpart_target, resolve_social_local_context,
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes,
+    resolve_social_counterpart_target, resolve_social_local_context,
 };
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
     AgentPaymentSettleBody, AgentPaymentsQuery, ControlPlaneState, StreamEvent,
     WalletBindWeb3PaymentAccountBody, agent_commit_context_from_headers,
 };
-use watt_wallet::PaymentAccountKind;
+use watt_did::PaymentAccountCustody;
+use watt_wallet::{
+    PaymentAccountBindingProofOptions, PaymentAccountKind, PaymentAccountSigner,
+    build_payment_account_binding_proof,
+};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
@@ -716,13 +721,35 @@ async fn update_outbound_payment_with_wallet_signature(
         Err(error) => return Err(internal_error(&error)),
     };
     let mut signing_target = current.clone();
-    let sender_address = body.sender_address.or_else(|| {
-        wallet_state
-            .wallet
-            .active_payment_account(&wallet_state.profile)
-            .ok()
-            .and_then(|account| account.address.clone())
-    });
+    let active_account = match wallet_state
+        .wallet
+        .active_payment_account(&wallet_state.profile)
+    {
+        Ok(account) => account.clone(),
+        Err(error) => return Err(internal_error(&error.into())),
+    };
+    if active_account.key_handle.is_none() {
+        return Err(payment_error_response(
+            StatusCode::FORBIDDEN,
+            "active payment account is watch-only and cannot sign payments",
+        ));
+    }
+    let Some(active_address) = active_account.address.clone() else {
+        return Err(payment_error_response(
+            StatusCode::BAD_REQUEST,
+            "active payment account is missing an address",
+        ));
+    };
+    let sender_address = match body.sender_address {
+        Some(address) if address.eq_ignore_ascii_case(&active_address) => Some(address),
+        Some(_) => {
+            return Err(payment_error_response(
+                StatusCode::FORBIDDEN,
+                "sender_address must match the active signing payment account",
+            ));
+        }
+        None => Some(active_address),
+    };
     signing_target.sender_address.clone_from(&sender_address);
     let payload = match authorization_payload_bytes(&signing_target) {
         Ok(payload) => payload,
@@ -817,17 +844,28 @@ async fn send_payment_message(
     message: &PaymentAgentMessage,
 ) -> anyhow::Result<Value> {
     let local = resolve_social_local_context(state, None).await;
-    let agent_envelope = build_signed_agent_envelope(
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let mut message_payload = json!({
+        "message_kind": message.kind.as_str(),
+        "payment": message.payment,
+        "counterpart_public_id": counterpart.counterpart_public_id,
+    });
+    if let Some(binding) = try_build_payment_account_binding(state)
+        && let Some(map) = message_payload.as_object_mut()
+    {
+        map.insert("payment_account_binding".to_owned(), binding);
+    }
+    let agent_envelope = build_signed_agent_envelope_for_nodes(
         state,
-        local.agent_id,
-        counterpart.target_agent.clone(),
-        "payment.agent_message",
-        json!({
-            "message_kind": message.kind.as_str(),
-            "payment": message.payment,
-            "counterpart_public_id": counterpart.counterpart_public_id,
-        }),
-        None,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: local.agent_id,
+            target_agent_id: Some(counterpart.target_agent.clone()),
+            source_node_id: local_node_id,
+            target_node_id: Some(counterpart.remote_node.clone()),
+            capability: "payment.agent_message".to_string(),
+            message: message_payload,
+            extensions: None,
+        },
     )?;
     state
         .swarm_bridge
@@ -839,6 +877,56 @@ async fn send_payment_message(
             agent_envelope,
         })
         .await
+}
+
+/// Best-effort PaymentAccountBindingProof for the active spending payment
+/// account. Returns `None` on any failure — backwards compat with deployments
+/// that have no wallet, watch-only accounts, or an inactive payment account.
+fn try_build_payment_account_binding(state: &ControlPlaneState) -> Option<Value> {
+    let wallet_state = open_local_wallet(&state.data_dir).ok()?;
+    let agent_key_info = wallet_state
+        .wallet
+        .active_identity_key_info(&wallet_state.profile)
+        .ok()?;
+    let active_account = wallet_state
+        .wallet
+        .active_payment_account(&wallet_state.profile)
+        .ok()?
+        .clone();
+    active_account.key_handle.as_ref()?;
+    let payment_key_info = wallet_state
+        .wallet
+        .active_payment_account_key_info(&wallet_state.profile)
+        .ok()?;
+    let issued_at_ms = Utc::now()
+        .timestamp_millis()
+        .max(0)
+        .try_into()
+        .unwrap_or(u64::MAX);
+    let proof = build_payment_account_binding_proof(
+        wallet_state.wallet.keystore(),
+        PaymentAccountBindingProofOptions {
+            agent_did: agent_key_info.did.clone(),
+            agent_key_handle: &agent_key_info.key_handle,
+            agent_public_key_multibase: agent_key_info.public_key_multibase.clone(),
+            rail: active_account.rail.clone(),
+            network: active_account.network.clone(),
+            custody: PaymentAccountCustody::LocalGenerated,
+            receive_only: false,
+            can_sign: true,
+            capabilities: active_account.capabilities.clone(),
+            issued_at_ms,
+            expires_at_ms: None,
+            nonce: None,
+            payment_signer: Some(PaymentAccountSigner {
+                key_handle: &payment_key_info.key_handle,
+                public_key_multibase: payment_key_info.public_key_multibase.clone(),
+            }),
+            watch_only_payment_address: None,
+        },
+    )
+    .ok()?;
+    serde_json::to_value(&proof).ok()
 }
 
 fn ensure_sender_controls_payment(
@@ -883,6 +971,8 @@ pub(crate) fn payment_to_json(payment: &PaymentTransaction) -> Value {
 }
 
 fn payment_account_to_json(account: &watt_wallet::PaymentAccount) -> Value {
+    let can_sign = account.key_handle.is_some();
+    let receive_only = !can_sign;
     json!({
         "account_id": account.account_id,
         "rail": account.rail,
@@ -891,6 +981,10 @@ fn payment_account_to_json(account: &watt_wallet::PaymentAccount) -> Value {
         "kind": account.kind,
         "layer": account.layer,
         "capabilities": account.capabilities,
+        "custody": if can_sign { "local_key" } else { "watch_only" },
+        "can_sign": can_sign,
+        "can_submit_payment": can_sign,
+        "receive_only": receive_only,
     })
 }
 

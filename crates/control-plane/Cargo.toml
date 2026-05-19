@@ -16,9 +16,12 @@ async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
+hex.workspace = true
 prost = "0.13"
 serde.workspace = true
+serde_jcs.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 serde_urlencoded = "0.7"
 tokio.workspace = true
 tonic = { version = "0.12", features = ["transport"] }
@@ -29,6 +32,7 @@ uuid.workspace = true
 wattetheria-social = { path = "../social" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
+watt-did = { path = "../../../watt-did" }
 watt-wallet = { path = "../../../watt-wallet" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", rev = "9965eea30b88b4ebb16a4e6a855f4d37ecb70284", package = "wattswarm-protocol" }
 

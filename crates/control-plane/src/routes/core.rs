@@ -247,8 +247,9 @@ async fn commit_friend_request(
         commit_headers,
         Json(AgentRelationshipActionBody {
             public_id: event_message_public_id(&body, "target_public_id"),
-            counterpart_public_id,
+            counterpart_public_id: Some(counterpart_public_id),
             remote_node_id: None,
+            target_agent_did: None,
             action,
             message: body.decision.payload.get("message").cloned(),
             extensions: body.decision.payload.get("extensions").cloned(),
@@ -288,8 +289,9 @@ async fn commit_dm_received(
                 commit_headers,
                 Json(AgentRelationshipActionBody {
                     public_id: event_message_public_id(&body, "target_public_id"),
-                    counterpart_public_id,
+                    counterpart_public_id: Some(counterpart_public_id),
                     remote_node_id: None,
+                    target_agent_did: None,
                     action: SwarmRelationshipAction::Block,
                     message: body.decision.payload.get("message").cloned(),
                     extensions: body.decision.payload.get("extensions").cloned(),

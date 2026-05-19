@@ -4,12 +4,28 @@
 //! between agents using their local wallet payment accounts.
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use watt_wallet::{
+    SignatureBytes, evm_address_from_secp256k1_multibase_public_key,
+    verify_secp256k1_with_multibase_public_key,
+};
+
+pub mod x402;
+
+pub use x402::{
+    PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER,
+    X402PaymentRequired, X402PaymentRequirement, X402SettlementResponse,
+    build_payment_signature_payload, decode_payment_required_header,
+    decode_settlement_response_header, encode_payment_signature_header, select_payment_requirement,
+    validate_x402_settlement_receipt,
+};
 
 #[derive(Debug, Serialize)]
 struct PaymentAuthorizationPayload<'a> {
@@ -102,6 +118,29 @@ impl PaymentMessageKind {
             Self::Settled => "payment_settled",
             Self::Rejected => "payment_rejected",
             Self::Cancelled => "payment_cancelled",
+        }
+    }
+
+    #[must_use]
+    pub fn expected_status(&self) -> PaymentStatus {
+        match self {
+            Self::Request => PaymentStatus::Proposed,
+            Self::Authorized => PaymentStatus::Authorized,
+            Self::Submitted => PaymentStatus::Submitted,
+            Self::Settled => PaymentStatus::Settled,
+            Self::Rejected => PaymentStatus::Rejected,
+            Self::Cancelled => PaymentStatus::Cancelled,
+        }
+    }
+
+    #[must_use]
+    pub fn expected_actor_did<'a>(&self, payment: &'a PaymentTransaction) -> Option<&'a str> {
+        match self {
+            Self::Request | Self::Authorized | Self::Submitted | Self::Cancelled => {
+                Some(&payment.sender_did)
+            }
+            Self::Rejected => Some(&payment.recipient_did),
+            Self::Settled => None,
         }
     }
 }
@@ -201,6 +240,75 @@ pub fn authorization_payload_bytes(transaction: &PaymentTransaction) -> Result<V
         expires_at: &transaction.expires_at,
     };
     serde_json::to_vec(&payload).context("serialize payment authorization payload")
+}
+
+pub fn verify_payment_authorization_signature(transaction: &PaymentTransaction) -> Result<()> {
+    let signature = transaction
+        .authorization_signature
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("payment authorization signature is required"))?;
+    let public_key = transaction
+        .authorization_public_key
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("payment authorization public key is required"))?;
+    let signature = SignatureBytes(
+        STANDARD
+            .decode(signature)
+            .context("decode payment authorization signature")?,
+    );
+    verify_secp256k1_with_multibase_public_key(
+        public_key,
+        &authorization_payload_bytes(transaction)?,
+        &signature,
+    )
+    .map_err(anyhow::Error::from)
+    .context("verify payment authorization signature")?;
+    let sender_address = transaction
+        .sender_address
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("payment authorization sender address is required"))?;
+    let derived_address =
+        evm_address_from_secp256k1_multibase_public_key(public_key).map_err(anyhow::Error::from)?;
+    if !derived_address.eq_ignore_ascii_case(sender_address) {
+        bail!("payment authorization public key does not match sender address");
+    }
+    Ok(())
+}
+
+pub fn validate_agent_payment_message(
+    message: &PaymentAgentMessage,
+    source_agent_did: &str,
+) -> Result<()> {
+    let payment = &message.payment;
+    if payment.status != message.kind.expected_status() {
+        bail!(
+            "payment message kind {} does not match payment status {:?}",
+            message.kind.as_str(),
+            payment.status
+        );
+    }
+
+    if let Some(expected) = message.kind.expected_actor_did(payment) {
+        if expected != source_agent_did {
+            bail!(
+                "payment message kind {} must be sent by {}",
+                message.kind.as_str(),
+                expected
+            );
+        }
+    } else if source_agent_did != payment.sender_did && source_agent_did != payment.recipient_did {
+        bail!("payment settlement message must be sent by a payment participant");
+    }
+
+    if matches!(
+        message.kind,
+        PaymentMessageKind::Authorized
+            | PaymentMessageKind::Submitted
+            | PaymentMessageKind::Settled
+    ) {
+        verify_payment_authorization_signature(payment)?;
+    }
+    Ok(())
 }
 
 /// A request to propose a new payment.
@@ -413,6 +521,10 @@ impl PaymentLedger {
             );
         }
 
+        if transaction.rail.eq_ignore_ascii_case("x402") {
+            validate_x402_settlement_receipt(transaction, &request.settlement_receipt)?;
+        }
+
         transaction.status = PaymentStatus::Settled;
         transaction.settlement_receipt = Some(request.settlement_receipt);
         transaction.settled_at = Some(Utc::now().timestamp());
@@ -604,6 +716,15 @@ impl PaymentLedger {
             Ok((transaction, true))
         }
     }
+
+    pub fn merge_remote_agent_message(
+        &mut self,
+        message: PaymentAgentMessage,
+        source_agent_did: &str,
+    ) -> Result<(PaymentTransaction, bool)> {
+        validate_agent_payment_message(&message, source_agent_did)?;
+        self.merge_remote_transaction(message.payment)
+    }
 }
 
 fn merge_transaction(current: &mut PaymentTransaction, incoming: &PaymentTransaction) -> bool {
@@ -648,7 +769,11 @@ fn merge_transaction(current: &mut PaymentTransaction, incoming: &PaymentTransac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD;
     use serde_json::json;
+    use watt_wallet::{InMemoryKeyStore, KeyStore};
+
+    const TEST_TX_HASH: &str = "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9";
 
     fn test_ledger() -> PaymentLedger {
         PaymentLedger::default()
@@ -672,6 +797,42 @@ mod tests {
             metadata: None,
             expires_at: Some(Utc::now().timestamp() + 3600),
         }
+    }
+
+    fn sign_authorization(payment: &mut PaymentTransaction) {
+        let mut keystore = InMemoryKeyStore::new();
+        let key_info = keystore.generate_secp256k1().unwrap();
+        payment.sender_address = key_info.derived_address.clone();
+        let payload = authorization_payload_bytes(payment).unwrap();
+        let signature = keystore.sign_bytes(&key_info.key_handle, &payload).unwrap();
+        payment.authorization_signature = Some(STANDARD.encode(signature.0));
+        payment.authorization_public_key = Some(key_info.public_key_multibase);
+    }
+
+    fn authorize_for_settlement(
+        ledger: &mut PaymentLedger,
+        payment: &PaymentTransaction,
+    ) -> PaymentTransaction {
+        let mut signed = payment.clone();
+        sign_authorization(&mut signed);
+        ledger
+            .authorize(AuthorizePaymentRequest {
+                payment_id: signed.payment_id,
+                authorization_signature: signed.authorization_signature.unwrap(),
+                authorization_public_key: signed.authorization_public_key,
+                sender_address: signed.sender_address,
+            })
+            .unwrap()
+    }
+
+    fn x402_success_receipt(sender_address: &str, amount: &str, network: &str) -> Value {
+        json!({
+            "success": true,
+            "payer": sender_address,
+            "transaction": TEST_TX_HASH,
+            "network": network,
+            "amount": amount
+        })
     }
 
     #[test]
@@ -723,26 +884,91 @@ mod tests {
         let mut ledger = test_ledger();
         let proposal = sample_proposal("did:key:sender", "did:key:recipient");
         let proposed = ledger.propose("did:key:sender", proposal).unwrap();
-
-        ledger
-            .authorize(AuthorizePaymentRequest {
-                payment_id: proposed.payment_id.clone(),
-                authorization_signature: "sig".to_owned(),
-                authorization_public_key: None,
-                sender_address: None,
-            })
-            .unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
 
         let settled = ledger
             .settle(SettlePaymentRequest {
                 payment_id: proposed.payment_id,
-                settlement_receipt: json!({"tx_hash": "0xabc", "status": "confirmed"}),
+                settlement_receipt: x402_success_receipt(
+                    authorized.sender_address.as_deref().unwrap(),
+                    &authorized.amount,
+                    "eip155:84532",
+                ),
             })
             .unwrap();
 
         assert_eq!(settled.status, PaymentStatus::Settled);
         assert!(settled.settlement_receipt.is_some());
         assert!(settled.settled_at.is_some());
+    }
+
+    #[test]
+    fn settle_x402_rejects_failed_receipt() {
+        let mut ledger = test_ledger();
+        let proposed = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
+
+        let error = ledger
+            .settle(SettlePaymentRequest {
+                payment_id: proposed.payment_id,
+                settlement_receipt: json!({
+                    "success": false,
+                    "payer": authorized.sender_address.as_deref().unwrap(),
+                    "transaction": TEST_TX_HASH,
+                    "network": "base-sepolia",
+                    "amount": authorized.amount
+                }),
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("receipt must report success=true")
+        );
+    }
+
+    #[test]
+    fn settle_x402_rejects_mismatched_receipt_fields() {
+        let mut ledger = test_ledger();
+        let proposed = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
+
+        let error = ledger
+            .settle(SettlePaymentRequest {
+                payment_id: proposed.payment_id,
+                settlement_receipt: x402_success_receipt(
+                    authorized.sender_address.as_deref().unwrap(),
+                    "42",
+                    "base",
+                ),
+            })
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("amount does not match payment amount")
+        );
+    }
+
+    #[test]
+    fn validate_x402_settlement_receipt_accepts_pay_to_when_matching() {
+        let mut ledger = test_ledger();
+        let mut proposal = sample_proposal("did:key:a", "did:key:b");
+        proposal.recipient_address = Some("0x0000000000000000000000000000000000000001".to_owned());
+        let proposed = ledger.propose("did:key:a", proposal).unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
+        let mut receipt = x402_success_receipt(
+            authorized.sender_address.as_deref().unwrap(),
+            &authorized.amount,
+            "84532",
+        );
+        receipt["payTo"] = json!("0x0000000000000000000000000000000000000001");
+
+        validate_x402_settlement_receipt(&authorized, &receipt).unwrap();
     }
 
     #[test]
@@ -807,20 +1033,16 @@ mod tests {
         let mut ledger = test_ledger();
         let proposal = sample_proposal("did:key:sender", "did:key:recipient");
         let proposed = ledger.propose("did:key:sender", proposal).unwrap();
-
-        ledger
-            .authorize(AuthorizePaymentRequest {
-                payment_id: proposed.payment_id.clone(),
-                authorization_signature: "sig".to_owned(),
-                authorization_public_key: None,
-                sender_address: None,
-            })
-            .unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
 
         ledger
             .settle(SettlePaymentRequest {
                 payment_id: proposed.payment_id.clone(),
-                settlement_receipt: json!({"tx_hash": "0xabc"}),
+                settlement_receipt: x402_success_receipt(
+                    authorized.sender_address.as_deref().unwrap(),
+                    &authorized.amount,
+                    "base-sepolia",
+                ),
             })
             .unwrap();
 
@@ -901,20 +1123,16 @@ mod tests {
         let _p2 = ledger
             .propose("did:key:a", sample_proposal("did:key:a", "did:key:c"))
             .unwrap();
-
-        ledger
-            .authorize(AuthorizePaymentRequest {
-                payment_id: p1.payment_id.clone(),
-                authorization_signature: "sig".to_owned(),
-                authorization_public_key: None,
-                sender_address: None,
-            })
-            .unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &p1);
 
         ledger
             .settle(SettlePaymentRequest {
                 payment_id: p1.payment_id,
-                settlement_receipt: json!({"tx_hash": "0xabc"}),
+                settlement_receipt: x402_success_receipt(
+                    authorized.sender_address.as_deref().unwrap(),
+                    &authorized.amount,
+                    "base-sepolia",
+                ),
             })
             .unwrap();
 
@@ -974,5 +1192,96 @@ mod tests {
         assert_eq!(merged.status, PaymentStatus::Authorized);
         assert_eq!(merged.sender_address.as_deref(), Some("0xsender"));
         assert_eq!(merged.authorization_public_key.as_deref(), Some("zpub"));
+    }
+
+    #[test]
+    fn validate_agent_payment_message_requires_expected_sender_for_request() {
+        let mut ledger = test_ledger();
+        let proposed = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        let message = proposed.agent_message(PaymentMessageKind::Request, 1);
+
+        assert!(validate_agent_payment_message(&message, "did:key:a").is_ok());
+        let error = validate_agent_payment_message(&message, "did:key:b").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("payment_request must be sent by did:key:a")
+        );
+    }
+
+    #[test]
+    fn validate_agent_payment_message_verifies_authorization_signature() {
+        let mut ledger = test_ledger();
+        let mut payment = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        payment.status = PaymentStatus::Authorized;
+        sign_authorization(&mut payment);
+        let message = payment.agent_message(PaymentMessageKind::Authorized, 1);
+
+        validate_agent_payment_message(&message, "did:key:a").unwrap();
+    }
+
+    #[test]
+    fn validate_agent_payment_message_rejects_tampered_authorization_payload() {
+        let mut ledger = test_ledger();
+        let mut payment = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        payment.status = PaymentStatus::Authorized;
+        sign_authorization(&mut payment);
+        payment.amount = "2".to_owned();
+        let message = payment.agent_message(PaymentMessageKind::Authorized, 1);
+
+        let error = validate_agent_payment_message(&message, "did:key:a").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("verify payment authorization signature")
+        );
+    }
+
+    #[test]
+    fn validate_agent_payment_message_rejects_sender_address_mismatch() {
+        let mut ledger = test_ledger();
+        let mut payment = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        payment.status = PaymentStatus::Authorized;
+        payment.sender_address = Some("0x0000000000000000000000000000000000000000".to_owned());
+        let mut keystore = InMemoryKeyStore::new();
+        let key_info = keystore.generate_secp256k1().unwrap();
+        let payload = authorization_payload_bytes(&payment).unwrap();
+        let signature = keystore.sign_bytes(&key_info.key_handle, &payload).unwrap();
+        payment.authorization_signature = Some(STANDARD.encode(signature.0));
+        payment.authorization_public_key = Some(key_info.public_key_multibase);
+        let message = payment.agent_message(PaymentMessageKind::Authorized, 1);
+
+        let error = validate_agent_payment_message(&message, "did:key:a").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("public key does not match sender address")
+        );
+    }
+
+    #[test]
+    fn merge_remote_agent_message_validates_actor_before_merge() {
+        let mut ledger = test_ledger();
+        let payment = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+        let message = payment.agent_message(PaymentMessageKind::Request, 1);
+
+        let error = ledger
+            .merge_remote_agent_message(message, "did:key:b")
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("payment_request must be sent by did:key:a")
+        );
     }
 }

@@ -105,7 +105,10 @@ fn client_router() -> Router<ControlPlaneState> {
             get(routes::client::supervision_home),
         )
         .route("/v1/supervision/missions", get(routes::client::my_missions))
-        .route("/v1/missions/my", get(routes::client::my_missions))
+        .route(
+            "/v1/wattetheria/missions/my",
+            get(routes::client::my_missions),
+        )
         .route(
             "/v1/supervision/governance",
             get(routes::client::my_governance),
@@ -143,7 +146,7 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         )
         .route("/v1/client/tasks", get(routes::client_api::client_tasks))
         .route(
-            "/v1/client/task-activity",
+            "/v1/wattetheria/client/task-activity",
             get(routes::client_swarm::client_task_activity),
         )
         .route(
@@ -175,7 +178,10 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             "/v1/client/leaderboard",
             get(routes::client_api::client_leaderboard),
         )
-        .route("/v1/client/export", get(routes::client_api::client_export))
+        .route(
+            "/v1/wattetheria/client/export",
+            get(routes::client_api::client_export),
+        )
 }
 
 fn game_router() -> Router<ControlPlaneState> {
@@ -317,26 +323,26 @@ fn civilization_router() -> Router<ControlPlaneState> {
                 .post(routes::civilization::citizen_profile_upsert),
         )
         .route(
-            "/v1/civilization/friends",
+            "/v1/wattetheria/social/friends",
             get(routes::civilization::list_relationships)
                 .post(routes::civilization::upsert_relationship),
         )
         .route(
-            "/v1/civilization/agent-friends",
+            "/v1/wattetheria/social/agent-friends",
             get(routes::civilization::list_agent_relationships)
                 .post(routes::civilization::agent_relationship_action),
         )
         .route(
-            "/v1/civilization/agent-dm/threads",
+            "/v1/wattetheria/social/agent-dm/threads",
             get(routes::civilization::list_agent_dm_threads),
         )
         .route(
-            "/v1/civilization/agent-dm/messages",
+            "/v1/wattetheria/social/agent-dm/messages",
             get(routes::civilization::list_agent_dm_messages)
                 .post(routes::civilization::send_agent_dm_message),
         )
         .merge(organization_civilization_router())
-        .merge(topic_civilization_router())
+        .merge(hive_wattetheria_router())
         .route(
             "/v1/civilization/metrics",
             get(routes::civilization::civilization_metrics),
@@ -374,17 +380,24 @@ fn civilization_router() -> Router<ControlPlaneState> {
             post(routes::civilization::galaxy_event_generate),
         )
         .route(
-            "/v1/missions",
+            "/v1/wattetheria/missions",
             get(routes::missions::mission_list).post(routes::missions::mission_publish),
         )
-        .route("/v1/missions/claim", post(routes::missions::mission_claim))
         .route(
-            "/v1/missions/complete",
-            post(routes::missions::mission_complete),
+            "/v1/wattetheria/missions/{mission_id}",
+            get(routes::missions::mission_get),
         )
         .route(
-            "/v1/missions/settle",
-            post(routes::missions::mission_settle),
+            "/v1/wattetheria/missions/{mission_id}/claim",
+            post(routes::missions::mission_claim_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/complete",
+            post(routes::missions::mission_complete_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/settle",
+            post(routes::missions::mission_settle_by_id),
         )
 }
 
@@ -395,52 +408,56 @@ fn payments_router() -> Router<ControlPlaneState> {
             post(routes::payments::bind_web3_payment_account),
         )
         .route(
-            "/v1/payments/agent-payments",
+            "/v1/wattetheria/payments/agent-payments",
             get(routes::payments::list_agent_payments),
         )
         .route(
-            "/v1/payments/agent-payments/propose",
+            "/v1/wattetheria/payments/agent-payments/propose",
             post(routes::payments::propose_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}",
             get(routes::payments::get_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}/authorize",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}/authorize",
             post(routes::payments::authorize_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}/submit",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}/submit",
             post(routes::payments::submit_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}/settle",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}/settle",
             post(routes::payments::settle_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}/reject",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}/reject",
             post(routes::payments::reject_agent_payment),
         )
         .route(
-            "/v1/payments/agent-payments/{payment_id}/cancel",
+            "/v1/wattetheria/payments/agent-payments/{payment_id}/cancel",
             post(routes::payments::cancel_agent_payment),
         )
 }
 
-fn topic_civilization_router() -> Router<ControlPlaneState> {
+fn hive_wattetheria_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
-            "/v1/civilization/topics",
-            get(routes::topics::list_topics).post(routes::topics::create_topic),
+            "/v1/wattetheria/hives",
+            get(routes::topics::list_hives).post(routes::topics::create_hive),
         )
         .route(
-            "/v1/civilization/topics/messages",
-            get(routes::topics::topic_messages).post(routes::topics::post_topic_message),
+            "/v1/wattetheria/hives/{hive_id}/messages",
+            get(routes::topics::hive_messages).post(routes::topics::post_hive_message),
         )
         .route(
-            "/v1/civilization/topics/subscribe",
-            post(routes::topics::subscribe_topic),
+            "/v1/wattetheria/hives/{hive_id}/subscribe",
+            post(routes::topics::subscribe_hive),
+        )
+        .route(
+            "/v1/wattetheria/hives/{hive_id}/unsubscribe",
+            post(routes::topics::unsubscribe_hive),
         )
 }
 
@@ -542,10 +559,13 @@ fn governance_router() -> Router<ControlPlaneState> {
 fn mailbox_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
-            "/v1/mailbox/messages",
+            "/v1/wattetheria/mailbox/messages",
             get(routes::mailbox::mailbox_fetch).post(routes::mailbox::mailbox_send),
         )
-        .route("/v1/mailbox/ack", post(routes::mailbox::mailbox_ack))
+        .route(
+            "/v1/wattetheria/mailbox/ack",
+            post(routes::mailbox::mailbox_ack),
+        )
 }
 
 fn policy_router() -> Router<ControlPlaneState> {

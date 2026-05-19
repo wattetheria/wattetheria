@@ -528,7 +528,7 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Wattetheria Node Console"));
     assert!(body.contains("/v1/civilization/identities"));
-    assert!(body.contains("/v1/client/export"));
+    assert!(body.contains("/v1/wattetheria/client/export"));
     assert!(body.contains("node_limit"));
     assert!(body.contains("Nodes"));
     assert!(body.contains("identityRecordPublicIdentity"));
@@ -551,8 +551,9 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("network connection established"));
     assert!(body.contains("remote_addr"));
     assert!(body.contains("WATT Balance"));
-    assert!(body.contains("Web3 Settlement Wallet"));
+    assert!(body.contains("Web3 Settlement Address"));
     assert!(body.contains("Connect Web3 Wallet"));
+    assert!(body.contains("Bind Receive Address"));
     assert!(body.contains("/v1/wallet/payment-account/bind-web3"));
     assert!(body.contains("Web2 Payments"));
     assert!(body.contains("Agent Runtime"));

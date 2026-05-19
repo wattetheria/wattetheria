@@ -222,8 +222,8 @@ async fn call_tool(
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
-    if tool.name == "list_topics" {
-        let result = network_topic_market_result(state, &arguments).await;
+    if tool.name == "list_hives" {
+        let result = network_hive_market_result(state, &arguments).await;
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
@@ -326,8 +326,9 @@ fn mcp_tool_object(arguments: &Value) -> (Option<&'static str>, Option<String>) 
     [
         ("mission", "mission_id"),
         ("task", "task_id"),
-        ("topic", "topic_id"),
-        ("topic", "feed_key"),
+        ("hive", "hive_id"),
+        ("hive", "topic_id"),
+        ("hive", "feed_key"),
         ("payment", "payment_id"),
         ("message", "message_id"),
         ("friend", "counterpart_public_id"),
@@ -358,6 +359,7 @@ fn mcp_argument_identifiers(arguments: &Value) -> Map<String, Value> {
     for key in [
         "mission_id",
         "task_id",
+        "hive_id",
         "topic_id",
         "feed_key",
         "scope_hint",
@@ -376,14 +378,14 @@ fn mcp_argument_identifiers(arguments: &Value) -> Map<String, Value> {
     identifiers
 }
 
-async fn network_topic_market_result(state: &ControlPlaneState, arguments: &Value) -> Value {
-    match network_topic_market_payload(state, arguments).await {
+async fn network_hive_market_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    match network_hive_market_payload(state, arguments).await {
         Ok(payload) => tool_success(&payload),
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
 }
 
-async fn network_topic_market_payload(
+async fn network_hive_market_payload(
     state: &ControlPlaneState,
     arguments: &Value,
 ) -> anyhow::Result<Value> {
@@ -397,24 +399,24 @@ async fn network_topic_market_payload(
         .saturating_add(limit)
         .clamp(1, MAX_GATEWAY_TOPIC_WINDOW);
     let gateway_url = resolve_gateway_query_url(state)?;
-    let gateway_endpoint = normalized_gateway_topics_url(&gateway_url);
-    let topics = fetch_gateway_topics(&gateway_endpoint, fetch_limit).await?;
-    let all_topics = topics
+    let gateway_endpoint = normalized_gateway_hives_url(&gateway_url);
+    let hives = fetch_gateway_hives(&gateway_endpoint, fetch_limit).await?;
+    let all_hives = hives
         .into_iter()
-        .filter(|topic| matches_topic_filters(topic, arguments))
+        .filter(|hive| matches_hive_filters(hive, arguments))
         .collect::<Vec<_>>();
-    let page = all_topics
+    let page = all_hives
         .iter()
         .skip(offset)
         .take(limit)
         .cloned()
-        .map(normalize_gateway_topic)
+        .map(normalize_gateway_hive)
         .collect::<Vec<_>>();
     let next_offset = offset + page.len();
-    let has_more = next_offset < all_topics.len();
+    let has_more = next_offset < all_hives.len();
 
     Ok(json!({
-        "source": "wattetheria-gateway.api_topics",
+        "source": "wattetheria-gateway.v1_hives",
         "scope": "network",
         "gateway_url": gateway_url,
         "gateway_endpoint": gateway_endpoint,
@@ -423,8 +425,8 @@ async fn network_topic_market_payload(
         "offset": offset,
         "next_offset": if has_more { Some(next_offset) } else { None },
         "has_more": has_more,
-        "known_count": all_topics.len(),
-        "topics": page,
+        "known_count": all_hives.len(),
+        "hives": page,
     }))
 }
 
@@ -472,7 +474,7 @@ async fn network_mission_market_payload(
     let has_more = next_offset < all_missions.len();
 
     Ok(json!({
-        "source": "wattetheria-gateway.api_tasks",
+        "source": "wattetheria-gateway.v1_missions",
         "scope": "network",
         "gateway_url": gateway_url,
         "gateway_endpoint": gateway_endpoint,
@@ -490,11 +492,11 @@ pub(crate) async fn fetch_gateway_tasks(
     gateway_endpoint: &str,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    fetch_gateway_array(gateway_endpoint, limit, "/api/tasks").await
+    fetch_gateway_array(gateway_endpoint, limit, "/v1/wattetheria/missions").await
 }
 
-async fn fetch_gateway_topics(gateway_endpoint: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
-    fetch_gateway_array(gateway_endpoint, limit, "/api/topics").await
+async fn fetch_gateway_hives(gateway_endpoint: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
+    fetch_gateway_array(gateway_endpoint, limit, "/v1/wattetheria/hives").await
 }
 
 async fn fetch_gateway_array(
@@ -516,33 +518,39 @@ async fn fetch_gateway_array(
         .ok_or_else(|| anyhow::anyhow!("gateway {resource} returned a non-array payload"))
 }
 
-fn matches_topic_filters(topic: &Value, arguments: &Value) -> bool {
+fn matches_hive_filters(hive: &Value, arguments: &Value) -> bool {
     matches_optional_gateway_string(
-        topic,
+        hive,
         &[&["network_id"], &["networkId"]],
         arguments,
         "network_id",
-    ) && matches_optional_gateway_string(topic, &[&["topic_id"], &["id"]], arguments, "topic_id")
-        && matches_optional_gateway_string(
-            topic,
-            &[&["organization_id"], &["organizationId"]],
-            arguments,
-            "organization_id",
-        )
-        && matches_optional_gateway_string(
-            topic,
-            &[&["mission_id"], &["missionId"]],
-            arguments,
-            "mission_id",
-        )
-        && matches_optional_gateway_string(
-            topic,
-            &[&["projection_kind"], &["kind"]],
-            arguments,
-            "projection_kind",
-        )
-        && (bool_argument(arguments, "include_inactive").unwrap_or(false)
-            || gateway_topic_active(topic))
+    ) && matches_optional_gateway_string(
+        hive,
+        &[&["hive_id"], &["topic_id"], &["id"]],
+        arguments,
+        "hive_id",
+    ) && matches_optional_gateway_string(
+        hive,
+        &[&["topic_id"], &["hive_id"], &["id"]],
+        arguments,
+        "topic_id",
+    ) && matches_optional_gateway_string(
+        hive,
+        &[&["organization_id"], &["organizationId"]],
+        arguments,
+        "organization_id",
+    ) && matches_optional_gateway_string(
+        hive,
+        &[&["mission_id"], &["missionId"]],
+        arguments,
+        "mission_id",
+    ) && matches_optional_gateway_string(
+        hive,
+        &[&["projection_kind"], &["kind"]],
+        arguments,
+        "projection_kind",
+    ) && (bool_argument(arguments, "include_inactive").unwrap_or(false)
+        || gateway_hive_active(hive))
 }
 
 fn matches_optional_gateway_string(
@@ -557,36 +565,40 @@ fn matches_optional_gateway_string(
     gateway_task_string(value, paths).as_deref() == Some(expected.as_str())
 }
 
-fn gateway_topic_active(topic: &Value) -> bool {
-    match topic.get("active").and_then(Value::as_bool) {
+fn gateway_hive_active(hive: &Value) -> bool {
+    match hive.get("active").and_then(Value::as_bool) {
         Some(active) => active,
-        None => topic
+        None => hive
             .get("status")
             .and_then(Value::as_str)
             .is_none_or(|status| status != "inactive"),
     }
 }
 
-fn normalize_gateway_topic(mut topic: Value) -> Value {
-    let subscribe_route = gateway_topic_subscribe_route(&topic);
-    let topic_id = gateway_task_string(&topic, &[&["topic_id"], &["id"]]);
+fn normalize_gateway_hive(mut hive: Value) -> Value {
+    let subscribe_route = gateway_hive_subscribe_route(&hive);
+    let hive_id = gateway_task_string(&hive, &[&["hive_id"], &["topic_id"], &["id"]]);
     let display_name = gateway_task_string(
-        &topic,
+        &hive,
         &[
             &["display_name"],
             &["title"],
             &["name"],
+            &["hive_id"],
             &["topic_id"],
             &["id"],
         ],
     );
-    let Some(object) = topic.as_object_mut() else {
-        return topic;
+    let Some(object) = hive.as_object_mut() else {
+        return hive;
     };
-    if let Some(topic_id) = topic_id {
+    if let Some(hive_id) = hive_id {
+        object
+            .entry("hive_id".to_string())
+            .or_insert_with(|| Value::String(hive_id.clone()));
         object
             .entry("topic_id".to_string())
-            .or_insert_with(|| Value::String(topic_id));
+            .or_insert_with(|| Value::String(hive_id));
     }
     if let Some(display_name) = display_name {
         object
@@ -603,12 +615,12 @@ fn normalize_gateway_topic(mut topic: Value) -> Value {
         }
     }
     object.insert("subscribe_route".to_string(), subscribe_route);
-    topic
+    hive
 }
 
-fn gateway_topic_subscribe_route(topic: &Value) -> Value {
+fn gateway_hive_subscribe_route(hive: &Value) -> Value {
     let network_id = gateway_task_string(
-        topic,
+        hive,
         &[
             &["network_id"],
             &["networkId"],
@@ -617,7 +629,7 @@ fn gateway_topic_subscribe_route(topic: &Value) -> Value {
         ],
     );
     let feed_key = gateway_task_string(
-        topic,
+        hive,
         &[
             &["feed_key"],
             &["summary", "feed_key"],
@@ -625,7 +637,7 @@ fn gateway_topic_subscribe_route(topic: &Value) -> Value {
         ],
     );
     let scope_hint = gateway_task_string(
-        topic,
+        hive,
         &[
             &["scope_hint"],
             &["summary", "scope_hint"],
@@ -867,19 +879,22 @@ fn normalize_gateway_base_url(gateway_url: &str) -> String {
 
 pub(crate) fn normalized_gateway_tasks_url(gateway_url: &str) -> String {
     let trimmed = gateway_url.trim_end_matches('/');
-    if trimmed.ends_with("/api/tasks") {
+    if trimmed.ends_with("/v1/wattetheria/missions") {
         trimmed.to_string()
     } else {
-        format!("{trimmed}/api/tasks")
+        format!("{trimmed}/v1/wattetheria/missions")
     }
 }
 
-fn normalized_gateway_topics_url(gateway_url: &str) -> String {
-    let trimmed = gateway_url.trim_end_matches('/');
-    if trimmed.ends_with("/api/topics") {
+fn normalized_gateway_hives_url(gateway_url: &str) -> String {
+    let trimmed = gateway_url
+        .trim_end_matches('/')
+        .strip_suffix("/api")
+        .unwrap_or_else(|| gateway_url.trim_end_matches('/'));
+    if trimmed.ends_with("/v1/wattetheria/hives") {
         trimmed.to_string()
     } else {
-        format!("{trimmed}/api/topics")
+        format!("{trimmed}/v1/wattetheria/hives")
     }
 }
 async fn dispatch_loopback_tool(
@@ -994,11 +1009,11 @@ fn mcp_tool(tool: &AgentTool, available: bool) -> McpTool {
         input_schema: input_schema(tool),
         meta: json!({
             "wattetheria": {
-                "manifestEndpoint": tool.name,
+                "toolName": tool.name,
                 "method": tool.method.as_str(),
                 "path": tool.path,
                 "available": available,
-                "source": "agent-participation.manifest.v1"
+                "source": "wattetheria.mcp.tools.v1"
             }
         }),
     }
@@ -1063,21 +1078,22 @@ async fn apply_local_identity_defaults(
                 Value::String("player".to_string()),
             );
         }
-        "create_topic"
-        | "post_topic_message"
-        | "subscribe_topic"
-        | "unsubscribe_topic"
+        "create_hive"
+        | "post_hive_message"
+        | "subscribe_hive"
+        | "unsubscribe_hive"
         | "propose_agent_payment"
         | "upsert_friend"
         | "request_agent_friend" => {
             let public_id = local_public_id(state).await;
             object.insert("public_id".to_string(), Value::String(public_id));
-            if tool.name == "unsubscribe_topic" {
-                object.insert("active".to_string(), Value::Bool(false));
-            }
             if tool.name == "request_agent_friend" {
                 object.insert("action".to_string(), Value::String("request".to_string()));
                 if !object.contains_key("counterpart_public_id")
+                    && object
+                        .get("target_agent_did")
+                        .and_then(Value::as_str)
+                        .is_none_or(|value| value.trim().is_empty())
                     && let Some(remote_node_id) = object
                         .get("remote_node_id")
                         .and_then(Value::as_str)
@@ -1166,6 +1182,12 @@ fn path_vars(path: &str) -> Vec<&'static str> {
     if path.contains("{payment_id}") {
         return vec!["payment_id"];
     }
+    if path.contains("{mission_id}") {
+        return vec!["mission_id"];
+    }
+    if path.contains("{hive_id}") {
+        return vec!["hive_id"];
+    }
     if path.contains("{agent_id}") && path.contains("{task_id}") {
         return vec!["agent_id", "task_id"];
     }
@@ -1191,33 +1213,33 @@ fn agent_tools() -> &'static [AgentTool] {
 
 #[rustfmt::skip]
 const AGENT_TOOLS: [AgentTool; 31] = [
-    AgentTool { name: "client_export", method: Method::GET, path: "/v1/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
-    AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
-    AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
-    AgentTool { name: "get_agent_payment", method: Method::GET, path: "/v1/payments/agent-payments/{payment_id}", description: "Inspect one payment session by payment ID.", availability: Availability::Always },
-    AgentTool { name: "propose_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/propose", description: "Propose a new payment session to a counterpart agent.", availability: Availability::Always },
-    AgentTool { name: "authorize_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/{payment_id}/authorize", description: "Authorize a proposed outbound payment with the bound wallet.", availability: Availability::Always },
-    AgentTool { name: "submit_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/{payment_id}/submit", description: "Mark a payment as submitted to the settlement rail.", availability: Availability::Always },
-    AgentTool { name: "settle_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/{payment_id}/settle", description: "Record settlement success and receipt for a payment session.", availability: Availability::Always },
-    AgentTool { name: "reject_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/{payment_id}/reject", description: "Reject an inbound payment request.", availability: Availability::Always },
-    AgentTool { name: "cancel_agent_payment", method: Method::POST, path: "/v1/payments/agent-payments/{payment_id}/cancel", description: "Cancel an outbound payment request.", availability: Availability::Always },
-    AgentTool { name: "list_topics", method: Method::GET, path: "/api/topics", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
-    AgentTool { name: "create_topic", method: Method::POST, path: "/v1/civilization/topics", description: "Create a civilization topic and subscribe the local controller.", availability: Availability::TopicBridge },
-    AgentTool { name: "list_topic_messages", method: Method::GET, path: "/v1/civilization/topics/messages", description: "List messages for a civilization topic.", availability: Availability::TopicBridge },
-    AgentTool { name: "post_topic_message", method: Method::POST, path: "/v1/civilization/topics/messages", description: "Post a message to a civilization topic.", availability: Availability::TopicBridge },
-    AgentTool { name: "subscribe_topic", method: Method::POST, path: "/v1/civilization/topics/subscribe", description: "Subscribe the local controller to a civilization topic.", availability: Availability::TopicBridge },
-    AgentTool { name: "unsubscribe_topic", method: Method::POST, path: "/v1/civilization/topics/subscribe", description: "Cancel the local controller subscription for a civilization topic.", availability: Availability::TopicBridge },
-    AgentTool { name: "list_missions", method: Method::GET, path: "/api/tasks", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
-    AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/missions", description: "Publish a new mission.", availability: Availability::Always },
-    AgentTool { name: "claim_mission", method: Method::POST, path: "/v1/missions/claim", description: "Claim a mission for an agent DID.", availability: Availability::Always },
-    AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/missions/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
-    AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/missions/settle", description: "Settle a completed mission.", availability: Availability::Always },
-    AgentTool { name: "list_friends", method: Method::GET, path: "/v1/social/friends", description: "List local friend relationships.", availability: Availability::Always },
-    AgentTool { name: "upsert_friend", method: Method::POST, path: "/v1/social/friends", description: "Add or update a local friend relationship.", availability: Availability::Always },
-    AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/civilization/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
-    AgentTool { name: "send_message", method: Method::POST, path: "/v1/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
-    AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },
-    AgentTool { name: "ack_message", method: Method::POST, path: "/v1/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
+    AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
+    AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
+    AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
+    AgentTool { name: "get_agent_payment", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments/{payment_id}", description: "Inspect one payment session by payment ID.", availability: Availability::Always },
+    AgentTool { name: "propose_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/propose", description: "Propose a new payment session to a counterpart agent.", availability: Availability::Always },
+    AgentTool { name: "authorize_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/authorize", description: "Authorize a proposed outbound payment with the bound wallet.", availability: Availability::Always },
+    AgentTool { name: "submit_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/submit", description: "Mark a payment as submitted to the settlement rail.", availability: Availability::Always },
+    AgentTool { name: "settle_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/settle", description: "Record settlement success and receipt for a payment session.", availability: Availability::Always },
+    AgentTool { name: "reject_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/reject", description: "Reject an inbound payment request.", availability: Availability::Always },
+    AgentTool { name: "cancel_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/cancel", description: "Cancel an outbound payment request.", availability: Availability::Always },
+    AgentTool { name: "list_hives", method: Method::GET, path: "/v1/wattetheria/hives", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
+    AgentTool { name: "create_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a Wattetheria Hive and subscribe the local controller.", availability: Availability::TopicBridge },
+    AgentTool { name: "list_hive_messages", method: Method::GET, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "List messages for a Wattetheria Hive.", availability: Availability::TopicBridge },
+    AgentTool { name: "post_hive_message", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "Post a message to a Wattetheria Hive.", availability: Availability::TopicBridge },
+    AgentTool { name: "subscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/subscribe", description: "Subscribe the local controller to a Wattetheria Hive.", availability: Availability::TopicBridge },
+    AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
+    AgentTool { name: "list_missions", method: Method::GET, path: "/v1/wattetheria/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
+    AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
+    AgentTool { name: "claim_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claim", description: "Claim a mission for an agent DID.", availability: Availability::Always },
+    AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
+    AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
+    AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/friends", description: "List local friend relationships.", availability: Availability::Always },
+    AgentTool { name: "upsert_friend", method: Method::POST, path: "/v1/wattetheria/social/friends", description: "Add or update a local friend relationship.", availability: Availability::Always },
+    AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/wattetheria/social/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
+    AgentTool { name: "send_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
+    AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },
+    AgentTool { name: "ack_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "invoke_servicenet_agent", method: Method::POST, path: "/v1/servicenet/agents/{agent_id}/invoke", description: "Invoke an external ServiceNet agent.", availability: Availability::ServiceNet },

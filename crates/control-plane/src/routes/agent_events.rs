@@ -5,7 +5,15 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use watt_did::{PaymentAccountBindingProof, VerifiedAgentContext};
+use watt_wallet::verify_payment_account_binding_proof;
 use wattetheria_kernel::brain::AgentEventResolution;
+use wattetheria_kernel::local_db;
+use wattetheria_kernel::payments::{
+    PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
+};
+
+pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
 
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::state::ControlPlaneState;
@@ -198,6 +206,241 @@ fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
         .get(key)
         .and_then(Value::as_bool)
         .or_else(|| payload.pointer(&format!("/{key}")).and_then(Value::as_bool))
+}
+
+fn payment_event_bad_request(message: impl Into<String>) -> Response {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(json!({"error": message.into()})),
+    )
+        .into_response()
+}
+
+fn payment_value_from_event(event: &AgentEventEnvelope) -> Option<&Value> {
+    event
+        .payload
+        .get("payment")
+        .or_else(|| event.payload.pointer("/agent_envelope/message/payment"))
+}
+
+fn payment_message_kind_from_str(value: &str) -> Option<PaymentMessageKind> {
+    match value {
+        "payment_request" => Some(PaymentMessageKind::Request),
+        "payment_authorized" => Some(PaymentMessageKind::Authorized),
+        "payment_submitted" => Some(PaymentMessageKind::Submitted),
+        "payment_settled" => Some(PaymentMessageKind::Settled),
+        "payment_rejected" => Some(PaymentMessageKind::Rejected),
+        "payment_cancelled" => Some(PaymentMessageKind::Cancelled),
+        _ => None,
+    }
+}
+
+fn payment_message_kind_from_status(status: &PaymentStatus) -> Option<PaymentMessageKind> {
+    match status {
+        PaymentStatus::Proposed => Some(PaymentMessageKind::Request),
+        PaymentStatus::Authorized => Some(PaymentMessageKind::Authorized),
+        PaymentStatus::Submitted => Some(PaymentMessageKind::Submitted),
+        PaymentStatus::Settled => Some(PaymentMessageKind::Settled),
+        PaymentStatus::Rejected => Some(PaymentMessageKind::Rejected),
+        PaymentStatus::Cancelled => Some(PaymentMessageKind::Cancelled),
+        PaymentStatus::Expired => None,
+    }
+}
+
+fn payment_message_kind_from_event(
+    event: &AgentEventEnvelope,
+    payment: &PaymentTransaction,
+) -> Option<PaymentMessageKind> {
+    event
+        .payload
+        .pointer("/agent_envelope/message/message_kind")
+        .or_else(|| event.payload.get("message_kind"))
+        .and_then(Value::as_str)
+        .and_then(payment_message_kind_from_str)
+        .or_else(|| {
+            if event.event_type == "payment_request" {
+                Some(PaymentMessageKind::Request)
+            } else {
+                payment_message_kind_from_status(&payment.status)
+            }
+        })
+}
+
+fn payment_event_source_agent_did(event: &AgentEventEnvelope) -> Option<String> {
+    event
+        .payload
+        .pointer("/agent_envelope/source_agent_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn payment_event_target_agent_did(event: &AgentEventEnvelope) -> Option<String> {
+    event
+        .payload
+        .pointer("/agent_envelope/target_agent_id")
+        .and_then(Value::as_str)
+        .or(event.target_agent_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn looks_like_full_payment_payload(value: &Value) -> bool {
+    value.get("sender_did").is_some()
+        || value.get("recipient_did").is_some()
+        || value.get("status").is_some()
+}
+
+fn payment_event_source_node_id(event: &AgentEventEnvelope) -> Option<String> {
+    event
+        .payload
+        .pointer("/agent_envelope/source_node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_verified_agent_context(
+    event: &AgentEventEnvelope,
+) -> Result<Option<VerifiedAgentContext>, Response> {
+    let Some(value) = event.payload.get(VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY) else {
+        return Ok(None);
+    };
+    serde_json::from_value::<VerifiedAgentContext>(value.clone())
+        .map(Some)
+        .map_err(|error| {
+            payment_event_bad_request(format!(
+                "invalid {VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY} payload: {error}"
+            ))
+        })
+}
+
+fn verify_context_against_payment_event(
+    context: &VerifiedAgentContext,
+    source_agent_did: &str,
+    envelope_source_node_id: Option<&str>,
+) -> Result<(), Response> {
+    if !context.envelope_verified || !context.source_node_verified {
+        return Err(payment_event_bad_request(
+            "verified agent context must have envelope and source node verified",
+        ));
+    }
+    if context.agent_did.to_string() != source_agent_did {
+        return Err(payment_event_bad_request(
+            "verified agent context agent_did does not match agent_envelope.source_agent_id",
+        ));
+    }
+    if let (Some(context_node), Some(envelope_node)) =
+        (context.source_node_id.as_deref(), envelope_source_node_id)
+        && context_node != envelope_node
+    {
+        return Err(payment_event_bad_request(
+            "verified agent context source_node_id does not match agent_envelope.source_node_id",
+        ));
+    }
+    Ok(())
+}
+
+fn extract_payment_account_binding(
+    event: &AgentEventEnvelope,
+) -> Result<Option<PaymentAccountBindingProof>, Response> {
+    let Some(value) = event
+        .payload
+        .pointer("/agent_envelope/message/payment_account_binding")
+    else {
+        return Ok(None);
+    };
+    serde_json::from_value::<PaymentAccountBindingProof>(value.clone())
+        .map(Some)
+        .map_err(|error| {
+            payment_event_bad_request(format!("invalid payment_account_binding payload: {error}"))
+        })
+}
+
+fn verify_inbound_payment_account_binding(
+    proof: &PaymentAccountBindingProof,
+    source_agent_did: &str,
+) -> Result<(), Response> {
+    if proof.agent_did.to_string() != source_agent_did {
+        return Err(payment_event_bad_request(
+            "payment_account_binding agent_did does not match agent_envelope.source_agent_id",
+        ));
+    }
+    verify_payment_account_binding_proof(proof)
+        .map_err(|error| payment_event_bad_request(format!("payment_account_binding: {error}")))
+}
+
+async fn sync_payment_event_to_ledger(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+) -> Result<(), Response> {
+    if !matches!(
+        event.event_type.as_str(),
+        "payment_request" | "payment_update"
+    ) {
+        return Ok(());
+    }
+    let Some(payment_value) = payment_value_from_event(event) else {
+        return Ok(());
+    };
+    let payment = match serde_json::from_value::<PaymentTransaction>(payment_value.clone()) {
+        Ok(payment) => payment,
+        Err(error) if looks_like_full_payment_payload(payment_value) => {
+            return Err(payment_event_bad_request(format!(
+                "invalid payment payload: {error}"
+            )));
+        }
+        Err(_) => return Ok(()),
+    };
+    if let Some(target_agent_did) = payment_event_target_agent_did(event)
+        && target_agent_did != state.agent_did
+    {
+        return Err(payment_event_bad_request(
+            "payment event target_agent_id does not match local agent",
+        ));
+    }
+    if payment.sender_did != state.agent_did && payment.recipient_did != state.agent_did {
+        return Err(payment_event_bad_request(
+            "payment event does not include the local agent as a participant",
+        ));
+    }
+    let Some(kind) = payment_message_kind_from_event(event, &payment) else {
+        return Err(payment_event_bad_request(
+            "payment event has unsupported payment status",
+        ));
+    };
+    let Some(source_agent_did) = payment_event_source_agent_did(event) else {
+        return Err(payment_event_bad_request(
+            "payment event missing agent_envelope.source_agent_id",
+        ));
+    };
+    if let Some(context) = extract_verified_agent_context(event)? {
+        verify_context_against_payment_event(
+            &context,
+            &source_agent_did,
+            payment_event_source_node_id(event).as_deref(),
+        )?;
+    }
+    if let Some(binding) = extract_payment_account_binding(event)? {
+        verify_inbound_payment_account_binding(&binding, &source_agent_did)?;
+    }
+    let message = PaymentAgentMessage {
+        kind,
+        payment,
+        emitted_at: event.created_at.try_into().unwrap_or(i64::MAX),
+    };
+    let mut ledger = state.payment_ledger.lock().await;
+    ledger
+        .merge_remote_agent_message(message, &source_agent_did)
+        .map_err(|error| payment_event_bad_request(error.to_string()))?;
+    state
+        .local_db
+        .save_domain(local_db::domain::PAYMENT_LEDGER, &*ledger)
+        .map_err(|error| payment_event_bad_request(error.to_string()))?;
+    Ok(())
 }
 
 fn ensure_mission_payload_fields(
@@ -555,6 +798,9 @@ pub(crate) async fn callback(
 ) -> Response {
     let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
     let mut event = body.event;
+    if let Err(response) = sync_payment_event_to_ledger(&state, &event).await {
+        return response;
+    }
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(&mut event);
     let input = build_brain_event_input(&state, &event);

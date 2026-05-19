@@ -1,6 +1,6 @@
 use super::*;
 
-const AGENT_PARTICIPATION_MANIFEST_ENDPOINTS: &[&str] = &[
+const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "client_export",
     "client_task_activity",
     "list_agent_payments",
@@ -11,12 +11,12 @@ const AGENT_PARTICIPATION_MANIFEST_ENDPOINTS: &[&str] = &[
     "settle_agent_payment",
     "reject_agent_payment",
     "cancel_agent_payment",
-    "list_topics",
-    "create_topic",
-    "list_topic_messages",
-    "post_topic_message",
-    "subscribe_topic",
-    "unsubscribe_topic",
+    "list_hives",
+    "create_hive",
+    "list_hive_messages",
+    "post_hive_message",
+    "subscribe_hive",
+    "unsubscribe_hive",
     "list_missions",
     "publish_mission",
     "claim_mission",
@@ -49,7 +49,7 @@ async fn mcp_request(app: Router, token: &str, body: Value) -> Value {
 }
 
 #[tokio::test]
-async fn mcp_tools_list_matches_agent_participation_manifest_endpoint_surface() {
+async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
     let response = mcp_request(
@@ -70,7 +70,7 @@ async fn mcp_tools_list_matches_agent_participation_manifest_endpoint_surface() 
         .map(|tool| tool["name"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     actual.sort();
-    let mut expected = AGENT_PARTICIPATION_MANIFEST_ENDPOINTS
+    let mut expected = MCP_AGENT_TOOL_NAMES
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
@@ -80,7 +80,7 @@ async fn mcp_tools_list_matches_agent_participation_manifest_endpoint_surface() 
 }
 
 #[tokio::test]
-async fn mcp_tools_list_surfaces_manifest_availability_metadata() {
+async fn mcp_tools_list_surfaces_tool_availability_metadata() {
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
         agent_topic_bridge_enabled: false,
@@ -99,13 +99,13 @@ async fn mcp_tools_list_surfaces_manifest_availability_metadata() {
     )
     .await;
     let tools = response["result"]["tools"].as_array().unwrap();
-    let create_topic = tools
+    let create_hive = tools
         .iter()
-        .find(|tool| tool["name"].as_str() == Some("create_topic"))
+        .find(|tool| tool["name"].as_str() == Some("create_hive"))
         .unwrap();
-    let list_topics = tools
+    let list_hives = tools
         .iter()
-        .find(|tool| tool["name"].as_str() == Some("list_topics"))
+        .find(|tool| tool["name"].as_str() == Some("list_hives"))
         .unwrap();
     let servicenet = tools
         .iter()
@@ -113,11 +113,11 @@ async fn mcp_tools_list_surfaces_manifest_availability_metadata() {
         .unwrap();
 
     assert_eq!(
-        create_topic["_meta"]["wattetheria"]["available"].as_bool(),
+        create_hive["_meta"]["wattetheria"]["available"].as_bool(),
         Some(false)
     );
     assert_eq!(
-        list_topics["_meta"]["wattetheria"]["available"].as_bool(),
+        list_hives["_meta"]["wattetheria"]["available"].as_bool(),
         Some(true)
     );
     assert_eq!(
@@ -233,6 +233,84 @@ async fn mcp_request_agent_friend_sends_relationship_action_to_remote_node() {
 }
 
 #[tokio::test]
+async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-delta", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Delta".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooTargetPeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "target_agent_did": remote_identity.agent_did,
+                    "remote_node_id": "stale-nearby-node",
+                    "message": {
+                        "kind": "friend_request",
+                        "text": "hello known agent"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, "12D3KooTargetPeer");
+    assert_eq!(
+        command.agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("target_public_id")
+            .and_then(Value::as_str),
+        Some(remote_public_id.as_str())
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
@@ -276,19 +354,31 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         Some("web3")
     );
 
-    let create_topic = find_tool(tools, "create_topic");
-    assert_schema_omits(create_topic, &["public_id"]);
-    let post_topic_message = find_tool(tools, "post_topic_message");
-    assert_schema_omits(post_topic_message, &["public_id"]);
-    let subscribe_topic = find_tool(tools, "subscribe_topic");
-    assert_schema_omits(subscribe_topic, &["public_id"]);
-    let unsubscribe_topic = find_tool(tools, "unsubscribe_topic");
-    assert_schema_requires(unsubscribe_topic, &["feed_key", "scope_hint"]);
-    assert_schema_omits(unsubscribe_topic, &["public_id", "active"]);
+    let create_hive = find_tool(tools, "create_hive");
+    assert_schema_omits(create_hive, &["public_id"]);
+    let post_hive_message = find_tool(tools, "post_hive_message");
+    assert_schema_omits(post_hive_message, &["public_id"]);
+    let subscribe_hive = find_tool(tools, "subscribe_hive");
+    assert_schema_omits(subscribe_hive, &["public_id"]);
+    let unsubscribe_hive = find_tool(tools, "unsubscribe_hive");
+    assert_schema_requires(unsubscribe_hive, &["hive_id"]);
+    assert_schema_omits(unsubscribe_hive, &["public_id", "active"]);
     let upsert_friend = find_tool(tools, "upsert_friend");
     assert_schema_omits(upsert_friend, &["public_id"]);
     let request_agent_friend = find_tool(tools, "request_agent_friend");
-    assert_schema_requires(request_agent_friend, &["remote_node_id"]);
+    assert!(
+        request_agent_friend["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("target_agent_did")
+    );
+    assert!(
+        !request_agent_friend["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("remote_node_id"))
+    );
     assert_schema_omits(request_agent_friend, &["public_id", "action"]);
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
@@ -403,7 +493,7 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
 }
 
 #[tokio::test]
-async fn mcp_create_topic_uses_current_local_public_identity() {
+async fn mcp_create_hive_uses_current_local_public_identity() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
     let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
     let local_public_id = self_json["id"].as_str().unwrap();
@@ -416,12 +506,12 @@ async fn mcp_create_topic_uses_current_local_public_identity() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "create_topic",
+                "name": "create_hive",
                 "arguments": {
                     "public_id": "wrong-manual-value",
                     "feed_key": "mcp-topic-feed",
                     "scope_hint": "local-test",
-                    "display_name": "MCP Topic",
+                    "display_name": "MCP Hive",
                     "projection_kind": "chat_room"
                 }
             }
@@ -432,13 +522,13 @@ async fn mcp_create_topic_uses_current_local_public_identity() {
     let content = &response["result"]["structuredContent"];
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     assert_eq!(
-        content["topic"]["created_by_public_id"].as_str(),
+        content["hive"]["created_by_public_id"].as_str(),
         Some(local_public_id)
     );
 }
 
 #[tokio::test]
-async fn mcp_unsubscribe_topic_uses_current_local_public_identity_and_deactivates() {
+async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
@@ -446,18 +536,41 @@ async fn mcp_unsubscribe_topic_uses_current_local_public_identity_and_deactivate
     let (_dir, app, token, _policy, _state) =
         build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
 
-    let response = mcp_request(
-        app,
+    let create_response = mcp_request(
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "unsubscribe_topic",
+                "name": "create_hive",
                 "arguments": {
+                    "public_id": "wrong-manual-value",
                     "feed_key": "codex_topic_smoke_test",
                     "scope_hint": "global",
+                    "display_name": "Codex Hive",
+                    "projection_kind": "chat_room"
+                }
+            }
+        }),
+    )
+    .await;
+    let hive_id = create_response["result"]["structuredContent"]["hive"]["topic_id"]
+        .as_str()
+        .unwrap();
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "unsubscribe_hive",
+                "arguments": {
+                    "hive_id": hive_id,
                     "active": true
                 }
             }
@@ -467,15 +580,15 @@ async fn mcp_unsubscribe_topic_uses_current_local_public_identity_and_deactivate
 
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     let subscriptions = bridge.subscriptions.lock().await;
-    assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0].2, "codex_topic_smoke_test");
-    assert_eq!(subscriptions[0].3, "global");
-    assert!(!subscriptions[0].4);
+    assert_eq!(subscriptions.len(), 2);
+    assert_eq!(subscriptions[1].2, "codex_topic_smoke_test");
+    assert_eq!(subscriptions[1].3, "global");
+    assert!(!subscriptions[1].4);
 }
 
 #[tokio::test]
-async fn mcp_list_topics_reads_configured_gateway_hives() {
-    let gateway_url = spawn_gateway_topics_server(gateway_hives_fixture()).await;
+async fn mcp_list_hives_reads_configured_gateway_hives() {
+    let gateway_url = spawn_gateway_hives_server(gateway_hives_fixture()).await;
     let (dir, app, token, _policy, _state) = build_test_app(100);
     std::fs::write(
         dir.path().join("config.json"),
@@ -491,7 +604,7 @@ async fn mcp_list_topics_reads_configured_gateway_hives() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "list_topics",
+                "name": "list_hives",
                 "arguments": {
                     "limit": 1,
                     "offset": 1,
@@ -507,7 +620,7 @@ async fn mcp_list_topics_reads_configured_gateway_hives() {
     let content = &response["result"]["structuredContent"];
     assert_eq!(
         content["source"].as_str(),
-        Some("wattetheria-gateway.api_topics")
+        Some("wattetheria-gateway.v1_hives")
     );
     assert_eq!(content["scope"].as_str(), Some("network"));
     assert_eq!(
@@ -518,8 +631,8 @@ async fn mcp_list_topics_reads_configured_gateway_hives() {
     assert_eq!(content["offset"].as_u64(), Some(1));
     assert_eq!(content["known_count"].as_u64(), Some(1));
     assert_eq!(content["has_more"].as_bool(), Some(false));
-    let topics = content["topics"].as_array().unwrap();
-    assert_eq!(topics.len(), 0);
+    let hives = content["hives"].as_array().unwrap();
+    assert_eq!(hives.len(), 0);
 
     let response = mcp_request(
         app,
@@ -529,7 +642,7 @@ async fn mcp_list_topics_reads_configured_gateway_hives() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "list_topics",
+                "name": "list_hives",
                 "arguments": {
                     "limit": 2,
                     "projection_kind": "working_group"
@@ -541,9 +654,9 @@ async fn mcp_list_topics_reads_configured_gateway_hives() {
     assert_gateway_hive_topic(&response);
 }
 
-async fn spawn_gateway_topics_server(payload: Value) -> String {
+async fn spawn_gateway_hives_server(payload: Value) -> String {
     let gateway_app = axum::Router::new().route(
-        "/api/topics",
+        "/v1/wattetheria/hives",
         axum::routing::get(move || async move { axum::Json(payload) }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -588,20 +701,21 @@ fn gateway_hives_fixture() -> Value {
 
 fn assert_gateway_hive_topic(response: &Value) {
     let content = &response["result"]["structuredContent"];
-    let topics = content["topics"].as_array().unwrap();
-    assert_eq!(topics.len(), 1);
-    assert_eq!(topics[0]["topic_id"].as_str(), Some("hive-gateway-2"));
-    assert_eq!(topics[0]["source_node_id"].as_str(), Some("node-beta"));
+    let hives = content["hives"].as_array().unwrap();
+    assert_eq!(hives.len(), 1);
+    assert_eq!(hives[0]["topic_id"].as_str(), Some("hive-gateway-2"));
+    assert_eq!(hives[0]["hive_id"].as_str(), Some("hive-gateway-2"));
+    assert_eq!(hives[0]["source_node_id"].as_str(), Some("node-beta"));
     assert_eq!(
-        topics[0]["subscribe_route"]["feed_key"].as_str(),
+        hives[0]["subscribe_route"]["feed_key"].as_str(),
         Some("wattetheria.hives")
     );
     assert_eq!(
-        topics[0]["subscribe_route"]["scope_hint"].as_str(),
+        hives[0]["subscribe_route"]["scope_hint"].as_str(),
         Some("hive:two")
     );
     assert_eq!(
-        topics[0]["subscribe_route"]["subscribe_ready"].as_bool(),
+        hives[0]["subscribe_route"]["subscribe_ready"].as_bool(),
         Some(true)
     );
 }
@@ -609,7 +723,7 @@ fn assert_gateway_hive_topic(response: &Value) {
 #[tokio::test]
 async fn mcp_list_missions_reads_configured_gateway_tasks() {
     let gateway_app = axum::Router::new().route(
-        "/api/tasks",
+        "/v1/wattetheria/missions",
         axum::routing::get(|| async {
             axum::Json(json!([
                 {
@@ -689,7 +803,7 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     let content = &response["result"]["structuredContent"];
     assert_eq!(
         content["source"].as_str(),
-        Some("wattetheria-gateway.api_tasks")
+        Some("wattetheria-gateway.v1_missions")
     );
     assert_eq!(content["scope"].as_str(), Some("network"));
     assert_eq!(
@@ -821,7 +935,7 @@ async fn seed_mcp_gateway_remote_mission_with_status(
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
-        "/api/tasks",
+        "/v1/wattetheria/missions",
         get(move || {
             let gateway_task = gateway_task.clone();
             async move { Json(json!([gateway_task])) }
