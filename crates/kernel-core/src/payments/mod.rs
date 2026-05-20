@@ -145,6 +145,27 @@ impl PaymentMessageKind {
     }
 }
 
+#[must_use]
+pub fn source_payment_account_binding_required(
+    kind: &PaymentMessageKind,
+    payment: &PaymentTransaction,
+    source_agent_did: &str,
+) -> bool {
+    if source_agent_did != payment.sender_did {
+        return false;
+    }
+    matches!(
+        kind,
+        PaymentMessageKind::Authorized
+            | PaymentMessageKind::Submitted
+            | PaymentMessageKind::Settled
+    ) || matches!(kind, PaymentMessageKind::Request)
+        && payment
+            .sender_address
+            .as_deref()
+            .is_some_and(|address| !address.trim().is_empty())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PaymentAgentMessage {
     pub kind: PaymentMessageKind,
@@ -1209,6 +1230,37 @@ mod tests {
                 .to_string()
                 .contains("payment_request must be sent by did:key:a")
         );
+    }
+
+    #[test]
+    fn source_payment_account_binding_required_only_for_sender_payment_account_claims() {
+        let mut ledger = test_ledger();
+        let mut payment = ledger
+            .propose("did:key:a", sample_proposal("did:key:a", "did:key:b"))
+            .unwrap();
+
+        assert!(!source_payment_account_binding_required(
+            &PaymentMessageKind::Request,
+            &payment,
+            "did:key:a"
+        ));
+
+        payment.sender_address = Some("0x0000000000000000000000000000000000000001".to_owned());
+        assert!(source_payment_account_binding_required(
+            &PaymentMessageKind::Request,
+            &payment,
+            "did:key:a"
+        ));
+        assert!(source_payment_account_binding_required(
+            &PaymentMessageKind::Authorized,
+            &payment,
+            "did:key:a"
+        ));
+        assert!(!source_payment_account_binding_required(
+            &PaymentMessageKind::Rejected,
+            &payment,
+            "did:key:b"
+        ));
     }
 
     #[test]

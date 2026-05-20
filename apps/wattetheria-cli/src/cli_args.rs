@@ -72,6 +72,53 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    Identity {
+        #[arg(long, default_value = ".wattetheria")]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        command: IdentityCommand,
+    },
+    Servicenet {
+        #[arg(long, default_value = ".wattetheria")]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        command: ServicenetCommand,
+    },
+    Publish {
+        #[arg(long, default_value = ".wattetheria")]
+        data_dir: PathBuf,
+        /// Path to A2A `AgentCard` JSON file.
+        card: PathBuf,
+        /// Public endpoint URL where the agent runs.
+        #[arg(long)]
+        endpoint: String,
+        /// Provider id this agent belongs to (must already be registered).
+        #[arg(long)]
+        provider_id: String,
+        /// Agent id within the provider namespace.
+        #[arg(long)]
+        agent_id: String,
+        /// Semantic version of this submission, e.g. "0.1.0".
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+        /// Servicenet base URL, e.g. <https://servicenet.wattetheria.network>
+        #[arg(long)]
+        servicenet: String,
+        /// Risk level: low | medium | high.
+        #[arg(long, default_value = "low")]
+        risk_level: String,
+        /// Skip building a `PaymentAccountBindingProof` from the active wallet
+        /// payment account. Use this for agents that do not collect payments;
+        /// callers will not have a verified payment binding for them.
+        #[arg(long, default_value_t = false)]
+        skip_binding_proof: bool,
+        /// How many minutes the signed submission stays valid. Defaults to 30.
+        #[arg(long, default_value_t = 30)]
+        ttl_minutes: u64,
+        /// Print signed request without sending.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
     Oracle {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
@@ -246,6 +293,42 @@ pub(crate) enum WalletCommand {
         account_id: String,
     },
     ActivePaymentAccount,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum IdentityCommand {
+    /// Generate and persist a wallet-backed agent identity if missing,
+    /// then print the DID.
+    Init,
+    /// Print the public agent DID + public key, never the private key.
+    Show,
+    /// Export the active ed25519 identity seed as 32 raw bytes, hex-encoded.
+    /// Treat the output like a password.
+    ExportSeed,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServicenetCommand {
+    Provider {
+        #[command(subcommand)]
+        command: ServicenetProviderCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServicenetProviderCommand {
+    /// Register the local identity as a provider on a watt-servicenet node.
+    Register {
+        /// Provider id (namespace), e.g. "alice" or "acme-labs".
+        #[arg(long)]
+        provider_id: String,
+        /// Optional display name shown in registry listings.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Servicenet base URL, e.g. <https://servicenet.wattetheria.network>
+        #[arg(long)]
+        servicenet: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

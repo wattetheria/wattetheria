@@ -2960,6 +2960,7 @@ name = "wattetheria-client-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "flate2",
@@ -2968,12 +2969,16 @@ dependencies = [
  "reqwest",
  "semver",
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
  "tar",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
+ "watt-did",
+ "watt-wallet",
  "wattetheria-kernel-core",
 ]
 

@@ -1,14 +1,15 @@
 //! CLI tools for bootstrap, diagnostics, policy approvals, and reporting.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 mod cli_args;
 mod config;
 mod doctor;
+mod publish;
 
 use crate::cli_args::{
-    BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, McpCommand, OracleCommand,
-    PolicyCommand, WalletCommand,
+    BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, IdentityCommand, McpCommand,
+    OracleCommand, PolicyCommand, ServicenetCommand, ServicenetProviderCommand, WalletCommand,
 };
 use crate::config::{read_config, read_control_token, run_init, run_up};
 use crate::doctor::run_doctor;
@@ -75,6 +76,36 @@ async fn main() -> Result<()> {
         Commands::Brain { data_dir, command } => run_brain(&data_dir, command).await?,
         Commands::Data { data_dir, command } => run_data(&data_dir, command)?,
         Commands::Wallet { data_dir, command } => run_wallet(&data_dir, command)?,
+        Commands::Identity { data_dir, command } => run_identity(&data_dir, &command)?,
+        Commands::Servicenet { data_dir, command } => run_servicenet(&data_dir, command).await?,
+        Commands::Publish {
+            data_dir,
+            card,
+            endpoint,
+            provider_id,
+            agent_id,
+            version,
+            servicenet,
+            risk_level,
+            skip_binding_proof,
+            ttl_minutes,
+            dry_run,
+        } => {
+            run_publish(
+                &data_dir,
+                &card,
+                &endpoint,
+                &provider_id,
+                &agent_id,
+                &version,
+                &servicenet,
+                &risk_level,
+                skip_binding_proof,
+                ttl_minutes,
+                dry_run,
+            )
+            .await?;
+        }
         Commands::Oracle { data_dir, command } => run_oracle(&data_dir, command)?,
         Commands::UpgradeCheck { current, latest } => {
             run_upgrade_check(&current, latest.as_deref())?;
@@ -621,6 +652,238 @@ fn run_wallet(data_dir: &Path, command: WalletCommand) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
+    run_init(data_dir)?;
+    let identity = load_or_create_wallet_backed_identity(data_dir)
+        .context("load or create wallet-backed identity")?;
+    match command {
+        IdentityCommand::Init => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "agent_did": identity.agent_did,
+                    "public_key": identity.public_key,
+                    "data_dir": data_dir.display().to_string(),
+                }))?
+            );
+        }
+        IdentityCommand::Show => {
+            let identity =
+                load_wallet_backed_identity(data_dir).context("load wallet-backed identity")?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "agent_did": identity.agent_did,
+                    "public_key": identity.public_key,
+                }))?
+            );
+        }
+        IdentityCommand::ExportSeed => {
+            let wallet_state = open_local_wallet(data_dir)?;
+            let seed = wallet_state
+                .wallet
+                .export_active_identity_ed25519_seed(&wallet_state.profile)
+                .context("export active identity seed")?;
+            println!("{}", hex::encode(seed));
+        }
+    }
+    Ok(())
+}
+
+async fn run_servicenet(data_dir: &Path, command: ServicenetCommand) -> Result<()> {
+    match command {
+        ServicenetCommand::Provider { command } => match command {
+            ServicenetProviderCommand::Register {
+                provider_id,
+                display_name,
+                servicenet,
+            } => {
+                run_servicenet_provider_register(
+                    data_dir,
+                    &provider_id,
+                    display_name.as_deref(),
+                    &servicenet,
+                )
+                .await
+            }
+        },
+    }
+}
+
+async fn run_servicenet_provider_register(
+    data_dir: &Path,
+    provider_id: &str,
+    display_name: Option<&str>,
+    servicenet: &str,
+) -> Result<()> {
+    run_init(data_dir)?;
+    let _ = load_or_create_wallet_backed_identity(data_dir)?;
+    let wallet = publish::open_wallet_or_explain(data_dir)?;
+    let identity = wallet
+        .wallet
+        .active_identity(&wallet.profile)
+        .context("resolve active identity")?;
+    let identity_did = identity.did.to_string();
+
+    let client = publish::ServicenetClient::new(servicenet);
+    let challenge = client
+        .create_ownership_challenge(provider_id, &identity_did, "register")
+        .await?;
+
+    let signature_b64 = publish::sign_with_identity_b64(&wallet, challenge.challenge.as_bytes())?;
+    let record = client
+        .register_provider(
+            provider_id,
+            &identity_did,
+            display_name,
+            challenge.challenge_id,
+            &signature_b64,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn run_publish(
+    data_dir: &Path,
+    card_path: &Path,
+    endpoint: &str,
+    provider_id: &str,
+    agent_id: &str,
+    version: &str,
+    servicenet: &str,
+    risk_level: &str,
+    skip_binding_proof: bool,
+    ttl_minutes: u64,
+    dry_run: bool,
+) -> Result<()> {
+    run_init(data_dir)?;
+    let _ = load_or_create_wallet_backed_identity(data_dir)?;
+
+    let card_raw = fs::read_to_string(card_path)
+        .with_context(|| format!("read agent card `{}`", card_path.display()))?;
+    let agent_card: Value = serde_json::from_str(&card_raw).context("parse agent card JSON")?;
+    publish::validate_agent_card(&agent_card)?;
+    publish::validate_endpoint(endpoint)?;
+
+    let card_url = agent_card
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `url` missing"))?;
+    if !endpoints_equivalent(card_url, endpoint) {
+        bail!(
+            "agent card `url` ({card_url}) does not match --endpoint ({endpoint}); fix the card or the flag",
+        );
+    }
+
+    let wallet = publish::open_wallet_or_explain(data_dir)?;
+    let identity = wallet
+        .wallet
+        .active_identity(&wallet.profile)
+        .context("resolve active identity")?;
+    let identity_did = identity.did.to_string();
+
+    let deployment = serde_json::json!({
+        "runtime": "remote_http",
+        "endpoint": {
+            "url": endpoint,
+            "protocol_binding": "JSONRPC",
+            "protocol_version": "1.0",
+            "interaction_protocol": "google_a2a",
+        },
+    });
+    let review = serde_json::json!({
+        "risk_level": risk_level,
+        "data_classes": [],
+        "destructive_actions": [],
+        "human_approval_required": false,
+        "allowed_regions": [],
+    });
+    let artifacts = serde_json::json!({});
+
+    let issued_at_ms = now_ms();
+    let expires_at_ms = issued_at_ms.saturating_add(ttl_minutes.saturating_mul(60_000));
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let payment_account_binding = if skip_binding_proof {
+        None
+    } else {
+        Some(
+            publish::build_active_payment_account_binding(&wallet, issued_at_ms, nonce.clone())
+                .context(
+                    "build PaymentAccountBindingProof — pass --skip-binding-proof to publish without one",
+                )?,
+        )
+    };
+    let payment_binding_value = match payment_account_binding.as_ref() {
+        Some(proof) => serde_json::to_value(proof).context("serialize binding proof")?,
+        None => Value::Null,
+    };
+
+    // Mirror server-side `build_agent_attestation_payload`: signature is NOT
+    // part of the signed bytes — only the submission semantics, the freshness
+    // window, and the binding proof are.
+    let attestation_payload_value = serde_json::json!({
+        "provider_id": provider_id,
+        "agent_id": agent_id,
+        "version": version,
+        "agent_card": agent_card,
+        "deployment": deployment,
+        "review": review,
+        "artifacts": artifacts,
+        "provider_attester_did": &identity_did,
+        "delegation_token": Value::Null,
+        "source_commit": Value::Null,
+        "build_digest": Value::Null,
+        "payment_account_binding": payment_binding_value,
+        "nonce": nonce,
+        "issued_at_ms": issued_at_ms,
+        "expires_at_ms": expires_at_ms,
+    });
+    let attestation_bytes =
+        serde_jcs::to_vec(&attestation_payload_value).context("canonicalize attestation")?;
+    let signature_b64 = publish::sign_with_identity_b64(&wallet, &attestation_bytes)?;
+
+    let mut attestations = serde_json::json!({
+        "attestation_signature": signature_b64,
+        "provider_attester_did": &identity_did,
+        "nonce": nonce,
+        "issued_at_ms": issued_at_ms,
+        "expires_at_ms": expires_at_ms,
+    });
+    if let Some(binding) = payment_account_binding {
+        attestations["payment_account_binding"] =
+            serde_json::to_value(&binding).context("serialize binding proof")?;
+    }
+    let request = serde_json::json!({
+        "provider_id": provider_id,
+        "agent_id": agent_id,
+        "version": version,
+        "agent_card": agent_card,
+        "deployment": deployment,
+        "review": review,
+        "artifacts": artifacts,
+        "attestations": attestations,
+    });
+
+    if dry_run {
+        println!("{}", serde_json::to_string_pretty(&request)?);
+        return Ok(());
+    }
+
+    let client = publish::ServicenetClient::new(servicenet);
+    let record = client.submit_agent(request).await?;
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
+fn endpoints_equivalent(card_url: &str, endpoint: &str) -> bool {
+    let normalize = |value: &str| value.trim_end_matches('/').to_owned();
+    let card = normalize(card_url);
+    let endpoint = normalize(endpoint);
+    card == endpoint || endpoint.starts_with(&format!("{card}/"))
 }
 
 #[allow(clippy::too_many_lines)]

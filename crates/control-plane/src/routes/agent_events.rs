@@ -11,6 +11,7 @@ use wattetheria_kernel::brain::AgentEventResolution;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
+    source_payment_account_binding_required,
 };
 
 pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
@@ -303,6 +304,7 @@ fn payment_event_source_node_id(event: &AgentEventEnvelope) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+#[allow(clippy::result_large_err)]
 fn extract_verified_agent_context(
     event: &AgentEventEnvelope,
 ) -> Result<Option<VerifiedAgentContext>, Response> {
@@ -318,6 +320,7 @@ fn extract_verified_agent_context(
         })
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_context_against_payment_event(
     context: &VerifiedAgentContext,
     source_agent_did: &str,
@@ -344,6 +347,7 @@ fn verify_context_against_payment_event(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn extract_payment_account_binding(
     event: &AgentEventEnvelope,
 ) -> Result<Option<PaymentAccountBindingProof>, Response> {
@@ -360,9 +364,12 @@ fn extract_payment_account_binding(
         })
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_inbound_payment_account_binding(
     proof: &PaymentAccountBindingProof,
     source_agent_did: &str,
+    payment: &PaymentTransaction,
+    require_sender_binding: bool,
 ) -> Result<(), Response> {
     if proof.agent_did.to_string() != source_agent_did {
         return Err(payment_event_bad_request(
@@ -370,7 +377,53 @@ fn verify_inbound_payment_account_binding(
         ));
     }
     verify_payment_account_binding_proof(proof)
-        .map_err(|error| payment_event_bad_request(format!("payment_account_binding: {error}")))
+        .map_err(|error| payment_event_bad_request(format!("payment_account_binding: {error}")))?;
+    if !require_sender_binding {
+        return Ok(());
+    }
+    if !proof.can_sign || proof.receive_only || proof.payment_account_proof.is_none() {
+        return Err(payment_event_bad_request(
+            "payment_account_binding must prove a signing payment account",
+        ));
+    }
+    let Some(sender_address) = payment
+        .sender_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|address| !address.is_empty())
+    else {
+        return Err(payment_event_bad_request(
+            "payment sender_address is required when sender account binding is required",
+        ));
+    };
+    if !proof.payment_address.eq_ignore_ascii_case(sender_address) {
+        return Err(payment_event_bad_request(
+            "payment_account_binding payment_address does not match payment.sender_address",
+        ));
+    }
+    if !proof.rail.trim().eq_ignore_ascii_case(payment.rail.trim()) {
+        return Err(payment_event_bad_request(
+            "payment_account_binding rail does not match payment.rail",
+        ));
+    }
+    if let Some(payment_network) = payment
+        .network
+        .as_deref()
+        .map(str::trim)
+        .filter(|network| !network.is_empty())
+    {
+        let proof_network = proof
+            .network
+            .as_deref()
+            .map(str::trim)
+            .filter(|network| !network.is_empty());
+        if proof_network.is_none_or(|network| !network.eq_ignore_ascii_case(payment_network)) {
+            return Err(payment_event_bad_request(
+                "payment_account_binding network does not match payment.network",
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn sync_payment_event_to_ledger(
@@ -424,8 +477,19 @@ async fn sync_payment_event_to_ledger(
             payment_event_source_node_id(event).as_deref(),
         )?;
     }
+    let require_sender_binding =
+        source_payment_account_binding_required(&kind, &payment, &source_agent_did);
     if let Some(binding) = extract_payment_account_binding(event)? {
-        verify_inbound_payment_account_binding(&binding, &source_agent_did)?;
+        verify_inbound_payment_account_binding(
+            &binding,
+            &source_agent_did,
+            &payment,
+            require_sender_binding,
+        )?;
+    } else if require_sender_binding {
+        return Err(payment_event_bad_request(
+            "payment_account_binding is required for sender-signed payment state",
+        ));
     }
     let message = PaymentAgentMessage {
         kind,

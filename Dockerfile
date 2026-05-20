@@ -30,8 +30,13 @@ RUN sed -i \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/kernel-core/Cargo.toml \
     && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/control-plane/Cargo.toml \
+    && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    apps/wattetheria-cli/Cargo.toml \
     && sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     crates/social/Cargo.toml
@@ -87,8 +92,13 @@ RUN sed -i \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/kernel-core/Cargo.toml \
     && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
     crates/control-plane/Cargo.toml \
+    && sed -i \
+    -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
+    -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
+    apps/wattetheria-cli/Cargo.toml \
     && sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     crates/social/Cargo.toml \

@@ -29,7 +29,7 @@ use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     AuthorizePaymentRequest, PaymentAgentMessage, PaymentLedger, PaymentMessageKind, PaymentQuery,
     PaymentTransaction, ProposePaymentRequest, RejectPaymentRequest, SettlePaymentRequest,
-    authorization_payload_bytes,
+    authorization_payload_bytes, source_payment_account_binding_required,
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
 use wattetheria_kernel::wallet_identity::{
@@ -850,10 +850,21 @@ async fn send_payment_message(
         "payment": message.payment,
         "counterpart_public_id": counterpart.counterpart_public_id,
     });
-    if let Some(binding) = try_build_payment_account_binding(state)
-        && let Some(map) = message_payload.as_object_mut()
-    {
-        map.insert("payment_account_binding".to_owned(), binding);
+    let binding_required =
+        source_payment_account_binding_required(&message.kind, &message.payment, &local.agent_id);
+    match try_build_payment_account_binding(state) {
+        Ok(Some(binding)) => {
+            if let Some(map) = message_payload.as_object_mut() {
+                map.insert("payment_account_binding".to_owned(), binding);
+            }
+        }
+        Ok(None) if binding_required => {
+            bail!("payment_account_binding is required for sender-signed payment state");
+        }
+        Err(error) if binding_required => {
+            return Err(error.context("build payment_account_binding"));
+        }
+        Ok(None) | Err(_) => {}
     }
     let agent_envelope = build_signed_agent_envelope_for_nodes(
         state,
@@ -879,25 +890,37 @@ async fn send_payment_message(
         .await
 }
 
-/// Best-effort PaymentAccountBindingProof for the active spending payment
-/// account. Returns `None` on any failure — backwards compat with deployments
-/// that have no wallet, watch-only accounts, or an inactive payment account.
-fn try_build_payment_account_binding(state: &ControlPlaneState) -> Option<Value> {
-    let wallet_state = open_local_wallet(&state.data_dir).ok()?;
+/// Best-effort `PaymentAccountBindingProof` for the active spending payment
+/// account. Missing wallets, watch-only accounts, and inactive payment accounts
+/// return `Ok(None)` for backwards compatibility. Callers decide when the proof
+/// is required for a payment state transition.
+fn try_build_payment_account_binding(state: &ControlPlaneState) -> anyhow::Result<Option<Value>> {
+    let Ok(wallet_state) = open_local_wallet(&state.data_dir) else {
+        return Ok(None);
+    };
     let agent_key_info = wallet_state
         .wallet
         .active_identity_key_info(&wallet_state.profile)
-        .ok()?;
+        .ok();
+    let Some(agent_key_info) = agent_key_info else {
+        return Ok(None);
+    };
     let active_account = wallet_state
         .wallet
         .active_payment_account(&wallet_state.profile)
-        .ok()?
-        .clone();
-    active_account.key_handle.as_ref()?;
+        .ok()
+        .cloned();
+    let Some(active_account) = active_account else {
+        return Ok(None);
+    };
+    if active_account.key_handle.is_none() {
+        return Ok(None);
+    }
     let payment_key_info = wallet_state
         .wallet
         .active_payment_account_key_info(&wallet_state.profile)
-        .ok()?;
+        .context("load active payment account key")?
+        .clone();
     let issued_at_ms = Utc::now()
         .timestamp_millis()
         .max(0)
@@ -925,8 +948,10 @@ fn try_build_payment_account_binding(state: &ControlPlaneState) -> Option<Value>
             watch_only_payment_address: None,
         },
     )
-    .ok()?;
-    serde_json::to_value(&proof).ok()
+    .context("build active payment account binding proof")?;
+    serde_json::to_value(&proof)
+        .context("serialize active payment account binding proof")
+        .map(Some)
 }
 
 fn ensure_sender_controls_payment(

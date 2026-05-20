@@ -926,3 +926,87 @@ async fn agent_events_payment_sync_rejects_binding_with_mismatched_agent_did() {
         "rejected event must not reach the ledger"
     );
 }
+
+#[tokio::test]
+async fn agent_events_payment_sync_rejects_sender_signed_state_without_payment_account_binding() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let remote_identity = Identity::new_random();
+    let payment_id = "payment-binding-required-1";
+    let mut event = payment_event_with_optional_extras(
+        &state.agent_did,
+        &remote_identity.agent_did,
+        payment_id,
+        "12D3KooRemotePeer",
+        None,
+        None,
+    );
+    event["event"]["event_type"] = json!("payment_update");
+    event["event"]["payload"]["agent_envelope"]["message"]["message_kind"] =
+        json!("payment_authorized");
+    event["event"]["payload"]["agent_envelope"]["message"]["payment"]["status"] =
+        json!("authorized");
+    event["event"]["payload"]["agent_envelope"]["message"]["payment"]["sender_address"] =
+        json!("0x0000000000000000000000000000000000000002");
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(event.to_string()))
+            .expect("request"),
+    )
+    .await;
+
+    let error = response["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("payment_account_binding is required"),
+        "expected required payment_account_binding error, got {response}"
+    );
+    let ledger = state.payment_ledger.lock().await;
+    assert!(
+        ledger.get(payment_id).is_none(),
+        "rejected event must not reach the ledger"
+    );
+}
+
+#[tokio::test]
+async fn agent_events_payment_sync_rejects_binding_with_mismatched_sender_address() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let fixture = build_remote_binding_fixture();
+    let payment_id = "payment-binding-address-mismatch-1";
+    let mut event = payment_event_with_optional_extras(
+        &state.agent_did,
+        &fixture.remote_agent_did,
+        payment_id,
+        "12D3KooRemotePeer",
+        None,
+        Some(&fixture.binding),
+    );
+    event["event"]["event_type"] = json!("payment_update");
+    event["event"]["payload"]["agent_envelope"]["message"]["message_kind"] =
+        json!("payment_authorized");
+    event["event"]["payload"]["agent_envelope"]["message"]["payment"]["status"] =
+        json!("authorized");
+    event["event"]["payload"]["agent_envelope"]["message"]["payment"]["sender_address"] =
+        json!("0x0000000000000000000000000000000000000003");
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(event.to_string()))
+            .expect("request"),
+    )
+    .await;
+
+    let error = response["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("payment_address does not match"),
+        "expected sender address mismatch error, got {response}"
+    );
+    let ledger = state.payment_ledger.lock().await;
+    assert!(
+        ledger.get(payment_id).is_none(),
+        "rejected event must not reach the ledger"
+    );
+}

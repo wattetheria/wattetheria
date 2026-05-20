@@ -4,6 +4,8 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
 use http_body_util::BodyExt;
 use serde::Serialize;
@@ -13,6 +15,7 @@ use std::fs;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use tower::ServiceExt;
+use watt_wallet::SignerPurpose;
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
@@ -226,6 +229,34 @@ fn build_test_state_with_bridge(
     ));
     let (stream_tx, _) = broadcast::channel(32);
     let token = "test-token".to_string();
+    identity.save(dir.path().join("identity.json")).unwrap();
+    {
+        let mut wallet_state = open_local_wallet(dir.path()).unwrap();
+        if wallet_state
+            .wallet
+            .active_identity(&wallet_state.profile)
+            .is_err()
+        {
+            let seed_bytes = STANDARD.decode(&identity.private_key).unwrap();
+            let seed: [u8; 32] = seed_bytes.try_into().unwrap();
+            let wallet_identity = wallet_state
+                .wallet
+                .import_identity_ed25519_seed(
+                    &mut wallet_state.profile,
+                    seed,
+                    Some("test-agent".to_string()),
+                    vec![
+                        SignerPurpose::General,
+                        SignerPurpose::Authentication,
+                        SignerPurpose::AssertionMethod,
+                        SignerPurpose::CapabilityInvocation,
+                    ],
+                    1,
+                )
+                .unwrap();
+            assert_eq!(wallet_identity.did.to_string(), identity.agent_did);
+        }
+    }
 
     let state = ControlPlaneState {
         data_dir: dir.path().to_path_buf(),
