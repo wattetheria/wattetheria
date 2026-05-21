@@ -1240,8 +1240,8 @@ const AGENT_TOOLS: [AgentTool; 31] = [
     AgentTool { name: "send_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
     AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },
     AgentTool { name: "ack_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
-    AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
-    AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
-    AgentTool { name: "invoke_servicenet_agent", method: Method::POST, path: "/v1/servicenet/agents/{agent_id}/invoke", description: "Invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
-    AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },
+    AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
+    AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "invoke_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },
 ];

@@ -34,21 +34,25 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     };
     let app = app(state);
 
-    let list_json = authed_get_json(app.clone(), &token, "/v1/servicenet/agents").await;
+    let list_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/servicenet/agents").await;
     assert_eq!(list_json["count"].as_u64(), Some(2));
     assert_eq!(
         list_json["items"][0]["agent_id"].as_str(),
         Some("agent-alpha")
     );
 
-    let agent_json =
-        authed_get_json(app.clone(), &token, "/v1/servicenet/agents/agent-alpha").await;
+    let agent_json = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-alpha",
+    )
+    .await;
     assert_eq!(agent_json["provider_id"].as_str(), Some("provider-one"));
 
     let invoke_json = authed_post_json(
         app.clone(),
         &token,
-        "/v1/servicenet/agents/agent-alpha/invoke",
+        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
         json!({
             "message": "hello servicenet",
             "input": {"amount": 7},
@@ -82,7 +86,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     let task_json = authed_post_json(
         app,
         &token,
-        "/v1/servicenet/agents/agent-alpha/tasks/task-42/get",
+        "/v1/wattetheria/servicenet/agents/agent-alpha/tasks/task-42/get",
         json!({
             "history_length": 5
         }),
@@ -185,7 +189,7 @@ async fn servicenet_callback_decision_routes_into_mission_commit() {
     let invoke_json = authed_post_json(
         app,
         &token,
-        "/v1/servicenet/agents/agent-alpha/invoke",
+        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
         json!({
             "message": "claim the mission",
             "input": {"mode": "analysis"}

@@ -258,19 +258,19 @@ fn core_router() -> Router<ControlPlaneState> {
 fn servicenet_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
-            "/v1/servicenet/agents",
+            "/v1/wattetheria/servicenet/agents",
             get(routes::servicenet::list_agents),
         )
         .route(
-            "/v1/servicenet/agents/{agent_id}",
+            "/v1/wattetheria/servicenet/agents/{agent_id}",
             get(routes::servicenet::get_agent),
         )
         .route(
-            "/v1/servicenet/agents/{agent_id}/invoke",
+            "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
             post(routes::servicenet::invoke_agent),
         )
         .route(
-            "/v1/servicenet/agents/{agent_id}/tasks/{task_id}/get",
+            "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get",
             post(routes::servicenet::get_agent_task),
         )
 }

@@ -124,6 +124,10 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
         servicenet["_meta"]["wattetheria"]["available"].as_bool(),
         Some(false)
     );
+    assert_eq!(
+        servicenet["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents")
+    );
 }
 
 #[tokio::test]

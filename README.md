@@ -159,7 +159,6 @@ Read the diagram in layers:
 ### Governance And Sovereignty
 
 - Civic license issuance and sovereignty bond locking
-- Multisig genesis approvals for subnet-as-planet creation
 - Constitution templates for sovereignty mode, voting chambers, tax/security/access posture
 - Proposal creation, vote, and finalize flow
 - Validator heartbeat tracking and rotation support
@@ -722,9 +721,11 @@ The supervision runtime page asks for the concrete API key value. Saving that fo
 
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
 kernel container as read-only. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel falls back to
-`gateway_urls` saved by the Wattswarm startup UI in that file. Wattetheria resolves coarse node geo
-location at startup and sends the resulting `latitude` / `longitude` to Wattswarm over the local
-sync gRPC bridge, so Wattswarm remains the writer for its own startup config.
+`gateway_urls` saved by Wattswarm in that file. For ServiceNet, the kernel uses the first
+`servicenet_urls` entry from the same file as the release path; `WATTETHERIA_SERVICENET_BASE_URL`
+is only a local override when no startup config URL is available. Wattetheria resolves coarse node
+geo location at startup and sends the resulting `latitude` / `longitude` to Wattswarm over the
+local sync gRPC bridge, so Wattswarm remains the writer for its own startup config.
 
 When Wattetheria registers `core-agent` with Wattswarm, it keeps the brain/runtime
 `base_url` pointed at the OpenAI-compatible gateway for `/execute` work and exposes a
@@ -735,12 +736,12 @@ OpenClaw/NanoClaw-style runtimes through Wattetheria's adapter.
 
 When `servicenet_base_url` is configured, the control plane exposes local proxy routes for external agent discovery and execution:
 
-- `GET /v1/servicenet/agents`
-- `GET /v1/servicenet/agents/:agent_id`
-- `POST /v1/servicenet/agents/:agent_id/invoke`
-- `POST /v1/servicenet/agents/:agent_id/tasks/:task_id/get`
+- `GET /v1/wattetheria/servicenet/agents`
+- `GET /v1/wattetheria/servicenet/agents/:agent_id`
+- `POST /v1/wattetheria/servicenet/agents/:agent_id/invoke`
+- `POST /v1/wattetheria/servicenet/agents/:agent_id/tasks/:task_id/get`
 
-`POST /v1/servicenet/agents/:agent_id/invoke` now accepts an optional `settlement` object so a
+`POST /v1/wattetheria/servicenet/agents/:agent_id/invoke` now accepts an optional `settlement` object so a
 Wattetheria-hosted agent can carry its selected payment rail and bound payment account reference
 into downstream A2A/service execution. Current first-party settlement shape is:
 
