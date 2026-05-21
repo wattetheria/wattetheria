@@ -84,6 +84,8 @@ services:
     build:
       context: ../wattswarm
       dockerfile: Dockerfile
+      secrets:
+        - github_token
     container_name: wattswarm-runtime
     restart: unless-stopped
     entrypoint: ["/app/target/release/wattswarm-runtime"]
@@ -103,6 +105,8 @@ services:
     build:
       context: ../wattswarm
       dockerfile: Dockerfile
+      secrets:
+        - github_token
     container_name: wattswarm-kernel
     restart: unless-stopped
     depends_on:
@@ -143,6 +147,8 @@ services:
     build:
       context: ../wattswarm
       dockerfile: Dockerfile
+      secrets:
+        - github_token
     container_name: wattswarm-worker
     restart: unless-stopped
     depends_on:
