@@ -9,9 +9,13 @@ mod publish;
 
 use crate::cli_args::{
     BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, IdentityCommand, McpCommand,
-    OracleCommand, PolicyCommand, ServicenetCommand, ServicenetProviderCommand, WalletCommand,
+    OracleCommand, PolicyCommand, ServicenetAgentCardCommand, ServicenetCommand,
+    ServicenetProviderCommand, WalletCommand,
 };
-use crate::config::{read_config, read_control_token, run_init, run_up};
+use crate::config::{
+    LocalConfig, ServicenetRegistrationConfig, read_config, read_control_token, run_init, run_up,
+    write_config,
+};
 use crate::doctor::run_doctor;
 use semver::Version;
 use serde_json::Value;
@@ -78,34 +82,6 @@ async fn main() -> Result<()> {
         Commands::Wallet { data_dir, command } => run_wallet(&data_dir, command)?,
         Commands::Identity { data_dir, command } => run_identity(&data_dir, &command)?,
         Commands::Servicenet { data_dir, command } => run_servicenet(&data_dir, command).await?,
-        Commands::Publish {
-            data_dir,
-            card,
-            endpoint,
-            provider_id,
-            agent_id,
-            version,
-            servicenet,
-            risk_level,
-            skip_binding_proof,
-            ttl_minutes,
-            dry_run,
-        } => {
-            run_publish(
-                &data_dir,
-                &card,
-                &endpoint,
-                &provider_id,
-                &agent_id,
-                &version,
-                &servicenet,
-                &risk_level,
-                skip_binding_proof,
-                ttl_minutes,
-                dry_run,
-            )
-            .await?;
-        }
         Commands::Oracle { data_dir, command } => run_oracle(&data_dir, command)?,
         Commands::UpgradeCheck { current, latest } => {
             run_upgrade_check(&current, latest.as_deref())?;
@@ -695,31 +671,106 @@ fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
 async fn run_servicenet(data_dir: &Path, command: ServicenetCommand) -> Result<()> {
     match command {
         ServicenetCommand::Provider { command } => match command {
-            ServicenetProviderCommand::Register {
-                provider_id,
-                display_name,
-                servicenet,
-            } => {
-                run_servicenet_provider_register(
-                    data_dir,
-                    &provider_id,
-                    display_name.as_deref(),
-                    &servicenet,
-                )
-                .await
+            ServicenetProviderCommand::Register { card, display_name } => {
+                run_servicenet_provider_register(data_dir, &card, display_name.as_deref()).await
             }
         },
+        ServicenetCommand::AgentCard { command } => match command {
+            ServicenetAgentCardCommand::Init { out } => run_servicenet_agent_card_init(out),
+        },
+        ServicenetCommand::Publish {
+            agent_id,
+            version,
+            risk_level,
+            skip_binding_proof,
+            ttl_minutes,
+            dry_run,
+        } => {
+            run_servicenet_publish(
+                data_dir,
+                &agent_id,
+                &version,
+                &risk_level,
+                skip_binding_proof,
+                ttl_minutes,
+                dry_run,
+            )
+            .await
+        }
     }
+}
+
+fn run_servicenet_agent_card_init(out: Option<PathBuf>) -> Result<()> {
+    let output_dir = match out {
+        Some(path) => path,
+        None => std::env::current_dir().context("resolve current directory")?,
+    };
+    if output_dir.exists() && !output_dir.is_dir() {
+        bail!(
+            "agent card output path is not a directory: {}",
+            output_dir.display()
+        );
+    }
+    fs::create_dir_all(&output_dir).with_context(|| {
+        format!(
+            "create agent card output directory `{}`",
+            output_dir.display()
+        )
+    })?;
+    let card_path = output_dir.join("agent-card.json");
+    if card_path.exists() {
+        bail!("agent card already exists: {}", card_path.display());
+    }
+    let template = serde_json::json!({
+        "name": "",
+        "description": "",
+        "url": "",
+        "preferredTransport": "JSONRPC",
+        "protocolVersion": "1.0",
+        "skills": [
+            {
+                "id": "",
+                "name": "",
+                "description": ""
+            }
+        ],
+        "securitySchemes": {
+            "none": {
+                "type": "none"
+            }
+        },
+        "security": [
+            {
+                "none": []
+            }
+        ]
+    });
+    fs::write(&card_path, serde_json::to_string_pretty(&template)?)
+        .with_context(|| format!("write agent card template `{}`", card_path.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "status": "ok",
+            "card": card_path,
+        }))?
+    );
+    Ok(())
 }
 
 async fn run_servicenet_provider_register(
     data_dir: &Path,
-    provider_id: &str,
+    card_path: &Path,
     display_name: Option<&str>,
-    servicenet: &str,
 ) -> Result<()> {
-    run_init(data_dir)?;
+    ensure_servicenet_data_dir(data_dir)?;
     let _ = load_or_create_wallet_backed_identity(data_dir)?;
+    let config = read_config(data_dir)?;
+    let servicenet = resolve_servicenet_base_url(&config);
+    let (agent_card, card_raw, card_path) = load_agent_card(card_path)?;
+    publish::validate_agent_card(&agent_card)?;
+    let endpoint = agent_card_url(&agent_card)?;
+    publish::validate_endpoint(endpoint)?;
+
     let wallet = publish::open_wallet_or_explain(data_dir)?;
     let identity = wallet
         .wallet
@@ -727,55 +778,97 @@ async fn run_servicenet_provider_register(
         .context("resolve active identity")?;
     let identity_did = identity.did.to_string();
 
-    let client = publish::ServicenetClient::new(servicenet);
+    let client = publish::ServicenetClient::new(&servicenet);
     let challenge = client
-        .create_ownership_challenge(provider_id, &identity_did, "register")
+        .create_ownership_challenge(&identity_did, "register")
         .await?;
 
     let signature_b64 = publish::sign_with_identity_b64(&wallet, challenge.challenge.as_bytes())?;
     let record = client
         .register_provider(
-            provider_id,
+            &challenge.provider_id,
             &identity_did,
-            display_name,
+            display_name.or_else(|| agent_card.get("name").and_then(Value::as_str)),
             challenge.challenge_id,
             &signature_b64,
         )
         .await?;
-    println!("{}", serde_json::to_string_pretty(&record)?);
+    let servicenet_namespace = record["provider_id"]
+        .as_str()
+        .unwrap_or(&challenge.provider_id)
+        .to_owned();
+    let attester_identity = record["provider_did"]
+        .as_str()
+        .unwrap_or(&identity_did)
+        .to_owned();
+    let agent_id = derive_agent_id(&agent_card, &servicenet_namespace)?;
+    let card_hash = hash_agent_card(&card_raw);
+
+    let mut config = config;
+    config.servicenet_base_url = Some(servicenet.clone());
+    let registration = ServicenetRegistrationConfig {
+        provider_id: servicenet_namespace.clone(),
+        provider_did: attester_identity.clone(),
+        agent_id: agent_id.clone(),
+        card_path: card_path.display().to_string(),
+        card_hash: card_hash.clone(),
+    };
+    config
+        .servicenet_registrations
+        .retain(|existing| existing.agent_id != agent_id);
+    config.servicenet_registrations.push(registration);
+    write_config(data_dir, &config)?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "status": "ok",
+            "provider_id": &servicenet_namespace,
+            "provider_did": &attester_identity,
+            "provider_key": &attester_identity,
+            "agent_id": &agent_id,
+            "servicenet": &servicenet,
+            "card": card_path,
+            "card_hash": &card_hash,
+        }))?
+    );
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn run_publish(
+async fn run_servicenet_publish(
     data_dir: &Path,
-    card_path: &Path,
-    endpoint: &str,
-    provider_id: &str,
     agent_id: &str,
     version: &str,
-    servicenet: &str,
     risk_level: &str,
     skip_binding_proof: bool,
     ttl_minutes: u64,
     dry_run: bool,
 ) -> Result<()> {
-    run_init(data_dir)?;
+    ensure_servicenet_data_dir(data_dir)?;
     let _ = load_or_create_wallet_backed_identity(data_dir)?;
+    let config = read_config(data_dir)?;
+    let registration = config
+        .servicenet_registrations
+        .iter()
+        .find(|registration| registration.agent_id == agent_id)
+        .ok_or_else(|| {
+        anyhow!(
+            "no ServiceNet registration found for agent `{agent_id}`; run `wattetheria servicenet provider register --card <agent-card.json>` first"
+        )
+    })?;
+    let servicenet = resolve_servicenet_base_url(&config);
 
-    let card_raw = fs::read_to_string(card_path)
-        .with_context(|| format!("read agent card `{}`", card_path.display()))?;
-    let agent_card: Value = serde_json::from_str(&card_raw).context("parse agent card JSON")?;
+    let card_path = PathBuf::from(&registration.card_path);
+    let (agent_card, card_raw, _) = load_agent_card(&card_path)?;
     publish::validate_agent_card(&agent_card)?;
+    let endpoint = agent_card_url(&agent_card)?;
     publish::validate_endpoint(endpoint)?;
-
-    let card_url = agent_card
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("agent card `url` missing"))?;
-    if !endpoints_equivalent(card_url, endpoint) {
+    let card_hash = hash_agent_card(&card_raw);
+    if card_hash != registration.card_hash {
         bail!(
-            "agent card `url` ({card_url}) does not match --endpoint ({endpoint}); fix the card or the flag",
+            "agent card changed since ServiceNet registration; run `wattetheria servicenet provider register --card {}` again",
+            card_path.display()
         );
     }
 
@@ -826,8 +919,8 @@ async fn run_publish(
     // part of the signed bytes — only the submission semantics, the freshness
     // window, and the binding proof are.
     let attestation_payload_value = serde_json::json!({
-        "provider_id": provider_id,
-        "agent_id": agent_id,
+        "provider_id": &registration.provider_id,
+        "agent_id": &registration.agent_id,
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -858,8 +951,8 @@ async fn run_publish(
             serde_json::to_value(&binding).context("serialize binding proof")?;
     }
     let request = serde_json::json!({
-        "provider_id": provider_id,
-        "agent_id": agent_id,
+        "provider_id": &registration.provider_id,
+        "agent_id": &registration.agent_id,
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -873,17 +966,90 @@ async fn run_publish(
         return Ok(());
     }
 
-    let client = publish::ServicenetClient::new(servicenet);
+    let client = publish::ServicenetClient::new(&servicenet);
     let record = client.submit_agent(request).await?;
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())
 }
 
-fn endpoints_equivalent(card_url: &str, endpoint: &str) -> bool {
-    let normalize = |value: &str| value.trim_end_matches('/').to_owned();
-    let card = normalize(card_url);
-    let endpoint = normalize(endpoint);
-    card == endpoint || endpoint.starts_with(&format!("{card}/"))
+const DEFAULT_SERVICENET_BASE_URL: &str = "https://servicenet.wattetheria.com";
+
+fn ensure_servicenet_data_dir(data_dir: &Path) -> Result<()> {
+    fs::create_dir_all(data_dir).context("create data directory")?;
+    if !data_dir.join("config.json").exists() {
+        write_config(data_dir, &LocalConfig::default())?;
+    }
+    Ok(())
+}
+
+fn resolve_servicenet_base_url(config: &LocalConfig) -> String {
+    if let Some(base_url) = config.servicenet_base_url.as_deref() {
+        let normalized = base_url.trim().trim_end_matches('/');
+        if !normalized.is_empty() {
+            return normalized.to_owned();
+        }
+    }
+    if let Ok(base_url) = std::env::var("WATTETHERIA_SERVICENET_BASE_URL") {
+        let normalized = base_url.trim().trim_end_matches('/');
+        if !normalized.is_empty() {
+            return normalized.to_owned();
+        }
+    }
+    DEFAULT_SERVICENET_BASE_URL.to_owned()
+}
+
+fn load_agent_card(card_path: &Path) -> Result<(Value, String, PathBuf)> {
+    let path = fs::canonicalize(card_path)
+        .with_context(|| format!("resolve agent card `{}`", card_path.display()))?;
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read agent card `{}`", path.display()))?;
+    let card: Value = serde_json::from_str(&raw).context("parse agent card JSON")?;
+    Ok((card, raw, path))
+}
+
+fn agent_card_url(agent_card: &Value) -> Result<&str> {
+    agent_card
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `url` missing"))
+}
+
+fn hash_agent_card(card_raw: &str) -> String {
+    format!("sha256:{:x}", Sha256::digest(card_raw.as_bytes()))
+}
+
+fn derive_agent_id(agent_card: &Value, provider_id: &str) -> Result<String> {
+    let name = agent_card
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `name` missing"))?;
+    let url = agent_card_url(agent_card)?;
+    let slug = slugify_agent_name(name);
+    let digest = Sha256::digest(format!("{provider_id}:{url}").as_bytes());
+    let suffix = format!("{digest:x}");
+    Ok(format!("{slug}-{}", &suffix[..8]))
+}
+
+fn slugify_agent_name(name: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    for ch in name.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash && !slug.is_empty() {
+            slug.push('-');
+            last_was_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "agent".to_owned()
+    } else {
+        slug
+    }
 }
 
 #[allow(clippy::too_many_lines)]

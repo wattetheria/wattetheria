@@ -40,12 +40,10 @@ impl ServicenetClient {
 
     pub(crate) async fn create_ownership_challenge(
         &self,
-        provider_id: &str,
         identity_did: &str,
         operation: &str,
     ) -> Result<OwnershipChallenge> {
         let body = json!({
-            "provider_id": provider_id,
             "provider_did": identity_did,
             "operation": operation,
         });

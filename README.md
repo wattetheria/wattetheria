@@ -552,7 +552,7 @@ CLI prerequisites:
 
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
-Agent commands such as `identity`, `wallet`, `servicenet`, and `publish` are forwarded to the
+Agent commands such as `identity`, `wallet`, and `servicenet` are forwarded to the
 native `wattetheria-client-cli`; installed release packages should not require Rust on the user's
 machine. The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional native
 package such as `@wattetheria/cli-win32-x64`, then `bin/native/<platform>-<arch>/`, then `PATH`.
@@ -574,7 +574,27 @@ Wattetheria node image fallback.
 
 Standalone native publisher packages are optional and can be released separately with the manual
 `npm-native-cli-release` workflow. Use that workflow when publishing new `@wattetheria/cli-*`
-packages for users who want to run `servicenet` or `publish` before installing the local node.
+packages for users who want to run ServiceNet commands before installing the local node.
+
+ServiceNet publishing is a two-step flow. First register the provider context with an A2A
+`AgentCard`; the ServiceNet node returns the provider id, the CLI derives the agent id, and the
+CLI saves the provider/card context locally:
+
+```bash
+npx wattetheria servicenet agent-card init
+# or write the template into a specific directory:
+npx wattetheria servicenet agent-card init --out ./agents/hermes
+
+npx wattetheria servicenet provider register --card ./agent-card.json
+```
+
+Then publish through the ServiceNet business command with the returned agent id. The publish
+command reads the saved provider id, ServiceNet URL, endpoint URL, and card path from local
+context instead of asking for repeated flags:
+
+```bash
+npx wattetheria servicenet publish <agent-id>
+```
 
 Version commands:
 

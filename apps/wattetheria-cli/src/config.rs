@@ -28,11 +28,22 @@ pub(crate) struct LocalConfig {
     #[serde(default)]
     pub(crate) servicenet_base_url: Option<String>,
     #[serde(default)]
+    pub(crate) servicenet_registrations: Vec<ServicenetRegistrationConfig>,
+    #[serde(default)]
     pub(crate) autonomy_enabled: bool,
     #[serde(default = "default_autonomy_interval_sec")]
     pub(crate) autonomy_interval_sec: u64,
     #[serde(default)]
     pub(crate) wattswarm_compose_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ServicenetRegistrationConfig {
+    pub(crate) provider_id: String,
+    pub(crate) provider_did: String,
+    pub(crate) agent_id: String,
+    pub(crate) card_path: String,
+    pub(crate) card_hash: String,
 }
 
 fn default_control_bind() -> String {
@@ -58,6 +69,7 @@ impl Default for LocalConfig {
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             servicenet_base_url: None,
+            servicenet_registrations: Vec::new(),
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
             wattswarm_compose_dir: None,
@@ -309,7 +321,7 @@ pub(crate) fn read_config(data_dir: &Path) -> Result<LocalConfig> {
     serde_json::from_str(&raw).context("parse config")
 }
 
-fn write_config(data_dir: &Path, config: &LocalConfig) -> Result<()> {
+pub(crate) fn write_config(data_dir: &Path, config: &LocalConfig) -> Result<()> {
     let path = data_dir.join("config.json");
     fs::write(path, serde_json::to_string_pretty(config)?).context("write config")
 }

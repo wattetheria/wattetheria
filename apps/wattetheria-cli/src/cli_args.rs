@@ -84,41 +84,6 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: ServicenetCommand,
     },
-    Publish {
-        #[arg(long, default_value = ".wattetheria")]
-        data_dir: PathBuf,
-        /// Path to A2A `AgentCard` JSON file.
-        card: PathBuf,
-        /// Public endpoint URL where the agent runs.
-        #[arg(long)]
-        endpoint: String,
-        /// Provider id this agent belongs to (must already be registered).
-        #[arg(long)]
-        provider_id: String,
-        /// Agent id within the provider namespace.
-        #[arg(long)]
-        agent_id: String,
-        /// Semantic version of this submission, e.g. "0.1.0".
-        #[arg(long, default_value = "0.1.0")]
-        version: String,
-        /// Servicenet base URL, e.g. <https://servicenet.wattetheria.network>
-        #[arg(long)]
-        servicenet: String,
-        /// Risk level: low | medium | high.
-        #[arg(long, default_value = "low")]
-        risk_level: String,
-        /// Skip building a `PaymentAccountBindingProof` from the active wallet
-        /// payment account. Use this for agents that do not collect payments;
-        /// callers will not have a verified payment binding for them.
-        #[arg(long, default_value_t = false)]
-        skip_binding_proof: bool,
-        /// How many minutes the signed submission stays valid. Defaults to 30.
-        #[arg(long, default_value_t = 30)]
-        ttl_minutes: u64,
-        /// Print signed request without sending.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
     Oracle {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
@@ -313,21 +278,54 @@ pub(crate) enum ServicenetCommand {
         #[command(subcommand)]
         command: ServicenetProviderCommand,
     },
+    AgentCard {
+        #[command(subcommand)]
+        command: ServicenetAgentCardCommand,
+    },
+    /// Publish the registered `ServiceNet` agent.
+    Publish {
+        /// Agent id returned by `servicenet provider register --card`.
+        agent_id: String,
+        /// Semantic version of this submission, e.g. "0.1.0".
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+        /// Risk level: low | medium | high.
+        #[arg(long, default_value = "low")]
+        risk_level: String,
+        /// Skip building a `PaymentAccountBindingProof` from the active wallet
+        /// payment account. Use this for agents that do not collect payments;
+        /// callers will not have a verified payment binding for them.
+        #[arg(long, default_value_t = false)]
+        skip_binding_proof: bool,
+        /// How many minutes the signed submission stays valid. Defaults to 30.
+        #[arg(long, default_value_t = 30)]
+        ttl_minutes: u64,
+        /// Print signed request without sending.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ServicenetAgentCardCommand {
+    /// Generate an editable A2A `AgentCard` template.
+    Init {
+        /// Output directory. Defaults to the current directory.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServicenetProviderCommand {
     /// Register the local identity as a provider on a watt-servicenet node.
     Register {
-        /// Provider id (namespace), e.g. "alice" or "acme-labs".
+        /// Path to A2A `AgentCard` JSON file.
         #[arg(long)]
-        provider_id: String,
+        card: PathBuf,
         /// Optional display name shown in registry listings.
         #[arg(long)]
         display_name: Option<String>,
-        /// Servicenet base URL, e.g. <https://servicenet.wattetheria.network>
-        #[arg(long)]
-        servicenet: String,
     },
 }
 
