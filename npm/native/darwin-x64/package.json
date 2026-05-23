@@ -1,0 +1,25 @@
+{
+  "name": "@wattetheria/cli-darwin-x64",
+  "version": "0.3.0",
+  "description": "Wattetheria native CLI for macOS x64",
+  "license": "Apache-2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "bin": {
+    "wattetheria-client-cli": "bin/wattetheria-client-cli"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prepublishOnly": "node ../../../scripts/check-native-package-binary.js"
+  }
+}

@@ -1,0 +1,169 @@
+name: npm-native-cli-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run builds and npm publish dry-runs without publishing packages.
+        type: boolean
+        default: true
+      publish_main:
+        description: Publish the main wattetheria package after all native packages succeed.
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "20"
+
+jobs:
+  native:
+    name: Build and publish ${{ matrix.target_key }}
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target_key: darwin-arm64
+            runs_on: macos-latest
+            platform: darwin
+            arch: arm64
+            binary: target/release/wattetheria-client-cli
+          - target_key: darwin-x64
+            runs_on: macos-15-intel
+            platform: darwin
+            arch: x64
+            binary: target/release/wattetheria-client-cli
+          - target_key: linux-arm64
+            runs_on: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            binary: target/release/wattetheria-client-cli
+          - target_key: linux-x64
+            runs_on: ubuntu-latest
+            platform: linux
+            arch: x64
+            binary: target/release/wattetheria-client-cli
+          - target_key: win32-arm64
+            runs_on: windows-11-arm
+            platform: win32
+            arch: arm64
+            binary: target/release/wattetheria-client-cli.exe
+          - target_key: win32-x64
+            runs_on: windows-latest
+            platform: win32
+            arch: x64
+            binary: target/release/wattetheria-client-cli.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          path: deps/watt-did
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          path: deps/watt-wallet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattswarm
+          path: deps/wattswarm
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+
+      - name: Prepare workspace dependencies (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          rm -rf ../watt-did ../watt-wallet ../wattswarm
+          cp -R deps/watt-did ../watt-did
+          cp -R deps/watt-wallet ../watt-wallet
+          cp -R deps/wattswarm ../wattswarm
+
+      - name: Prepare workspace dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($dep in @("watt-did", "watt-wallet", "wattswarm")) {
+            $target = Join-Path (Split-Path $env:GITHUB_WORKSPACE -Parent) $dep
+            if (Test-Path $target) {
+              Remove-Item $target -Recurse -Force
+            }
+            Copy-Item (Join-Path $env:GITHUB_WORKSPACE "deps/$dep") $target -Recurse
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-cli-${{ matrix.target_key }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Build native CLI
+        run: cargo build --release -p wattetheria-client-cli
+
+      - name: Stage native package
+        run: >
+          node scripts/stage-native-cli.js
+          --platform ${{ matrix.platform }}
+          --arch ${{ matrix.arch }}
+          --source ${{ matrix.binary }}
+
+      - name: Verify native package
+        run: node scripts/check-native-package-binary.js npm/native/${{ matrix.target_key }}
+
+      - name: Pack native package
+        run: npm pack npm/native/${{ matrix.target_key }} --dry-run
+
+      - name: Publish native package dry-run
+        if: inputs.dry_run
+        run: npm publish npm/native/${{ matrix.target_key }} --access public --dry-run
+
+      - name: Publish native package
+        if: ${{ !inputs.dry_run }}
+        run: npm publish npm/native/${{ matrix.target_key }} --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  main:
+    name: Publish main npm package
+    needs: native
+    if: inputs.publish_main
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Check package syntax
+        run: npm run check
+
+      - name: Pack main package dry-run
+        if: inputs.dry_run
+        run: npm pack --dry-run
+
+      - name: Verify published native packages
+        if: ${{ !inputs.dry_run }}
+        run: npm run prepublishOnly
+        env:
+          WATTETHERIA_NPM_VIEW_ATTEMPTS: "6"
+          WATTETHERIA_NPM_VIEW_RETRY_DELAY_MS: "10000"
+
+      - name: Publish main package
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

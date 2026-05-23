@@ -1,6 +1,6 @@
 {
   "name": "wattetheria",
-  "version": "0.2.8",
+  "version": "0.3.0",
   "description": "Wattetheria deployment CLI",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -8,6 +8,9 @@
   "files": [
     "bin/",
     "lib/",
+    "scripts/stage-native-cli.js",
+    "scripts/check-native-package-binary.js",
+    "scripts/check-native-packages.js",
     ".env.release",
     "docker-compose.release.yml",
     "README.md",
@@ -19,8 +22,18 @@
   "publishConfig": {
     "access": "public"
   },
+  "optionalDependencies": {
+    "@wattetheria/cli-darwin-arm64": "0.3.0",
+    "@wattetheria/cli-darwin-x64": "0.3.0",
+    "@wattetheria/cli-linux-arm64": "0.3.0",
+    "@wattetheria/cli-linux-x64": "0.3.0",
+    "@wattetheria/cli-win32-arm64": "0.3.0",
+    "@wattetheria/cli-win32-x64": "0.3.0"
+  },
   "scripts": {
-    "check": "node --check bin/wattetheria.js && node --check lib/cli.js"
+    "check": "node --check bin/wattetheria.js && node --check lib/cli.js && node --check scripts/stage-native-cli.js && node --check scripts/check-native-package-binary.js && node --check scripts/check-native-packages.js",
+    "prepublishOnly": "node scripts/check-native-packages.js",
+    "stage:native-cli": "node scripts/stage-native-cli.js"
   },
   "keywords": [
     "wattetheria",

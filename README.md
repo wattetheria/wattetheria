@@ -552,6 +552,25 @@ CLI prerequisites:
 
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
+Agent commands such as `identity`, `wallet`, `servicenet`, and `publish` are forwarded to the
+platform native `wattetheria-client-cli`; installed release packages should not require Rust on the
+user's machine. The npm package uses platform-specific optional native packages such as
+`@wattetheria/cli-win32-x64`, `@wattetheria/cli-darwin-arm64`, and `@wattetheria/cli-linux-x64`.
+The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional package, then
+`bin/native/<platform>-<arch>/`, then `PATH`.
+
+Native npm release flow:
+
+1. Set the repository secret `NPM_TOKEN` to an npm token that can publish `wattetheria` and
+   `@wattetheria/cli-*`.
+2. Run the manual GitHub Actions workflow `npm-native-cli-release`.
+3. Keep `dry_run` enabled first. It builds and packs each native package on its matching runner.
+4. Rerun with `dry_run=false` to publish native packages first, then the main `wattetheria` package.
+
+The main package `prepublishOnly` checks that the configured native optional packages exist on npm
+before allowing `npm publish --access public`. Local `npm run stage:native-cli` is only for
+maintainer verification on the current machine; Windows binaries are produced by the Windows GitHub
+Actions runner, not from a macOS developer machine.
 
 Version commands:
 
