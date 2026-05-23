@@ -12,10 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 use uuid::Uuid;
-use watt_did::{PaymentAccountBindingProof, PaymentAccountCustody};
-use watt_wallet::{
-    PaymentAccountBindingProofOptions, PaymentAccountSigner, build_payment_account_binding_proof,
-};
 use wattetheria_kernel::wallet_identity::{LocalWalletState, open_local_wallet};
 
 /// Minimal client for a watt-servicenet node. Only covers the routes the
@@ -180,7 +176,7 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         let skill_obj = skill
             .as_object()
             .ok_or_else(|| anyhow!("skill[{index}] must be an object"))?;
-        for field in ["id", "name", "description"] {
+        for field in ["name", "description"] {
             let value = skill_obj
                 .get(field)
                 .and_then(Value::as_str)
@@ -258,64 +254,6 @@ pub(crate) fn open_wallet_or_explain(data_dir: &Path) -> Result<LocalWalletState
     })
 }
 
-/// Build a `PaymentAccountBindingProof` for the wallet's currently active
-/// spending payment account, signed by the active agent identity.
-///
-/// Returns `Ok(None)` only when the active payment account is watch-only or
-/// otherwise unable to sign — in that case the publisher must explicitly
-/// pass a `--skip-binding-proof` flag to publish without one.
-pub(crate) fn build_active_payment_account_binding(
-    wallet: &LocalWalletState,
-    issued_at_ms: u64,
-    nonce: String,
-) -> Result<PaymentAccountBindingProof> {
-    let identity = wallet
-        .wallet
-        .active_identity(&wallet.profile)
-        .context("resolve active identity")?;
-    let identity_key_info = wallet
-        .wallet
-        .active_identity_key_info(&wallet.profile)
-        .context("read active identity key info")?;
-    let payment_account = wallet
-        .wallet
-        .active_payment_account(&wallet.profile)
-        .context("resolve active payment account")?
-        .clone();
-    let key_handle = payment_account.key_handle.clone().ok_or_else(|| {
-        anyhow!(
-            "active payment account `{}` is watch-only and cannot sign a binding proof",
-            payment_account.account_id
-        )
-    })?;
-    let payment_key_info = wallet
-        .wallet
-        .active_payment_account_key_info(&wallet.profile)
-        .context("read active payment account key info")?;
-
-    let options = PaymentAccountBindingProofOptions {
-        agent_did: identity.did.clone(),
-        agent_key_handle: &identity.key_handle,
-        agent_public_key_multibase: identity_key_info.public_key_multibase.clone(),
-        rail: payment_account.rail.clone(),
-        network: payment_account.network.clone(),
-        custody: PaymentAccountCustody::LocalGenerated,
-        receive_only: false,
-        can_sign: true,
-        capabilities: payment_account.capabilities.clone(),
-        issued_at_ms,
-        expires_at_ms: None,
-        nonce: Some(nonce),
-        payment_signer: Some(PaymentAccountSigner {
-            key_handle: &key_handle,
-            public_key_multibase: payment_key_info.public_key_multibase.clone(),
-        }),
-        watch_only_payment_address: None,
-    };
-    build_payment_account_binding_proof(wallet.wallet.keystore(), options)
-        .context("build payment account binding proof")
-}
-
 /// Sign a payload with the active wallet identity and base64-encode it.
 pub(crate) fn sign_with_identity_b64(wallet: &LocalWalletState, payload: &[u8]) -> Result<String> {
     let signature = wallet
@@ -323,4 +261,66 @@ pub(crate) fn sign_with_identity_b64(wallet: &LocalWalletState, payload: &[u8]) 
         .sign_with_active_identity(&wallet.profile, payload)
         .context("sign with active identity")?;
     Ok(STANDARD.encode(signature.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_agent_card;
+    use serde_json::json;
+
+    fn valid_card() -> serde_json::Value {
+        json!({
+            "name": "Alice",
+            "description": "Alice Test",
+            "url": "https://alice.example.com/",
+            "preferredTransport": "JSONRPC",
+            "protocolVersion": "1.0",
+            "skills": [
+                {
+                    "description": "Get weather",
+                    "id": "",
+                    "name": "Get Weather"
+                }
+            ],
+            "securitySchemes": {
+                "none": {
+                    "type": "none"
+                }
+            },
+            "security": [
+                {
+                    "none": []
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn agent_card_allows_empty_skill_id() {
+        assert!(validate_agent_card(&valid_card()).is_ok());
+    }
+
+    #[test]
+    fn agent_card_requires_skill_name() {
+        let mut card = valid_card();
+        card["skills"][0]["name"] = json!("");
+        let error = validate_agent_card(&card).expect_err("empty skill name should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("skill[0] is missing required field `name`")
+        );
+    }
+
+    #[test]
+    fn agent_card_requires_skill_description() {
+        let mut card = valid_card();
+        card["skills"][0]["description"] = json!("");
+        let error = validate_agent_card(&card).expect_err("empty skill description should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("skill[0] is missing required field `description`")
+        );
+    }
 }

@@ -679,7 +679,6 @@ async fn run_servicenet(data_dir: &Path, command: ServicenetCommand) -> Result<(
             agent_id,
             version,
             risk_level,
-            skip_binding_proof,
             ttl_minutes,
             dry_run,
         } => {
@@ -688,7 +687,6 @@ async fn run_servicenet(data_dir: &Path, command: ServicenetCommand) -> Result<(
                 &agent_id,
                 &version,
                 &risk_level,
-                skip_binding_proof,
                 ttl_minutes,
                 dry_run,
             )
@@ -822,7 +820,6 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
             "status": "ok",
             "provider_id": &servicenet_namespace,
             "provider_did": &attester_identity,
-            "provider_key": &attester_identity,
             "agent_id": &agent_id,
             "servicenet": &servicenet,
             "card": card_path,
@@ -838,7 +835,6 @@ async fn run_servicenet_publish(
     agent_id: &str,
     version: &str,
     risk_level: &str,
-    skip_binding_proof: bool,
     ttl_minutes: u64,
     dry_run: bool,
 ) -> Result<()> {
@@ -897,24 +893,10 @@ async fn run_servicenet_publish(
     let issued_at_ms = now_ms();
     let expires_at_ms = issued_at_ms.saturating_add(ttl_minutes.saturating_mul(60_000));
     let nonce = uuid::Uuid::new_v4().to_string();
-    let payment_account_binding = if skip_binding_proof {
-        None
-    } else {
-        Some(
-            publish::build_active_payment_account_binding(&wallet, issued_at_ms, nonce.clone())
-                .context(
-                    "build PaymentAccountBindingProof — pass --skip-binding-proof to publish without one",
-                )?,
-        )
-    };
-    let payment_binding_value = match payment_account_binding.as_ref() {
-        Some(proof) => serde_json::to_value(proof).context("serialize binding proof")?,
-        None => Value::Null,
-    };
 
     // Mirror server-side `build_agent_attestation_payload`: signature is NOT
-    // part of the signed bytes — only the submission semantics, the freshness
-    // window, and the binding proof are.
+    // part of the signed bytes; the CLI signs the submission semantics and
+    // freshness window.
     let attestation_payload_value = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,
@@ -927,7 +909,7 @@ async fn run_servicenet_publish(
         "delegation_token": Value::Null,
         "source_commit": Value::Null,
         "build_digest": Value::Null,
-        "payment_account_binding": payment_binding_value,
+        "payment_account_binding": Value::Null,
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -936,17 +918,13 @@ async fn run_servicenet_publish(
         serde_jcs::to_vec(&attestation_payload_value).context("canonicalize attestation")?;
     let signature_b64 = publish::sign_with_identity_b64(&wallet, &attestation_bytes)?;
 
-    let mut attestations = serde_json::json!({
+    let attestations = serde_json::json!({
         "attestation_signature": signature_b64,
         "provider_attester_did": &identity_did,
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
     });
-    if let Some(binding) = payment_account_binding {
-        attestations["payment_account_binding"] =
-            serde_json::to_value(&binding).context("serialize binding proof")?;
-    }
     let request = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,

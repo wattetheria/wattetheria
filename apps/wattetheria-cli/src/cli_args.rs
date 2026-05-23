@@ -315,11 +315,6 @@ pub(crate) enum ServicenetCommand {
         /// Risk level: low | medium | high.
         #[arg(long, default_value = "low")]
         risk_level: String,
-        /// Skip building a `PaymentAccountBindingProof` from the active wallet
-        /// payment account. Use this for agents that do not collect payments;
-        /// callers will not have a verified payment binding for them.
-        #[arg(long, default_value_t = false)]
-        skip_binding_proof: bool,
         /// How many minutes the signed submission stays valid. Defaults to 30.
         #[arg(long, default_value_t = 30)]
         ttl_minutes: u64,
