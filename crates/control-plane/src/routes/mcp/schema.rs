@@ -450,7 +450,16 @@ fn mailbox_schema(tool: &AgentTool) -> Option<Value> {
 
 fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "list_servicenet_agents" | "get_servicenet_agent" => Some(empty_tool_schema(tool)),
+        "list_servicenet_agents" => Some(tool_schema(
+            tool,
+            &[
+                integer_field("limit", "Maximum number of ServiceNet agents to return."),
+                integer_field("offset", "Zero-based ServiceNet agent list offset."),
+            ],
+            &[],
+            false,
+        )),
+        "get_servicenet_agent" => Some(empty_tool_schema(tool)),
         "invoke_servicenet_agent" => Some(tool_schema(
             tool,
             &[

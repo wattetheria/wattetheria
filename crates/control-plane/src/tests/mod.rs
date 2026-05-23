@@ -1,6 +1,6 @@
 use super::*;
 use crate::social_host::{WattetheriaLocalIdentityProvider, WattetheriaTransportAdapter};
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -397,93 +397,215 @@ async fn authed_post_json_with_headers(
     .await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let app =
-            Router::new()
-                .route(
-                    "/v1/agents",
-                    get(|| async move {
-                        Json(json!({
-                            "items": [
+    let app = Router::new()
+        .route(
+            "/v1/agents",
+            get(|Query(query): Query<BTreeMap<String, String>>| async move {
+                let limit = query
+                    .get("limit")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(50);
+                let offset = query
+                    .get("offset")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let agents = vec![
+                    json!({
+                        "agent_id": "agent-alpha",
+                        "provider_id": "provider-one",
+                        "version": "0.1.0",
+                        "status": "approved",
+                        "agent_card": {
+                            "name": "Agent Alpha",
+                            "description": "Alpha test agent",
+                            "cost": 18,
+                            "skills": [
                                 {
-                                    "agent_id": "agent-alpha",
-                                    "provider_id": "provider-one",
-                                    "status": "approved",
-                                    "agent_card": {"name": "Agent Alpha"},
-                                    "deployment": {"endpoint": {"url": "https://example.com/a2a"}},
-                                    "review": {"risk_level": "low"},
-                                },
-                                {
-                                    "agent_id": "agent-beta",
-                                    "provider_id": "provider-two",
-                                    "status": "approved",
-                                    "agent_card": {"name": "Agent Beta"},
-                                    "deployment": {"endpoint": {"url": "https://example.net/a2a"}},
-                                    "review": {"risk_level": "medium"},
+                                    "id": "weather.lookup",
+                                    "name": "Get weather",
+                                    "description": "Returns current weather"
                                 }
                             ]
-                        }))
+                        },
+                        "deployment": {
+                            "runtime": "remote_http",
+                            "endpoint": {
+                                "url": "https://example.com/a2a",
+                                "interaction_protocol": "google_a2a",
+                                "protocol_binding": "JSONRPC"
+                            }
+                        },
+                        "review": {"risk_level": "low"},
                     }),
-                )
-                .route(
-                    "/v1/agents/{agent_id}",
-                    get(|Path(agent_id): Path<String>| async move {
-                        Json(json!({
-                            "agent_id": agent_id,
+                    json!({
+                        "agent_id": "agent-beta",
+                        "provider_id": "provider-two",
+                        "version": "0.2.0",
+                        "status": "approved",
+                        "agent_card": {
+                            "name": "Agent Beta",
+                            "description": "Beta test agent",
+                            "cost": 7,
+                            "skills": [
+                                {
+                                    "id": "address.name",
+                                    "name": "Name address"
+                                }
+                            ]
+                        },
+                        "deployment": {
+                            "runtime": "remote_http",
+                            "endpoint": {
+                                "url": "https://example.net/a2a",
+                                "interaction_protocol": "google_a2a",
+                                "protocol_binding": "JSONRPC"
+                            }
+                        },
+                        "review": {"risk_level": "medium"},
+                    }),
+                ];
+                let known_count = agents.len();
+                let items = agents
+                    .into_iter()
+                    .skip(offset)
+                    .take(limit)
+                    .collect::<Vec<_>>();
+                let next_offset = offset.saturating_add(items.len());
+                let has_more = next_offset < known_count;
+                Json(json!({
+                    "items": items,
+                    "count": items.len(),
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": if has_more { Some(next_offset) } else { None },
+                    "has_more": has_more,
+                    "known_count": known_count
+                }))
+            }),
+        )
+        .route(
+            "/v1/health/agents",
+            get(|| async move {
+                Json(json!({
+                    "items": [
+                        {
+                            "agent_id": "agent-alpha",
                             "provider_id": "provider-one",
-                            "status": "approved",
-                            "agent_card": {"name": "Agent Alpha"},
-                            "deployment": {"endpoint": {"url": "https://example.com/a2a"}},
-                            "review": {"risk_level": "low"},
-                        }))
-                    }),
-                )
-                .route(
-                    "/v1/agents/{agent_id}/invoke",
-                    post(
-                        |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
-                            Json(json!({
-                                "agent_id": agent_id,
-                                "status": "completed",
-                                "receipt_id": "00000000-0000-0000-0000-000000000001",
-                                "task_id": "task-42",
-                                "context_id": "ctx-1",
-                                "message": "ok",
-                                "output": {
-                                    "echo": body["message"].clone(),
-                                },
-                                "settlement": body["settlement"].clone(),
-                                "payment_receipt": {
-                                    "status": "submitted",
-                                    "rail": body["settlement"]["rail"].clone(),
-                                },
-                                "raw": {
-                                    "kind": "invoke",
-                                },
-                            }))
+                            "status": "unknown",
+                            "success_count": 0,
+                            "failure_count": 0,
+                            "success_rate": 1.0
                         },
-                    ),
-                )
-                .route(
-                    "/v1/agents/{agent_id}/tasks/{task_id}/get",
-                    post(
-                        |Path((agent_id, task_id)): Path<(String, String)>,
-                         Json(body): Json<Value>| async move {
-                            Json(json!({
-                                "agent_id": agent_id,
-                                "status": "completed",
-                                "task_id": task_id,
-                                "output": {
-                                    "history_length": body["history_length"].clone(),
-                                    "result": "done",
-                                },
-                                "raw": {
-                                    "kind": "task",
-                                },
-                            }))
+                        {
+                            "agent_id": "agent-beta",
+                            "provider_id": "provider-two",
+                            "status": "online",
+                            "success_count": 3,
+                            "failure_count": 0,
+                            "success_rate": 1.0
+                        }
+                    ]
+                }))
+            }),
+        )
+        .route(
+            "/v1/trust/agents",
+            get(|| async move {
+                Json(json!({
+                    "items": [
+                        {
+                            "agent_id": "agent-alpha",
+                            "reputation_score": 0.75,
+                            "blocked": false
                         },
-                    ),
-                );
+                        {
+                            "agent_id": "agent-beta",
+                            "reputation_score": 0.5,
+                            "blocked": false
+                        }
+                    ]
+                }))
+            }),
+        )
+        .route(
+            "/v1/agents/{agent_id}",
+            get(|Path(agent_id): Path<String>| async move {
+                Json(json!({
+                    "agent_id": agent_id,
+                    "provider_id": "provider-one",
+                    "version": "0.1.0",
+                    "status": "approved",
+                    "agent_card": {
+                        "name": "Agent Alpha",
+                        "description": "Alpha test agent",
+                        "cost": 18,
+                        "skills": [
+                            {
+                                "id": "weather.lookup",
+                                "name": "Get weather",
+                                "description": "Returns current weather"
+                            }
+                        ]
+                    },
+                    "deployment": {
+                        "runtime": "remote_http",
+                        "endpoint": {
+                            "url": "https://example.com/a2a",
+                            "interaction_protocol": "google_a2a",
+                            "protocol_binding": "JSONRPC"
+                        }
+                    },
+                    "review": {"risk_level": "low"},
+                }))
+            }),
+        )
+        .route(
+            "/v1/agents/{agent_id}/invoke",
+            post(
+                |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                    Json(json!({
+                        "agent_id": agent_id,
+                        "status": "completed",
+                        "receipt_id": "00000000-0000-0000-0000-000000000001",
+                        "task_id": "task-42",
+                        "context_id": "ctx-1",
+                        "message": "ok",
+                        "output": {
+                            "echo": body["message"].clone(),
+                        },
+                        "settlement": body["settlement"].clone(),
+                        "payment_receipt": {
+                            "status": "submitted",
+                            "rail": body["settlement"]["rail"].clone(),
+                        },
+                        "raw": {
+                            "kind": "invoke",
+                        },
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/v1/agents/{agent_id}/tasks/{task_id}/get",
+            post(
+                |Path((agent_id, task_id)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    Json(json!({
+                        "agent_id": agent_id,
+                        "status": "completed",
+                        "task_id": task_id,
+                        "output": {
+                            "history_length": body["history_length"].clone(),
+                            "result": "done",
+                        },
+                        "raw": {
+                            "kind": "task",
+                        },
+                    }))
+                },
+            ),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move {

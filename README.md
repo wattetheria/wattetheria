@@ -589,8 +589,13 @@ npx wattetheria servicenet agent-card init --out <output-directory>
 
 npx wattetheria servicenet register
 # If the card is not in the current directory:
-npx wattetheria servicenet register --card <path-to-agent-card.json>
+npx wattetheria servicenet register --card <path-to-agent-card.jsonc>
 ```
+
+The generated `agent-card.jsonc` supports comments so users can see how ServiceNet registry fields
+map into the UI. ServiceNet public agents use `scope: "real_world"`, `origin:
+"established_service"` or `"custom_built"`, and a UI domain such as `GENERAL`, `FOOD`, or
+`PAYMENTS`.
 
 Then publish through the ServiceNet business command with the returned agent id. The publish
 command reads the saved provider id, endpoint URL, and card path from local context instead of

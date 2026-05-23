@@ -140,6 +140,10 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         "url",
         "preferredTransport",
         "protocolVersion",
+        "scope",
+        "origin",
+        "domain",
+        "cost",
         "skills",
         "securitySchemes",
         "security",
@@ -163,6 +167,19 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         .ok_or_else(|| anyhow!("agent card `preferredTransport` must be a string"))?;
     if transport != "JSONRPC" {
         bail!("agent card `preferredTransport` must be `JSONRPC` (got `{transport}`)",);
+    }
+
+    validate_scope_origin_domain(object)?;
+
+    let cost = object
+        .get("cost")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("agent card `cost` must be a non-negative integer"))?;
+    if cost > u64::from(u32::MAX) {
+        bail!(
+            "agent card `cost` must be a non-negative integer up to {}",
+            u32::MAX
+        );
     }
 
     let skills = object
@@ -193,6 +210,82 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_scope_origin_domain(object: &serde_json::Map<String, Value>) -> Result<()> {
+    let scope = object
+        .get("scope")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `scope` must be a string"))?;
+    if !matches!(scope, "real_world" | "wattetheria_native") {
+        bail!("agent card `scope` must be `real_world` or `wattetheria_native` (got `{scope}`)");
+    }
+
+    let origin = object
+        .get("origin")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `origin` must be a string"))?;
+    validate_origin_for_scope(scope, origin)?;
+
+    let domain = object
+        .get("domain")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `domain` must be a string"))?;
+    if !domain_allowed_for_scope(scope, domain) {
+        bail!(
+            "agent card `domain` is not a supported ServiceNet UI domain for `{scope}` scope (got `{domain}`)"
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_origin_for_scope(scope: &str, origin: &str) -> Result<()> {
+    match scope {
+        "real_world" if !matches!(origin, "established_service" | "custom_built") => {
+            bail!(
+                "agent card `origin` must be `established_service` or `custom_built` for `real_world` scope (got `{origin}`)"
+            );
+        }
+        "wattetheria_native" if origin != "native_published" => {
+            bail!(
+                "agent card `origin` must be `native_published` for `wattetheria_native` scope (got `{origin}`)"
+            );
+        }
+        _ => Ok(()),
+    }
+}
+
+fn domain_allowed_for_scope(scope: &str, domain: &str) -> bool {
+    match scope {
+        "real_world" => matches!(
+            domain,
+            "GENERAL"
+                | "TRANSPORTATION"
+                | "FOOD"
+                | "CLOTHING"
+                | "HOUSING"
+                | "PAYMENTS"
+                | "COMMERCE"
+                | "MEDIA"
+                | "HEALTH"
+                | "EDUCATION"
+                | "TRAVEL"
+        ),
+        "wattetheria_native" => matches!(
+            domain,
+            "GENERAL"
+                | "GOVERNANCE"
+                | "PRODUCTION"
+                | "TRADING"
+                | "AUTOMATION"
+                | "SECURITY"
+                | "EXPLORATION"
+                | "DISCOVERY"
+                | "SERVICENET"
+        ),
+        _ => false,
+    }
 }
 
 /// Validate that the endpoint is a usable runtime URL.
@@ -275,6 +368,10 @@ mod tests {
             "url": "https://alice.example.com/",
             "preferredTransport": "JSONRPC",
             "protocolVersion": "1.0",
+            "scope": "real_world",
+            "origin": "custom_built",
+            "domain": "GENERAL",
+            "cost": 18,
             "skills": [
                 {
                     "description": "Get weather",
@@ -321,6 +418,73 @@ mod tests {
             error
                 .to_string()
                 .contains("skill[0] is missing required field `description`")
+        );
+    }
+
+    #[test]
+    fn agent_card_allows_wattetheria_native_scope() {
+        let mut card = valid_card();
+        card["scope"] = json!("wattetheria_native");
+        card["origin"] = json!("native_published");
+        card["domain"] = json!("SERVICENET");
+        assert!(validate_agent_card(&card).is_ok());
+    }
+
+    #[test]
+    fn agent_card_requires_known_real_world_origin() {
+        let mut card = valid_card();
+        card["origin"] = json!("native_published");
+        let error = validate_agent_card(&card).expect_err("native origin should fail");
+        assert!(
+            error.to_string().contains(
+                "agent card `origin` must be `established_service` or `custom_built` for `real_world` scope"
+            )
+        );
+    }
+
+    #[test]
+    fn agent_card_requires_native_origin_for_native_scope() {
+        let mut card = valid_card();
+        card["scope"] = json!("wattetheria_native");
+        card["origin"] = json!("custom_built");
+        card["domain"] = json!("SERVICENET");
+        let error = validate_agent_card(&card).expect_err("real-world origin should fail");
+        assert!(error.to_string().contains(
+            "agent card `origin` must be `native_published` for `wattetheria_native` scope"
+        ));
+    }
+
+    #[test]
+    fn agent_card_rejects_risk_level_as_domain() {
+        let mut card = valid_card();
+        card["domain"] = json!("LOW");
+        let error = validate_agent_card(&card).expect_err("risk level should not be a domain");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `domain` is not a supported ServiceNet UI domain")
+        );
+    }
+
+    #[test]
+    fn agent_card_rejects_real_world_domain_for_native_scope() {
+        let mut card = valid_card();
+        card["scope"] = json!("wattetheria_native");
+        card["origin"] = json!("native_published");
+        card["domain"] = json!("TRANSPORTATION");
+        let error = validate_agent_card(&card).expect_err("real-world domain should fail");
+        assert!(error.to_string().contains("for `wattetheria_native` scope"));
+    }
+
+    #[test]
+    fn agent_card_requires_integer_cost() {
+        let mut card = valid_card();
+        card["cost"] = json!("18");
+        let error = validate_agent_card(&card).expect_err("string cost should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `cost` must be a non-negative integer")
         );
     }
 }

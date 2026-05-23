@@ -131,6 +131,122 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
 }
 
 #[tokio::test]
+async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_servicenet_agents",
+                "arguments": {
+                    "limit": 1,
+                    "offset": 1
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["count"].as_u64(), Some(1));
+    assert_eq!(content["limit"].as_u64(), Some(1));
+    assert_eq!(content["offset"].as_u64(), Some(1));
+    assert_eq!(content["next_offset"], Value::Null);
+    assert_eq!(content["has_more"].as_bool(), Some(false));
+    assert_eq!(content["known_count"].as_u64(), Some(2));
+    let agents = content["items"].as_array().unwrap();
+    assert_eq!(agents.len(), 1);
+    let beta = &agents[0];
+    assert_eq!(beta["agent_id"].as_str(), Some("agent-beta"));
+    assert_eq!(beta["name"].as_str(), Some("Agent Beta"));
+    assert_eq!(beta["description"].as_str(), Some("Beta test agent"));
+    assert_eq!(beta["status"].as_str(), Some("online"));
+    assert_eq!(beta["version"].as_str(), Some("0.2.0"));
+    assert_eq!(beta["provider_id"].as_str(), Some("provider-two"));
+    assert_eq!(beta["runtime"].as_str(), Some("remote_http"));
+    assert_eq!(beta["protocol"].as_str(), Some("google_a2a / JSONRPC"));
+    assert_eq!(beta["url"].as_str(), Some("https://example.net/a2a"));
+    assert_eq!(beta["risk_level"].as_str(), Some("medium"));
+    assert_eq!(beta["reputation_score"].as_f64(), Some(500.0));
+    assert_eq!(beta["cost"].as_u64(), Some(7));
+    assert!(beta.get("skills").is_none());
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_get_servicenet_agent_returns_enriched_summary() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_servicenet_agent",
+                "arguments": {
+                    "agent_id": "agent-alpha"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let agent = &response["result"]["structuredContent"];
+    assert_eq!(agent["agent_id"].as_str(), Some("agent-alpha"));
+    assert_eq!(agent["name"].as_str(), Some("Agent Alpha"));
+    assert_eq!(agent["description"].as_str(), Some("Alpha test agent"));
+    assert_eq!(agent["status"].as_str(), Some("published"));
+    assert_eq!(agent["version"].as_str(), Some("0.1.0"));
+    assert_eq!(agent["provider_id"].as_str(), Some("provider-one"));
+    assert_eq!(agent["runtime"].as_str(), Some("remote_http"));
+    assert_eq!(agent["protocol"].as_str(), Some("google_a2a / JSONRPC"));
+    assert_eq!(agent["url"].as_str(), Some("https://example.com/a2a"));
+    assert_eq!(agent["risk_level"].as_str(), Some("low"));
+    assert_eq!(agent["reputation_score"].as_f64(), Some(750.0));
+    assert_eq!(agent["cost"].as_u64(), Some(18));
+    assert_eq!(
+        agent["skills"],
+        json!([
+            {
+                "name": "Get weather",
+                "description": "Returns current weather"
+            }
+        ])
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 async fn mcp_tools_call_writes_product_diagnostics() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
 

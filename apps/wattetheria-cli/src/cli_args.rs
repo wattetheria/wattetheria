@@ -293,11 +293,11 @@ pub(crate) enum ServicenetCommand {
     ///
     /// Returns the `ServiceNet` `agent_id` and `provider_id` used by later publish steps.
     #[command(
-        after_help = "Examples:\n  wattetheria servicenet register\n  wattetheria servicenet register --card <path-to-agent-card.json>"
+        after_help = "Examples:\n  wattetheria servicenet register\n  wattetheria servicenet register --card <path-to-agent-card.jsonc>"
     )]
     Register {
-        /// Path to A2A `AgentCard` JSON file. Defaults to agent-card.json in the current directory.
-        #[arg(long, default_value = "agent-card.json")]
+        /// Path to A2A `AgentCard` JSON or JSONC file. Defaults to agent-card.jsonc in the current directory.
+        #[arg(long, default_value = "agent-card.jsonc")]
         card: PathBuf,
     },
     /// Generate local agent-card files used by `ServiceNet` registration.
@@ -328,7 +328,7 @@ pub(crate) enum ServicenetCommand {
 pub(crate) enum ServicenetAgentCardCommand {
     /// Generate an editable A2A `AgentCard` template.
     ///
-    /// By default, writes agent-card.json in the current directory.
+    /// By default, writes agent-card.jsonc in the current directory.
     Init {
         /// Output directory. Defaults to the current directory.
         #[arg(long)]

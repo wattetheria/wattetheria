@@ -87,6 +87,34 @@ struct ServiceNetItemsResponse {
     items: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ServiceNetListAgentsResponseBody {
+    items: Vec<Value>,
+    #[serde(default)]
+    count: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    next_offset: Option<usize>,
+    #[serde(default)]
+    has_more: Option<bool>,
+    #[serde(default)]
+    known_count: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServiceNetListAgentsResponse {
+    pub items: Vec<Value>,
+    pub count: usize,
+    pub limit: usize,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
+    pub has_more: bool,
+    pub known_count: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServiceNetClient {
     base_url: String,
@@ -136,11 +164,57 @@ impl ServiceNetClient {
         &self.base_url
     }
 
-    pub async fn list_agents(&self) -> std::result::Result<Vec<Value>, ServiceNetClientError> {
+    pub async fn list_agents(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> std::result::Result<ServiceNetListAgentsResponse, ServiceNetClientError> {
+        let mut url = self
+            .endpoint(&["v1", "agents"])
+            .map_err(|error| Self::client_error(&error))?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string())
+            .append_pair("offset", &offset.to_string());
+        let response: ServiceNetListAgentsResponseBody = self
+            .request_json(Method::GET, url, Option::<&Value>::None)
+            .await?;
+        let count = response.count.unwrap_or(response.items.len());
+        let limit = response.limit.unwrap_or(limit);
+        let offset = response.offset.unwrap_or(offset);
+        let next_offset = response.next_offset.or_else(|| {
+            let next = offset.saturating_add(response.items.len());
+            response.has_more.unwrap_or(false).then_some(next)
+        });
+        Ok(ServiceNetListAgentsResponse {
+            items: response.items,
+            count,
+            limit,
+            offset,
+            next_offset,
+            has_more: response.has_more.unwrap_or(next_offset.is_some()),
+            known_count: response.known_count,
+        })
+    }
+
+    pub async fn list_agent_health(
+        &self,
+    ) -> std::result::Result<Vec<Value>, ServiceNetClientError> {
         let response: ServiceNetItemsResponse = self
             .request_json(
                 Method::GET,
-                self.endpoint(&["v1", "agents"])
+                self.endpoint(&["v1", "health", "agents"])
+                    .map_err(|error| Self::client_error(&error))?,
+                Option::<&Value>::None,
+            )
+            .await?;
+        Ok(response.items)
+    }
+
+    pub async fn list_agent_trust(&self) -> std::result::Result<Vec<Value>, ServiceNetClientError> {
+        let response: ServiceNetItemsResponse = self
+            .request_json(
+                Method::GET,
+                self.endpoint(&["v1", "trust", "agents"])
                     .map_err(|error| Self::client_error(&error))?,
                 Option::<&Value>::None,
             )

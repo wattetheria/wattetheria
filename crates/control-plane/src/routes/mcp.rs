@@ -5,6 +5,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 use tower::ServiceExt;
@@ -26,6 +27,8 @@ const MAX_GATEWAY_TASK_WINDOW: usize = 200;
 const DEFAULT_GATEWAY_TOPIC_LIMIT: usize = 50;
 const MAX_GATEWAY_TOPIC_LIMIT: usize = 100;
 const MAX_GATEWAY_TOPIC_WINDOW: usize = 200;
+const DEFAULT_SERVICENET_AGENT_LIMIT: usize = 50;
+const MAX_SERVICENET_AGENT_LIMIT: usize = 100;
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
 #[derive(Debug, Clone)]
 struct AgentTool {
@@ -217,13 +220,7 @@ async fn call_tool(
         },
     );
 
-    if tool.name == "list_missions" {
-        let result = network_mission_market_result(state, &arguments).await;
-        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
-        return Ok(result);
-    }
-    if tool.name == "list_hives" {
-        let result = network_hive_market_result(state, &arguments).await;
+    if let Some(result) = direct_mcp_tool_result(state, tool.name, &arguments).await {
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
@@ -250,6 +247,20 @@ async fn call_tool(
     let result = response_to_tool_result(response).await;
     record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
     Ok(result)
+}
+
+async fn direct_mcp_tool_result(
+    state: &ControlPlaneState,
+    tool_name: &str,
+    arguments: &Value,
+) -> Option<Value> {
+    match tool_name {
+        "list_missions" => Some(network_mission_market_result(state, arguments).await),
+        "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
+        "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
+        "list_hives" => Some(network_hive_market_result(state, arguments).await),
+        _ => None,
+    }
 }
 
 fn record_mcp_tool_result(
@@ -435,6 +446,189 @@ async fn network_mission_market_result(state: &ControlPlaneState, arguments: &Va
         Ok(payload) => tool_success(&payload),
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
+}
+
+async fn servicenet_agents_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let Some(client) = state.servicenet_client.as_deref() else {
+        return tool_error(&json!({"error": "servicenet is not configured"}));
+    };
+    let limit = numeric_argument(arguments, "limit")
+        .unwrap_or(DEFAULT_SERVICENET_AGENT_LIMIT)
+        .clamp(1, MAX_SERVICENET_AGENT_LIMIT);
+    let offset = numeric_argument(arguments, "offset").unwrap_or(0);
+    let agents = match client.list_agents(limit, offset).await {
+        Ok(response) => response,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let health = match client.list_agent_health().await {
+        Ok(items) => items,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let trust = match client.list_agent_trust().await {
+        Ok(items) => items,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let items = servicenet_agent_list_summaries(&agents.items, health, trust);
+    tool_success(&json!({
+        "items": items,
+        "count": agents.count,
+        "limit": agents.limit,
+        "offset": agents.offset,
+        "next_offset": agents.next_offset,
+        "has_more": agents.has_more,
+        "known_count": agents.known_count,
+    }))
+}
+
+async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let Some(client) = state.servicenet_client.as_deref() else {
+        return tool_error(&json!({"error": "servicenet is not configured"}));
+    };
+    let Some(agent_id) = required_string(arguments, "agent_id") else {
+        return tool_error(&json!({"error": "agent_id is required"}));
+    };
+    let agent = match client.get_agent(&agent_id).await {
+        Ok(item) => item,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let health = match client.list_agent_health().await {
+        Ok(items) => items,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let trust = match client.list_agent_trust().await {
+        Ok(items) => items,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let health_by_agent = servicenet_records_by_agent_id(health);
+    let trust_by_agent = servicenet_records_by_agent_id(trust);
+    tool_success(&servicenet_agent_detail_summary(
+        &agent,
+        &health_by_agent,
+        &trust_by_agent,
+    ))
+}
+
+fn servicenet_agent_list_summaries(
+    agents: &[Value],
+    health: Vec<Value>,
+    trust: Vec<Value>,
+) -> Vec<Value> {
+    let health_by_agent = servicenet_records_by_agent_id(health);
+    let trust_by_agent = servicenet_records_by_agent_id(trust);
+    agents
+        .iter()
+        .map(|agent| servicenet_agent_list_summary(agent, &health_by_agent, &trust_by_agent))
+        .collect()
+}
+
+fn servicenet_agent_detail_summary(
+    agent: &Value,
+    health_by_agent: &BTreeMap<String, Value>,
+    trust_by_agent: &BTreeMap<String, Value>,
+) -> Value {
+    let mut summary = servicenet_agent_list_summary(agent, health_by_agent, trust_by_agent);
+    if let Some(object) = summary.as_object_mut() {
+        object.insert("skills".to_owned(), json!(servicenet_agent_skills(agent)));
+    }
+    summary
+}
+
+fn servicenet_records_by_agent_id(items: Vec<Value>) -> BTreeMap<String, Value> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let agent_id = item.get("agent_id")?.as_str()?.to_owned();
+            Some((agent_id, item))
+        })
+        .collect()
+}
+
+fn servicenet_agent_list_summary(
+    agent: &Value,
+    health_by_agent: &BTreeMap<String, Value>,
+    trust_by_agent: &BTreeMap<String, Value>,
+) -> Value {
+    let agent_id = field_str(agent, &["agent_id"]).unwrap_or_default();
+    let health = health_by_agent.get(agent_id);
+    let trust = trust_by_agent.get(agent_id);
+    json!({
+        "agent_id": value_at(agent, &["agent_id"]).cloned().unwrap_or(Value::Null),
+        "name": value_at(agent, &["agent_card", "name"]).cloned().unwrap_or(Value::Null),
+        "description": value_at(agent, &["agent_card", "description"]).cloned().unwrap_or(Value::Null),
+        "status": servicenet_agent_status(health),
+        "version": value_at(agent, &["version"]).cloned().unwrap_or(Value::Null),
+        "provider_id": value_at(agent, &["provider_id"]).cloned().unwrap_or(Value::Null),
+        "runtime": value_at(agent, &["deployment", "runtime"]).cloned().unwrap_or(Value::Null),
+        "protocol": servicenet_agent_protocol(agent),
+        "url": value_at(agent, &["deployment", "endpoint", "url"]).cloned().unwrap_or(Value::Null),
+        "risk_level": value_at(agent, &["review", "risk_level"]).cloned().unwrap_or(Value::Null),
+        "reputation_score": servicenet_reputation_score(trust),
+        "cost": value_at(agent, &["agent_card", "cost"]).cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn servicenet_agent_status(health: Option<&Value>) -> Value {
+    match health.and_then(|record| field_str(record, &["status"])) {
+        Some("unknown") => json!("published"),
+        Some(status) => json!(status),
+        None => Value::Null,
+    }
+}
+
+fn servicenet_reputation_score(trust: Option<&Value>) -> Value {
+    trust
+        .and_then(|record| value_at(record, &["reputation_score"]))
+        .and_then(Value::as_f64)
+        .map_or(Value::Null, |score| json!(score * 1000.0))
+}
+
+fn servicenet_agent_protocol(agent: &Value) -> Value {
+    let interaction_protocol =
+        field_str(agent, &["deployment", "endpoint", "interaction_protocol"]);
+    let protocol_binding = field_str(agent, &["deployment", "endpoint", "protocol_binding"]);
+    match (interaction_protocol, protocol_binding) {
+        (Some(interaction_protocol), Some(protocol_binding)) => {
+            json!(format!("{interaction_protocol} / {protocol_binding}"))
+        }
+        (Some(interaction_protocol), None) => json!(interaction_protocol),
+        (None, Some(protocol_binding)) => json!(protocol_binding),
+        (None, None) => Value::Null,
+    }
+}
+
+fn servicenet_agent_skills(agent: &Value) -> Vec<Value> {
+    value_at(agent, &["agent_card", "skills"])
+        .and_then(Value::as_array)
+        .map(|skills| {
+            skills
+                .iter()
+                .map(servicenet_agent_skill)
+                .filter(|skill| skill.as_object().is_some_and(|object| !object.is_empty()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn servicenet_agent_skill(skill: &Value) -> Value {
+    let mut item = Map::new();
+    for field in ["name", "description"] {
+        if let Some(value) = value_at(skill, &[field]) {
+            item.insert(field.to_owned(), value.clone());
+        }
+    }
+    Value::Object(item)
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn field_str<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    value_at(value, path).and_then(Value::as_str)
 }
 
 async fn network_mission_market_payload(

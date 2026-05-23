@@ -17,7 +17,7 @@ use crate::config::{
 };
 use crate::doctor::run_doctor;
 use semver::Version;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -712,43 +712,19 @@ fn run_servicenet_agent_card_init(out: Option<PathBuf>) -> Result<()> {
             output_dir.display()
         )
     })?;
-    let card_path = output_dir.join("agent-card.json");
+    let card_path = output_dir.join("agent-card.jsonc");
     if card_path.exists() {
         bail!("agent card already exists: {}", card_path.display());
     }
-    let template = serde_json::json!({
-        "name": "",
-        "description": "",
-        "url": "",
-        "preferredTransport": "JSONRPC",
-        "protocolVersion": "1.0",
-        "skills": [
-            {
-                "id": "",
-                "name": "",
-                "description": ""
-            }
-        ],
-        "securitySchemes": {
-            "none": {
-                "type": "none"
-            }
-        },
-        "security": [
-            {
-                "none": []
-            }
-        ]
-    });
-    fs::write(&card_path, serde_json::to_string_pretty(&template)?)
+    fs::write(&card_path, agent_card_template_jsonc())
         .with_context(|| format!("write agent card template `{}`", card_path.display()))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
+        serde_json::to_string_pretty(&json!({
             "status": "ok",
             "card": card_path,
             "next": [
-                "Edit agent-card.json with your agent details.",
+                "Edit agent-card.jsonc with your agent details.",
                 "Run `wattetheria servicenet register` from the directory that contains the file.",
                 "Run `wattetheria servicenet publish <agent-id>` with the returned agent_id."
             ],
@@ -962,8 +938,59 @@ fn load_agent_card(card_path: &Path) -> Result<(Value, String, PathBuf)> {
         .with_context(|| format!("resolve agent card `{}`", card_path.display()))?;
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("read agent card `{}`", path.display()))?;
-    let card: Value = serde_json::from_str(&raw).context("parse agent card JSON")?;
+    let mut json_source = raw.clone();
+    json_strip_comments::strip(&mut json_source).context("strip agent card JSONC comments")?;
+    let card: Value = serde_json::from_str(&json_source).context("parse agent card JSON/JSONC")?;
     Ok((card, raw, path))
+}
+
+fn agent_card_template_jsonc() -> &'static str {
+    r#"{
+  "name": "",
+  "description": "",
+  "url": "",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "1.0",
+
+  // UI Scope:
+  // "real_world" = real-world ServiceNet agent.
+  // "wattetheria_native" = Wattetheria-native published agent.
+  "scope": "real_world",
+
+  // UI Origin:
+  // real_world: "established_service" or "custom_built".
+  // wattetheria_native: "native_published".
+  "origin": "custom_built",
+
+  // UI Domain:
+  // real_world: GENERAL, TRANSPORTATION, FOOD, CLOTHING, HOUSING, PAYMENTS,
+  // COMMERCE, MEDIA, HEALTH, EDUCATION, TRAVEL.
+  // wattetheria_native: GENERAL, GOVERNANCE, PRODUCTION, TRADING, AUTOMATION,
+  // SECURITY, EXPLORATION, DISCOVERY, SERVICENET.
+  "domain": "GENERAL",
+
+  // UI Cost. User-set cost charged for invoking this agent.
+  "cost": 18,
+
+  "skills": [
+    {
+      "id": "",
+      "name": "",
+      "description": ""
+    }
+  ],
+  "securitySchemes": {
+    "none": {
+      "type": "none"
+    }
+  },
+  "security": [
+    {
+      "none": []
+    }
+  ]
+}
+"#
 }
 
 fn agent_card_url(agent_card: &Value) -> Result<&str> {
@@ -1437,4 +1464,51 @@ fn latest_stats(events: &[EventRecord]) -> Option<AgentStats> {
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{agent_card_template_jsonc, load_agent_card};
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn load_agent_card_accepts_jsonc_comments() {
+        let dir = tempdir().expect("create temp dir");
+        let card_path = dir.path().join("agent-card.jsonc");
+        fs::write(
+            &card_path,
+            r#"{
+  // UI metadata must survive JSONC parsing.
+  "name": "Alice",
+  "scope": "real_world",
+  "origin": "custom_built",
+  "domain": "GENERAL"
+}"#,
+        )
+        .expect("write card");
+
+        let (card, raw, path) = load_agent_card(&card_path).expect("load JSONC card");
+
+        assert_eq!(path, card_path.canonicalize().expect("canonicalize card"));
+        assert!(raw.contains("// UI metadata"));
+        assert_eq!(card["name"], "Alice");
+        assert_eq!(card["scope"], "real_world");
+        assert_eq!(card["origin"], "custom_built");
+        assert_eq!(card["domain"], "GENERAL");
+    }
+
+    #[test]
+    fn agent_card_template_is_valid_jsonc() {
+        let dir = tempdir().expect("create temp dir");
+        let card_path = dir.path().join("agent-card.jsonc");
+        fs::write(&card_path, agent_card_template_jsonc()).expect("write template");
+
+        let (card, _, _) = load_agent_card(&card_path).expect("load template");
+
+        assert_eq!(card["scope"], "real_world");
+        assert_eq!(card["origin"], "custom_built");
+        assert_eq!(card["domain"], "GENERAL");
+        assert_eq!(card["cost"], 18);
+    }
 }

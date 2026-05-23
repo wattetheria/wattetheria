@@ -14,6 +14,7 @@ clap.workspace = true
 flate2.workspace = true
 hex.workspace = true
 jsonschema.workspace = true
+json-strip-comments.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

@@ -1,8 +1,9 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -19,6 +20,14 @@ use wattetheria_kernel::servicenet::{
 };
 
 const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
+const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
+const MAX_AGENT_LIST_LIMIT: usize = 100;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct AgentListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
 
 #[derive(Debug, Clone)]
 struct ThirdPartyAgentEvent {
@@ -182,6 +191,7 @@ async fn notify_local_agent_of_third_party_result(
 
 pub(crate) async fn list_agents(
     State(state): State<ControlPlaneState>,
+    Query(query): Query<AgentListQuery>,
     headers: HeaderMap,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
@@ -191,13 +201,23 @@ pub(crate) async fn list_agents(
     let Some(client) = servicenet_client(&state) else {
         return servicenet_unavailable_response();
     };
-    let items = match client.list_agents().await {
-        Ok(items) => items,
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_AGENT_LIST_LIMIT)
+        .clamp(1, MAX_AGENT_LIST_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let agents = match client.list_agents(limit, offset).await {
+        Ok(response) => response,
         Err(error) => return servicenet_error_response(&error),
     };
     let response = json!({
-        "items": items,
-        "count": items.len(),
+        "items": agents.items,
+        "count": agents.count,
+        "limit": agents.limit,
+        "offset": agents.offset,
+        "next_offset": agents.next_offset,
+        "has_more": agents.has_more,
+        "known_count": agents.known_count,
     });
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
