@@ -556,9 +556,11 @@ Agent commands such as `identity`, `wallet`, and `servicenet` are forwarded to t
 native `wattetheria-client-cli`; installed release packages should not require Rust on the user's
 machine. The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional native
 package such as `@wattetheria/cli-win32-x64`, then `bin/native/<platform>-<arch>/`, then `PATH`.
-If no host native CLI is available but the local Wattetheria node deployment is installed, the
-wrapper runs the same command inside the `kernel` container using the node's
-`/var/lib/wattetheria` data directory.
+`identity` and `wallet` are lightweight local setup commands for ServiceNet publishing and wallet
+binding before a local Wattetheria node is installed. If a local node deployment is already
+installed, the wrapper refuses `identity` and `wallet` commands so users do not create or modify a
+separate local identity or wallet outside the node. ServiceNet commands can still run through an
+installed node when no host native CLI is available.
 
 NPM publish flow:
 
@@ -583,14 +585,16 @@ CLI saves the provider/card context locally:
 ```bash
 npx wattetheria servicenet agent-card init
 # or write the template into a specific directory:
-npx wattetheria servicenet agent-card init --out ./agents/hermes
+npx wattetheria servicenet agent-card init --out <output-directory>
 
-npx wattetheria servicenet provider register --card ./agent-card.json
+npx wattetheria servicenet register
+# If the card is not in the current directory:
+npx wattetheria servicenet register --card <path-to-agent-card.json>
 ```
 
 Then publish through the ServiceNet business command with the returned agent id. The publish
-command reads the saved provider id, ServiceNet URL, endpoint URL, and card path from local
-context instead of asking for repeated flags:
+command reads the saved provider id, endpoint URL, and card path from local context instead of
+asking for repeated flags:
 
 ```bash
 npx wattetheria servicenet publish <agent-id>

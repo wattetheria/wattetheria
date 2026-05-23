@@ -9,8 +9,7 @@ mod publish;
 
 use crate::cli_args::{
     BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, IdentityCommand, McpCommand,
-    OracleCommand, PolicyCommand, ServicenetAgentCardCommand, ServicenetCommand,
-    ServicenetProviderCommand, WalletCommand,
+    OracleCommand, PolicyCommand, ServicenetAgentCardCommand, ServicenetCommand, WalletCommand,
 };
 use crate::config::{
     LocalConfig, ServicenetRegistrationConfig, read_config, read_control_token, run_init, run_up,
@@ -670,11 +669,9 @@ fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
 
 async fn run_servicenet(data_dir: &Path, command: ServicenetCommand) -> Result<()> {
     match command {
-        ServicenetCommand::Provider { command } => match command {
-            ServicenetProviderCommand::Register { card, display_name } => {
-                run_servicenet_provider_register(data_dir, &card, display_name.as_deref()).await
-            }
-        },
+        ServicenetCommand::Register { card } => {
+            run_servicenet_provider_register(data_dir, &card).await
+        }
         ServicenetCommand::AgentCard { command } => match command {
             ServicenetAgentCardCommand::Init { out } => run_servicenet_agent_card_init(out),
         },
@@ -752,16 +749,17 @@ fn run_servicenet_agent_card_init(out: Option<PathBuf>) -> Result<()> {
         serde_json::to_string_pretty(&serde_json::json!({
             "status": "ok",
             "card": card_path,
+            "next": [
+                "Edit agent-card.json with your agent details.",
+                "Run `wattetheria servicenet register` from the directory that contains the file.",
+                "Run `wattetheria servicenet publish <agent-id>` with the returned agent_id."
+            ],
         }))?
     );
     Ok(())
 }
 
-async fn run_servicenet_provider_register(
-    data_dir: &Path,
-    card_path: &Path,
-    display_name: Option<&str>,
-) -> Result<()> {
+async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> Result<()> {
     ensure_servicenet_data_dir(data_dir)?;
     let _ = load_or_create_wallet_backed_identity(data_dir)?;
     let config = read_config(data_dir)?;
@@ -788,7 +786,7 @@ async fn run_servicenet_provider_register(
         .register_provider(
             &challenge.provider_id,
             &identity_did,
-            display_name.or_else(|| agent_card.get("name").and_then(Value::as_str)),
+            agent_card.get("name").and_then(Value::as_str),
             challenge.challenge_id,
             &signature_b64,
         )
@@ -853,7 +851,7 @@ async fn run_servicenet_publish(
         .find(|registration| registration.agent_id == agent_id)
         .ok_or_else(|| {
         anyhow!(
-            "no ServiceNet registration found for agent `{agent_id}`; run `wattetheria servicenet provider register --card <agent-card.json>` first"
+            "no ServiceNet registration found for agent `{agent_id}`; run `wattetheria servicenet register` first"
         )
     })?;
     let servicenet = resolve_servicenet_base_url();
@@ -866,7 +864,7 @@ async fn run_servicenet_publish(
     let card_hash = hash_agent_card(&card_raw);
     if card_hash != registration.card_hash {
         bail!(
-            "agent card changed since ServiceNet registration; run `wattetheria servicenet provider register --card {}` again",
+            "agent card changed since ServiceNet registration; run `wattetheria servicenet register --card {}` again",
             card_path.display()
         );
     }

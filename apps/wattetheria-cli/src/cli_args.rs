@@ -66,18 +66,29 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DataCommand,
     },
+    /// Manage a lightweight local wallet for `ServiceNet` publishing and payment binding.
+    ///
+    /// Use this when you have not installed a local Wattetheria node. If a local
+    /// node is already installed, use the node's existing wallet instead of
+    /// creating a separate local wallet.
     Wallet {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
         #[command(subcommand)]
         command: WalletCommand,
     },
+    /// Initialize or inspect a lightweight local identity for `ServiceNet` publishing or wallet binding.
+    ///
+    /// Use this when you have not installed a local Wattetheria node. If a local
+    /// node is already installed, use the node's existing identity instead of
+    /// creating a separate local identity.
     Identity {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
         #[command(subcommand)]
         command: IdentityCommand,
     },
+    /// Register and publish agents to `ServiceNet`.
     Servicenet {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
@@ -224,6 +235,7 @@ pub(crate) enum DataCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum WalletCommand {
+    /// Create a local payment account for `ServiceNet` payment binding.
     CreatePaymentAccount {
         #[arg(long)]
         label: Option<String>,
@@ -232,6 +244,7 @@ pub(crate) enum WalletCommand {
         #[arg(long)]
         network: Option<String>,
     },
+    /// Import a local payment account for `ServiceNet` payment binding.
     ImportPaymentAccount {
         #[arg(long)]
         private_key_hex: String,
@@ -242,6 +255,7 @@ pub(crate) enum WalletCommand {
         #[arg(long)]
         network: Option<String>,
     },
+    /// Track a payment address without importing its private key.
     WatchPaymentAccount {
         #[arg(long)]
         address: String,
@@ -252,39 +266,48 @@ pub(crate) enum WalletCommand {
         #[arg(long)]
         network: Option<String>,
     },
+    /// List local payment accounts.
     ListPaymentAccounts,
+    /// Select the active local payment account for `ServiceNet` payment binding.
     BindPaymentAccount {
         #[arg(long)]
         account_id: String,
     },
+    /// Show the active local payment account.
     ActivePaymentAccount,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum IdentityCommand {
-    /// Generate and persist a wallet-backed agent identity if missing,
-    /// then print the DID.
+    /// Initialize a lightweight local identity for `ServiceNet` publishing or wallet binding.
     Init,
-    /// Print the public agent DID + public key, never the private key.
+    /// Show the local identity public DID and public key.
     Show,
-    /// Export the active ed25519 identity seed as 32 raw bytes, hex-encoded.
-    /// Treat the output like a password.
+    /// Export the local identity seed; treat it like a password.
     ExportSeed,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServicenetCommand {
-    Provider {
-        #[command(subcommand)]
-        command: ServicenetProviderCommand,
+    /// Register an agent card and local identity with `ServiceNet`.
+    ///
+    /// Returns the `ServiceNet` `agent_id` and `provider_id` used by later publish steps.
+    #[command(
+        after_help = "Examples:\n  wattetheria servicenet register\n  wattetheria servicenet register --card <path-to-agent-card.json>"
+    )]
+    Register {
+        /// Path to A2A `AgentCard` JSON file. Defaults to agent-card.json in the current directory.
+        #[arg(long, default_value = "agent-card.json")]
+        card: PathBuf,
     },
+    /// Generate local agent-card files used by `ServiceNet` registration.
     AgentCard {
         #[command(subcommand)]
         command: ServicenetAgentCardCommand,
     },
-    /// Publish the registered `ServiceNet` agent.
+    /// Publish a registered `ServiceNet` agent by `agent_id`.
     Publish {
-        /// Agent id returned by `servicenet provider register --card`.
+        /// Agent id returned by `servicenet register`.
         agent_id: String,
         /// Semantic version of this submission, e.g. "0.1.0".
         #[arg(long, default_value = "0.1.0")]
@@ -309,23 +332,12 @@ pub(crate) enum ServicenetCommand {
 #[derive(Debug, Subcommand)]
 pub(crate) enum ServicenetAgentCardCommand {
     /// Generate an editable A2A `AgentCard` template.
+    ///
+    /// By default, writes agent-card.json in the current directory.
     Init {
         /// Output directory. Defaults to the current directory.
         #[arg(long)]
         out: Option<PathBuf>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ServicenetProviderCommand {
-    /// Register the local identity as a provider on a watt-servicenet node.
-    Register {
-        /// Path to A2A `AgentCard` JSON file.
-        #[arg(long)]
-        card: PathBuf,
-        /// Optional display name shown in registry listings.
-        #[arg(long)]
-        display_name: Option<String>,
     },
 }
 
