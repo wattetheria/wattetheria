@@ -7,10 +7,6 @@ on:
         description: Run builds and npm publish dry-runs without publishing packages.
         type: boolean
         default: true
-      publish_main:
-        description: Publish the main wattetheria package after all native packages succeed.
-        type: boolean
-        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -131,39 +127,5 @@ jobs:
       - name: Publish native package
         if: ${{ !inputs.dry_run }}
         run: npm publish npm/native/${{ matrix.target_key }} --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  main:
-    name: Publish main npm package
-    needs: native
-    if: inputs.publish_main
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
-
-      - name: Check package syntax
-        run: npm run check
-
-      - name: Pack main package dry-run
-        if: inputs.dry_run
-        run: npm pack --dry-run
-
-      - name: Verify published native packages
-        if: ${{ !inputs.dry_run }}
-        run: npm run prepublishOnly
-        env:
-          WATTETHERIA_NPM_VIEW_ATTEMPTS: "6"
-          WATTETHERIA_NPM_VIEW_RETRY_DELAY_MS: "10000"
-
-      - name: Publish main package
-        if: ${{ !inputs.dry_run }}
-        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

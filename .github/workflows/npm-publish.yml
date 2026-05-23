@@ -1,0 +1,41 @@
+name: npm-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run npm pack and publish dry-run without publishing.
+        type: boolean
+        default: true
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  publish:
+    name: Publish wattetheria npm package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Check package syntax
+        run: npm run check
+
+      - name: Pack dry-run
+        run: npm pack --dry-run
+
+      - name: Publish dry-run
+        if: inputs.dry_run
+        run: npm publish --access public --dry-run
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -553,24 +553,28 @@ CLI prerequisites:
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
 Agent commands such as `identity`, `wallet`, `servicenet`, and `publish` are forwarded to the
-platform native `wattetheria-client-cli`; installed release packages should not require Rust on the
-user's machine. The npm package uses platform-specific optional native packages such as
-`@wattetheria/cli-win32-x64`, `@wattetheria/cli-darwin-arm64`, and `@wattetheria/cli-linux-x64`.
-The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional package, then
-`bin/native/<platform>-<arch>/`, then `PATH`.
+native `wattetheria-client-cli`; installed release packages should not require Rust on the user's
+machine. The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional native
+package such as `@wattetheria/cli-win32-x64`, then `bin/native/<platform>-<arch>/`, then `PATH`.
+If no host native CLI is available but the local Wattetheria node deployment is installed, the
+wrapper runs the same command inside the `kernel` container using the node's
+`/var/lib/wattetheria` data directory.
 
-Native npm release flow:
+NPM publish flow:
 
-1. Set the repository secret `NPM_TOKEN` to an npm token that can publish `wattetheria` and
-   `@wattetheria/cli-*`.
-2. Run the manual GitHub Actions workflow `npm-native-cli-release`.
-3. Keep `dry_run` enabled first. It builds and packs each native package on its matching runner.
-4. Rerun with `dry_run=false` to publish native packages first, then the main `wattetheria` package.
+1. Set the repository secret `NPM_TOKEN` to an npm token that can publish `wattetheria`.
+2. Run the manual GitHub Actions workflow `npm-publish`.
+3. Keep `dry_run` enabled first. It checks syntax, packs the main package, and runs npm publish
+   dry-run without building native packages.
+4. Rerun with `dry_run=false` to publish the main `wattetheria` package.
 
-The main package `prepublishOnly` checks that the configured native optional packages exist on npm
-before allowing `npm publish --access public`. Local `npm run stage:native-cli` is only for
-maintainer verification on the current machine; Windows binaries are produced by the Windows GitHub
-Actions runner, not from a macOS developer machine.
+The main package does not block on platform native packages. Windows and other platform-specific
+publisher execution is handled either by the optional native package or by the installed
+Wattetheria node image fallback.
+
+Standalone native publisher packages are optional and can be released separately with the manual
+`npm-native-cli-release` workflow. Use that workflow when publishing new `@wattetheria/cli-*`
+packages for users who want to run `servicenet` or `publish` before installing the local node.
 
 Version commands:
 

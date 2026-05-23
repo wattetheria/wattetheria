@@ -79,6 +79,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     fi \
     && cargo chef cook --release --recipe-path recipe.json \
     -p wattetheria-kernel \
+    -p wattetheria-client-cli \
     && rm -f /root/.gitconfig
 
 FROM chef AS builder
@@ -124,7 +125,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     if [ -f /run/secrets/github_token ]; then \
       git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
     fi \
-    && cargo build --release -p wattetheria-kernel \
+    && cargo build --release -p wattetheria-kernel -p wattetheria-client-cli \
     && rm -f /root/.gitconfig
 
 FROM debian:bookworm-slim
@@ -138,6 +139,7 @@ RUN useradd --create-home --uid 10001 wattetheria
 WORKDIR /app
 
 COPY --from=builder /app/target/release/wattetheria-kernel /app/target/release/wattetheria-kernel
+COPY --from=builder /app/target/release/wattetheria-client-cli /app/target/release/wattetheria-client-cli
 COPY --from=builder /app/scripts/docker-kernel-entrypoint.sh /app/scripts/docker-kernel-entrypoint.sh
 
 RUN mkdir -p /var/lib/wattetheria \
