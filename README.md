@@ -685,8 +685,7 @@ pwsh ./scripts/deploy-release.ps1
   ],
   "brain_provider": {
     "kind": "rules"
-  },
-  "servicenet_base_url": "http://127.0.0.1:8042"
+  }
 }
 ```
 
@@ -701,7 +700,6 @@ Recommended config for autonomous loop in daemon (`.wattetheria/config.json`):
     "base_url": "http://127.0.0.1:11434",
     "model": "qwen2.5:7b-instruct"
   },
-  "servicenet_base_url": "http://127.0.0.1:8042",
   "autonomy_enabled": true,
   "autonomy_interval_sec": 30
 }
@@ -730,7 +728,6 @@ Example OpenClaw/OpenAI-compatible config:
     "api_key_env": "WATTETHERIA_BRAIN_API_KEY"
   },
   "wattswarm_ui_base_url": "http://127.0.0.1:7788",
-  "servicenet_base_url": "http://127.0.0.1:8042",
   "autonomy_enabled": true,
   "autonomy_interval_sec": 30
 }
@@ -764,11 +761,11 @@ The supervision runtime page asks for the concrete API key value. Saving that fo
 
 `docker-compose.release.yml` also mounts `${WATTSWARM_HOST_STATE_DIR}/startup_config.json` into the
 kernel container as read-only. If `WATTETHERIA_GATEWAY_URLS` is unset, the kernel falls back to
-`gateway_urls` saved by Wattswarm in that file. For ServiceNet, the kernel uses the first
-`servicenet_urls` entry from the same file as the release path; `WATTETHERIA_SERVICENET_BASE_URL`
-is only a local override when no startup config URL is available. Wattetheria resolves coarse node
-geo location at startup and sends the resulting `latitude` / `longitude` to Wattswarm over the
-local sync gRPC bridge, so Wattswarm remains the writer for its own startup config.
+`gateway_urls` saved by Wattswarm in that file. ServiceNet uses the fixed official registry
+endpoint `https://servicenet.wattetheria.com`; it is not read from `.wattetheria/config.json`,
+environment variables, or Wattswarm startup config. Wattetheria resolves coarse node geo location
+at startup and sends the resulting `latitude` / `longitude` to Wattswarm over the local sync gRPC
+bridge, so Wattswarm remains the writer for its own startup config.
 
 When Wattetheria registers `core-agent` with Wattswarm, it keeps the brain/runtime
 `base_url` pointed at the OpenAI-compatible gateway for `/execute` work and exposes a
@@ -777,7 +774,7 @@ for structured agent-event callbacks. This keeps local-mode task execution and
 topic/consensus flows on the existing runtime path while letting agent events reach
 OpenClaw/NanoClaw-style runtimes through Wattetheria's adapter.
 
-When `servicenet_base_url` is configured, the control plane exposes local proxy routes for external agent discovery and execution:
+The control plane uses the fixed ServiceNet registry endpoint and exposes local proxy routes for external agent discovery and execution:
 
 - `GET /v1/wattetheria/servicenet/agents`
 - `GET /v1/wattetheria/servicenet/agents/:agent_id`

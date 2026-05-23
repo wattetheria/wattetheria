@@ -765,7 +765,7 @@ async fn run_servicenet_provider_register(
     ensure_servicenet_data_dir(data_dir)?;
     let _ = load_or_create_wallet_backed_identity(data_dir)?;
     let config = read_config(data_dir)?;
-    let servicenet = resolve_servicenet_base_url(&config);
+    let servicenet = resolve_servicenet_base_url();
     let (agent_card, card_raw, card_path) = load_agent_card(card_path)?;
     publish::validate_agent_card(&agent_card)?;
     let endpoint = agent_card_url(&agent_card)?;
@@ -805,7 +805,6 @@ async fn run_servicenet_provider_register(
     let card_hash = hash_agent_card(&card_raw);
 
     let mut config = config;
-    config.servicenet_base_url = Some(servicenet.clone());
     let registration = ServicenetRegistrationConfig {
         provider_id: servicenet_namespace.clone(),
         provider_did: attester_identity.clone(),
@@ -857,7 +856,7 @@ async fn run_servicenet_publish(
             "no ServiceNet registration found for agent `{agent_id}`; run `wattetheria servicenet provider register --card <agent-card.json>` first"
         )
     })?;
-    let servicenet = resolve_servicenet_base_url(&config);
+    let servicenet = resolve_servicenet_base_url();
 
     let card_path = PathBuf::from(&registration.card_path);
     let (agent_card, card_raw, _) = load_agent_card(&card_path)?;
@@ -982,19 +981,7 @@ fn ensure_servicenet_data_dir(data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn resolve_servicenet_base_url(config: &LocalConfig) -> String {
-    if let Some(base_url) = config.servicenet_base_url.as_deref() {
-        let normalized = base_url.trim().trim_end_matches('/');
-        if !normalized.is_empty() {
-            return normalized.to_owned();
-        }
-    }
-    if let Ok(base_url) = std::env::var("WATTETHERIA_SERVICENET_BASE_URL") {
-        let normalized = base_url.trim().trim_end_matches('/');
-        if !normalized.is_empty() {
-            return normalized.to_owned();
-        }
-    }
+fn resolve_servicenet_base_url() -> String {
     DEFAULT_SERVICENET_BASE_URL.to_owned()
 }
 

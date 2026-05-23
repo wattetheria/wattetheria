@@ -148,12 +148,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let executor_base_url = resolve_executor_base_url(&brain_config);
     let brain_config_arc = Arc::new(tokio::sync::RwLock::new(brain_config.clone()));
     let brain_engine_arc = Arc::new(tokio::sync::RwLock::new(brain_engine));
-    let servicenet_base_url = resolve_servicenet_base_url(cli);
-    let servicenet_client = servicenet_base_url
-        .as_deref()
-        .map(ServiceNetClient::new)
-        .transpose()?
-        .map(Arc::new);
+    let servicenet_base_url = resolve_servicenet_base_url();
+    let servicenet_client = Some(Arc::new(ServiceNetClient::new(&servicenet_base_url)?));
 
     let mut online_proof: OnlineProofManager = local_db.load_or_migrate(
         local_db::domain::ONLINE_PROOF,
@@ -181,7 +177,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         &identity,
         &brain_config,
         &control_bind,
-        cli.servicenet_base_url.as_deref(),
+        Some(&servicenet_base_url),
         &agent_surface,
     )
     .context("write agent participation artifacts")?;
@@ -723,8 +719,6 @@ fn spawn_gateway_dispatch_tasks(
 struct GatewayDispatchConfig {
     #[serde(default)]
     gateway_urls: Vec<String>,
-    #[serde(default)]
-    servicenet_urls: Vec<String>,
 }
 
 fn resolve_gateway_urls(cli: &Cli) -> Vec<String> {
@@ -738,40 +732,10 @@ fn resolve_gateway_urls(cli: &Cli) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn resolve_servicenet_base_url(cli: &Cli) -> Option<String> {
-    if let Some(configured) = cli
-        .gateway_config_path
-        .as_deref()
-        .and_then(load_servicenet_url_from_config)
-    {
-        return Some(configured);
-    }
-    let explicit = normalize_servicenet_url(cli.servicenet_base_url.as_deref().unwrap_or_default());
-    if !explicit.is_empty() {
-        return Some(explicit);
-    }
-    None
-}
+const DEFAULT_SERVICENET_BASE_URL: &str = "https://servicenet.wattetheria.com";
 
-fn load_servicenet_url_from_config(path: &Path) -> Option<String> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return None;
-    };
-    match serde_json::from_slice::<GatewayDispatchConfig>(&bytes) {
-        Ok(config) => config
-            .servicenet_urls
-            .iter()
-            .map(|url| normalize_servicenet_url(url))
-            .find(|url| !url.is_empty()),
-        Err(error) => {
-            warn!(
-                path = %path.display(),
-                %error,
-                "failed to parse gateway config; skipping startup-config ServiceNet URLs"
-            );
-            None
-        }
-    }
+fn resolve_servicenet_base_url() -> String {
+    DEFAULT_SERVICENET_BASE_URL.to_owned()
 }
 
 fn load_gateway_urls_from_config(path: &Path) -> Vec<String> {
@@ -801,10 +765,6 @@ fn normalize_gateway_urls(values: &[String]) -> Vec<String> {
         normalized.push(trimmed.to_owned());
     }
     normalized
-}
-
-fn normalize_servicenet_url(value: &str) -> String {
-    value.trim().trim_end_matches('/').to_owned()
 }
 
 #[cfg(test)]
@@ -843,7 +803,6 @@ mod tests {
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
-            servicenet_base_url: None,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -875,7 +834,6 @@ mod tests {
             agent_wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
-            servicenet_base_url: None,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -925,7 +883,6 @@ mod tests {
             agent_wattswarm_ui_base_url: Some("http://127.0.0.1:7788/".to_owned()),
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
-            servicenet_base_url: None,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -985,7 +942,6 @@ mod tests {
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
-            servicenet_base_url: None,
             gateway_urls: Vec::new(),
             gateway_config_path: Some(config_path),
             gateway_snapshot_interval_sec: 45,
@@ -1030,7 +986,6 @@ mod tests {
             agent_wattswarm_ui_base_url: None,
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
-            servicenet_base_url: None,
             gateway_urls: vec!["http://primary-gateway:8080/".to_owned()],
             gateway_config_path: Some(config_path),
             gateway_snapshot_interval_sec: 45,
@@ -1050,121 +1005,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_servicenet_base_url_reads_startup_config_when_cli_url_missing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("startup_config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_vec(&json!({
-                "servicenet_urls": [
-                    " https://servicenet.wattetheria.com/ ",
-                    "https://secondary-servicenet.wattetheria.com"
-                ]
-            }))
-            .expect("serialize config"),
-        )
-        .expect("write config");
-        let cli = Cli {
-            data_dir: ".wattetheria".into(),
-            recovery_sources: Vec::new(),
-            control_plane_bind: "127.0.0.1:7777".to_owned(),
-            wattswarm_ui_base_url: None,
-            wattswarm_sync_grpc_endpoint: None,
-            wattswarm_agent_event_callback_base_url: None,
-            agent_control_plane_endpoint: None,
-            agent_wattswarm_ui_base_url: None,
-            agent_wattswarm_sync_grpc_endpoint: None,
-            agent_host_data_dir: None,
-            servicenet_base_url: None,
-            gateway_urls: Vec::new(),
-            gateway_config_path: Some(config_path),
-            gateway_snapshot_interval_sec: 45,
-            control_plane_rate_limit: 60,
-            brain_provider_kind: "rules".to_owned(),
-            brain_base_url: "http://127.0.0.1:11434".to_owned(),
-            brain_model: "model".to_owned(),
-            brain_api_key_env: None,
-            autonomy_enabled: false,
-            autonomy_interval_sec: 30,
-        };
-
+    fn resolve_servicenet_base_url_is_fixed_official_endpoint() {
         assert_eq!(
-            resolve_servicenet_base_url(&cli).as_deref(),
-            Some("https://servicenet.wattetheria.com")
-        );
-    }
-
-    #[test]
-    fn resolve_servicenet_base_url_prefers_startup_config_over_explicit_cli_url() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config_path = dir.path().join("startup_config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_vec(&json!({
-                "servicenet_urls": ["https://servicenet.wattetheria.com"]
-            }))
-            .expect("serialize config"),
-        )
-        .expect("write config");
-        let cli = Cli {
-            data_dir: ".wattetheria".into(),
-            recovery_sources: Vec::new(),
-            control_plane_bind: "127.0.0.1:7777".to_owned(),
-            wattswarm_ui_base_url: None,
-            wattswarm_sync_grpc_endpoint: None,
-            wattswarm_agent_event_callback_base_url: None,
-            agent_control_plane_endpoint: None,
-            agent_wattswarm_ui_base_url: None,
-            agent_wattswarm_sync_grpc_endpoint: None,
-            agent_host_data_dir: None,
-            servicenet_base_url: Some("https://explicit-servicenet.wattetheria.com/".to_owned()),
-            gateway_urls: Vec::new(),
-            gateway_config_path: Some(config_path),
-            gateway_snapshot_interval_sec: 45,
-            control_plane_rate_limit: 60,
-            brain_provider_kind: "rules".to_owned(),
-            brain_base_url: "http://127.0.0.1:11434".to_owned(),
-            brain_model: "model".to_owned(),
-            brain_api_key_env: None,
-            autonomy_enabled: false,
-            autonomy_interval_sec: 30,
-        };
-
-        assert_eq!(
-            resolve_servicenet_base_url(&cli).as_deref(),
-            Some("https://servicenet.wattetheria.com")
-        );
-    }
-
-    #[test]
-    fn resolve_servicenet_base_url_uses_explicit_cli_url_when_startup_config_missing() {
-        let cli = Cli {
-            data_dir: ".wattetheria".into(),
-            recovery_sources: Vec::new(),
-            control_plane_bind: "127.0.0.1:7777".to_owned(),
-            wattswarm_ui_base_url: None,
-            wattswarm_sync_grpc_endpoint: None,
-            wattswarm_agent_event_callback_base_url: None,
-            agent_control_plane_endpoint: None,
-            agent_wattswarm_ui_base_url: None,
-            agent_wattswarm_sync_grpc_endpoint: None,
-            agent_host_data_dir: None,
-            servicenet_base_url: Some("https://explicit-servicenet.wattetheria.com/".to_owned()),
-            gateway_urls: Vec::new(),
-            gateway_config_path: None,
-            gateway_snapshot_interval_sec: 45,
-            control_plane_rate_limit: 60,
-            brain_provider_kind: "rules".to_owned(),
-            brain_base_url: "http://127.0.0.1:11434".to_owned(),
-            brain_model: "model".to_owned(),
-            brain_api_key_env: None,
-            autonomy_enabled: false,
-            autonomy_interval_sec: 30,
-        };
-
-        assert_eq!(
-            resolve_servicenet_base_url(&cli).as_deref(),
-            Some("https://explicit-servicenet.wattetheria.com")
+            resolve_servicenet_base_url(),
+            "https://servicenet.wattetheria.com"
         );
     }
 

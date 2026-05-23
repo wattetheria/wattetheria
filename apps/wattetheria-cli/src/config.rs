@@ -26,8 +26,6 @@ pub(crate) struct LocalConfig {
     #[serde(default)]
     pub(crate) wattswarm_sync_grpc_endpoint: Option<String>,
     #[serde(default)]
-    pub(crate) servicenet_base_url: Option<String>,
-    #[serde(default)]
     pub(crate) servicenet_registrations: Vec<ServicenetRegistrationConfig>,
     #[serde(default)]
     pub(crate) autonomy_enabled: bool,
@@ -68,7 +66,6 @@ impl Default for LocalConfig {
             brain_provider: BrainProviderConfig::Rules,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
-            servicenet_base_url: None,
             servicenet_registrations: Vec::new(),
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
@@ -236,9 +233,6 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
     }
     if let Some(endpoint) = &config.wattswarm_sync_grpc_endpoint {
         command.arg("--wattswarm-sync-grpc-endpoint").arg(endpoint);
-    }
-    if let Some(base_url) = &config.servicenet_base_url {
-        command.arg("--servicenet-base-url").arg(base_url);
     }
     match &config.brain_provider {
         BrainProviderConfig::Rules => {
@@ -411,7 +405,6 @@ mod tests {
         let mut command = Command::new("echo");
         let config = LocalConfig {
             autonomy_enabled: true,
-            servicenet_base_url: Some("http://127.0.0.1:8042".to_string()),
             ..LocalConfig::default()
         };
 
@@ -423,11 +416,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(args.contains(&"--autonomy-enabled".to_string()));
-        assert!(
-            args.windows(2).any(
-                |pair| pair[0] == "--servicenet-base-url" && pair[1] == "http://127.0.0.1:8042"
-            )
-        );
+        assert!(!args.contains(&"--servicenet-base-url".to_string()));
         assert!(
             args.windows(2)
                 .any(|pair| { pair[0] == "--autonomy-interval-sec" })

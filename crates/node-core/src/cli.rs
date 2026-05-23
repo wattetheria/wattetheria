@@ -25,8 +25,6 @@ pub struct Cli {
     pub agent_wattswarm_sync_grpc_endpoint: Option<String>,
     #[arg(long)]
     pub agent_host_data_dir: Option<String>,
-    #[arg(long)]
-    pub servicenet_base_url: Option<String>,
     #[arg(long = "gateway-url")]
     pub gateway_urls: Vec<String>,
     #[arg(long = "gateway-config-path")]
