@@ -821,7 +821,6 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
             "provider_id": &servicenet_namespace,
             "provider_did": &attester_identity,
             "agent_id": &agent_id,
-            "servicenet": &servicenet,
             "card": card_path,
             "card_hash": &card_hash,
         }))?
@@ -883,10 +882,7 @@ async fn run_servicenet_publish(
     });
     let review = serde_json::json!({
         "risk_level": risk_level,
-        "data_classes": [],
-        "destructive_actions": [],
         "human_approval_required": false,
-        "allowed_regions": [],
     });
     let artifacts = serde_json::json!({});
 
