@@ -9,6 +9,7 @@
     const identitiesByPublicId = new Map();
     let connectedWeb3Wallet = null;
     let currentWalletOperator = null;
+    let selectedWalletNetwork = "base";
     let lastDiagnosticEntries = [];
     let lastDiagnosticPayload = null;
     let activeLogMode = "all";
@@ -23,7 +24,11 @@
         { symbol: "USDC", address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 },
       ],
       "0x2105": [
+        { symbol: "USDT", address: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2", decimals: 6 },
         { symbol: "USDC", address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 },
+      ],
+      "0x14a34": [
+        { symbol: "USDC", address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6 },
       ],
     };
 
@@ -35,6 +40,16 @@
       "0x2105": "base",
       "0x14a34": "base-sepolia",
     };
+
+    const stablecoinRpcUrls = {
+      "0x2105": "https://mainnet.base.org",
+      "0x14a34": "https://sepolia.base.org",
+    };
+
+    const walletNetworkOptions = [
+      { value: "base", label: "Base" },
+      { value: "base-sepolia", label: "Base Sepolia" },
+    ];
 
     function qs(id) {
       return document.getElementById(id);
@@ -692,8 +707,64 @@
       return chainLabels[String(chainId || "").toLowerCase()] || "";
     }
 
+    function networkChainId(network) {
+      const targetNetwork = String(network || "").toLowerCase();
+      return Object.entries(chainLabels).find(([, label]) => label === targetNetwork)?.[0] || "";
+    }
+
+    function renderWalletNetworkOptions(activeNetwork) {
+      const selectedNetwork = String(activeNetwork || "base").toLowerCase();
+      const knownNetworks = new Set(walletNetworkOptions.map((option) => option.value));
+      const options = knownNetworks.has(selectedNetwork)
+        ? walletNetworkOptions
+        : [{ value: selectedNetwork, label: selectedNetwork }, ...walletNetworkOptions];
+      return options.map((option) => {
+        const selected = option.value === selectedNetwork ? " selected" : "";
+        return `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+      }).join("");
+    }
+
+    function walletPaymentAccounts(operator = currentWalletOperator) {
+      const accounts = safeArray(operator?.payment_accounts);
+      const active = operator?.active_payment_account;
+      if (!active?.account_id || accounts.some((account) => account.account_id === active.account_id)) {
+        return accounts;
+      }
+      return [active, ...accounts];
+    }
+
+    function walletPaymentAccountFor(network, rail, operator = currentWalletOperator) {
+      const targetNetwork = String(network || "").toLowerCase();
+      const targetRail = String(rail || "x402").toLowerCase();
+      return walletPaymentAccounts(operator).find((account) => (
+        String(account?.network || "").toLowerCase() === targetNetwork
+        && String(account?.rail || "x402").toLowerCase() === targetRail
+        && account?.can_sign
+      )) || null;
+    }
+
+    function stablecoinTokensFor(networkRef) {
+      const key = String(networkRef || "").toLowerCase();
+      if (stablecoinContracts[key]) return stablecoinContracts[key];
+      const chainId = Object.entries(chainLabels).find(([, label]) => label === key)?.[0];
+      return chainId ? stablecoinContracts[chainId] || [] : [];
+    }
+
     function balanceOfData(address) {
       return `0x70a08231${String(address || "").replace(/^0x/i, "").padStart(64, "0")}`;
+    }
+
+    async function rpcCall(rpcUrl, method, params) {
+      const response = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.error) {
+        throw new Error(payload.error?.message || `RPC request failed with ${response.status}`);
+      }
+      return payload.result;
     }
 
     function formatTokenAmount(hexValue, decimals) {
@@ -705,8 +776,8 @@
       return fractionText ? `${whole}.${fractionText}` : whole.toString();
     }
 
-    function renderTokenBalances(chainId, balances = {}) {
-      const tokens = stablecoinContracts[String(chainId || "").toLowerCase()] || [];
+    function renderTokenBalances(networkRef, balances = {}) {
+      const tokens = stablecoinTokensFor(networkRef);
       const list = qs("web3-token-balances");
       if (!tokens.length) {
         list.innerHTML = `<div class="empty">No stablecoin contracts configured for this network.</div>`;
@@ -716,87 +787,89 @@
         <div class="token-balance">
           <span>${escapeHtml(token.symbol)}</span>
           <strong>${escapeHtml(balances[token.symbol] || "-")}</strong>
-          <span>${escapeHtml(chainNetwork(chainId) || chainId)}</span>
+          <span>${escapeHtml(chainNetwork(networkRef) || networkRef)}</span>
         </div>
       `).join("");
     }
 
     async function refreshStablecoinBalances() {
-      if (!connectedWeb3Wallet || !window.ethereum) return;
-      const tokens = stablecoinContracts[connectedWeb3Wallet.chainId] || [];
-      renderTokenBalances(connectedWeb3Wallet.chainId);
+      const selectedNetwork = qs("web3-wallet-network")?.value.trim() || selectedWalletNetwork || "base";
+      const selectedRail = qs("web3-wallet-rail")?.value.trim() || "x402";
+      const selectedChainId = networkChainId(selectedNetwork);
+      const rpcUrl = stablecoinRpcUrls[selectedChainId];
+      const payment = walletPaymentAccountFor(selectedNetwork, selectedRail);
+      const address = payment?.address || "";
+      if (!address) {
+        setStatus("Create an agent wallet first.", true);
+        return;
+      }
+      if (!rpcUrl) {
+        setStatus(`Balance refresh RPC is not configured for ${selectedNetwork}.`, true);
+        renderTokenBalances(selectedNetwork);
+        return;
+      }
+      const tokens = stablecoinTokensFor(selectedNetwork);
+      renderTokenBalances(selectedNetwork);
       const balances = {};
       await Promise.all(tokens.map(async (token) => {
-        const result = await window.ethereum.request({
-          method: "eth_call",
-          params: [{
+        const result = await rpcCall(
+          rpcUrl,
+          "eth_call",
+          [{
             to: token.address,
-            data: balanceOfData(connectedWeb3Wallet.address),
+            data: balanceOfData(address),
           }, "latest"],
-        });
+        );
         balances[token.symbol] = formatTokenAmount(result, token.decimals);
       }));
-      renderTokenBalances(connectedWeb3Wallet.chainId, balances);
+      renderTokenBalances(selectedNetwork, balances);
     }
 
-    async function connectWeb3Wallet() {
-      if (!window.ethereum) {
-        setStatus("Browser Web3 wallet not found.", true);
-        return;
-      }
-      const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
-      const chainId = String(await window.ethereum.request({ method: "eth_chainId" })).toLowerCase();
-      const address = accounts[0];
-      connectedWeb3Wallet = { address, chainId };
-      qs("web3-wallet-address").value = address;
-      qs("web3-wallet-network").value = chainNetwork(chainId);
-      qs("web3-wallet-status").textContent = `${compactId(address, 28)} | ${chainNetwork(chainId) || chainId}`;
-      await refreshStablecoinBalances();
-    }
-
-    async function bindConnectedWeb3Wallet() {
+    async function createAgentWallet() {
       const address = qs("web3-wallet-address").value.trim();
-      if (!address) {
-        setStatus("Connect a Web3 wallet first.", true);
-        return;
-      }
       const chainId = connectedWeb3Wallet?.chainId || "";
       const network = qs("web3-wallet-network").value.trim() || chainNetwork(chainId);
       const rail = qs("web3-wallet-rail").value.trim() || "x402";
-      const data = await fetchJson("/v1/wallet/payment-account/bind-web3", {
+      selectedWalletNetwork = network || "base";
+      const data = await fetchJson("/v1/wallet/payment-account/create", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          address,
           network,
           rail,
-          chain_id: chainId,
-          label: "browser-wallet",
+          label: "agent-wallet",
         }),
         auth: true,
       });
-      setStatus(`Bound receive address ${compactId(data.active_payment_account?.address || address, 28)}.`);
+      const activeAddress = data.active_payment_account?.address || address;
+      selectedWalletNetwork = data.active_payment_account?.network || selectedWalletNetwork;
+      setStatus(data.already_exists
+        ? `Agent wallet already exists ${compactId(activeAddress, 28)}.`
+        : `Created agent wallet ${compactId(activeAddress, 28)}.`);
       await refreshConsole();
     }
 
     function bindWalletControls() {
-      qs("connect-web3-wallet")?.addEventListener("click", () => {
-        connectWeb3Wallet().catch((error) => setStatus(error.message, true));
-      });
-      qs("bind-web3-wallet")?.addEventListener("click", () => {
-        bindConnectedWeb3Wallet().catch((error) => setStatus(error.message, true));
+      qs("create-agent-wallet")?.addEventListener("click", () => {
+        createAgentWallet().catch((error) => setStatus(error.message, true));
       });
       qs("refresh-web3-balances")?.addEventListener("click", () => {
         refreshStablecoinBalances().catch((error) => setStatus(error.message, true));
+      });
+      qs("web3-wallet-network")?.addEventListener("change", (event) => {
+        selectedWalletNetwork = event.target.value || "base";
+        renderWallet(currentWalletOperator || {});
       });
     }
 
     function renderWallet(operator) {
       currentWalletOperator = operator;
-      const payment = operator.active_payment_account;
-      const activeAddress = payment?.address || "";
       const chainId = connectedWeb3Wallet?.chainId || "";
-      const activeNetwork = payment?.network || chainNetwork(chainId);
+      const activeNetwork = selectedWalletNetwork || chainNetwork(chainId) || "base";
+      const fallbackRail = operator.active_payment_account?.rail || "x402";
+      const selectedPayment = walletPaymentAccountFor(activeNetwork, fallbackRail, operator);
+      const activeAddress = selectedPayment?.address || "";
+      const hasSigningAccount = Boolean(selectedPayment?.can_sign);
       qs("wallet-list").innerHTML = `
         <section class="wallet-section">
           <div class="wallet-section-head">
@@ -812,37 +885,38 @@
         </section>
         <section class="wallet-section web3">
           <div class="wallet-section-head">
-            <div class="wallet-section-title">Web3 Settlement Address</div>
-            ${pill(payment ? "bound" : "unbound", payment ? "ready" : "pending")}
+            <div class="wallet-section-title">Agent Payment Account</div>
+            ${pill(selectedPayment ? "bound" : "unbound", selectedPayment ? "ready" : "pending")}
           </div>
           ${walletSummaryRows([
-            ["Payment Account", payment ? payment.account_id : "none"],
+            ["Payment Account", selectedPayment ? selectedPayment.account_id : "none"],
             ["Address", activeAddress || "none"],
-            ["Rail", payment?.rail || "x402"],
+            ["Rail", selectedPayment?.rail || fallbackRail],
             ["Network", activeNetwork || "none"],
-            ["Custody", payment?.custody || "watch_only"],
-            ["Can Sign", payment?.can_sign ? "yes" : "no"],
+            ["Custody", selectedPayment?.custody || "none"],
+            ["Can Sign", selectedPayment?.can_sign ? "yes" : "no"],
           ])}
           <div class="wallet-fields">
             <label>
               Address
-              <input id="web3-wallet-address" value="${escapeHtml(connectedWeb3Wallet?.address || activeAddress)}" readonly>
+              <input id="web3-wallet-address" value="${escapeHtml(activeAddress)}" readonly>
             </label>
             <label>
               Network
-              <input id="web3-wallet-network" value="${escapeHtml(activeNetwork)}">
+              <select id="web3-wallet-network">
+                ${renderWalletNetworkOptions(activeNetwork)}
+              </select>
             </label>
             <label>
               Rail
-              <input id="web3-wallet-rail" value="${escapeHtml(payment?.rail || "x402")}">
+              <input id="web3-wallet-rail" value="${escapeHtml(selectedPayment?.rail || fallbackRail)}">
             </label>
           </div>
           <div class="wallet-actions">
-            <button id="connect-web3-wallet" type="button">Connect Web3 Wallet</button>
-            <button id="bind-web3-wallet" class="secondary" type="button">Bind Receive Address</button>
+            <button id="create-agent-wallet" type="button" ${hasSigningAccount ? "disabled" : ""}>Create Agent Wallet</button>
             <button id="refresh-web3-balances" class="secondary" type="button">Refresh Balances</button>
           </div>
-          <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No receive address bound.")}</div>
+          <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No agent payment account created.")}</div>
           <div id="web3-token-balances" class="wallet-token-grid"></div>
         </section>
         <section class="wallet-section web2">
@@ -856,7 +930,7 @@
           ])}
         </section>
       `;
-      renderTokenBalances(chainId);
+      renderTokenBalances(activeNetwork);
       bindWalletControls();
     }
 

@@ -6,7 +6,7 @@ use wattetheria_kernel::economy::{
     EconomicPolicy, WalletBalanceState, WalletBoundBalance, wallet_bound_balance_from_missions,
 };
 use wattetheria_kernel::local_db;
-use wattetheria_kernel::wallet_identity::active_payment_account;
+use wattetheria_kernel::wallet_identity::{active_payment_account, open_local_wallet};
 
 use crate::state::ControlPlaneState;
 
@@ -111,14 +111,42 @@ pub(crate) fn active_wallet_payment_account_payload(state: &ControlPlaneState) -
         return Value::Null;
     }
     match active_payment_account(&state.data_dir) {
-        Ok(account) => json!({
-            "account_id": account.account_id,
-            "rail": account.rail,
-            "network": account.network,
-            "address": account.address,
-            "kind": account.kind,
-            "layer": account.layer,
-        }),
+        Ok(account) => payment_account_payload(&account),
         Err(_) => Value::Null,
     }
+}
+
+pub(crate) fn wallet_payment_accounts_payload(state: &ControlPlaneState) -> Value {
+    let wallet_dir = state.data_dir.join(".watt-wallet");
+    if !wallet_dir.join("metadata.json").exists() || !wallet_dir.join("keystore.json").exists() {
+        return json!([]);
+    }
+    match open_local_wallet(&state.data_dir) {
+        Ok(wallet_state) => json!(
+            wallet_state
+                .wallet
+                .list_payment_accounts(&wallet_state.profile)
+                .into_iter()
+                .map(|account| payment_account_payload(&account))
+                .collect::<Vec<_>>()
+        ),
+        Err(_) => json!([]),
+    }
+}
+
+fn payment_account_payload(account: &watt_wallet::PaymentAccount) -> Value {
+    let can_sign = account.key_handle.is_some();
+    let receive_only = !can_sign;
+    json!({
+        "account_id": account.account_id,
+        "rail": account.rail,
+        "network": account.network,
+        "address": account.address,
+        "kind": account.kind,
+        "layer": account.layer,
+        "custody": if can_sign { "local_key" } else { "watch_only" },
+        "can_sign": can_sign,
+        "can_submit_payment": can_sign,
+        "receive_only": receive_only,
+    })
 }

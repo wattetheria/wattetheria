@@ -17,7 +17,8 @@ use crate::social_host::{
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
     AgentPaymentSettleBody, AgentPaymentsQuery, ControlPlaneState, StreamEvent,
-    WalletBindWeb3PaymentAccountBody, agent_commit_context_from_headers,
+    WalletBindWeb3PaymentAccountBody, WalletCreatePaymentAccountBody,
+    agent_commit_context_from_headers,
 };
 use watt_did::PaymentAccountCustody;
 use watt_wallet::{
@@ -196,6 +197,92 @@ pub(crate) async fn bind_web3_payment_account(
 
     Json(json!({
         "ok": true,
+        "active_payment_account": payment_account_to_json(&account),
+    }))
+    .into_response()
+}
+
+pub(crate) async fn create_payment_account(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<WalletCreatePaymentAccountBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let rail = body.rail.unwrap_or_else(|| "x402".to_string());
+    let network = body.network.clone();
+
+    if let Err(error) = load_or_create_wallet_backed_identity(&state.data_dir) {
+        return internal_error(&error);
+    }
+    let mut wallet_state = match open_local_wallet(&state.data_dir) {
+        Ok(wallet) => wallet,
+        Err(error) => return internal_error(&error),
+    };
+    let now_ms = wallet_now_ms();
+    if let Some(account) = wallet_state
+        .profile
+        .payment_accounts
+        .iter()
+        .find(|account| {
+            account.kind == PaymentAccountKind::Web3Evm
+                && account.key_handle.is_some()
+                && account.rail.as_str() == rail.as_str()
+                && account.network.as_deref() == network.as_deref()
+        })
+        .cloned()
+    {
+        if let Err(error) = wallet_state.wallet.set_active_payment_account(
+            &mut wallet_state.profile,
+            &account.account_id,
+            now_ms,
+        ) {
+            return wallet_internal_error(error);
+        }
+        return Json(json!({
+            "ok": true,
+            "already_exists": true,
+            "active_payment_account": payment_account_to_json(&account),
+        }))
+        .into_response();
+    }
+    let account = match wallet_state.wallet.create_payment_account_web3_evm(
+        &mut wallet_state.profile,
+        body.label.or_else(|| Some("agent-wallet".to_string())),
+        network,
+        Some(rail),
+        now_ms,
+    ) {
+        Ok(account) => account,
+        Err(error) => return wallet_internal_error(error),
+    };
+    if let Err(error) = wallet_state.wallet.set_active_payment_account(
+        &mut wallet_state.profile,
+        &account.account_id,
+        now_ms,
+    ) {
+        return wallet_internal_error(error);
+    }
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "wallet".to_string(),
+        action: "wallet.payment_account.create".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: account.address.clone(),
+        capability: Some(WALLET_BIND_CAPABILITY.to_string()),
+        reason: None,
+        duration_ms: None,
+        details: Some(payment_account_to_json(&account)),
+    });
+
+    Json(json!({
+        "ok": true,
+        "already_exists": false,
         "active_payment_account": payment_account_to_json(&account),
     }))
     .into_response()

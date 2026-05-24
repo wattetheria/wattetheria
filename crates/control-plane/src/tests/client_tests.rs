@@ -258,53 +258,130 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
 }
 
 #[tokio::test]
-async fn wallet_page_can_bind_external_web3_payment_account() {
+#[allow(clippy::too_many_lines)]
+async fn wallet_page_can_create_agent_payment_account() {
     let (_dir, app, token, _, _state) = build_test_app(20);
-    let address = "0x1111111111111111111111111111111111111111";
-    let bound = authed_post_json(
+    let created = authed_post_json(
         app.clone(),
         &token,
-        "/v1/wallet/payment-account/bind-web3",
+        "/v1/wallet/payment-account/create",
         json!({
-            "address": address,
             "network": "base",
             "rail": "x402",
-            "label": "browser-wallet"
+            "label": "agent-wallet"
         }),
     )
     .await;
 
-    assert_eq!(bound["ok"].as_bool(), Some(true));
-    assert_eq!(
-        bound["active_payment_account"]["address"].as_str(),
-        Some(address)
+    assert_eq!(created["ok"].as_bool(), Some(true));
+    assert!(
+        created["active_payment_account"]["address"]
+            .as_str()
+            .is_some_and(|address| address.starts_with("0x") && address.len() == 42)
     );
     assert_eq!(
-        bound["active_payment_account"]["network"].as_str(),
+        created["active_payment_account"]["network"].as_str(),
         Some("base")
     );
     assert_eq!(
-        bound["active_payment_account"]["rail"].as_str(),
+        created["active_payment_account"]["rail"].as_str(),
         Some("x402")
     );
     assert_eq!(
-        bound["active_payment_account"]["custody"].as_str(),
-        Some("watch_only")
+        created["active_payment_account"]["custody"].as_str(),
+        Some("local_key")
     );
     assert_eq!(
-        bound["active_payment_account"]["receive_only"].as_bool(),
+        created["active_payment_account"]["receive_only"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        created["active_payment_account"]["can_sign"].as_bool(),
         Some(true)
     );
+
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
     assert_eq!(
-        bound["active_payment_account"]["can_sign"].as_bool(),
-        Some(false)
+        self_json["active_payment_account"]["address"].as_str(),
+        created["active_payment_account"]["address"].as_str()
+    );
+    assert_eq!(
+        self_json["active_payment_account"]["custody"].as_str(),
+        Some("local_key")
+    );
+    assert_eq!(
+        self_json["active_payment_account"]["can_sign"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        self_json["payment_accounts"]
+            .as_array()
+            .is_some_and(|accounts| accounts.iter().any(|account| {
+                account["account_id"].as_str()
+                    == created["active_payment_account"]["account_id"].as_str()
+                    && account["network"].as_str() == Some("base")
+                    && account["can_sign"].as_bool() == Some(true)
+            }))
+    );
+
+    let duplicate = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wallet/payment-account/create",
+        json!({
+            "network": "base",
+            "rail": "x402",
+            "label": "agent-wallet"
+        }),
+    )
+    .await;
+    assert_eq!(duplicate["ok"].as_bool(), Some(true));
+    assert_eq!(duplicate["already_exists"].as_bool(), Some(true));
+    assert_eq!(
+        duplicate["active_payment_account"]["account_id"].as_str(),
+        created["active_payment_account"]["account_id"].as_str()
+    );
+    assert_eq!(
+        duplicate["active_payment_account"]["address"].as_str(),
+        created["active_payment_account"]["address"].as_str()
+    );
+
+    let testnet = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wallet/payment-account/create",
+        json!({
+            "network": "base-sepolia",
+            "rail": "x402",
+            "label": "agent-wallet"
+        }),
+    )
+    .await;
+    assert_eq!(testnet["ok"].as_bool(), Some(true));
+    assert_eq!(testnet["already_exists"].as_bool(), Some(false));
+    assert_eq!(
+        testnet["active_payment_account"]["network"].as_str(),
+        Some("base-sepolia")
+    );
+    assert_ne!(
+        testnet["active_payment_account"]["account_id"].as_str(),
+        created["active_payment_account"]["account_id"].as_str()
+    );
+    assert_ne!(
+        testnet["active_payment_account"]["address"].as_str(),
+        created["active_payment_account"]["address"].as_str()
     );
 
     let self_json = authed_get_json(app, &token, "/v1/client/self").await;
-    assert_eq!(
-        self_json["active_payment_account"]["address"].as_str(),
-        Some(address)
-    );
+    let accounts = self_json["payment_accounts"].as_array().unwrap();
+    assert!(accounts.iter().any(|account| {
+        account["account_id"].as_str() == created["active_payment_account"]["account_id"].as_str()
+            && account["network"].as_str() == Some("base")
+    }));
+    assert!(accounts.iter().any(|account| {
+        account["account_id"].as_str() == testnet["active_payment_account"]["account_id"].as_str()
+            && account["network"].as_str() == Some("base-sepolia")
+    }));
 }
 
 #[tokio::test]

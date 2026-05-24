@@ -851,6 +851,16 @@ pub struct WalletBindWeb3PaymentAccountBody {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct WalletCreatePaymentAccountBody {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub rail: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct MetricsQuery {
     pub agent_did: Option<String>,
     pub public_id: Option<String>,

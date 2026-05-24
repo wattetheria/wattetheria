@@ -29,6 +29,7 @@ use crate::routes::identity::resolve_identity_context;
 use crate::routes::missions::mission_task_contract;
 use crate::routes::reward_view::{
     active_wallet_payment_account_payload, wallet_bound_balance_for_identity,
+    wallet_payment_accounts_payload,
 };
 use crate::state::{
     ClientExportQuery, ClientIdentityQuery, ClientLeaderboardQuery, ClientListQuery,
@@ -185,6 +186,7 @@ async fn build_client_self_payload(
     let balance =
         wallet_bound_balance_for_identity(state, &controller_id, Some(&public_id)).await?;
     let payment_account = active_wallet_payment_account_payload(state);
+    let payment_accounts = wallet_payment_accounts_payload(state);
     let geo = &state.geo_location;
     Ok(json!({
         "id": public_id,
@@ -193,6 +195,7 @@ async fn build_client_self_payload(
         "reward_policy_version": balance.policy_version,
         "wallet_bound_agent_did": controller_id,
         "active_payment_account": payment_account,
+        "payment_accounts": payment_accounts,
         "status": "online",
         "lat": geo.lat,
         "lng": geo.lng,

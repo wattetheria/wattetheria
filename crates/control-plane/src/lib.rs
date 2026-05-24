@@ -416,6 +416,10 @@ fn payments_router() -> Router<ControlPlaneState> {
             post(routes::payments::bind_web3_payment_account),
         )
         .route(
+            "/v1/wallet/payment-account/create",
+            post(routes::payments::create_payment_account),
+        )
+        .route(
             "/v1/wattetheria/payments/agent-payments",
             get(routes::payments::list_agent_payments),
         )
