@@ -532,6 +532,57 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
         .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
+                if agent_id == "agent-oauth" {
+                    return Json(json!({
+                        "agent_id": agent_id,
+                        "provider_id": "provider-oauth",
+                        "version": "0.1.0",
+                        "status": "approved",
+                        "agent_card": {
+                            "name": "OAuth Agent",
+                            "description": "Agent requiring OAuth consent",
+                            "cost": 21,
+                            "securitySchemes": {
+                                "oauth2": {
+                                    "oauth2SecurityScheme": {
+                                        "flows": {
+                                            "authorizationCode": {
+                                                "authorizationUrl": "https://auth.example.com/oauth/authorize",
+                                                "tokenUrl": "https://auth.example.com/oauth/token",
+                                                "refreshUrl": "https://auth.example.com/oauth/token",
+                                                "scopes": {
+                                                    "rides:request": "Request rides"
+                                                },
+                                                "pkceRequired": true
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "security": [
+                                {
+                                    "oauth2": ["rides:request"]
+                                }
+                            ],
+                            "skills": [
+                                {
+                                    "id": "rides.request",
+                                    "name": "Request ride",
+                                    "description": "Requests a ride"
+                                }
+                            ]
+                        },
+                        "deployment": {
+                            "runtime": "remote_http",
+                            "endpoint": {
+                                "url": "https://example.com/a2a",
+                                "interaction_protocol": "google_a2a",
+                                "protocol_binding": "JSONRPC"
+                            }
+                        },
+                        "review": {"risk_level": "low"},
+                    }));
+                }
                 Json(json!({
                     "agent_id": agent_id,
                     "provider_id": "provider-one",
@@ -574,6 +625,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "message": "ok",
                         "output": {
                             "echo": body["message"].clone(),
+                            "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
                         },
                         "settlement": body["settlement"].clone(),
                         "payment_receipt": {

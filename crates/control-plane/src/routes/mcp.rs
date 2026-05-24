@@ -13,7 +13,9 @@ use tower::ServiceExt;
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::resolve_identity_context;
+use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::servicenet::ServiceNetInvokeRequest;
 
 mod schema;
 
@@ -258,6 +260,7 @@ async fn direct_mcp_tool_result(
         "list_missions" => Some(network_mission_market_result(state, arguments).await),
         "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
         "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
+        "invoke_servicenet_agent" => Some(servicenet_invoke_agent_result(state, arguments).await),
         "list_hives" => Some(network_hive_market_result(state, arguments).await),
         _ => None,
     }
@@ -506,6 +509,142 @@ async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -
         &health_by_agent,
         &trust_by_agent,
     ))
+}
+
+async fn servicenet_invoke_agent_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let Some(client) = state.servicenet_client.as_deref() else {
+        return tool_error(&json!({"error": "servicenet is not configured"}));
+    };
+    let Some(agent_id) = required_string(arguments, "agent_id") else {
+        return tool_error(&json!({"error": "agent_id is required"}));
+    };
+    let agent = match client.get_agent(&agent_id).await {
+        Ok(item) => item,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let mut body = arguments.get("body").cloned().unwrap_or_else(|| {
+        object_without_path_vars(
+            arguments,
+            "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
+        )
+    });
+    if !body.is_object() {
+        return tool_error(&json!({"error": "invoke body must be a JSON object"}));
+    }
+    let envelope = match servicenet_invoke_agent_envelope(state, &agent_id, &body).await {
+        Ok(envelope) => envelope,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    if let Some(object) = body.as_object_mut() {
+        object.insert("agent_envelope".to_owned(), envelope);
+    }
+    if servicenet_agent_requires_auth(&agent)
+        && body
+            .get("auth_token")
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+        && body.get("auth_context_id").is_none()
+    {
+        return tool_success(&servicenet_auth_consent_payload(&agent_id, &agent));
+    }
+    let request = match serde_json::from_value::<ServiceNetInvokeRequest>(body) {
+        Ok(request) => request,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    match client.invoke_agent(&agent_id, &request).await {
+        Ok(response) => tool_success(&serde_json::to_value(response).unwrap_or(Value::Null)),
+        Err(error) => tool_error(&json!({"error": error.to_string()})),
+    }
+}
+
+async fn servicenet_invoke_agent_envelope(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    body: &Value,
+) -> anyhow::Result<Value> {
+    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let envelope = build_signed_agent_envelope_for_nodes(
+        state,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            target_agent_id: Some(agent_id.to_owned()),
+            source_node_id,
+            target_node_id: None,
+            capability: "servicenet.agents.invoke".to_owned(),
+            message: servicenet_invoke_envelope_message(body),
+            extensions: None,
+        },
+    )?;
+    Ok(serde_json::to_value(envelope)?)
+}
+
+fn servicenet_invoke_envelope_message(body: &Value) -> Value {
+    let mut message = body.clone();
+    if let Some(object) = message.as_object_mut() {
+        object.remove("auth_token");
+        object.remove("auth_context_id");
+        object.remove("agent_envelope");
+    }
+    message
+}
+
+fn servicenet_agent_requires_auth(agent: &Value) -> bool {
+    let Some(agent_card) = value_at(agent, &["agent_card"]) else {
+        return false;
+    };
+    match value_at(agent_card, &["security"]) {
+        Some(Value::Array(items)) => {
+            !items.is_empty() && !items.iter().any(security_requirement_allows_none)
+        }
+        Some(Value::Object(map)) => !map.is_empty() && !map.contains_key("none"),
+        Some(Value::Null) | None => security_schemes_require_auth(agent_card),
+        Some(_) => true,
+    }
+}
+
+fn security_requirement_allows_none(requirement: &Value) -> bool {
+    requirement
+        .as_object()
+        .is_some_and(|object| object.contains_key("none"))
+}
+
+fn security_schemes_require_auth(agent_card: &Value) -> bool {
+    value_at(agent_card, &["securitySchemes"])
+        .and_then(Value::as_object)
+        .is_some_and(|schemes| {
+            !schemes.is_empty()
+                && !schemes.iter().all(|(name, scheme)| {
+                    name == "none"
+                        || value_at(scheme, &["type"]).and_then(Value::as_str) == Some("none")
+                })
+        })
+}
+
+fn servicenet_auth_consent_payload(agent_id: &str, agent: &Value) -> Value {
+    let agent_card = value_at(agent, &["agent_card"]).unwrap_or(&Value::Null);
+    json!({
+        "status": "auth_required",
+        "agent_id": agent_id,
+        "authorizationUrl": oauth_flow_field(agent_card, "authorizationUrl").cloned().unwrap_or(Value::Null),
+        "tokenUrl": oauth_flow_field(agent_card, "tokenUrl").cloned().unwrap_or(Value::Null),
+        "refreshUrl": oauth_flow_field(agent_card, "refreshUrl").cloned().unwrap_or(Value::Null),
+        "scopes": oauth_flow_field(agent_card, "scopes").cloned().unwrap_or(Value::Null),
+        "securitySchemes": value_at(agent_card, &["securitySchemes"]).cloned().unwrap_or(Value::Null),
+        "security": value_at(agent_card, &["security"]).cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn oauth_flow_field<'a>(agent_card: &'a Value, field: &str) -> Option<&'a Value> {
+    value_at(agent_card, &["securitySchemes"])
+        .and_then(Value::as_object)?
+        .values()
+        .find_map(|scheme| {
+            value_at(
+                scheme,
+                &["oauth2SecurityScheme", "flows", "authorizationCode", field],
+            )
+            .or_else(|| value_at(scheme, &["flows", "authorizationCode", field]))
+        })
 }
 
 fn servicenet_agent_list_summaries(

@@ -49,6 +49,8 @@ pub struct ServiceNetInvokeRequest {
     pub max_cost_units: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement: Option<SettlementRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

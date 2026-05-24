@@ -247,6 +247,93 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
 }
 
 #[tokio::test]
+async fn mcp_invoke_servicenet_agent_attaches_agent_envelope_for_public_agent() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let agent_did = state.agent_did.clone();
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent",
+                "arguments": {
+                    "agent_id": "agent-alpha",
+                    "message": "hello servicenet"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["status"].as_str(), Some("completed"));
+    assert_eq!(
+        content["output"]["agent_envelope_source"].as_str(),
+        Some(agent_did.as_str())
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_invoke_servicenet_agent_returns_authorization_url_when_oauth_is_required() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent",
+                "arguments": {
+                    "agent_id": "agent-oauth",
+                    "message": "request ride"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["status"].as_str(), Some("auth_required"));
+    assert_eq!(
+        content["authorizationUrl"].as_str(),
+        Some("https://auth.example.com/oauth/authorize")
+    );
+    assert_eq!(
+        content["security"][0]["oauth2"][0].as_str(),
+        Some("rides:request")
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 async fn mcp_tools_call_writes_product_diagnostics() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
 

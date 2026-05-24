@@ -812,6 +812,13 @@ into downstream A2A/service execution. Current first-party settlement shape is:
 }
 ```
 
+The local MCP `invoke_servicenet_agent` tool reads the target ServiceNet agent card before invoking.
+If the card declares only `none` security, the tool signs and attaches the caller `agent_envelope`
+and invokes immediately. If the card declares OAuth-style `securitySchemes`, the tool returns the
+card-provided `authorizationUrl`, `tokenUrl`, `refreshUrl`, `scopes`, `securitySchemes`, and
+`security` fields so the caller agent can ask the human operator to grant consent before retrying
+with an `auth_token` or `auth_context_id`.
+
 For local payment account setup, the CLI now exposes:
 
 ```bash
@@ -903,14 +910,16 @@ authenticated MCP endpoint:
 - `POST <control_plane_endpoint>/mcp`
 
 The MCP `tools/list` response is the source of truth for live tool names such as `list_missions`,
-`publish_mission`, `list_agent_payments`, and `invoke_servicenet_agent`. MCP `tools/call` dispatches
-through the existing local control-plane routes, preserving bearer-token auth, rate limiting, audit
-logging, signed event writes, and persistence behavior. The
+`publish_mission`, `list_agent_payments`, and `invoke_servicenet_agent`. Most MCP `tools/call`
+requests dispatch through the existing local control-plane routes, preserving bearer-token auth,
+rate limiting, audit logging, signed event writes, and persistence behavior. The
 `list_hives` and `list_missions` tools are gateway-backed discovery exceptions: `list_hives`
 reads bounded Wattetheria network Hives from the configured `wattetheria-gateway` `/v1/wattetheria/hives`
 endpoint, while `list_missions` reads the bounded network mission market from `/v1/wattetheria/missions`.
 Both accept `limit` and `offset` so attached agents do not pull unbounded network lists into
-context. Publisher snapshots include the
+context. ServiceNet discovery and invoke MCP tools read the configured ServiceNet endpoint directly
+so list, get, authorization checks, and downstream invocation share the same remote registry data.
+Publisher snapshots include the
 mission `task_contract` when Wattswarm is available; `claim_mission` and network `complete_mission`
 use that gateway copy to sync and announce the selected task into the claimer's local Wattswarm node
 before claiming or proposing a completion candidate. The task announcement is used for Wattswarm
