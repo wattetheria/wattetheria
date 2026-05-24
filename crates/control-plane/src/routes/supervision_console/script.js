@@ -415,8 +415,7 @@
       renderTopics(payload);
       renderTopicMessages(payload);
       renderWallet(operator);
-      renderNodes(payload);
-        renderOrganizations(payload);
+      renderOrganizations(payload);
     }
 
     function diagnosticQuery(limitOverride) {
@@ -859,19 +858,6 @@
       `;
       renderTokenBalances(chainId);
       bindWalletControls();
-    }
-
-    function renderNodes(payload) {
-      renderList("nodes-list", safeArray(payload.nodes), "No nodes visible.", (row) => `
-        <div class="row">
-          <div class="row-head">
-            <div class="row-title">${escapeHtml(compactId(row.node_id || row.id, 24))}</div>
-            ${pill(row.status || nodeRelationshipState(row) || "node", row.status || nodeRelationshipState(row))}
-          </div>
-          <div class="row-body">${escapeHtml(valueOrDash(row.endpoint || at(row, ["metadata", "endpoint_id"]) || at(row, ["metadata", "local_iroh_endpoint_id"]) || at(row, ["discovery", "endpoint_id"]) || row.region))}</div>
-          <div class="subtle">${escapeHtml(valueOrDash(row.source_kind || at(row, ["discovery", "source_kind"])))} | ${escapeHtml(valueOrDash(at(row, ["metadata", "handshake_status"]) || (row.connected ? "connected" : "not connected")))}</div>
-        </div>
-      `);
     }
 
     function renderOrganizations(payload) {

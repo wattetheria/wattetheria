@@ -294,6 +294,43 @@ pub(crate) async fn invoke_agent(
     Json(payload).into_response()
 }
 
+pub(crate) async fn invoke_agent_async(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(body): Json<ServiceNetInvokeRequest>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(client) = servicenet_client(&state) else {
+        return servicenet_unavailable_response();
+    };
+    let response = match client.invoke_agent_async(&agent_id, &body).await {
+        Ok(response) => response,
+        Err(error) => return servicenet_error_response(&error),
+    };
+    let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "servicenet".to_string(),
+        action: "servicenet.agents.invoke_async".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(agent_id),
+        capability: Some("net.outbound".to_string()),
+        reason: Some("servicenet.invoke_async".to_string()),
+        duration_ms: None,
+        details: Some(json!({
+            "status": payload["status"],
+            "receipt_id": payload["receipt_id"],
+        })),
+    });
+    Json(payload).into_response()
+}
+
 pub(crate) async fn get_agent_task(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -337,6 +374,31 @@ pub(crate) async fn get_agent_task(
         })),
     });
     Json(payload).into_response()
+}
+
+pub(crate) async fn get_receipt(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(receipt_id): Path<uuid::Uuid>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(client) = servicenet_client(&state) else {
+        return servicenet_unavailable_response();
+    };
+    let response = match client.get_receipt(&receipt_id).await {
+        Ok(response) => response,
+        Err(error) => return servicenet_error_response(&error),
+    };
+    append_query_audit(
+        &state,
+        auth,
+        "servicenet.receipts.get",
+        &receipt_id.to_string(),
+    );
+    Json(response).into_response()
 }
 
 fn append_query_audit(state: &ControlPlaneState, auth: String, action: &str, subject: &str) {

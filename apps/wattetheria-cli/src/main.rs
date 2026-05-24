@@ -972,6 +972,11 @@ fn agent_card_template_jsonc() -> &'static str {
   // UI Cost. User-set cost charged for invoking this agent.
   "cost": 18,
 
+  // A2A task support:
+  // true = SendMessage may return a Task, caller can poll with GetTask.
+  // false = SendMessage normally returns a Message.
+  "supportsTask": false,
+
   "skills": [
     {
       "id": "",
@@ -1510,5 +1515,6 @@ mod tests {
         assert_eq!(card["origin"], "custom_built");
         assert_eq!(card["domain"], "GENERAL");
         assert_eq!(card["cost"], 18);
+        assert_eq!(card["supportsTask"], false);
     }
 }

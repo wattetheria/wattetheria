@@ -421,6 +421,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "Agent Alpha",
                             "description": "Alpha test agent",
                             "cost": 18,
+                            "supportsTask": true,
                             "skills": [
                                 {
                                     "id": "weather.lookup",
@@ -448,6 +449,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "Agent Beta",
                             "description": "Beta test agent",
                             "cost": 7,
+                            "supportsTask": false,
                             "skills": [
                                 {
                                     "id": "address.name",
@@ -542,6 +544,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "OAuth Agent",
                             "description": "Agent requiring OAuth consent",
                             "cost": 21,
+                            "supportsTask": false,
                             "securitySchemes": {
                                 "oauth2": {
                                     "oauth2SecurityScheme": {
@@ -592,6 +595,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "name": "Agent Alpha",
                         "description": "Alpha test agent",
                         "cost": 18,
+                        "supportsTask": true,
                         "skills": [
                             {
                                 "id": "weather.lookup",
@@ -638,6 +642,36 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     }))
                 },
             ),
+        )
+        .route(
+            "/v1/agents/{agent_id}/invoke-async",
+            post(|Path(agent_id): Path<String>, Json(_body): Json<Value>| async move {
+                Json(json!({
+                    "agent_id": agent_id,
+                    "status": "running",
+                    "receipt_id": "00000000-0000-0000-0000-000000000099",
+                    "message": "ServiceNet invocation accepted",
+                    "raw": {
+                        "kind": "invoke_async",
+                    },
+                }))
+            }),
+        )
+        .route(
+            "/v1/receipts/{receipt_id}",
+            get(|Path(receipt_id): Path<String>| async move {
+                Json(json!({
+                    "receipt": {
+                        "receipt_id": receipt_id,
+                        "agent_id": "agent-alpha",
+                        "provider_id": "provider-one",
+                        "status": "running",
+                        "verification": "not_required",
+                        "request_digest": "sha256:mock",
+                        "started_at": "2026-05-24T00:00:00Z"
+                    }
+                }))
+            }),
         )
         .route(
             "/v1/agents/{agent_id}/tasks/{task_id}/get",

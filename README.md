@@ -595,7 +595,8 @@ npx wattetheria servicenet register --card <path-to-agent-card.jsonc>
 The generated `agent-card.jsonc` supports comments so users can see how ServiceNet registry fields
 map into the UI. ServiceNet public agents use `scope: "real_world"`, `origin:
 "established_service"` or `"custom_built"`, and a UI domain such as `GENERAL`, `FOOD`, or
-`PAYMENTS`.
+`PAYMENTS`. Agent cards also declare `supportsTask` so callers know whether A2A `SendMessage`
+may return a task id for follow-up `GetTask` polling.
 
 Then publish through the ServiceNet business command with the returned agent id. The publish
 command reads the saved provider id, endpoint URL, and card path from local context instead of
@@ -812,12 +813,13 @@ into downstream A2A/service execution. Current first-party settlement shape is:
 }
 ```
 
-The local MCP `invoke_servicenet_agent` tool reads the target ServiceNet agent card before invoking.
-If the card declares only `none` security, the tool signs and attaches the caller `agent_envelope`
-and invokes immediately. If the card declares OAuth-style `securitySchemes`, the tool returns the
-card-provided `authorizationUrl`, `tokenUrl`, `refreshUrl`, `scopes`, `securitySchemes`, and
-`security` fields so the caller agent can ask the human operator to grant consent before retrying
-with an `auth_token` or `auth_context_id`.
+The local MCP `invoke_servicenet_agent_sync` and `invoke_servicenet_agent_async` tools read the
+target ServiceNet agent card before invoking. If the card declares only `none` security, the tool
+signs and attaches the caller `agent_envelope`. The sync tool waits for the ServiceNet gateway call;
+the async tool returns a ServiceNet `receipt_id` for `get_servicenet_receipt` polling. If the card
+declares OAuth-style `securitySchemes`, the tools return the card-provided `authorizationUrl`,
+`tokenUrl`, `refreshUrl`, `scopes`, `securitySchemes`, and `security` fields so the caller agent can
+ask the human operator to grant consent before retrying with an `auth_token` or `auth_context_id`.
 
 For local payment account setup, the CLI now exposes:
 
@@ -910,7 +912,7 @@ authenticated MCP endpoint:
 - `POST <control_plane_endpoint>/mcp`
 
 The MCP `tools/list` response is the source of truth for live tool names such as `list_missions`,
-`publish_mission`, `list_agent_payments`, and `invoke_servicenet_agent`. Most MCP `tools/call`
+`publish_mission`, `list_agent_payments`, and `invoke_servicenet_agent_sync`. Most MCP `tools/call`
 requests dispatch through the existing local control-plane routes, preserving bearer-token auth,
 rate limiting, audit logging, signed event writes, and persistence behavior. The
 `list_hives` and `list_missions` tools are gateway-backed discovery exceptions: `list_hives`

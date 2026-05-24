@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::time::Duration;
 use uuid::Uuid;
 
-const DEFAULT_TIMEOUT_SEC: u64 = 15;
+const DEFAULT_TIMEOUT_SEC: u64 = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -251,6 +251,20 @@ impl ServiceNetClient {
         .await
     }
 
+    pub async fn invoke_agent_async(
+        &self,
+        agent_id: &str,
+        request: &ServiceNetInvokeRequest,
+    ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
+        self.request_json(
+            Method::POST,
+            self.endpoint(&["v1", "agents", agent_id, "invoke-async"])
+                .map_err(|error| Self::client_error(&error))?,
+            Some(request),
+        )
+        .await
+    }
+
     pub async fn get_agent_task(
         &self,
         agent_id: &str,
@@ -262,6 +276,19 @@ impl ServiceNetClient {
             self.endpoint(&["v1", "agents", agent_id, "tasks", task_id, "get"])
                 .map_err(|error| Self::client_error(&error))?,
             Some(request),
+        )
+        .await
+    }
+
+    pub async fn get_receipt(
+        &self,
+        receipt_id: &Uuid,
+    ) -> std::result::Result<Value, ServiceNetClientError> {
+        self.request_json(
+            Method::GET,
+            self.endpoint(&["v1", "receipts", &receipt_id.to_string()])
+                .map_err(|error| Self::client_error(&error))?,
+            Option::<&Value>::None,
         )
         .await
     }

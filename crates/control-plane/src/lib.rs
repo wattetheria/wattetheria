@@ -270,8 +270,16 @@ fn servicenet_router() -> Router<ControlPlaneState> {
             post(routes::servicenet::invoke_agent),
         )
         .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async",
+            post(routes::servicenet::invoke_agent_async),
+        )
+        .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get",
             post(routes::servicenet::get_agent_task),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/receipts/{receipt_id}",
+            get(routes::servicenet::get_receipt),
         )
 }
 

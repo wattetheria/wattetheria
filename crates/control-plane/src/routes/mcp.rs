@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 use tower::ServiceExt;
+use uuid::Uuid;
 
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
@@ -260,7 +261,13 @@ async fn direct_mcp_tool_result(
         "list_missions" => Some(network_mission_market_result(state, arguments).await),
         "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
         "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
-        "invoke_servicenet_agent" => Some(servicenet_invoke_agent_result(state, arguments).await),
+        "invoke_servicenet_agent_sync" => {
+            Some(servicenet_invoke_agent_result(state, arguments, ServiceNetInvokeMode::Sync).await)
+        }
+        "invoke_servicenet_agent_async" => Some(
+            servicenet_invoke_agent_result(state, arguments, ServiceNetInvokeMode::Async).await,
+        ),
+        "get_servicenet_receipt" => Some(servicenet_receipt_result(state, arguments).await),
         "list_hives" => Some(network_hive_market_result(state, arguments).await),
         _ => None,
     }
@@ -511,7 +518,17 @@ async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -
     ))
 }
 
-async fn servicenet_invoke_agent_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+#[derive(Debug, Clone, Copy)]
+enum ServiceNetInvokeMode {
+    Sync,
+    Async,
+}
+
+async fn servicenet_invoke_agent_result(
+    state: &ControlPlaneState,
+    arguments: &Value,
+    mode: ServiceNetInvokeMode,
+) -> Value {
     let Some(client) = state.servicenet_client.as_deref() else {
         return tool_error(&json!({"error": "servicenet is not configured"}));
     };
@@ -522,12 +539,10 @@ async fn servicenet_invoke_agent_result(state: &ControlPlaneState, arguments: &V
         Ok(item) => item,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
     };
-    let mut body = arguments.get("body").cloned().unwrap_or_else(|| {
-        object_without_path_vars(
-            arguments,
-            "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
-        )
-    });
+    let mut body = arguments
+        .get("body")
+        .cloned()
+        .unwrap_or_else(|| object_without_path_vars(arguments, servicenet_invoke_tool_path(mode)));
     if !body.is_object() {
         return tool_error(&json!({"error": "invoke body must be a JSON object"}));
     }
@@ -551,8 +566,36 @@ async fn servicenet_invoke_agent_result(state: &ControlPlaneState, arguments: &V
         Ok(request) => request,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
     };
-    match client.invoke_agent(&agent_id, &request).await {
+    let response = match mode {
+        ServiceNetInvokeMode::Sync => client.invoke_agent(&agent_id, &request).await,
+        ServiceNetInvokeMode::Async => client.invoke_agent_async(&agent_id, &request).await,
+    };
+    match response {
         Ok(response) => tool_success(&serde_json::to_value(response).unwrap_or(Value::Null)),
+        Err(error) => tool_error(&json!({"error": error.to_string()})),
+    }
+}
+
+fn servicenet_invoke_tool_path(mode: ServiceNetInvokeMode) -> &'static str {
+    match mode {
+        ServiceNetInvokeMode::Sync => "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
+        ServiceNetInvokeMode::Async => "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async",
+    }
+}
+
+async fn servicenet_receipt_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let Some(client) = state.servicenet_client.as_deref() else {
+        return tool_error(&json!({"error": "servicenet is not configured"}));
+    };
+    let Some(receipt_id) = required_string(arguments, "receipt_id") else {
+        return tool_error(&json!({"error": "receipt_id is required"}));
+    };
+    let receipt_id = match Uuid::parse_str(&receipt_id) {
+        Ok(receipt_id) => receipt_id,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    match client.get_receipt(&receipt_id).await {
+        Ok(response) => tool_success(&response),
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
 }
@@ -668,6 +711,14 @@ fn servicenet_agent_detail_summary(
     let mut summary = servicenet_agent_list_summary(agent, health_by_agent, trust_by_agent);
     if let Some(object) = summary.as_object_mut() {
         object.insert("skills".to_owned(), json!(servicenet_agent_skills(agent)));
+        object.insert(
+            "supportsTask".to_owned(),
+            json!(
+                value_at(agent, &["agent_card", "supportsTask"])
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            ),
+        );
     }
     summary
 }
@@ -699,7 +750,6 @@ fn servicenet_agent_list_summary(
         "provider_id": value_at(agent, &["provider_id"]).cloned().unwrap_or(Value::Null),
         "runtime": value_at(agent, &["deployment", "runtime"]).cloned().unwrap_or(Value::Null),
         "protocol": servicenet_agent_protocol(agent),
-        "url": value_at(agent, &["deployment", "endpoint", "url"]).cloned().unwrap_or(Value::Null),
         "risk_level": value_at(agent, &["review", "risk_level"]).cloned().unwrap_or(Value::Null),
         "reputation_score": servicenet_reputation_score(trust),
         "cost": value_at(agent, &["agent_card", "cost"]).cloned().unwrap_or(Value::Null),
@@ -1545,7 +1595,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 31] = [
+const AGENT_TOOLS: [AgentTool; 33] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1575,6 +1625,8 @@ const AGENT_TOOLS: [AgentTool; 31] = [
     AgentTool { name: "ack_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
-    AgentTool { name: "invoke_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "invoke_servicenet_agent_sync", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Synchronously invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "invoke_servicenet_agent_async", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async", description: "Submit an external ServiceNet agent invocation and poll the returned receipt.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },
+    AgentTool { name: "get_servicenet_receipt", method: Method::GET, path: "/v1/wattetheria/servicenet/receipts/{receipt_id}", description: "Get a ServiceNet invocation receipt.", availability: Availability::ServiceNet },
 ];

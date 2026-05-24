@@ -83,6 +83,29 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
         Some("submitted")
     );
 
+    let async_json = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke-async",
+        json!({
+            "message": "hello async servicenet"
+        }),
+    )
+    .await;
+    assert_eq!(async_json["status"].as_str(), Some("running"));
+    assert_eq!(
+        async_json["receipt_id"].as_str(),
+        Some("00000000-0000-0000-0000-000000000099")
+    );
+
+    let receipt_json = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/receipts/00000000-0000-0000-0000-000000000099",
+    )
+    .await;
+    assert_eq!(receipt_json["receipt"]["status"].as_str(), Some("running"));
+
     let task_json = authed_post_json(
         app,
         &token,

@@ -531,6 +531,8 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("/v1/wattetheria/client/export"));
     assert!(body.contains("node_limit"));
     assert!(body.contains("Nodes"));
+    assert!(!body.contains("id=\"nodes-list\""));
+    assert!(!body.contains("renderNodes(payload)"));
     assert!(body.contains("identityRecordPublicIdentity"));
     assert!(body.contains("isAgentIdentityRecord"));
     assert!(

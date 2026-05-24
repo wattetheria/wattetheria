@@ -460,7 +460,7 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             false,
         )),
         "get_servicenet_agent" => Some(empty_tool_schema(tool)),
-        "invoke_servicenet_agent" => Some(tool_schema(
+        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => Some(tool_schema(
             tool,
             &[
                 string_field("task_id", "ServiceNet task ID."),
@@ -479,6 +479,12 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
                 settlement_field(),
             ],
             &[],
+            false,
+        )),
+        "get_servicenet_receipt" => Some(tool_schema(
+            tool,
+            &[string_field("receipt_id", "ServiceNet receipt UUID.")],
+            &["receipt_id"],
             false,
         )),
         "get_servicenet_agent_task" => Some(tool_schema(

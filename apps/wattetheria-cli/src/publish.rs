@@ -144,6 +144,7 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         "origin",
         "domain",
         "cost",
+        "supportsTask",
         "skills",
         "securitySchemes",
         "security",
@@ -180,6 +181,14 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
             "agent card `cost` must be a non-negative integer up to {}",
             u32::MAX
         );
+    }
+
+    if object
+        .get("supportsTask")
+        .and_then(Value::as_bool)
+        .is_none()
+    {
+        bail!("agent card `supportsTask` must be a boolean");
     }
 
     let skills = object
@@ -372,6 +381,7 @@ mod tests {
             "origin": "custom_built",
             "domain": "GENERAL",
             "cost": 18,
+            "supportsTask": false,
             "skills": [
                 {
                     "description": "Get weather",
@@ -485,6 +495,18 @@ mod tests {
             error
                 .to_string()
                 .contains("agent card `cost` must be a non-negative integer")
+        );
+    }
+
+    #[test]
+    fn agent_card_requires_boolean_supports_task() {
+        let mut card = valid_card();
+        card["supportsTask"] = json!("false");
+        let error = validate_agent_card(&card).expect_err("string supportsTask should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `supportsTask` must be a boolean")
         );
     }
 }

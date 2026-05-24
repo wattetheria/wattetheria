@@ -30,8 +30,10 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "ack_message",
     "list_servicenet_agents",
     "get_servicenet_agent",
-    "invoke_servicenet_agent",
+    "invoke_servicenet_agent_sync",
+    "invoke_servicenet_agent_async",
     "get_servicenet_agent_task",
+    "get_servicenet_receipt",
 ];
 
 async fn mcp_request(app: Router, token: &str, body: Value) -> Value {
@@ -180,7 +182,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(beta["provider_id"].as_str(), Some("provider-two"));
     assert_eq!(beta["runtime"].as_str(), Some("remote_http"));
     assert_eq!(beta["protocol"].as_str(), Some("google_a2a / JSONRPC"));
-    assert_eq!(beta["url"].as_str(), Some("https://example.net/a2a"));
+    assert!(beta.get("url").is_none());
     assert_eq!(beta["risk_level"].as_str(), Some("medium"));
     assert_eq!(beta["reputation_score"].as_f64(), Some(500.0));
     assert_eq!(beta["cost"].as_u64(), Some(7));
@@ -229,10 +231,11 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["provider_id"].as_str(), Some("provider-one"));
     assert_eq!(agent["runtime"].as_str(), Some("remote_http"));
     assert_eq!(agent["protocol"].as_str(), Some("google_a2a / JSONRPC"));
-    assert_eq!(agent["url"].as_str(), Some("https://example.com/a2a"));
+    assert!(agent.get("url").is_none());
     assert_eq!(agent["risk_level"].as_str(), Some("low"));
     assert_eq!(agent["reputation_score"].as_f64(), Some(750.0));
     assert_eq!(agent["cost"].as_u64(), Some(18));
+    assert_eq!(agent["supportsTask"].as_bool(), Some(true));
     assert_eq!(
         agent["skills"],
         json!([
@@ -247,7 +250,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_attaches_agent_envelope_for_public_agent() {
+async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_agent() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let agent_did = state.agent_did.clone();
@@ -267,7 +270,7 @@ async fn mcp_invoke_servicenet_agent_attaches_agent_envelope_for_public_agent() 
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent",
+                "name": "invoke_servicenet_agent_sync",
                 "arguments": {
                     "agent_id": "agent-alpha",
                     "message": "hello servicenet"
@@ -289,7 +292,7 @@ async fn mcp_invoke_servicenet_agent_attaches_agent_envelope_for_public_agent() 
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_returns_authorization_url_when_oauth_is_required() {
+async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -308,7 +311,88 @@ async fn mcp_invoke_servicenet_agent_returns_authorization_url_when_oauth_is_req
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent",
+                "name": "invoke_servicenet_agent_async",
+                "arguments": {
+                    "agent_id": "agent-alpha",
+                    "message": "hello servicenet"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["status"].as_str(), Some("running"));
+    assert_eq!(
+        content["receipt_id"].as_str(),
+        Some("00000000-0000-0000-0000-000000000099")
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_get_servicenet_receipt_returns_receipt_status() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_servicenet_receipt",
+                "arguments": {
+                    "receipt_id": "00000000-0000-0000-0000-000000000099"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["receipt"]["status"].as_str(), Some("running"));
+    assert_eq!(
+        content["receipt"]["receipt_id"].as_str(),
+        Some("00000000-0000-0000-0000-000000000099")
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_invoke_servicenet_agent_sync_returns_authorization_url_when_oauth_is_required() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent_sync",
                 "arguments": {
                     "agent_id": "agent-oauth",
                     "message": "request ride"
@@ -590,6 +674,9 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
     assert_schema_requires(settle_payment, &["payment_id", "settlement_receipt"]);
+
+    let get_servicenet_receipt = find_tool(tools, "get_servicenet_receipt");
+    assert_schema_requires(get_servicenet_receipt, &["receipt_id"]);
 
     let fetch_messages = find_tool(tools, "fetch_messages");
     assert_schema_requires(fetch_messages, &["subnet_id"]);
