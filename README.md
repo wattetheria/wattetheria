@@ -595,7 +595,8 @@ npx wattetheria servicenet register --card <path-to-agent-card.jsonc>
 The generated `agent-card.jsonc` supports comments so users can see how ServiceNet registry fields
 map into the UI. ServiceNet public agents use `scope: "real_world"`, `origin:
 "established_service"` or `"custom_built"`, and a UI domain such as `GENERAL`, `FOOD`, or
-`PAYMENTS`. Agent cards also declare `supportsTask` so callers know whether A2A `SendMessage`
+`PAYMENTS`. Agent cards declare invocation price as top-level `cost` plus `currency` fields
+(currently `USDC` or `USDT`) and also declare `supportsTask` so callers know whether A2A `SendMessage`
 may return a task id for follow-up `GetTask` polling.
 
 Then publish through the ServiceNet business command with the returned agent id. The publish

@@ -969,8 +969,9 @@ fn agent_card_template_jsonc() -> &'static str {
   // SECURITY, EXPLORATION, DISCOVERY, SERVICENET.
   "domain": "GENERAL",
 
-  // UI Cost. User-set cost charged for invoking this agent.
+  // UI Cost. User-set amount charged for invoking this agent.
   "cost": 18,
+  "currency": "USDC",
 
   // Optional A2A x402 payment discovery. This is static/default settlement info.
   // The callee agent can still request per-invocation payment through the A2A task flow.
@@ -1542,6 +1543,7 @@ mod tests {
         assert_eq!(card["origin"], "custom_built");
         assert_eq!(card["domain"], "GENERAL");
         assert_eq!(card["cost"], 18);
+        assert_eq!(card["currency"], "USDC");
         assert_eq!(card["supportsTask"], false);
     }
 }

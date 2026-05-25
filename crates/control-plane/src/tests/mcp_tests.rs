@@ -186,6 +186,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(beta["risk_level"].as_str(), Some("medium"));
     assert_eq!(beta["reputation_score"].as_f64(), Some(500.0));
     assert_eq!(beta["cost"].as_u64(), Some(7));
+    assert_eq!(beta["currency"].as_str(), Some("USDT"));
     assert!(beta.get("skills").is_none());
 
     servicenet_server.abort();
@@ -235,6 +236,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["risk_level"].as_str(), Some("low"));
     assert_eq!(agent["reputation_score"].as_f64(), Some(750.0));
     assert_eq!(agent["cost"].as_u64(), Some(18));
+    assert_eq!(agent["currency"].as_str(), Some("USDC"));
     assert_eq!(agent["supportsTask"].as_bool(), Some(true));
     assert_eq!(
         agent["payment"]["params"]["accepts"][0]["payTo"].as_str(),

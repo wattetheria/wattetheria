@@ -144,6 +144,7 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         "origin",
         "domain",
         "cost",
+        "currency",
         "supportsTask",
         "skills",
         "securitySchemes",
@@ -182,6 +183,7 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
             u32::MAX
         );
     }
+    validate_agent_card_currency(object)?;
 
     if object
         .get("supportsTask")
@@ -218,6 +220,17 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         bail!("agent card appears to contain a secret; remove it before publishing");
     }
 
+    Ok(())
+}
+
+fn validate_agent_card_currency(object: &serde_json::Map<String, Value>) -> Result<()> {
+    let currency = object
+        .get("currency")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `currency` must be a string"))?;
+    if !matches!(currency, "USDC" | "USDT") {
+        bail!("agent card `currency` must be `USDC` or `USDT` (got `{currency}`)");
+    }
     Ok(())
 }
 
@@ -381,6 +394,7 @@ mod tests {
             "origin": "custom_built",
             "domain": "GENERAL",
             "cost": 18,
+            "currency": "USDC",
             "supportsTask": false,
             "skills": [
                 {
@@ -495,6 +509,30 @@ mod tests {
             error
                 .to_string()
                 .contains("agent card `cost` must be a non-negative integer")
+        );
+    }
+
+    #[test]
+    fn agent_card_requires_string_currency() {
+        let mut card = valid_card();
+        card["currency"] = json!(18);
+        let error = validate_agent_card(&card).expect_err("numeric currency should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `currency` must be a string")
+        );
+    }
+
+    #[test]
+    fn agent_card_requires_supported_currency() {
+        let mut card = valid_card();
+        card["currency"] = json!("WATT");
+        let error = validate_agent_card(&card).expect_err("unsupported currency should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `currency` must be `USDC` or `USDT`")
         );
     }
 

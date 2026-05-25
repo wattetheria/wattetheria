@@ -780,6 +780,7 @@ fn servicenet_agent_list_summary(
         "risk_level": value_at(agent, &["review", "risk_level"]).cloned().unwrap_or(Value::Null),
         "reputation_score": servicenet_reputation_score(trust),
         "cost": value_at(agent, &["agent_card", "cost"]).cloned().unwrap_or(Value::Null),
+        "currency": value_at(agent, &["agent_card", "currency"]).cloned().unwrap_or(Value::Null),
     })
 }
 

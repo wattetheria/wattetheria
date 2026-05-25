@@ -421,6 +421,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "Agent Alpha",
                             "description": "Alpha test agent",
                             "cost": 18,
+                            "currency": "USDC",
                             "supportsTask": true,
                             "capabilities": {
                                 "extensions": [
@@ -472,6 +473,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "Agent Beta",
                             "description": "Beta test agent",
                             "cost": 7,
+                            "currency": "USDT",
                             "supportsTask": false,
                             "skills": [
                                 {
@@ -567,6 +569,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "name": "OAuth Agent",
                             "description": "Agent requiring OAuth consent",
                             "cost": 21,
+                            "currency": "USDC",
                             "supportsTask": false,
                             "securitySchemes": {
                                 "oauth2": {
@@ -618,6 +621,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "name": "Agent Alpha",
                         "description": "Alpha test agent",
                         "cost": 18,
+                        "currency": "USDC",
                         "supportsTask": true,
                         "capabilities": {
                             "extensions": [
