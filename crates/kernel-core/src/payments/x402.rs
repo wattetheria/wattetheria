@@ -84,6 +84,20 @@ pub fn encode_payment_signature_header(payment_payload: &Value) -> Result<String
     encode_header_json(payment_payload)
 }
 
+pub fn stablecoin_amount_to_base_units(amount: &str, currency: &str) -> Result<Option<String>> {
+    let Some(decimals) = stablecoin_decimals(currency) else {
+        return Ok(None);
+    };
+    decimal_amount_to_base_units(amount, decimals, currency).map(Some)
+}
+
+#[must_use]
+pub fn stablecoin_amount_from_base_units(amount: &str, currency: &str) -> Option<String> {
+    let decimals = stablecoin_decimals(currency)?;
+    let base_units = amount.trim().parse::<u128>().ok()?;
+    Some(format_base_units_as_decimal(base_units, decimals))
+}
+
 #[must_use]
 pub fn build_payment_signature_payload(
     accepted: &X402PaymentRequirement,
@@ -285,6 +299,74 @@ fn amounts_match(receipt_amount: &str, expected_amount: &str) -> bool {
     }
 }
 
+fn stablecoin_decimals(currency: &str) -> Option<u32> {
+    match currency.trim().to_ascii_uppercase().as_str() {
+        "USDC" | "USDT" => Some(6),
+        _ => None,
+    }
+}
+
+fn decimal_amount_to_base_units(amount: &str, decimals: u32, currency: &str) -> Result<String> {
+    let currency = currency.trim().to_ascii_uppercase();
+    let amount = amount.trim();
+    if amount.is_empty() || amount.starts_with('-') {
+        bail!("{currency} payment amount must be greater than zero");
+    }
+    let parts = amount.split('.').collect::<Vec<_>>();
+    if parts.len() > 2 {
+        bail!("{currency} payment amount is not a decimal value");
+    }
+    let whole = if parts[0].is_empty() { "0" } else { parts[0] };
+    if !whole.chars().all(|value| value.is_ascii_digit()) {
+        bail!("{currency} payment amount is not a decimal value");
+    }
+    let whole_units = whole
+        .parse::<u128>()
+        .map_err(|_| anyhow::anyhow!("{currency} payment amount is too large"))?;
+    let scale = 10_u128
+        .checked_pow(decimals)
+        .ok_or_else(|| anyhow::anyhow!("{currency} payment decimals are too large"))?;
+    let fractional_units = if let Some(fractional) = parts.get(1) {
+        let fractional = fractional.trim_end_matches('0');
+        if !fractional.chars().all(|value| value.is_ascii_digit()) {
+            bail!("{currency} payment amount is not a decimal value");
+        }
+        let decimals_usize = usize::try_from(decimals)
+            .map_err(|_| anyhow::anyhow!("{currency} payment decimals are too large"))?;
+        if fractional.len() > decimals_usize {
+            bail!("{currency} payment amount has more than {decimals} decimal places");
+        }
+        let padded = format!("{fractional:0<decimals_usize$}");
+        padded
+            .parse::<u128>()
+            .map_err(|_| anyhow::anyhow!("{currency} payment amount is too large"))?
+    } else {
+        0
+    };
+    let base_units = whole_units
+        .checked_mul(scale)
+        .and_then(|value| value.checked_add(fractional_units))
+        .ok_or_else(|| anyhow::anyhow!("{currency} payment amount is too large"))?;
+    if base_units == 0 {
+        bail!("{currency} payment amount must be greater than zero");
+    }
+    Ok(base_units.to_string())
+}
+
+fn format_base_units_as_decimal(base_units: u128, decimals: u32) -> String {
+    let scale = 10_u128.checked_pow(decimals).unwrap_or(1);
+    let whole = base_units / scale;
+    let fractional = base_units % scale;
+    if fractional == 0 {
+        return whole.to_string();
+    }
+    let width = usize::try_from(decimals).unwrap_or(0);
+    let fractional = format!("{fractional:0width$}")
+        .trim_end_matches('0')
+        .to_string();
+    format!("{whole}.{fractional}")
+}
+
 fn canonical_x402_network(network: &str) -> String {
     match network.trim().to_ascii_lowercase().as_str() {
         "base" | "base-mainnet" | "eip155:8453" | "8453" => "eip155:8453".to_owned(),
@@ -337,6 +419,36 @@ mod tests {
             settled_at: None,
             expires_at: None,
         }
+    }
+
+    #[test]
+    fn stablecoin_amounts_convert_between_human_and_base_units() {
+        assert_eq!(
+            stablecoin_amount_to_base_units("1", "USDC").unwrap(),
+            Some("1000000".to_owned())
+        );
+        assert_eq!(
+            stablecoin_amount_to_base_units("0.5", "USDT").unwrap(),
+            Some("500000".to_owned())
+        );
+        assert_eq!(
+            stablecoin_amount_to_base_units("0.18", "USDC").unwrap(),
+            Some("180000".to_owned())
+        );
+        assert_eq!(
+            stablecoin_amount_from_base_units("1000000", "USDC"),
+            Some("1".to_owned())
+        );
+        assert_eq!(
+            stablecoin_amount_from_base_units("180000", "USDC"),
+            Some("0.18".to_owned())
+        );
+    }
+
+    #[test]
+    fn stablecoin_amounts_reject_precision_below_token_base_unit() {
+        let error = stablecoin_amount_to_base_units("0.0000001", "USDC").unwrap_err();
+        assert!(error.to_string().contains("more than 6 decimal places"));
     }
 
     #[test]

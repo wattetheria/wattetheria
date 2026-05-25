@@ -86,7 +86,10 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
             &[
                 string_field("counterpart_public_id", "Recipient public identity."),
                 string_field("agent_id", "ServiceNet agent ID."),
-                string_field("amount", "Payment amount as a string."),
+                string_field(
+                    "amount",
+                    "Payment amount as a human unit string; x402 USDC and USDT amounts are converted to token base units internally.",
+                ),
                 string_field("currency", "Payment currency."),
                 string_field("rail", "Settlement rail."),
                 enum_field("layer", "Settlement layer.", &["web2", "web3"]),

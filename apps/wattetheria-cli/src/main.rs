@@ -976,6 +976,7 @@ fn agent_card_template_jsonc() -> &'static str {
   // Optional A2A x402 payment discovery. This is static/default settlement info.
   // The callee agent can still request per-invocation payment through the A2A task flow.
   // payTo is the callee/merchant settlement receiving address, not the caller wallet.
+  // resource names the paid ServiceNet resource; use this card's agent name, not a registry agent_id.
   // "capabilities": {
   //   "extensions": [
   //     {
@@ -990,7 +991,7 @@ fn agent_card_template_jsonc() -> &'static str {
   //             "asset": "0x0000000000000000000000000000000000000000",
   //             "payTo": "0x0000000000000000000000000000000000000000",
   //             "maxAmountRequired": "0",
-  //             "resource": "servicenet:agent:<agent_id>",
+  //             "resource": "servicenet:agent:<agent_name>",
   //             "description": "ServiceNet agent invocation",
   //             "maxTimeoutSeconds": 600
   //           }
@@ -1007,7 +1008,6 @@ fn agent_card_template_jsonc() -> &'static str {
 
   "skills": [
     {
-      "id": "",
       "name": "",
       "description": ""
     }
@@ -1545,5 +1545,13 @@ mod tests {
         assert_eq!(card["cost"], 18);
         assert_eq!(card["currency"], "USDC");
         assert_eq!(card["supportsTask"], false);
+        let skill = card["skills"][0]
+            .as_object()
+            .expect("template skill object");
+        let mut skill_keys = skill.keys().map(String::as_str).collect::<Vec<_>>();
+        skill_keys.sort_unstable();
+        assert_eq!(skill_keys, vec!["description", "name"]);
+        assert!(agent_card_template_jsonc().contains("servicenet:agent:<agent_name>"));
+        assert!(!agent_card_template_jsonc().contains("servicenet:agent:<agent_id>"));
     }
 }

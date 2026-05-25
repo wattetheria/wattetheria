@@ -256,6 +256,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
@@ -279,7 +280,7 @@ async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
                 "name": "propose_agent_payment",
                 "arguments": {
                     "agent_id": "agent-alpha",
-                    "amount": "180000",
+                    "amount": "0.18",
                     "currency": "USDC",
                     "rail": "x402",
                     "layer": "web3"
@@ -301,6 +302,7 @@ async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
         content["payment"]["recipient_address"].as_str(),
         Some("0x742d35Cc6634C0532925a3b844Bc454e4438f44e")
     );
+    assert_eq!(content["payment"]["amount"].as_str(), Some("0.18"));
     assert_eq!(content["payment"]["network"].as_str(), Some("base"));
     assert_eq!(content["transport"]["mode"].as_str(), Some("servicenet"));
     assert_eq!(
@@ -356,8 +358,85 @@ async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
         submitted["result"]["structuredContent"]["status"].as_str(),
         Some("submitted")
     );
+    assert_eq!(
+        submitted["result"]["structuredContent"]["amount"].as_str(),
+        Some("0.18")
+    );
+    assert_eq!(
+        submitted["result"]["structuredContent"]["settlement_receipt"]["amount"].as_str(),
+        Some("0.18")
+    );
 
     servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_propose_agent_payment_normalizes_stablecoin_amount_for_counterpart() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-stable", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Stable".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooStablePeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_agent_payment",
+                "arguments": {
+                    "counterpart_public_id": remote_public_id,
+                    "amount": "1",
+                    "currency": "USDT",
+                    "rail": "x402",
+                    "layer": "web3",
+                    "network": "base"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["payment"]["amount"].as_str(), Some("1"));
+    let payment_commands = bridge.payment_commands.lock().await;
+    assert_eq!(payment_commands.len(), 1);
+    assert_eq!(
+        payment_commands[0].payment["amount"].as_str(),
+        Some("1000000")
+    );
 }
 
 #[tokio::test]

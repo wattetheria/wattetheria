@@ -16,6 +16,9 @@ use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::resolve_identity_context;
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::payments::{
+    stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
+};
 use wattetheria_kernel::servicenet::ServiceNetInvokeRequest;
 
 mod schema;
@@ -248,7 +251,7 @@ async fn call_tool(
             return Err(response);
         }
     };
-    let result = response_to_tool_result(response).await;
+    let result = response_to_tool_result(tool.name, response).await;
     record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
     Ok(result)
 }
@@ -1323,7 +1326,12 @@ async fn dispatch_loopback_tool(
     let body = if tool.method == Method::GET {
         Body::empty()
     } else {
-        let body = tool_body_with_local_identity(&state, tool, arguments).await;
+        let body = match tool_body_with_local_identity(&state, tool, arguments).await {
+            Ok(body) => body,
+            Err(error) => {
+                return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
+            }
+        };
         Body::from(body.to_string())
     };
     let request = Request::builder()
@@ -1340,7 +1348,7 @@ async fn dispatch_loopback_tool(
         .map_err(|error| internal_error(&anyhow::anyhow!(error)))
 }
 
-async fn response_to_tool_result(response: Response) -> Value {
+async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
     let status = response.status();
     let body = response.into_body();
     let bytes = match to_bytes(body, LOOPBACK_BODY_LIMIT).await {
@@ -1353,6 +1361,7 @@ async fn response_to_tool_result(response: Response) -> Value {
         serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
     };
+    let payload = present_tool_response_payload(tool_name, payload);
     let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
     json!({
         "content": [
@@ -1459,10 +1468,83 @@ async fn tool_body_with_local_identity(
     state: &ControlPlaneState,
     tool: &AgentTool,
     arguments: &Value,
-) -> Value {
+) -> Result<Value, String> {
     let mut body = tool_body(tool, arguments);
     apply_local_identity_defaults(state, tool, &mut body).await;
-    body
+    normalize_mcp_tool_body(tool, &mut body)?;
+    Ok(body)
+}
+
+fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), String> {
+    if tool.name == "propose_agent_payment" {
+        normalize_mcp_payment_request_amount(body)?;
+    }
+    Ok(())
+}
+
+fn normalize_mcp_payment_request_amount(body: &mut Value) -> Result<(), String> {
+    let Some(object) = body.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(currency) = object.get("currency").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(amount) = object.get("amount").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if let Some(base_units) =
+        stablecoin_amount_to_base_units(amount, currency).map_err(|error| error.to_string())?
+    {
+        object.insert("amount".to_string(), Value::String(base_units));
+    }
+    Ok(())
+}
+
+fn present_tool_response_payload(tool_name: &str, mut payload: Value) -> Value {
+    if is_agent_payment_tool(tool_name) {
+        present_payment_amounts(&mut payload, None);
+    }
+    payload
+}
+
+fn is_agent_payment_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "list_agent_payments"
+            | "get_agent_payment"
+            | "propose_agent_payment"
+            | "authorize_agent_payment"
+            | "submit_agent_payment"
+            | "settle_agent_payment"
+            | "reject_agent_payment"
+            | "cancel_agent_payment"
+    )
+}
+
+fn present_payment_amounts(value: &mut Value, inherited_currency: Option<&str>) {
+    match value {
+        Value::Object(object) => {
+            let currency = object
+                .get("currency")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| inherited_currency.map(ToOwned::to_owned));
+            if let (Some(amount), Some(currency)) = (
+                object.get("amount").and_then(Value::as_str),
+                currency.as_deref(),
+            ) && let Some(display_amount) = stablecoin_amount_from_base_units(amount, currency)
+            {
+                object.insert("amount".to_string(), Value::String(display_amount));
+            }
+            object
+                .values_mut()
+                .for_each(|value| present_payment_amounts(value, currency.as_deref()));
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|value| present_payment_amounts(value, inherited_currency)),
+        _ => {}
+    }
 }
 
 fn tool_body(tool: &AgentTool, arguments: &Value) -> Value {

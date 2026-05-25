@@ -24,6 +24,7 @@ pub use x402::{
     X402PaymentRequired, X402PaymentRequirement, X402SettlementResponse,
     build_payment_signature_payload, decode_payment_required_header,
     decode_settlement_response_header, encode_payment_signature_header, select_payment_requirement,
+    stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
     validate_x402_settlement_receipt,
 };
 
