@@ -799,7 +799,10 @@ pub struct AgentPaymentsQuery {
 #[derive(Debug, Deserialize)]
 pub struct AgentPaymentProposeBody {
     pub public_id: Option<String>,
-    pub counterpart_public_id: String,
+    #[serde(default)]
+    pub counterpart_public_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
     pub amount: String,
     pub currency: String,
     pub rail: String,
@@ -825,6 +828,12 @@ pub struct AgentPaymentProposeBody {
 pub struct AgentPaymentAuthorizeBody {
     #[serde(default)]
     pub sender_address: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentPaymentSubmitBody {
+    #[serde(default)]
+    pub settlement_receipt: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

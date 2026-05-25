@@ -32,6 +32,7 @@ const MAX_GATEWAY_TOPIC_LIMIT: usize = 100;
 const MAX_GATEWAY_TOPIC_WINDOW: usize = 200;
 const DEFAULT_SERVICENET_AGENT_LIMIT: usize = 50;
 const MAX_SERVICENET_AGENT_LIMIT: usize = 100;
+const A2A_X402_EXTENSION_URI: &str = "https://github.com/google-a2a/a2a-x402/v0.1";
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
 #[derive(Debug, Clone)]
 struct AgentTool {
@@ -719,8 +720,34 @@ fn servicenet_agent_detail_summary(
                     .unwrap_or(false)
             ),
         );
+        if let Some(payment) = servicenet_agent_payment(agent) {
+            object.insert("payment".to_owned(), payment);
+        }
     }
     summary
+}
+
+fn servicenet_agent_payment(agent: &Value) -> Option<Value> {
+    let extensions = value_at(agent, &["agent_card", "capabilities", "extensions"])?.as_array()?;
+    extensions
+        .iter()
+        .find(|extension| {
+            value_at(extension, &["uri"]).and_then(Value::as_str) == Some(A2A_X402_EXTENSION_URI)
+                && x402_extension_has_pay_to(extension)
+        })
+        .cloned()
+}
+
+fn x402_extension_has_pay_to(extension: &Value) -> bool {
+    value_at(extension, &["params", "accepts"])
+        .and_then(Value::as_array)
+        .is_some_and(|accepts| {
+            accepts.iter().any(|accept| {
+                value_at(accept, &["payTo"])
+                    .and_then(Value::as_str)
+                    .is_some_and(|pay_to| !pay_to.trim().is_empty())
+            })
+        })
 }
 
 fn servicenet_records_by_agent_id(items: Vec<Value>) -> BTreeMap<String, Value> {

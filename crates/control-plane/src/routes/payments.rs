@@ -11,13 +11,13 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes,
+    SignedAgentEnvelopeArgs, SocialCounterpartTarget, build_signed_agent_envelope_for_nodes,
     resolve_social_counterpart_target, resolve_social_local_context,
 };
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
-    AgentPaymentSettleBody, AgentPaymentsQuery, ControlPlaneState, StreamEvent,
-    WalletBindWeb3PaymentAccountBody, WalletCreatePaymentAccountBody,
+    AgentPaymentSettleBody, AgentPaymentSubmitBody, AgentPaymentsQuery, ControlPlaneState,
+    StreamEvent, WalletBindWeb3PaymentAccountBody, WalletCreatePaymentAccountBody,
     agent_commit_context_from_headers,
 };
 use watt_did::PaymentAccountCustody;
@@ -29,8 +29,8 @@ use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     AuthorizePaymentRequest, PaymentAgentMessage, PaymentLedger, PaymentMessageKind, PaymentQuery,
-    PaymentTransaction, ProposePaymentRequest, RejectPaymentRequest, SettlePaymentRequest,
-    authorization_payload_bytes, source_payment_account_binding_required,
+    PaymentStatus, PaymentTransaction, ProposePaymentRequest, RejectPaymentRequest,
+    SettlePaymentRequest, authorization_payload_bytes, source_payment_account_binding_required,
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
 use wattetheria_kernel::wallet_identity::{
@@ -39,6 +39,14 @@ use wattetheria_kernel::wallet_identity::{
 
 const PAYMENT_MESSAGE_CAPABILITY: &str = "payments.agent.transfer";
 const WALLET_BIND_CAPABILITY: &str = "wallet.bind";
+const A2A_X402_EXTENSION_URI: &str = "https://github.com/google-a2a/a2a-x402/v0.1";
+
+struct PaymentProposalTarget {
+    recipient_public_id: String,
+    recipient_did: String,
+    remote_node_id: String,
+    social_counterpart: Option<SocialCounterpartTarget>,
+}
 
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
@@ -406,10 +414,141 @@ pub(crate) async fn get_agent_payment(
     Json(payload).into_response()
 }
 
+async fn resolve_payment_proposal_target(
+    state: &ControlPlaneState,
+    body: &mut AgentPaymentProposeBody,
+) -> Result<PaymentProposalTarget, String> {
+    let counterpart_public_id =
+        trimmed_optional(body.counterpart_public_id.as_deref()).map(ToOwned::to_owned);
+    let agent_id = trimmed_optional(body.agent_id.as_deref()).map(ToOwned::to_owned);
+    match (counterpart_public_id.as_deref(), agent_id.as_deref()) {
+        (Some(_), Some(_)) => Err(
+            "provide either counterpart_public_id or agent_id for payment target, not both"
+                .to_string(),
+        ),
+        (Some(counterpart_public_id), None) => {
+            let counterpart =
+                resolve_social_counterpart_target(state, counterpart_public_id).await?;
+            Ok(PaymentProposalTarget {
+                recipient_public_id: counterpart.counterpart_public_id.clone(),
+                recipient_did: counterpart.target_agent.clone(),
+                remote_node_id: counterpart.remote_node.clone(),
+                social_counterpart: Some(counterpart),
+            })
+        }
+        (None, Some(agent_id)) => resolve_servicenet_payment_target(state, agent_id, body).await,
+        (None, None) => {
+            Err("counterpart_public_id or agent_id is required for payment target".to_string())
+        }
+    }
+}
+
+async fn resolve_servicenet_payment_target(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    body: &mut AgentPaymentProposeBody,
+) -> Result<PaymentProposalTarget, String> {
+    let client = state
+        .servicenet_client
+        .as_deref()
+        .ok_or_else(|| "servicenet is not configured".to_string())?;
+    let agent = client
+        .get_agent(agent_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let accept = servicenet_x402_accept(&agent)
+        .ok_or_else(|| format!("servicenet agent {agent_id} does not expose x402 payTo"))?;
+    if body.recipient_address.is_none() {
+        body.recipient_address = string_at(&accept, &["payTo"]);
+    }
+    if body.network.is_none() {
+        body.network = string_at(&accept, &["network"]);
+    }
+    if body.metadata.is_none() {
+        body.metadata = Some(json!({
+            "servicenet_agent_id": agent_id,
+            "x402_accept": accept,
+        }));
+    }
+    Ok(PaymentProposalTarget {
+        recipient_public_id: agent_id.to_string(),
+        recipient_did: agent_id.to_string(),
+        remote_node_id: format!("servicenet:{agent_id}"),
+        social_counterpart: None,
+    })
+}
+
+fn servicenet_x402_accept(agent: &Value) -> Option<Value> {
+    value_at(agent, &["agent_card", "capabilities", "extensions"])?
+        .as_array()?
+        .iter()
+        .filter(|extension| {
+            string_at(extension, &["uri"]).as_deref() == Some(A2A_X402_EXTENSION_URI)
+        })
+        .find_map(|extension| {
+            value_at(extension, &["params", "accepts"])?
+                .as_array()?
+                .iter()
+                .find(|accept| {
+                    string_at(accept, &["payTo"]).is_some_and(|pay_to| !pay_to.trim().is_empty())
+                })
+                .cloned()
+        })
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+}
+
+fn string_at(value: &Value, path: &[&str]) -> Option<String> {
+    value_at(value, path)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn trimmed_optional(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+async fn dispatch_payment_proposal_message(
+    state: &ControlPlaneState,
+    target: &PaymentProposalTarget,
+    message: &PaymentAgentMessage,
+) -> anyhow::Result<Value> {
+    if let Some(counterpart) = target.social_counterpart.as_ref() {
+        return send_payment_message(state, counterpart, message).await;
+    }
+    Ok(json!({
+        "ok": true,
+        "mode": "servicenet",
+        "agent_id": target.recipient_did.clone(),
+    }))
+}
+
+fn append_payment_proposed_event(
+    state: &ControlPlaneState,
+    payment: &PaymentTransaction,
+    target: &PaymentProposalTarget,
+    agent_id: Option<&str>,
+) -> anyhow::Result<()> {
+    state.append_signed_event(
+        "AGENT_PAYMENT_PROPOSED",
+        json!({
+            "payment_id": payment.payment_id,
+            "counterpart_public_id": target.social_counterpart.as_ref().map(|counterpart| counterpart.counterpart_public_id.clone()),
+            "agent_id": agent_id,
+        }),
+    )?;
+    Ok(())
+}
+
 pub(crate) async fn propose_agent_payment(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
-    Json(body): Json<AgentPaymentProposeBody>,
+    Json(mut body): Json<AgentPaymentProposeBody>,
 ) -> Response {
     if let Ok(Some(response)) = replay_commit_response(&state, &headers, "payments.propose") {
         return response;
@@ -420,25 +559,25 @@ pub(crate) async fn propose_agent_payment(
     };
     let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
     let request_counterpart_public_id = body.counterpart_public_id.clone();
+    let request_agent_id = body.agent_id.clone();
     let request_amount = body.amount.clone();
     let request_currency = body.currency.clone();
     let request_rail = body.rail.clone();
-    let counterpart =
-        match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
-            Ok(counterpart) => counterpart,
-            Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-            }
-        };
+    let target = match resolve_payment_proposal_target(&state, &mut body).await {
+        Ok(target) => target,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
 
     let mut ledger = state.payment_ledger.lock().await;
     let payment = match ledger.propose(
         &local.agent_id,
         ProposePaymentRequest {
             sender_public_id: local.public_id.clone(),
-            remote_node_id: counterpart.remote_node.clone(),
-            recipient_public_id: counterpart.counterpart_public_id.clone(),
-            recipient_did: counterpart.target_agent.clone(),
+            remote_node_id: target.remote_node_id.clone(),
+            recipient_public_id: target.recipient_public_id.clone(),
+            recipient_did: target.recipient_did.clone(),
             amount: body.amount,
             currency: body.currency,
             rail: body.rail,
@@ -461,15 +600,14 @@ pub(crate) async fn propose_agent_payment(
     drop(ledger);
 
     let message = payment.agent_message(PaymentMessageKind::Request, Utc::now().timestamp());
-    let response = match send_payment_message(&state, &counterpart, &message).await {
+    let response = match dispatch_payment_proposal_message(&state, &target, &message).await {
         Ok(response) => response,
         Err(error) => return internal_error(&error),
     };
 
-    if let Err(error) = state.append_signed_event(
-        "AGENT_PAYMENT_PROPOSED",
-        json!({"payment_id": payment.payment_id, "counterpart_public_id": counterpart.counterpart_public_id}),
-    ) {
+    if let Err(error) =
+        append_payment_proposed_event(&state, &payment, &target, request_agent_id.as_deref())
+    {
         return internal_error(&error);
     }
     emit_payment_stream_event(&state, "payments.proposed", &payment);
@@ -478,7 +616,11 @@ pub(crate) async fn propose_agent_payment(
         auth,
         "payments.agent.propose",
         Some(local.public_id.clone()),
-        Some(json!({"payment_id": payment.payment_id, "remote_node_id": counterpart.remote_node})),
+        Some(json!({
+            "payment_id": payment.payment_id.clone(),
+            "remote_node_id": target.remote_node_id,
+            "agent_id": request_agent_id.clone(),
+        })),
     );
 
     let response_json = json!({
@@ -496,6 +638,7 @@ pub(crate) async fn propose_agent_payment(
             actor_agent_did: Some(local.agent_id),
             request_json: &json!({
                 "counterpart_public_id": request_counterpart_public_id,
+                "agent_id": request_agent_id,
                 "amount": request_amount,
                 "currency": request_currency,
                 "rail": request_rail,
@@ -568,17 +711,35 @@ pub(crate) async fn submit_agent_payment(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(payment_id): Path<String>,
+    body: Option<Json<AgentPaymentSubmitBody>>,
 ) -> Response {
     if let Ok(Some(response)) = replay_commit_response(&state, &headers, "payments.submit") {
         return response;
     }
+    let body = body.map(|Json(body)| body).unwrap_or_default();
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
+    let mut settlement_receipt = body.settlement_receipt.clone();
+    if settlement_receipt.is_none() {
+        let current = match payment_snapshot_for_submit(&state, &payment_id).await {
+            Ok(payment) => payment,
+            Err(response) => return response,
+        };
+        match super::payment_chain::submit_x402_erc20_payment(&state.data_dir, &current).await {
+            Ok(receipt) => {
+                settlement_receipt = receipt;
+            }
+            Err(error) => {
+                return payment_error_response(StatusCode::BAD_REQUEST, &error.to_string());
+            }
+        }
+    }
+    let submitted_receipt = settlement_receipt.clone();
     let updated = match mutate_payment(&state, &payment_id, |ledger, payment| {
         ensure_sender_controls_payment(payment, &state)?;
-        ledger.submit(&payment.payment_id)
+        ledger.submit(&payment.payment_id, submitted_receipt)
     })
     .await
     {
@@ -596,7 +757,10 @@ pub(crate) async fn submit_agent_payment(
         auth,
         "payments.agent.submit",
         Some(updated.sender_public_id.clone()),
-        Some(json!({"payment_id": updated.payment_id})),
+        Some(json!({
+            "payment_id": updated.payment_id,
+            "settlement_receipt": updated.settlement_receipt
+        })),
     );
     let response_json = payment_to_json(&updated);
     if let Err(error) = append_commit_response(
@@ -607,13 +771,49 @@ pub(crate) async fn submit_agent_payment(
             target_id: Some(updated.payment_id.clone()),
             actor_public_id: Some(updated.sender_public_id.clone()),
             actor_agent_did: Some(updated.sender_did.clone()),
-            request_json: &json!({"payment_id": payment_id}),
+            request_json: &json!({
+                "payment_id": payment_id,
+                "settlement_receipt": settlement_receipt
+            }),
             response_json: &response_json,
         },
     ) {
         return internal_error(&error);
     }
     Json(response_json).into_response()
+}
+
+async fn payment_snapshot_for_submit(
+    state: &ControlPlaneState,
+    payment_id: &str,
+) -> Result<PaymentTransaction, Response> {
+    let ledger = state.payment_ledger.lock().await;
+    let current = match ledger.get(payment_id) {
+        Some(payment) => payment.clone(),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("payment not found: {payment_id}")})),
+            )
+                .into_response());
+        }
+    };
+    if let Err(error) = ensure_sender_controls_payment(&current, state) {
+        return Err(payment_error_response(
+            StatusCode::BAD_REQUEST,
+            &error.to_string(),
+        ));
+    }
+    if current.status != PaymentStatus::Authorized {
+        return Err(payment_error_response(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "payment {payment_id} is not in authorized state (current: {:?})",
+                current.status
+            ),
+        ));
+    }
+    Ok(current)
 }
 
 pub(crate) async fn settle_agent_payment(
@@ -910,6 +1110,14 @@ async fn notify_counterpart_of_payment_change(
     payment: &PaymentTransaction,
     kind: PaymentMessageKind,
 ) -> anyhow::Result<Value> {
+    if let Some(agent_id) = payment.remote_node_id.strip_prefix("servicenet:") {
+        return Ok(json!({
+            "ok": true,
+            "mode": "servicenet",
+            "agent_id": agent_id,
+            "message_kind": kind.as_str(),
+        }));
+    }
     let counterpart =
         match resolve_social_counterpart_target(state, &payment.recipient_public_id).await {
             Ok(counterpart) => counterpart,

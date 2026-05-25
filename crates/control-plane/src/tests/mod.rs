@@ -422,6 +422,29 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "description": "Alpha test agent",
                             "cost": 18,
                             "supportsTask": true,
+                            "capabilities": {
+                                "extensions": [
+                                    {
+                                        "uri": "https://github.com/google-a2a/a2a-x402/v0.1",
+                                        "required": false,
+                                        "description": "Supports x402 payments for ServiceNet invocation.",
+                                        "params": {
+                                            "accepts": [
+                                                {
+                                                    "scheme": "exact",
+                                                    "network": "base",
+                                                    "asset": "0x0000000000000000000000000000000000000000",
+                                                    "payTo": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+                                                    "maxAmountRequired": "180000",
+                                                    "resource": "servicenet:agent:agent-alpha",
+                                                    "description": "ServiceNet agent invocation",
+                                                    "maxTimeoutSeconds": 600
+                                                }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            },
                             "skills": [
                                 {
                                     "id": "weather.lookup",
@@ -596,6 +619,29 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "description": "Alpha test agent",
                         "cost": 18,
                         "supportsTask": true,
+                        "capabilities": {
+                            "extensions": [
+                                {
+                                    "uri": "https://github.com/google-a2a/a2a-x402/v0.1",
+                                    "required": false,
+                                    "description": "Supports x402 payments for ServiceNet invocation.",
+                                    "params": {
+                                        "accepts": [
+                                            {
+                                                "scheme": "exact",
+                                                "network": "base",
+                                                "asset": "0x0000000000000000000000000000000000000000",
+                                                "payTo": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+                                                "maxAmountRequired": "180000",
+                                                "resource": "servicenet:agent:agent-alpha",
+                                                "description": "ServiceNet agent invocation",
+                                                "maxTimeoutSeconds": 600
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        },
                         "skills": [
                             {
                                 "id": "weather.lookup",

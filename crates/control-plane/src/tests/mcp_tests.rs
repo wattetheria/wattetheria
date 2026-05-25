@@ -145,7 +145,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     let app = app(state);
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -237,6 +237,10 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["cost"].as_u64(), Some(18));
     assert_eq!(agent["supportsTask"].as_bool(), Some(true));
     assert_eq!(
+        agent["payment"]["params"]["accepts"][0]["payTo"].as_str(),
+        Some("0x742d35Cc6634C0532925a3b844Bc454e4438f44e")
+    );
+    assert_eq!(
         agent["skills"],
         json!([
             {
@@ -244,6 +248,111 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
                 "description": "Returns current weather"
             }
         ])
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let sender_address = seed_active_payment_account(&state);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_agent_payment",
+                "arguments": {
+                    "agent_id": "agent-alpha",
+                    "amount": "180000",
+                    "currency": "USDC",
+                    "rail": "x402",
+                    "layer": "web3"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["ok"].as_bool(), Some(true));
+    assert_eq!(
+        content["payment"]["recipient_public_id"].as_str(),
+        Some("agent-alpha")
+    );
+    assert_eq!(
+        content["payment"]["recipient_address"].as_str(),
+        Some("0x742d35Cc6634C0532925a3b844Bc454e4438f44e")
+    );
+    assert_eq!(content["payment"]["network"].as_str(), Some("base"));
+    assert_eq!(content["transport"]["mode"].as_str(), Some("servicenet"));
+    assert_eq!(
+        content["transport"]["agent_id"].as_str(),
+        Some("agent-alpha")
+    );
+    let payment_id = content["payment"]["payment_id"].as_str().unwrap();
+
+    let authorized = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "authorize_agent_payment",
+                "arguments": {
+                    "payment_id": payment_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(authorized["result"]["isError"].as_bool(), Some(false));
+
+    let submitted = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "submit_agent_payment",
+                "arguments": {
+                    "payment_id": payment_id,
+                    "settlement_receipt": {
+                        "success": true,
+                        "payer": sender_address,
+                        "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+                        "network": "base",
+                        "amount": "180000",
+                        "payTo": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(submitted["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        submitted["result"]["structuredContent"]["status"].as_str(),
+        Some("submitted")
     );
 
     servicenet_server.abort();
@@ -635,11 +744,12 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
 
     let propose_payment = find_tool(tools, "propose_agent_payment");
-    assert_schema_requires(
-        propose_payment,
-        &["counterpart_public_id", "amount", "currency", "rail"],
-    );
+    assert_schema_requires(propose_payment, &["amount", "currency", "rail"]);
     assert_schema_omits(propose_payment, &["public_id"]);
+    assert_eq!(
+        propose_payment["inputSchema"]["properties"]["agent_id"]["type"].as_str(),
+        Some("string")
+    );
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["layer"]["enum"][1].as_str(),
         Some("web3")
@@ -674,6 +784,22 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
     assert_schema_requires(settle_payment, &["payment_id", "settlement_receipt"]);
+
+    let submit_payment = find_tool(tools, "submit_agent_payment");
+    assert_schema_requires(submit_payment, &["payment_id"]);
+    assert!(
+        submit_payment["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("settlement_receipt")
+    );
+    assert!(
+        !submit_payment["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("settlement_receipt"))
+    );
 
     let get_servicenet_receipt = find_tool(tools, "get_servicenet_receipt");
     assert_schema_requires(get_servicenet_receipt, &["receipt_id"]);

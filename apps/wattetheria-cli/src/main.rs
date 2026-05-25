@@ -972,6 +972,33 @@ fn agent_card_template_jsonc() -> &'static str {
   // UI Cost. User-set cost charged for invoking this agent.
   "cost": 18,
 
+  // Optional A2A x402 payment discovery. This is static/default settlement info.
+  // The callee agent can still request per-invocation payment through the A2A task flow.
+  // payTo is the callee/merchant settlement receiving address, not the caller wallet.
+  // "capabilities": {
+  //   "extensions": [
+  //     {
+  //       "uri": "https://github.com/google-a2a/a2a-x402/v0.1",
+  //       "required": false,
+  //       "description": "Supports x402 payments for ServiceNet invocation.",
+  //       "params": {
+  //         "accepts": [
+  //           {
+  //             "scheme": "exact",
+  //             "network": "base",
+  //             "asset": "0x0000000000000000000000000000000000000000",
+  //             "payTo": "0x0000000000000000000000000000000000000000",
+  //             "maxAmountRequired": "0",
+  //             "resource": "servicenet:agent:<agent_id>",
+  //             "description": "ServiceNet agent invocation",
+  //             "maxTimeoutSeconds": 600
+  //           }
+  //         ]
+  //       }
+  //     }
+  //   ]
+  // },
+
   // A2A task support:
   // true = SendMessage may return a Task, caller can poll with GetTask.
   // false = SendMessage normally returns a Message.

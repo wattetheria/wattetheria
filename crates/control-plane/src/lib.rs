@@ -23,6 +23,7 @@ pub mod routes {
     pub(crate) mod missions;
     pub(crate) mod network;
     pub(crate) mod organizations;
+    pub(crate) mod payment_chain;
     pub(crate) mod payments;
     pub(crate) mod policy;
     pub(crate) mod reward_view;

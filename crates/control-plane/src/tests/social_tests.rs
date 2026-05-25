@@ -405,6 +405,32 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
     );
     drop(payment_commands);
 
+    let submitted = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/payments/agent-payments/{payment_id}/submit"),
+        json!({
+            "settlement_receipt": {
+                "success": true,
+                "payer": sender_address,
+                "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+                "network": "eip155:84532",
+                "amount": "2500000"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(submitted["status"].as_str(), Some("submitted"));
+    assert_eq!(
+        submitted["settlement_receipt"]["transaction"].as_str(),
+        Some("0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9")
+    );
+    let payment_commands = bridge.payment_commands.lock().await;
+    assert_eq!(payment_commands.len(), 3);
+    assert_eq!(payment_commands[2].message_kind, "payment_submitted");
+    drop(payment_commands);
+
     let proposed_mismatch = authed_post_json(
         app.clone(),
         &token,

@@ -507,7 +507,11 @@ impl PaymentLedger {
     }
 
     /// Mark an authorized payment as submitted to the settlement rail.
-    pub fn submit(&mut self, payment_id: &str) -> Result<PaymentTransaction> {
+    pub fn submit(
+        &mut self,
+        payment_id: &str,
+        settlement_receipt: Option<Value>,
+    ) -> Result<PaymentTransaction> {
         let transaction = self
             .payments
             .get_mut(payment_id)
@@ -521,6 +525,7 @@ impl PaymentLedger {
         }
 
         transaction.status = PaymentStatus::Submitted;
+        transaction.settlement_receipt = settlement_receipt;
         Ok(transaction.clone())
     }
 
@@ -898,6 +903,27 @@ mod tests {
         );
         assert_eq!(authorized.sender_address, Some("0xsender456".to_owned()));
         assert!(authorized.authorized_at.is_some());
+    }
+
+    #[test]
+    fn submit_payment_can_store_settlement_receipt() {
+        let mut ledger = test_ledger();
+        let proposal = sample_proposal("did:key:sender", "did:key:recipient");
+        let proposed = ledger.propose("did:key:sender", proposal).unwrap();
+        let authorized = authorize_for_settlement(&mut ledger, &proposed);
+        let receipt = x402_success_receipt(
+            authorized.sender_address.as_deref().unwrap(),
+            &authorized.amount,
+            "eip155:84532",
+        );
+
+        let submitted = ledger
+            .submit(&proposed.payment_id, Some(receipt.clone()))
+            .unwrap();
+
+        assert_eq!(submitted.status, PaymentStatus::Submitted);
+        assert_eq!(submitted.settlement_receipt, Some(receipt));
+        assert!(submitted.settled_at.is_none());
     }
 
     #[test]

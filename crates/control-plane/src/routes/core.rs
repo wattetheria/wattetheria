@@ -14,10 +14,10 @@ use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::identity_context_value;
 use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
-    AgentPaymentRejectBody, AgentPaymentSettleBody, AgentRelationshipActionBody, AuditQuery,
-    AuthQuery, AutonomyTickBody, ControlPlaneState, EventsExportQuery, EventsQuery,
-    MissionClaimBody, MissionPublishBody, MissionSettleBody, NightShiftQuery, StreamEvent,
-    TopicMessageBody, send_stream_text,
+    AgentPaymentRejectBody, AgentPaymentSettleBody, AgentPaymentSubmitBody,
+    AgentRelationshipActionBody, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState,
+    EventsExportQuery, EventsQuery, MissionClaimBody, MissionPublishBody, MissionSettleBody,
+    NightShiftQuery, StreamEvent, TopicMessageBody, send_stream_text,
 };
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
@@ -354,10 +354,12 @@ async fn commit_payment_action(
             .await
         }
         "submit" => {
+            let settlement_receipt = body.decision.payload.get("settlement_receipt").cloned();
             crate::routes::payments::submit_agent_payment(
                 State(state),
                 commit_headers,
                 axum::extract::Path(payment_id),
+                Some(Json(AgentPaymentSubmitBody { settlement_receipt })),
             )
             .await
         }

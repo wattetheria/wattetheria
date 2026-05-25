@@ -43,9 +43,16 @@ fn client_schema(tool: &AgentTool) -> Option<Value> {
 
 fn payment_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "get_agent_payment" | "submit_agent_payment" | "cancel_agent_payment" => {
-            Some(empty_tool_schema(tool))
-        }
+        "get_agent_payment" | "cancel_agent_payment" => Some(empty_tool_schema(tool)),
+        "submit_agent_payment" => Some(tool_schema(
+            tool,
+            &[value_field(
+                "settlement_receipt",
+                "Optional chain payment receipt or submission proof returned by the settlement rail.",
+            )],
+            &[],
+            false,
+        )),
         "list_agent_payments" => Some(tool_schema(
             tool,
             &[
@@ -78,6 +85,7 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
             tool,
             &[
                 string_field("counterpart_public_id", "Recipient public identity."),
+                string_field("agent_id", "ServiceNet agent ID."),
                 string_field("amount", "Payment amount as a string."),
                 string_field("currency", "Payment currency."),
                 string_field("rail", "Settlement rail."),
@@ -90,7 +98,7 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
                 value_field("metadata", "Optional payment metadata."),
                 integer_field("expires_at", "Unix timestamp expiry."),
             ],
-            &["counterpart_public_id", "amount", "currency", "rail"],
+            &["amount", "currency", "rail"],
             false,
         )),
         "authorize_agent_payment" => Some(tool_schema(

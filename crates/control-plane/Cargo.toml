@@ -17,11 +17,13 @@ axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
 hex.workspace = true
+k256 = { version = "0.13", features = ["ecdsa"] }
 prost = "0.13"
 serde.workspace = true
 serde_jcs.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sha3 = "0.10"
 serde_urlencoded = "0.7"
 tokio.workspace = true
 tonic = { version = "0.12", features = ["transport"] }
