@@ -6,7 +6,7 @@ use chrono::{TimeZone, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scores};
@@ -137,6 +137,59 @@ fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
         "metadata": peer.metadata,
         "relationship": peer.relationship,
     })
+}
+
+fn insert_if_some(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    let Some(value) = value else {
+        return;
+    };
+    match &value {
+        Value::Null => {}
+        Value::String(value) if value.trim().is_empty() => {}
+        Value::Array(value) if value.is_empty() => {}
+        Value::Object(value) if value.is_empty() => {}
+        _ => {
+            object.insert(key.to_string(), value);
+        }
+    }
+}
+
+fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
+    let node_id = peer.node_id;
+    let connected = peer.connected.unwrap_or(true);
+    let relationship_state = peer
+        .relationship
+        .as_ref()
+        .and_then(|value| value.get("relationship_state"))
+        .and_then(Value::as_str);
+    let endpoint = peer
+        .metadata
+        .as_ref()
+        .and_then(iroh_endpoint_id)
+        .or_else(|| peer.discovery.as_ref().and_then(iroh_endpoint_id));
+    let status = if connected {
+        "online"
+    } else if relationship_state == Some("blocked") {
+        "blocked"
+    } else if peer.discovery.is_some() {
+        "discovered"
+    } else {
+        "offline"
+    };
+
+    let mut object = Map::new();
+    object.insert("remote_node_id".to_string(), Value::String(node_id));
+    object.insert("status".to_string(), Value::String(status.to_string()));
+    object.insert("connected".to_string(), Value::Bool(connected));
+    insert_if_some(
+        &mut object,
+        "endpoint",
+        endpoint.map(|value| Value::String(value.to_string())),
+    );
+    insert_if_some(&mut object, "discovery", peer.discovery);
+    insert_if_some(&mut object, "metadata", peer.metadata);
+    insert_if_some(&mut object, "relationship", peer.relationship);
+    Value::Object(object)
 }
 
 fn iroh_endpoint_id(value: &Value) -> Option<&str> {
@@ -419,6 +472,49 @@ pub(crate) async fn client_peers(
     });
 
     Json(Value::Array(payload)).into_response()
+}
+
+pub(crate) async fn list_nearby(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<ClientListQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items = match state.swarm_bridge.peers().await {
+        Ok(peers) => peers
+            .into_iter()
+            .take(limit)
+            .map(compact_nearby_peer_payload)
+            .collect::<Vec<_>>(),
+        Err(error) => return internal_error(&error),
+    };
+    let count = items.len();
+    let payload = json!({
+        "ok": true,
+        "generated_at": Utc::now().timestamp(),
+        "count": count,
+        "items": items,
+    });
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "client".to_string(),
+        action: "client.nearby.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: None,
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": count})),
+    });
+
+    Json(payload).into_response()
 }
 
 pub(crate) async fn client_self(

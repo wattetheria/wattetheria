@@ -34,7 +34,9 @@ async fn client_api_routes_align_with_client_dtos() {
             })),
             metadata: Some(json!({
                 "endpoint_id": "iroh-endpoint-a",
-                "handshake_status": "identified"
+                "handshake_status": "identified",
+                "observed_addr": "198.51.100.2:4001",
+                "listen_addrs": ["203.0.113.10:4001"]
             })),
             relationship: Some(json!({
                 "relationship_state": "friend",
@@ -110,6 +112,37 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(peers_json[0]["endpoint"].as_str(), Some("iroh-endpoint-a"));
     assert!(peers_json[0].get("lat").is_none());
     assert!(peers_json[0].get("lng").is_none());
+
+    let nearby_json =
+        authed_get_json(app.clone(), &token, "/v1/wattetheria/social/nearby?limit=1").await;
+    assert_eq!(nearby_json["ok"].as_bool(), Some(true));
+    assert_eq!(nearby_json["count"].as_u64(), Some(1));
+    let nearby_item = &nearby_json["items"][0];
+    assert_eq!(nearby_item["remote_node_id"].as_str(), Some("peer-a"));
+    assert_eq!(nearby_item["status"].as_str(), Some("online"));
+    assert_eq!(nearby_item["connected"].as_bool(), Some(true));
+    assert_eq!(nearby_item["endpoint"].as_str(), Some("iroh-endpoint-a"));
+    assert_eq!(
+        nearby_item["discovery"]["source_kind"].as_str(),
+        Some("bootstrap")
+    );
+    assert_eq!(
+        nearby_item["metadata"]["observed_addr"].as_str(),
+        Some("198.51.100.2:4001")
+    );
+    assert_eq!(
+        nearby_item["metadata"]["listen_addrs"][0].as_str(),
+        Some("203.0.113.10:4001")
+    );
+    assert_eq!(
+        nearby_item["relationship"]["relationship_state"].as_str(),
+        Some("friend")
+    );
+    assert!(nearby_item.get("node_id").is_none());
+    assert!(nearby_item.get("source_kind").is_none());
+    assert!(nearby_item.get("relationship_state").is_none());
+    assert!(nearby_item.get("target_agent_did").is_none());
+    assert!(nearby_item.get("counterpart_public_id").is_none());
 
     let self_json = authed_get_json(
         app.clone(),

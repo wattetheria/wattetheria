@@ -380,6 +380,22 @@ fn settle_mission_fields() -> Vec<(&'static str, Value)> {
 
 fn social_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
+        "list_nearby" => Some(empty_tool_schema(tool)),
+        "list_friend_requests" | "list_sent_friend_requests" => Some(tool_schema(
+            tool,
+            &[
+                integer_field("limit", "Maximum number of friend requests to return."),
+                integer_field("offset", "Number of friend requests to skip."),
+            ],
+            &[],
+            false,
+        )),
+        "get_friend_request" => Some(tool_schema(
+            tool,
+            &[string_field("request_id", "Friend request ID.")],
+            &["request_id"],
+            false,
+        )),
         "list_friends" => Some(tool_schema(
             tool,
             &[

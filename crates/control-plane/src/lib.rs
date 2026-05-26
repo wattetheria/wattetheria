@@ -151,6 +151,22 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             get(routes::client_swarm::client_task_activity),
         )
         .route(
+            "/v1/wattetheria/social/nearby",
+            get(routes::client_api::list_nearby),
+        )
+        .route(
+            "/v1/wattetheria/social/friend-requests",
+            get(routes::civilization::list_friend_requests),
+        )
+        .route(
+            "/v1/wattetheria/social/sent-friend-requests",
+            get(routes::civilization::list_sent_friend_requests),
+        )
+        .route(
+            "/v1/wattetheria/social/friend-requests/{request_id}",
+            get(routes::civilization::get_friend_request),
+        )
+        .route(
             "/v1/client/organizations",
             get(routes::client_api::client_organizations),
         )

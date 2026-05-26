@@ -1,9 +1,10 @@
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -25,8 +26,9 @@ use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::relationships::RelationshipEdge;
 use wattetheria_kernel::swarm_bridge::{
-    SwarmDirectMessageCommand, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmRelationshipAction, SwarmRelationshipActionCommand,
+    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
+    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipAction,
+    SwarmRelationshipActionCommand,
 };
 use wattetheria_social::application::{
     block_service, friend_request_service, friendship_service, message_service,
@@ -78,6 +80,12 @@ struct FinalizeDmArgs {
     agent_envelope_json: Value,
     agent_signature: Option<String>,
     response_json: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FriendRequestsQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 fn replay_commit_response(
@@ -400,6 +408,243 @@ fn binding_remote_node_id(
     bindings
         .get(counterpart_public_id)
         .and_then(|binding| binding.controller_node_id.clone())
+}
+
+fn insert_payload_if_present(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    let Some(value) = value else {
+        return;
+    };
+    match &value {
+        Value::Null => {}
+        Value::String(value) if value.trim().is_empty() => {}
+        Value::Array(value) if value.is_empty() => {}
+        Value::Object(value) if value.is_empty() => {}
+        _ => {
+            object.insert(key.to_string(), value);
+        }
+    }
+}
+
+fn request_direction_label(direction: FriendRequestDirection) -> &'static str {
+    match direction {
+        FriendRequestDirection::Inbound => "inbound",
+        FriendRequestDirection::Outbound => "outbound",
+    }
+}
+
+fn request_state_label(state: FriendRequestState) -> &'static str {
+    match state {
+        FriendRequestState::Pending => "pending",
+        FriendRequestState::Accepted => "accepted",
+        FriendRequestState::Rejected => "rejected",
+        FriendRequestState::Blocked => "blocked",
+        FriendRequestState::Cancelled => "cancelled",
+        FriendRequestState::Expired => "expired",
+    }
+}
+
+fn iroh_endpoint_id(value: &Value) -> Option<&str> {
+    value
+        .get("endpoint_id")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("local_iroh_endpoint_id").and_then(Value::as_str))
+        .or_else(|| {
+            value
+                .get("metadata")
+                .and_then(|metadata| metadata.get("endpoint_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("extra")
+                .and_then(|extra| extra.get("endpoint_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("transports")
+                .and_then(Value::as_array)
+                .and_then(|transports| transports.iter().find_map(iroh_endpoint_id))
+        })
+}
+
+fn relationship_request_id(view: &SwarmPeerRelationshipView) -> Option<&str> {
+    view.agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.message.get("request_id"))
+        .and_then(Value::as_str)
+}
+
+fn matching_relationship_view<'a>(
+    views: &'a [SwarmPeerRelationshipView],
+    request: &FriendRequest,
+) -> Option<&'a SwarmPeerRelationshipView> {
+    views
+        .iter()
+        .find(|view| relationship_request_id(view) == Some(request.request_id.as_str()))
+        .or_else(|| {
+            request.remote_node_id.as_ref().and_then(|remote_node_id| {
+                views
+                    .iter()
+                    .find(|view| view.remote_node_id == *remote_node_id)
+            })
+        })
+}
+
+fn matching_peer<'a>(
+    peers: &'a [SwarmPeerView],
+    request: &FriendRequest,
+) -> Option<&'a SwarmPeerView> {
+    request
+        .remote_node_id
+        .as_ref()
+        .and_then(|remote_node_id| peers.iter().find(|peer| peer.node_id == *remote_node_id))
+}
+
+fn envelope_message_text(envelope: Option<&SwarmAgentEnvelope>) -> Option<String> {
+    envelope
+        .and_then(|envelope| envelope.message.get("text"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn truncate_preview(text: &str) -> String {
+    const MAX_PREVIEW_CHARS: usize = 80;
+    let trimmed = text.trim();
+    let mut chars = trimmed.chars();
+    let preview = chars.by_ref().take(MAX_PREVIEW_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn friend_request_summary_payload(
+    request: &FriendRequest,
+    identities: &BTreeMap<String, PublicIdentity>,
+    view: Option<&SwarmPeerRelationshipView>,
+    counterpart_label: &str,
+) -> Value {
+    let display_name = identities.get(&request.remote_public_id).map_or_else(
+        || request.remote_public_id.clone(),
+        |identity| identity.display_name.clone(),
+    );
+    let mut object = Map::new();
+    object.insert(
+        "request_id".to_string(),
+        Value::String(request.request_id.clone()),
+    );
+    object.insert(counterpart_label.to_string(), Value::String(display_name));
+    insert_payload_if_present(
+        &mut object,
+        "preview",
+        envelope_message_text(view.and_then(|view| view.agent_envelope.as_ref()))
+            .map(|text| Value::String(truncate_preview(&text))),
+    );
+    Value::Object(object)
+}
+
+fn friend_request_agent_payload(
+    request: &FriendRequest,
+    identities: &BTreeMap<String, PublicIdentity>,
+    view: Option<&SwarmPeerRelationshipView>,
+) -> Value {
+    let identity = identities.get(&request.remote_public_id);
+    let mut object = Map::new();
+    object.insert(
+        "public_id".to_string(),
+        Value::String(request.remote_public_id.clone()),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "display_name",
+        identity.map(|identity| Value::String(identity.display_name.clone())),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "agent_did",
+        identity
+            .and_then(|identity| identity.agent_did.clone())
+            .or_else(|| {
+                view.and_then(|view| view.agent_envelope.as_ref())
+                    .and_then(|envelope| envelope.source_agent_id.clone())
+            })
+            .map(Value::String),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "active",
+        identity.map(|identity| Value::Bool(identity.active)),
+    );
+    Value::Object(object)
+}
+
+fn friend_request_message_payload(view: Option<&SwarmPeerRelationshipView>) -> Value {
+    let mut object = Map::new();
+    let Some(envelope) = view.and_then(|view| view.agent_envelope.as_ref()) else {
+        return Value::Object(object);
+    };
+    for key in ["kind", "text", "sent_at"] {
+        insert_payload_if_present(&mut object, key, envelope.message.get(key).cloned());
+    }
+    Value::Object(object)
+}
+
+fn friend_request_network_payload(
+    request: &FriendRequest,
+    view: Option<&SwarmPeerRelationshipView>,
+    peer: Option<&SwarmPeerView>,
+) -> Value {
+    let remote_node_id = request
+        .remote_node_id
+        .clone()
+        .or_else(|| view.map(|view| view.remote_node_id.clone()));
+    let connected = peer.and_then(|peer| peer.connected).unwrap_or(false);
+    let relationship_state = peer
+        .and_then(|peer| peer.relationship.as_ref())
+        .and_then(|relationship| relationship.get("relationship_state"))
+        .and_then(Value::as_str)
+        .or_else(|| view.map(|view| view.relationship_state.as_str()));
+    let status = if connected {
+        "online"
+    } else if relationship_state == Some("blocked") {
+        "blocked"
+    } else if peer.is_some_and(|peer| peer.discovery.is_some()) {
+        "discovered"
+    } else {
+        "offline"
+    };
+    let endpoint = peer
+        .and_then(|peer| peer.metadata.as_ref().and_then(iroh_endpoint_id))
+        .or_else(|| peer.and_then(|peer| peer.discovery.as_ref().and_then(iroh_endpoint_id)));
+
+    let mut object = Map::new();
+    insert_payload_if_present(
+        &mut object,
+        "remote_node_id",
+        remote_node_id.map(Value::String),
+    );
+    object.insert("status".to_string(), Value::String(status.to_string()));
+    object.insert("connected".to_string(), Value::Bool(connected));
+    insert_payload_if_present(
+        &mut object,
+        "endpoint",
+        endpoint.map(|value| Value::String(value.to_string())),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "discovery",
+        peer.and_then(|peer| peer.discovery.clone()),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "metadata",
+        peer.and_then(|peer| peer.metadata.clone()),
+    );
+    Value::Object(object)
 }
 
 fn relationship_payload_from_friend_request(
@@ -1468,6 +1713,225 @@ pub(crate) async fn list_agent_relationships(
         details: Some(json!({"count": items.len()})),
     });
     Json(Value::Array(items)).into_response()
+}
+
+async fn load_friend_request_views(
+    state: &ControlPlaneState,
+    public_id: Option<&str>,
+) -> anyhow::Result<(
+    String,
+    BTreeMap<String, PublicIdentity>,
+    Vec<FriendRequest>,
+    Vec<SwarmPeerRelationshipView>,
+    Vec<SwarmPeerView>,
+)> {
+    let local = resolve_social_local_context(state, public_id).await;
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let relationship_views = state.swarm_bridge.list_peer_relationships().await.ok();
+    if let Some(views) = &relationship_views {
+        reconcile_swarm_relationship_views(state, &local.public_id, &identities, &bindings, views)?;
+    }
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local.public_id)
+            .unwrap_or_default();
+    let peers = state.swarm_bridge.peers().await.unwrap_or_default();
+    Ok((
+        local.public_id,
+        identities,
+        friend_requests,
+        relationship_views.unwrap_or_default(),
+        peers,
+    ))
+}
+
+fn bounded_friend_request_page(query: &FriendRequestsQuery) -> (usize, usize) {
+    const DEFAULT_LIMIT: usize = 20;
+    const MAX_LIMIT: usize = 100;
+    (
+        query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
+        query.offset.unwrap_or(0),
+    )
+}
+
+fn friend_request_list_payload(items: Vec<Value>, total: usize, offset: usize) -> Value {
+    let returned = items.len();
+    let has_more = offset.saturating_add(returned) < total;
+    let mut object = Map::new();
+    object.insert("ok".to_string(), Value::Bool(true));
+    object.insert("count".to_string(), json!(total));
+    object.insert("returned".to_string(), json!(returned));
+    object.insert("has_more".to_string(), Value::Bool(has_more));
+    if has_more {
+        object.insert(
+            "next_offset".to_string(),
+            json!(offset.saturating_add(returned)),
+        );
+    }
+    object.insert("items".to_string(), Value::Array(items));
+    Value::Object(object)
+}
+
+pub(crate) async fn list_friend_requests(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<FriendRequestsQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let (local_public_id, identities, friend_requests, relationship_views, _peers) =
+        match load_friend_request_views(&state, None).await {
+            Ok(result) => result,
+            Err(error) => return internal_error(&error),
+        };
+    let (limit, offset) = bounded_friend_request_page(&query);
+    let filtered = friend_requests
+        .iter()
+        .filter(|request| {
+            request.direction == FriendRequestDirection::Inbound
+                && request.state == FriendRequestState::Pending
+        })
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let items = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|request| {
+            friend_request_summary_payload(
+                request,
+                &identities,
+                matching_relationship_view(&relationship_views, request),
+                "from",
+            )
+        })
+        .collect::<Vec<_>>();
+    let payload = friend_request_list_payload(items, total, offset);
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.friend_requests.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(local_public_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": total, "direction": "inbound", "state": "pending"})),
+    });
+    Json(payload).into_response()
+}
+
+pub(crate) async fn list_sent_friend_requests(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<FriendRequestsQuery>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let (local_public_id, identities, friend_requests, relationship_views, _peers) =
+        match load_friend_request_views(&state, None).await {
+            Ok(result) => result,
+            Err(error) => return internal_error(&error),
+        };
+    let (limit, offset) = bounded_friend_request_page(&query);
+    let filtered = friend_requests
+        .iter()
+        .filter(|request| request.direction == FriendRequestDirection::Outbound)
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let items = filtered
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|request| {
+            let mut item = friend_request_summary_payload(
+                request,
+                &identities,
+                matching_relationship_view(&relationship_views, request),
+                "to",
+            );
+            if let Some(object) = item.as_object_mut() {
+                object.insert(
+                    "state".to_string(),
+                    Value::String(request_state_label(request.state).to_string()),
+                );
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    let payload = friend_request_list_payload(items, total, offset);
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.sent_friend_requests.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(local_public_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"count": total, "direction": "outbound"})),
+    });
+    Json(payload).into_response()
+}
+
+pub(crate) async fn get_friend_request(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let (local_public_id, identities, friend_requests, relationship_views, peers) =
+        match load_friend_request_views(&state, None).await {
+            Ok(result) => result,
+            Err(error) => return internal_error(&error),
+        };
+    let Some(request) = friend_requests
+        .iter()
+        .find(|request| request.request_id == request_id)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "friend request not found"})),
+        )
+            .into_response();
+    };
+    let relationship_view = matching_relationship_view(&relationship_views, request);
+    let peer = matching_peer(&peers, request);
+    let payload = json!({
+        "ok": true,
+        "request_id": request.request_id,
+        "direction": request_direction_label(request.direction),
+        "state": request_state_label(request.state),
+        "received_at": request.created_at,
+        "updated_at": request.updated_at,
+        "agent": friend_request_agent_payload(request, &identities, relationship_view),
+        "message": friend_request_message_payload(relationship_view),
+        "network": friend_request_network_payload(request, relationship_view, peer),
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "civilization".to_string(),
+        action: "civilization.friend_request.get".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(local_public_id),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({"request_id": request.request_id})),
+    });
+    Json(payload).into_response()
 }
 
 pub(crate) async fn agent_relationship_action(

@@ -24,6 +24,10 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "settle_mission",
     "list_friends",
     "upsert_friend",
+    "list_nearby",
+    "list_friend_requests",
+    "list_sent_friend_requests",
+    "get_friend_request",
     "request_agent_friend",
     "send_message",
     "fetch_messages",
@@ -791,6 +795,288 @@ async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
 }
 
 #[tokio::test]
+async fn mcp_list_nearby_returns_compact_peer_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        peers: vec![SwarmPeerView {
+            node_id: "peer-nearby-1".to_owned(),
+            connected: Some(true),
+            discovery: Some(json!({
+                "source_kind": "bootstrap"
+            })),
+            metadata: Some(json!({
+                "endpoint_id": "iroh-endpoint-nearby",
+                "network_id": "mainnet:watt-galaxy",
+                "protocol_version": "wattswarm/1.0.0",
+                "handshake_status": "identified",
+                "observed_addr": "198.51.100.2:4001",
+                "listen_addrs": ["203.0.113.10:4001"]
+            })),
+            relationship: None,
+        }],
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge;
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge_handle);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_nearby",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["ok"].as_bool(), Some(true));
+    assert_eq!(content["count"].as_u64(), Some(1));
+    let item = &content["items"][0];
+    assert_eq!(item["remote_node_id"].as_str(), Some("peer-nearby-1"));
+    assert_eq!(item["status"].as_str(), Some("online"));
+    assert_eq!(item["connected"].as_bool(), Some(true));
+    assert_eq!(item["endpoint"].as_str(), Some("iroh-endpoint-nearby"));
+    assert_eq!(item["discovery"]["source_kind"].as_str(), Some("bootstrap"));
+    assert_eq!(
+        item["metadata"]["observed_addr"].as_str(),
+        Some("198.51.100.2:4001")
+    );
+    assert_eq!(
+        item["metadata"]["listen_addrs"][0].as_str(),
+        Some("203.0.113.10:4001")
+    );
+    assert!(item.get("node_id").is_none());
+    assert!(item.get("source_kind").is_none());
+    assert!(item.get("request_agent_friend_arguments").is_none());
+    assert!(item.get("target_agent_did").is_none());
+    assert!(item.get("counterpart_public_id").is_none());
+    assert!(item.get("relationship_state").is_none());
+    assert!(item.get("relationship").is_none());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn mcp_friend_request_tools_split_list_and_detail_views() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-inbound", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooInboundPeer".to_string();
+    let bridge = Arc::new(MockSwarmBridge {
+        peers: vec![SwarmPeerView {
+            node_id: remote_node_id.clone(),
+            connected: Some(true),
+            discovery: Some(json!({"source_kind": "bootstrap"})),
+            metadata: Some(json!({
+                "endpoint_id": "iroh-endpoint-inbound",
+                "network_id": "mainnet:watt-etheria",
+                "protocol_version": "wattswarm/1.0.0",
+                "handshake_status": "identified",
+                "observed_addr": "198.51.100.2:4001",
+                "listen_addrs": ["203.0.113.10:4001"]
+            })),
+            relationship: None,
+        }],
+        relationship_views: Mutex::new(vec![
+            SwarmPeerRelationshipView {
+                remote_node_id: remote_node_id.clone(),
+                relationship_state: "requested".to_string(),
+                last_action: "request".to_string(),
+                initiated_by: "remote".to_string(),
+                agent_envelope: Some(SwarmAgentEnvelope {
+                    protocol: "google_a2a".to_string(),
+                    transport_profile: None,
+                    source_agent_id: Some(remote_identity.agent_did.clone()),
+                    target_agent_id: Some(identity.agent_did.clone()),
+                    source_node_id: Some(remote_node_id.clone()),
+                    target_node_id: None,
+                    capability: Some("peer.relationship.request".to_string()),
+                    source_agent_card: None,
+                    message: json!({
+                        "kind": "friend_request",
+                        "text": "hello, I am Alice from node X",
+                        "request_id": "req-inbound-1",
+                        "correlation_id": "corr-inbound-1",
+                        "sent_at": 1_710_000_100
+                    }),
+                    extensions: None,
+                    signature: Some("sig-inbound".to_string()),
+                }),
+                requested_at: Some(1_710_000_100),
+                responded_at: None,
+                blocked_at: None,
+                cleared_at: None,
+                updated_at: 1_710_000_105,
+            },
+            SwarmPeerRelationshipView {
+                remote_node_id: "12D3KooOutboundPeer".to_string(),
+                relationship_state: "requested".to_string(),
+                last_action: "request".to_string(),
+                initiated_by: "local".to_string(),
+                agent_envelope: Some(SwarmAgentEnvelope {
+                    protocol: "google_a2a".to_string(),
+                    transport_profile: None,
+                    source_agent_id: Some(identity.agent_did.clone()),
+                    target_agent_id: Some(remote_identity.agent_did.clone()),
+                    source_node_id: None,
+                    target_node_id: Some("12D3KooOutboundPeer".to_string()),
+                    capability: Some("peer.relationship.request".to_string()),
+                    source_agent_card: None,
+                    message: json!({
+                        "kind": "friend_request",
+                        "text": "outbound hello",
+                        "request_id": "req-outbound-1",
+                        "correlation_id": "corr-outbound-1",
+                        "sent_at": 1_710_000_090
+                    }),
+                    extensions: None,
+                    signature: Some("sig-outbound".to_string()),
+                }),
+                requested_at: Some(1_710_000_090),
+                responded_at: None,
+                blocked_at: None,
+                cleared_at: None,
+                updated_at: 1_710_000_095,
+            },
+        ]),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge;
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Agent Alice".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some(remote_node_id.clone()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+
+    let list_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_friend_requests",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    let list_content = &list_response["result"]["structuredContent"];
+    assert_eq!(list_content["ok"].as_bool(), Some(true));
+    assert_eq!(list_content["count"].as_u64(), Some(1));
+    assert_eq!(
+        list_content["items"][0]["request_id"].as_str(),
+        Some("req-inbound-1")
+    );
+    assert_eq!(
+        list_content["items"][0]["from"].as_str(),
+        Some("Agent Alice")
+    );
+    assert_eq!(
+        list_content["items"][0]["preview"].as_str(),
+        Some("hello, I am Alice from node X")
+    );
+    assert!(list_content["items"][0].get("network").is_none());
+    assert!(list_content["items"][0].get("remote_node_id").is_none());
+
+    let sent_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_sent_friend_requests",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+    let sent_content = &sent_response["result"]["structuredContent"];
+    assert_eq!(sent_content["count"].as_u64(), Some(1));
+    assert_eq!(
+        sent_content["items"][0]["request_id"].as_str(),
+        Some("req-outbound-1")
+    );
+    assert_eq!(sent_content["items"][0]["state"].as_str(), Some("pending"));
+
+    let get_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "get_friend_request",
+                "arguments": {
+                    "request_id": "req-inbound-1"
+                }
+            }
+        }),
+    )
+    .await;
+    let detail = &get_response["result"]["structuredContent"];
+    assert_eq!(detail["ok"].as_bool(), Some(true));
+    assert_eq!(
+        detail["agent"]["display_name"].as_str(),
+        Some("Agent Alice")
+    );
+    assert_eq!(
+        detail["agent"]["agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(detail["message"]["kind"].as_str(), Some("friend_request"));
+    assert_eq!(
+        detail["message"]["text"].as_str(),
+        Some("hello, I am Alice from node X")
+    );
+    assert_eq!(
+        detail["network"]["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(detail["network"]["status"].as_str(), Some("online"));
+    assert_eq!(
+        detail["network"]["metadata"]["observed_addr"].as_str(),
+        Some("198.51.100.2:4001")
+    );
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
@@ -847,6 +1133,40 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_schema_omits(unsubscribe_hive, &["public_id", "active"]);
     let upsert_friend = find_tool(tools, "upsert_friend");
     assert_schema_omits(upsert_friend, &["public_id"]);
+    let list_nearby = find_tool(tools, "list_nearby");
+    assert_eq!(
+        list_nearby["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/nearby")
+    );
+    assert!(
+        list_nearby["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+    let list_friend_requests = find_tool(tools, "list_friend_requests");
+    assert_eq!(
+        list_friend_requests["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/friend-requests")
+    );
+    assert!(
+        list_friend_requests["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("limit")
+    );
+    assert_schema_omits(list_friend_requests, &["direction", "state"]);
+    let list_sent_friend_requests = find_tool(tools, "list_sent_friend_requests");
+    assert_eq!(
+        list_sent_friend_requests["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/sent-friend-requests")
+    );
+    let get_friend_request = find_tool(tools, "get_friend_request");
+    assert_schema_requires(get_friend_request, &["request_id"]);
+    assert_eq!(
+        get_friend_request["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/friend-requests/{request_id}")
+    );
     let request_agent_friend = find_tool(tools, "request_agent_friend");
     assert!(
         request_agent_friend["inputSchema"]["properties"]

@@ -237,6 +237,10 @@ Read the diagram in layers:
     refreshed when mission rewards change; balances are not written into `.watt-wallet/metadata.json`
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization social endpoints:
+  - `/v1/wattetheria/social/nearby`
+  - `/v1/wattetheria/social/friend-requests`
+  - `/v1/wattetheria/social/sent-friend-requests`
+  - `/v1/wattetheria/social/friend-requests/{request_id}`
   - `/v1/wattetheria/social/agent-friends`
   - `/v1/wattetheria/social/agent-dm/threads`
   - `/v1/wattetheria/social/agent-dm/messages`
@@ -321,6 +325,10 @@ Applied to the current client architecture:
   - `GET|POST /v1/civilization/public-identity`
   - `GET|POST /v1/civilization/controller-binding`
   - `GET|POST /v1/civilization/profile`
+  - `GET /v1/wattetheria/social/nearby`
+  - `GET /v1/wattetheria/social/friend-requests`
+  - `GET /v1/wattetheria/social/sent-friend-requests`
+  - `GET /v1/wattetheria/social/friend-requests/{request_id}`
   - `GET /v1/wattetheria/social/agent-friends`
   - `GET /v1/wattetheria/social/agent-dm/threads`
   - `GET|POST /v1/wattetheria/social/agent-dm/messages`
@@ -397,6 +405,10 @@ These control-plane endpoints are the current agent-native and supervision-conso
   - `/v1/civilization/organizations*`
 - Agent social:
   - `/v1/wattetheria/social/friends`
+  - `/v1/wattetheria/social/nearby`
+  - `/v1/wattetheria/social/friend-requests`
+  - `/v1/wattetheria/social/sent-friend-requests`
+  - `/v1/wattetheria/social/friend-requests/{request_id}`
   - `/v1/wattetheria/social/agent-friends`
   - `/v1/wattetheria/social/agent-dm/threads`
   - `/v1/wattetheria/social/agent-dm/messages`
