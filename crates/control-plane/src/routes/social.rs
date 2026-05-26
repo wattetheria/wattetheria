@@ -1771,6 +1771,62 @@ fn friend_request_list_payload(items: Vec<Value>, total: usize, offset: usize) -
     Value::Object(object)
 }
 
+async fn load_decidable_friend_request(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    request_id: &str,
+) -> Result<FriendRequest, Response> {
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    if let Ok(views) = state.swarm_bridge.list_peer_relationships().await
+        && let Err(error) = reconcile_swarm_relationship_views(
+            state,
+            local_public_id,
+            &identities,
+            &bindings,
+            &views,
+        )
+    {
+        return Err(internal_error(&error));
+    }
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, local_public_id)
+            .unwrap_or_default();
+    let Some(request) = friend_requests
+        .iter()
+        .find(|request| request.request_id == request_id)
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "friend request not found"})),
+        )
+            .into_response());
+    };
+    if request.direction != FriendRequestDirection::Inbound
+        || request.state != FriendRequestState::Pending
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "friend request is not an inbound pending request"})),
+        )
+            .into_response());
+    }
+    Ok(request.clone())
+}
+
+fn friend_request_decision_message(request: &FriendRequest) -> Value {
+    let mut base_message = Map::new();
+    base_message.insert(
+        "request_id".to_string(),
+        Value::String(request.request_id.clone()),
+    );
+    insert_payload_if_present(
+        &mut base_message,
+        "correlation_id",
+        request.correlation_id.clone().map(Value::String),
+    );
+    Value::Object(base_message)
+}
+
 pub(crate) async fn list_friend_requests(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -1932,6 +1988,124 @@ pub(crate) async fn get_friend_request(
         details: Some(json!({"request_id": request.request_id})),
     });
     Json(payload).into_response()
+}
+
+async fn decide_friend_request(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    request_id: String,
+    action: SwarmRelationshipAction,
+    public_id: Option<&str>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let local = resolve_social_local_context(&state, public_id).await;
+    let request = match load_decidable_friend_request(&state, &local.public_id, &request_id).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(remote_node_id) = request.remote_node_id.clone() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "friend request missing remote_node_id"})),
+        )
+            .into_response();
+    };
+    let counterpart = match resolve_social_counterpart_target_by_remote_node(
+        &state,
+        &remote_node_id,
+        Some(request.remote_public_id.clone()),
+    )
+    .await
+    {
+        Ok(counterpart) => counterpart,
+        Err(error) => return internal_error(&anyhow::Error::msg(error.to_string())),
+    };
+    let capability = capability_for_relationship_action(&action).to_string();
+    let now = Utc::now().timestamp();
+    let message = build_relationship_action_message(
+        &local.public_id,
+        &counterpart.counterpart_public_id,
+        &action,
+        Some(friend_request_decision_message(&request)),
+        now,
+    );
+    let response_json = match send_signed_relationship_action_command(
+        &state,
+        SignedRelationshipActionArgs {
+            local_agent_id: local.agent_id,
+            target_agent_id: counterpart.target_agent.clone(),
+            remote_node_id: counterpart.remote_node.clone(),
+            action: action.clone(),
+            capability: capability.clone(),
+            message: message.clone(),
+            extensions: None,
+        },
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => return internal_error(&error),
+    };
+    finalize_agent_relationship_action(
+        &state,
+        &headers,
+        FinalizeRelationshipActionArgs {
+            auth,
+            local_public_id: local.public_id,
+            counterpart_public_id: counterpart.counterpart_public_id.clone(),
+            target_agent: counterpart.target_agent,
+            remote_node_id: counterpart.remote_node,
+            action,
+            capability,
+            request_counterpart_public_id: request.remote_public_id.clone(),
+            message,
+            response_json,
+        },
+    )
+    .await
+}
+
+pub(crate) async fn accept_friend_request(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let public_id = body
+        .as_ref()
+        .and_then(|Json(body)| body.get("public_id"))
+        .and_then(Value::as_str);
+    decide_friend_request(
+        state,
+        headers,
+        request_id,
+        SwarmRelationshipAction::Accept,
+        public_id,
+    )
+    .await
+}
+
+pub(crate) async fn reject_friend_request(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let public_id = body
+        .as_ref()
+        .and_then(|Json(body)| body.get("public_id"))
+        .and_then(Value::as_str);
+    decide_friend_request(
+        state,
+        headers,
+        request_id,
+        SwarmRelationshipAction::Reject,
+        public_id,
+    )
+    .await
 }
 
 pub(crate) async fn agent_relationship_action(

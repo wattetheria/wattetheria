@@ -390,12 +390,14 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
-        "get_friend_request" => Some(tool_schema(
-            tool,
-            &[string_field("request_id", "Friend request ID.")],
-            &["request_id"],
-            false,
-        )),
+        "get_friend_request" | "accept_friend_request" | "reject_friend_request" => {
+            Some(tool_schema(
+                tool,
+                &[string_field("request_id", "Friend request ID.")],
+                &["request_id"],
+                false,
+            ))
+        }
         "list_friends" => Some(tool_schema(
             tool,
             &[
@@ -408,7 +410,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
-        "upsert_friend" => Some(tool_schema(
+        "upsert_local_friend" => Some(tool_schema(
             tool,
             &[
                 string_field("counterpart_public_id", "Counterpart public identity."),

@@ -1578,7 +1578,9 @@ async fn apply_local_identity_defaults(
         | "subscribe_hive"
         | "unsubscribe_hive"
         | "propose_agent_payment"
-        | "upsert_friend"
+        | "upsert_local_friend"
+        | "accept_friend_request"
+        | "reject_friend_request"
         | "request_agent_friend" => {
             let public_id = local_public_id(state).await;
             object.insert("public_id".to_string(), Value::String(public_id));
@@ -1710,7 +1712,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 37] = [
+const AGENT_TOOLS: [AgentTool; 39] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1733,11 +1735,13 @@ const AGENT_TOOLS: [AgentTool; 37] = [
     AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
     AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/friends", description: "List local friend relationships.", availability: Availability::Always },
-    AgentTool { name: "upsert_friend", method: Method::POST, path: "/v1/wattetheria/social/friends", description: "Add or update a local friend relationship.", availability: Availability::Always },
+    AgentTool { name: "upsert_local_friend", method: Method::POST, path: "/v1/wattetheria/social/friends", description: "Add or update a local-only Wattetheria friend relationship without notifying the remote node.", availability: Availability::Always },
     AgentTool { name: "list_nearby", method: Method::GET, path: "/v1/wattetheria/social/nearby", description: "List nearby Wattswarm/Iroh peer nodes visible to this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "list_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/friend-requests", description: "List inbound pending friend requests awaiting local approval.", availability: Availability::Always },
     AgentTool { name: "list_sent_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/sent-friend-requests", description: "List outbound friend requests sent by this local agent.", availability: Availability::Always },
     AgentTool { name: "get_friend_request", method: Method::GET, path: "/v1/wattetheria/social/friend-requests/{request_id}", description: "Get one friend request with agent, message, and network details.", availability: Availability::Always },
+    AgentTool { name: "accept_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/accept", description: "Accept an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
+    AgentTool { name: "reject_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/reject", description: "Reject an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/wattetheria/social/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "send_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
     AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },

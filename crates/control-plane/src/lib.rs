@@ -167,6 +167,14 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             get(routes::civilization::get_friend_request),
         )
         .route(
+            "/v1/wattetheria/social/friend-requests/{request_id}/accept",
+            post(routes::civilization::accept_friend_request),
+        )
+        .route(
+            "/v1/wattetheria/social/friend-requests/{request_id}/reject",
+            post(routes::civilization::reject_friend_request),
+        )
+        .route(
             "/v1/client/organizations",
             get(routes::client_api::client_organizations),
         )

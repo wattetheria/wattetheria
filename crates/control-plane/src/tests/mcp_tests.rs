@@ -1,4 +1,7 @@
 use super::*;
+use wattetheria_social::domain::friend_requests::{
+    FriendRequest, FriendRequestDirection, FriendRequestState,
+};
 
 const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "client_export",
@@ -23,11 +26,13 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "complete_mission",
     "settle_mission",
     "list_friends",
-    "upsert_friend",
+    "upsert_local_friend",
     "list_nearby",
     "list_friend_requests",
     "list_sent_friend_requests",
     "get_friend_request",
+    "accept_friend_request",
+    "reject_friend_request",
     "request_agent_friend",
     "send_message",
     "fetch_messages",
@@ -795,6 +800,166 @@ async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn mcp_accept_and_reject_friend_requests_send_relationship_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let accept_identity = Identity::new_random();
+    let reject_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller);
+    let accept_public_id = scoped_id("broker-accept", &accept_identity.agent_did);
+    let reject_public_id = scoped_id("broker-reject", &reject_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &accept_public_id,
+                "Broker Accept".to_string(),
+                Some(accept_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+        identities
+            .upsert(
+                &reject_public_id,
+                "Broker Reject".to_string(),
+                Some(reject_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &accept_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "accept-runtime".to_string(),
+            Some("12D3KooAcceptPeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+        bindings.upsert(
+            &reject_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "reject-runtime".to_string(),
+            Some("12D3KooRejectPeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    for (request_id, remote_public_id, remote_node_id, correlation_id) in [
+        (
+            "req-accept-1",
+            accept_public_id.as_str(),
+            "12D3KooAcceptPeer",
+            "corr-accept-1",
+        ),
+        (
+            "req-reject-1",
+            reject_public_id.as_str(),
+            "12D3KooRejectPeer",
+            "corr-reject-1",
+        ),
+    ] {
+        friend_request_service::upsert_friend_request(
+            &*state.social_store,
+            &FriendRequest {
+                request_id: request_id.to_string(),
+                local_public_id: local_public_id.clone(),
+                remote_public_id: remote_public_id.to_string(),
+                remote_node_id: Some(remote_node_id.to_string()),
+                direction: FriendRequestDirection::Inbound,
+                state: FriendRequestState::Pending,
+                decision_reason: None,
+                correlation_id: Some(correlation_id.to_string()),
+                created_at: 1,
+                updated_at: 1,
+                expires_at: None,
+            },
+        )
+        .expect("save inbound friend request");
+    }
+
+    let accept_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "accept_friend_request",
+                "arguments": {"request_id": "req-accept-1"}
+            }
+        }),
+    )
+    .await;
+    let reject_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "reject_friend_request",
+                "arguments": {"request_id": "req-reject-1"}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(accept_response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(reject_response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 2);
+    assert_eq!(
+        commands[0].action,
+        wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Accept
+    );
+    assert_eq!(commands[0].remote_node_id, "12D3KooAcceptPeer");
+    assert_eq!(
+        commands[0]
+            .agent_envelope
+            .message
+            .get("request_id")
+            .and_then(Value::as_str),
+        Some("req-accept-1")
+    );
+    assert_eq!(
+        commands[0]
+            .agent_envelope
+            .message
+            .get("correlation_id")
+            .and_then(Value::as_str),
+        Some("corr-accept-1")
+    );
+    assert_eq!(
+        commands[1].action,
+        wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Reject
+    );
+    assert_eq!(commands[1].remote_node_id, "12D3KooRejectPeer");
+    assert_eq!(
+        commands[1]
+            .agent_envelope
+            .message
+            .get("request_id")
+            .and_then(Value::as_str),
+        Some("req-reject-1")
+    );
+}
+
+#[tokio::test]
 async fn mcp_list_nearby_returns_compact_peer_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -1131,8 +1296,8 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let unsubscribe_hive = find_tool(tools, "unsubscribe_hive");
     assert_schema_requires(unsubscribe_hive, &["hive_id"]);
     assert_schema_omits(unsubscribe_hive, &["public_id", "active"]);
-    let upsert_friend = find_tool(tools, "upsert_friend");
-    assert_schema_omits(upsert_friend, &["public_id"]);
+    let upsert_local_friend = find_tool(tools, "upsert_local_friend");
+    assert_schema_omits(upsert_local_friend, &["public_id"]);
     let list_nearby = find_tool(tools, "list_nearby");
     assert_eq!(
         list_nearby["_meta"]["wattetheria"]["path"].as_str(),
@@ -1166,6 +1331,18 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_eq!(
         get_friend_request["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/friend-requests/{request_id}")
+    );
+    let accept_friend_request = find_tool(tools, "accept_friend_request");
+    assert_schema_requires(accept_friend_request, &["request_id"]);
+    assert_eq!(
+        accept_friend_request["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/friend-requests/{request_id}/accept")
+    );
+    let reject_friend_request = find_tool(tools, "reject_friend_request");
+    assert_schema_requires(reject_friend_request, &["request_id"]);
+    assert_eq!(
+        reject_friend_request["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/friend-requests/{request_id}/reject")
     );
     let request_agent_friend = find_tool(tools, "request_agent_friend");
     assert!(

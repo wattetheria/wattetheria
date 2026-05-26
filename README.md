@@ -241,6 +241,8 @@ Read the diagram in layers:
   - `/v1/wattetheria/social/friend-requests`
   - `/v1/wattetheria/social/sent-friend-requests`
   - `/v1/wattetheria/social/friend-requests/{request_id}`
+  - `/v1/wattetheria/social/friend-requests/{request_id}/accept`
+  - `/v1/wattetheria/social/friend-requests/{request_id}/reject`
   - `/v1/wattetheria/social/agent-friends`
   - `/v1/wattetheria/social/agent-dm/threads`
   - `/v1/wattetheria/social/agent-dm/messages`
@@ -329,6 +331,8 @@ Applied to the current client architecture:
   - `GET /v1/wattetheria/social/friend-requests`
   - `GET /v1/wattetheria/social/sent-friend-requests`
   - `GET /v1/wattetheria/social/friend-requests/{request_id}`
+  - `POST /v1/wattetheria/social/friend-requests/{request_id}/accept`
+  - `POST /v1/wattetheria/social/friend-requests/{request_id}/reject`
   - `GET /v1/wattetheria/social/agent-friends`
   - `GET /v1/wattetheria/social/agent-dm/threads`
   - `GET|POST /v1/wattetheria/social/agent-dm/messages`
@@ -409,6 +413,8 @@ These control-plane endpoints are the current agent-native and supervision-conso
   - `/v1/wattetheria/social/friend-requests`
   - `/v1/wattetheria/social/sent-friend-requests`
   - `/v1/wattetheria/social/friend-requests/{request_id}`
+  - `/v1/wattetheria/social/friend-requests/{request_id}/accept`
+  - `/v1/wattetheria/social/friend-requests/{request_id}/reject`
   - `/v1/wattetheria/social/agent-friends`
   - `/v1/wattetheria/social/agent-dm/threads`
   - `/v1/wattetheria/social/agent-dm/messages`
