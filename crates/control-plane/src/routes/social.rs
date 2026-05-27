@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
@@ -273,9 +273,9 @@ fn relationship_view_to_payload(
     identities: &BTreeMap<String, PublicIdentity>,
     bindings: &BTreeMap<String, ControllerBinding>,
 ) -> Value {
-    let counterpart_public_id =
-        counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
-            .unwrap_or_else(|| view.remote_node_id.clone());
+    let counterpart_public_id = relationship_remote_public_id(view)
+        .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
+        .unwrap_or_else(|| view.remote_node_id.clone());
     let display_name = identities
         .get(&counterpart_public_id)
         .map(|identity| identity.display_name.clone());
@@ -475,6 +475,165 @@ fn relationship_request_id(view: &SwarmPeerRelationshipView) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+fn source_agent_card_is_remote(
+    view: &SwarmPeerRelationshipView,
+    envelope: &SwarmAgentEnvelope,
+) -> bool {
+    envelope.source_node_id.as_deref() == Some(view.remote_node_id.as_str())
+        || view.initiated_by == "remote"
+}
+
+fn relationship_remote_public_id(view: &SwarmPeerRelationshipView) -> Option<String> {
+    let envelope = view.agent_envelope.as_ref()?;
+    let key = if source_agent_card_is_remote(view, envelope) {
+        "source_public_id"
+    } else {
+        "target_public_id"
+    };
+    envelope
+        .message
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn relationship_remote_agent_id(view: &SwarmPeerRelationshipView) -> Option<String> {
+    let envelope = view.agent_envelope.as_ref()?;
+    if source_agent_card_is_remote(view, envelope) {
+        envelope.source_agent_id.clone().or_else(|| {
+            envelope
+                .source_agent_card
+                .as_ref()
+                .map(|card| card.agent_id.clone())
+        })
+    } else {
+        envelope.target_agent_id.clone()
+    }
+}
+
+fn relationship_remote_agent_card(view: &SwarmPeerRelationshipView) -> Option<&Value> {
+    let envelope = view.agent_envelope.as_ref()?;
+    if !source_agent_card_is_remote(view, envelope) {
+        return None;
+    }
+    envelope.source_agent_card.as_ref().map(|card| &card.card)
+}
+
+fn agent_card_skill_label(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .or_else(|| value.get("name").and_then(Value::as_str))
+        .or_else(|| value.get("id").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn agent_card_skills(card: &Value) -> Vec<String> {
+    card.get("skills")
+        .and_then(Value::as_array)
+        .map(|skills| skills.iter().filter_map(agent_card_skill_label).collect())
+        .unwrap_or_default()
+}
+
+fn peer_network_id(peer: Option<&SwarmPeerView>) -> Option<String> {
+    peer.and_then(|peer| {
+        peer.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("network_id"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                peer.discovery
+                    .as_ref()
+                    .and_then(|discovery| discovery.get("network_id"))
+                    .and_then(Value::as_str)
+            })
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn relationship_peer_status(
+    peer: Option<&SwarmPeerView>,
+    relationship_state: Option<&str>,
+) -> &'static str {
+    if peer.and_then(|peer| peer.connected).unwrap_or(false) {
+        "online"
+    } else if relationship_state == Some("blocked") {
+        "blocked"
+    } else if peer.is_some_and(|peer| peer.discovery.is_some()) {
+        "discovered"
+    } else {
+        "offline"
+    }
+}
+
+fn enrich_relationship_payload_from_bridge(
+    payload: &mut Value,
+    view: Option<&SwarmPeerRelationshipView>,
+    peer: Option<&SwarmPeerView>,
+) {
+    let relationship_state = payload
+        .get("relationship_state")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    if let Some(view) = view {
+        insert_payload_if_present(
+            object,
+            "remote_node_id",
+            Some(Value::String(view.remote_node_id.clone())),
+        );
+        insert_payload_if_present(
+            object,
+            "counterpart_agent_public_id",
+            relationship_remote_public_id(view).map(Value::String),
+        );
+        insert_payload_if_present(
+            object,
+            "counterpart_agent_did",
+            relationship_remote_agent_id(view).map(Value::String),
+        );
+        if let Some(card) = relationship_remote_agent_card(view) {
+            if let Some(name) = card
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                object.insert(
+                    "counterpart_display_name".to_string(),
+                    Value::String(name.to_string()),
+                );
+                object.insert(
+                    "counterpart_agent_name".to_string(),
+                    Value::String(name.to_string()),
+                );
+            }
+            let skills = agent_card_skills(card);
+            if !skills.is_empty() {
+                object.insert("counterpart_skills".to_string(), json!(skills));
+            }
+        }
+    }
+    object.insert(
+        "status".to_string(),
+        Value::String(relationship_peer_status(peer, relationship_state.as_deref()).to_string()),
+    );
+    object.insert(
+        "connected".to_string(),
+        Value::Bool(peer.and_then(|peer| peer.connected).unwrap_or(false)),
+    );
+    insert_payload_if_present(
+        object,
+        "network_id",
+        peer_network_id(peer).map(Value::String),
+    );
+}
+
 fn matching_relationship_view<'a>(
     views: &'a [SwarmPeerRelationshipView],
     request: &FriendRequest,
@@ -499,6 +658,45 @@ fn matching_peer<'a>(
         .remote_node_id
         .as_ref()
         .and_then(|remote_node_id| peers.iter().find(|peer| peer.node_id == *remote_node_id))
+}
+
+fn matching_peer_for_node<'a>(
+    peers: &'a [SwarmPeerView],
+    remote_node_id: Option<&str>,
+) -> Option<&'a SwarmPeerView> {
+    remote_node_id
+        .and_then(|remote_node_id| peers.iter().find(|peer| peer.node_id == remote_node_id))
+}
+
+fn matching_relationship_view_for_payload<'a>(
+    views: &'a [SwarmPeerRelationshipView],
+    payload: &Value,
+) -> Option<&'a SwarmPeerRelationshipView> {
+    let remote_node_id = payload.get("remote_node_id").and_then(Value::as_str);
+    let counterpart_public_id = payload.get("counterpart_public_id").and_then(Value::as_str);
+    views.iter().find(|view| {
+        Some(view.remote_node_id.as_str()) == remote_node_id
+            || Some(view.remote_node_id.as_str()) == counterpart_public_id
+            || relationship_remote_public_id(view).as_deref() == counterpart_public_id
+    })
+}
+
+fn relationship_payload_identity_key(payload: &Value) -> Option<String> {
+    [
+        "remote_node_id",
+        "counterpart_agent_public_id",
+        "counterpart_agent_did",
+        "counterpart_public_id",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
 }
 
 fn envelope_message_text(envelope: Option<&SwarmAgentEnvelope>) -> Option<String> {
@@ -645,48 +843,6 @@ fn friend_request_network_payload(
         peer.and_then(|peer| peer.metadata.clone()),
     );
     Value::Object(object)
-}
-
-fn relationship_payload_from_friend_request(
-    request: &FriendRequest,
-    identities: &BTreeMap<String, PublicIdentity>,
-    bindings: &BTreeMap<String, ControllerBinding>,
-) -> Value {
-    let display_name = identities
-        .get(&request.remote_public_id)
-        .map(|identity| identity.display_name.clone());
-    let remote_node_id = request
-        .remote_node_id
-        .clone()
-        .or_else(|| binding_remote_node_id(bindings, &request.remote_public_id));
-    let relationship_state = match request.state {
-        FriendRequestState::Pending => "requested",
-        FriendRequestState::Accepted => "accepted",
-        FriendRequestState::Rejected => "rejected",
-        FriendRequestState::Blocked => "blocked",
-        FriendRequestState::Cancelled => "cancelled",
-        FriendRequestState::Expired => "expired",
-    };
-    let initiated_by = match request.direction {
-        FriendRequestDirection::Inbound => "remote",
-        FriendRequestDirection::Outbound => "local",
-    };
-    json!({
-        "counterpart_public_id": request.remote_public_id.clone(),
-        "counterpart_display_name": display_name,
-        "remote_node_id": remote_node_id,
-        "relationship_state": relationship_state,
-        "last_action": relationship_state,
-        "initiated_by": initiated_by,
-        "agent_envelope": Value::Null,
-        "requested_at": request.created_at,
-        "responded_at": if request.state == FriendRequestState::Pending { Value::Null } else { json!(request.updated_at) },
-        "blocked_at": if request.state == FriendRequestState::Blocked { json!(request.updated_at) } else { Value::Null },
-        "cleared_at": Value::Null,
-        "updated_at": request.updated_at,
-        "pending_inbound": request.state == FriendRequestState::Pending && request.direction == FriendRequestDirection::Inbound,
-        "pending_outbound": request.state == FriendRequestState::Pending && request.direction == FriendRequestDirection::Outbound,
-    })
 }
 
 fn relationship_payload_from_friendship(
@@ -850,9 +1006,9 @@ pub(crate) fn reconcile_swarm_relationship_views(
 ) -> anyhow::Result<()> {
     let mut synced = Vec::with_capacity(views.len());
     for view in views {
-        let counterpart_public_id =
-            counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
-                .unwrap_or_else(|| view.remote_node_id.clone());
+        let counterpart_public_id = relationship_remote_public_id(view)
+            .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
+            .unwrap_or_else(|| view.remote_node_id.clone());
         let target_agent = identities
             .get(&counterpart_public_id)
             .and_then(|identity| identity.agent_did.clone())
@@ -1341,33 +1497,68 @@ pub(crate) async fn build_agent_relationship_payload(
     if let Ok(views) = &bridge_views {
         reconcile_swarm_relationship_views(state, &local.public_id, &identities, &bindings, views)?;
     }
-    let friend_requests =
-        friend_request_service::list_friend_requests(&*state.social_store, &local.public_id)
-            .unwrap_or_default();
+    let peers = state.swarm_bridge.peers().await.unwrap_or_default();
     let friendships = friendship_service::list_friendships(&*state.social_store, &local.public_id)
         .unwrap_or_default();
     let blocks =
         block_service::list_blocks(&*state.social_store, &local.public_id).unwrap_or_default();
-    let mut items = if friend_requests.is_empty() && friendships.is_empty() && blocks.is_empty() {
+    let mut items = if friendships.is_empty() && blocks.is_empty() {
         bridge_views?
             .into_iter()
-            .map(|view| relationship_view_to_payload(&view, &identities, &bindings))
+            .filter(|view| matches!(view.relationship_state.as_str(), "accepted" | "active"))
+            .map(|view| {
+                let peer = matching_peer_for_node(&peers, Some(&view.remote_node_id));
+                let mut payload = relationship_view_to_payload(&view, &identities, &bindings);
+                enrich_relationship_payload_from_bridge(&mut payload, Some(&view), peer);
+                payload
+            })
             .collect::<Vec<_>>()
     } else {
-        let mut items = friend_requests
+        let bridge_view_items = bridge_views.as_deref().unwrap_or(&[]);
+        let mut items = Vec::new();
+        let mut seen_friendship_keys = BTreeSet::new();
+        for friendship in friendships
             .iter()
-            .map(|request| {
-                relationship_payload_from_friend_request(request, &identities, &bindings)
-            })
-            .collect::<Vec<_>>();
-        items.extend(friendships.iter().map(|friendship| {
-            relationship_payload_from_friendship(friendship, &identities, &bindings)
+            .filter(|friendship| friendship.state == FriendshipState::Active)
+        {
+            let mut payload =
+                relationship_payload_from_friendship(friendship, &identities, &bindings);
+            let view = matching_relationship_view_for_payload(bridge_view_items, &payload);
+            let peer = view
+                .and_then(|view| matching_peer_for_node(&peers, Some(&view.remote_node_id)))
+                .or_else(|| {
+                    payload
+                        .get("remote_node_id")
+                        .and_then(Value::as_str)
+                        .and_then(|remote_node_id| {
+                            matching_peer_for_node(&peers, Some(remote_node_id))
+                        })
+                });
+            enrich_relationship_payload_from_bridge(&mut payload, view, peer);
+            let key = relationship_payload_identity_key(&payload);
+            if key
+                .as_ref()
+                .is_none_or(|key| seen_friendship_keys.insert(key.clone()))
+            {
+                items.push(payload);
+            }
+        }
+        items.extend(blocks.iter().map(|block| {
+            let mut payload = relationship_payload_from_block(block, &identities);
+            let view = matching_relationship_view_for_payload(bridge_view_items, &payload);
+            let peer = view
+                .and_then(|view| matching_peer_for_node(&peers, Some(&view.remote_node_id)))
+                .or_else(|| {
+                    payload
+                        .get("remote_node_id")
+                        .and_then(Value::as_str)
+                        .and_then(|remote_node_id| {
+                            matching_peer_for_node(&peers, Some(remote_node_id))
+                        })
+                });
+            enrich_relationship_payload_from_bridge(&mut payload, view, peer);
+            payload
         }));
-        items.extend(
-            blocks
-                .iter()
-                .map(|block| relationship_payload_from_block(block, &identities)),
-        );
         items
     };
     if let Some(counterpart_public_id) = counterpart_filter {
@@ -1385,7 +1576,6 @@ pub(crate) async fn build_agent_relationship_payload(
                     .cmp(right["counterpart_public_id"].as_str().unwrap_or_default())
             })
     });
-    items.dedup_by(|left, right| left["counterpart_public_id"] == right["counterpart_public_id"]);
     Ok(items)
 }
 

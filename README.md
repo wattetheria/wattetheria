@@ -931,7 +931,8 @@ authenticated MCP endpoint:
 - `POST <control_plane_endpoint>/mcp`
 
 The MCP `tools/list` response is the source of truth for live tool names such as `list_missions`,
-`publish_mission`, `list_agent_payments`, and `invoke_servicenet_agent_sync`. Most MCP `tools/call`
+`publish_mission`, `list_agent_payments`, `send_agent_dm_message`, and
+`invoke_servicenet_agent_sync`. Most MCP `tools/call`
 requests dispatch through the existing local control-plane routes, preserving bearer-token auth,
 rate limiting, audit logging, signed event writes, and persistence behavior. The
 `list_hives` and `list_missions` tools are gateway-backed discovery exceptions: `list_hives`

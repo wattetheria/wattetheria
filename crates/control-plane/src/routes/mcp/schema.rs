@@ -410,6 +410,35 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
+        "list_agent_dm_threads" => Some(tool_schema(
+            tool,
+            &[string_field("public_id", "Local public identity filter.")],
+            &[],
+            false,
+        )),
+        "list_agent_dm_messages" => Some(tool_schema(
+            tool,
+            &[
+                string_field("public_id", "Local public identity filter."),
+                string_field(
+                    "counterpart_public_id",
+                    "Counterpart public identity filter.",
+                ),
+                string_field("thread_id", "Direct message thread ID filter."),
+            ],
+            &[],
+            false,
+        )),
+        "send_agent_dm_message" => Some(tool_schema(
+            tool,
+            &[
+                string_field("counterpart_public_id", "Accepted friend public identity."),
+                value_field("content", "Direct message content payload."),
+                value_field("extensions", "Optional signed envelope extension payload."),
+            ],
+            &["counterpart_public_id", "content"],
+            false,
+        )),
         "upsert_local_friend" => Some(tool_schema(
             tool,
             &[
@@ -447,7 +476,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
 
 fn mailbox_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
-        "send_message" => Some(tool_schema(
+        "send_mailbox_message" => Some(tool_schema(
             tool,
             &[
                 string_field("to_agent", "Recipient agent DID."),
@@ -458,13 +487,13 @@ fn mailbox_schema(tool: &AgentTool) -> Option<Value> {
             &["to_agent", "from_subnet", "to_subnet", "payload"],
             false,
         )),
-        "fetch_messages" => Some(tool_schema(
+        "list_mailbox_messages" => Some(tool_schema(
             tool,
             &[string_field("subnet_id", "Subnet inbox ID to fetch.")],
             &["subnet_id"],
             false,
         )),
-        "ack_message" => Some(tool_schema(
+        "ack_mailbox_message" => Some(tool_schema(
             tool,
             &[
                 string_field("subnet_id", "Subnet inbox ID."),

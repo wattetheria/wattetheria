@@ -1164,7 +1164,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             node_id: remote_node_id.clone(),
             connected: Some(true),
             discovery: None,
-            metadata: None,
+            metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
             relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
@@ -1179,13 +1179,28 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                 transport_profile: None,
                 source_agent_id: Some(remote_identity.agent_did.clone()),
                 target_agent_id: Some(identity.agent_did.clone()),
-                source_node_id: None,
+                source_node_id: Some(remote_node_id.clone()),
                 target_node_id: None,
                 capability: Some("social.friend.accept".to_string()),
-                source_agent_card: None,
+                source_agent_card: Some(SwarmSourceAgentCard {
+                    agent_id: remote_identity.agent_did.clone(),
+                    node_id: Some(remote_node_id.clone()),
+                    card_hash: "sha256:remote-card".to_string(),
+                    issued_at: 1_710_000_120,
+                    card: json!({
+                        "name": "Remote Agent Alice",
+                        "description": "Remote agent profile from the accepted relationship action.",
+                        "skills": [
+                            {"id": "social-direct-message", "name": "Social direct message"},
+                            {"id": "task-participation", "name": "Task participation"}
+                        ]
+                    }),
+                    signature: Some("card-sig-1".to_string()),
+                }),
                 message: json!({
                     "request_id": "req-inbound-1",
-                    "correlation_id": "corr-inbound-1"
+                    "correlation_id": "corr-inbound-1",
+                    "source_public_id": remote_public_id.clone()
                 }),
                 extensions: None,
                 signature: Some("sig-1".to_string()),
@@ -1270,6 +1285,37 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             true,
         );
     }
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "req-inbound-1".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            remote_node_id: Some(remote_node_id.clone()),
+            direction: wattetheria_social::domain::friend_requests::FriendRequestDirection::Inbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Accepted,
+            decision_reason: Some("accepted".to_string()),
+            correlation_id: Some("corr-inbound-1".to_string()),
+            created_at: 1_710_000_100,
+            updated_at: 1_710_000_150,
+            expires_at: None,
+        },
+    )
+    .expect("seed accepted request alongside friendship");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_node_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_node_id.clone(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("req-inbound-1".to_string()),
+            thread_id: Some("legacy-thread".to_string()),
+            created_at: 1_710_000_100,
+            updated_at: 1_710_000_120,
+        },
+    )
+    .expect("seed legacy node-id friendship");
 
     let relationship_items = authed_get_json(
         app.clone(),
@@ -1280,7 +1326,27 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     assert_eq!(relationship_items.as_array().unwrap().len(), 1);
     assert_eq!(
         relationship_items[0]["relationship_state"].as_str(),
-        Some("accepted")
+        Some("active")
+    );
+    assert_eq!(
+        relationship_items[0]["counterpart_display_name"].as_str(),
+        Some("Remote Agent Alice")
+    );
+    assert_eq!(
+        relationship_items[0]["counterpart_agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        relationship_items[0]["counterpart_agent_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        relationship_items[0]["counterpart_skills"][0].as_str(),
+        Some("Social direct message")
+    );
+    assert_eq!(
+        relationship_items[0]["network_id"].as_str(),
+        Some("mainnet:watt-etheria")
     );
 
     let thread_items = authed_get_json(
@@ -1311,8 +1377,18 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
 
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
         .expect("list reconciled friendships");
-    assert_eq!(friendships.len(), 1);
-    assert_eq!(friendships[0].remote_public_id, remote_public_id);
+    let active_friendships = friendships
+        .iter()
+        .filter(|friendship| {
+            friendship.state == wattetheria_social::domain::friendships::FriendshipState::Active
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(active_friendships.len(), 1);
+    assert_eq!(active_friendships[0].remote_public_id, remote_public_id);
+    assert!(friendships.iter().any(|friendship| {
+        friendship.remote_public_id == remote_node_id
+            && friendship.state == wattetheria_social::domain::friendships::FriendshipState::Removed
+    }));
 
     let threads = thread_service::list_threads(&*state.social_store, &local_public_id)
         .expect("list reconciled threads");

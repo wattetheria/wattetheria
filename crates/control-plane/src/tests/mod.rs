@@ -43,7 +43,7 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
     SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
+    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand, SwarmSourceAgentCard,
     SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
     SwarmTopicCursorView, SwarmTopicMessageView,
 };

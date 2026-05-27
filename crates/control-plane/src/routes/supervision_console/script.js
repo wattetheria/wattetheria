@@ -207,6 +207,19 @@
       return Array.isArray(value) ? value : [];
     }
 
+    function skillPreview(skills) {
+      const labels = safeArray(skills)
+        .map((skill) => {
+          if (typeof skill === "string") return skill;
+          return skill?.name || skill?.id || "";
+        })
+        .map((skill) => String(skill).trim())
+        .filter(Boolean);
+      if (!labels.length) return "";
+      const visible = labels.slice(0, 3).join(", ");
+      return labels.length > 3 ? `${visible} +${labels.length - 3}` : visible;
+    }
+
     function textFromContent(content) {
       if (content == null) return "";
       if (typeof content === "string") return content;
@@ -387,18 +400,20 @@
         public_id: publicId,
         limit: String(limit),
       });
-      const [relationshipsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
+      const [relationshipsResult, friendRequestsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
         fetchJson(`/v1/wattetheria/social/agent-friends?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/wattetheria/social/friend-requests?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/wattetheria/social/agent-dm/messages?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/client/friends?${query.toString()}`, { auth: true }),
       ]);
       const relationships = relationshipsResult.status === "fulfilled" ? relationshipsResult.value : [];
+      const friendRequests = friendRequestsResult.status === "fulfilled" ? friendRequestsResult.value : {};
       const dmMessages = dmMessagesResult.status === "fulfilled" ? dmMessagesResult.value : [];
       const clientFriends = clientFriendsResult.status === "fulfilled" ? clientFriendsResult.value : [];
       return {
         local_client_friends: safeArray(clientFriends),
         friend_relationships: safeArray(relationships),
-        pending_friend_requests: safeArray(relationships).filter((entry) => entry.pending_inbound || entry.pending_outbound),
+        pending_friend_requests: safeArray(friendRequests.items),
         dm_messages: safeArray(dmMessages),
       };
     }
@@ -617,10 +632,19 @@
       renderList("friends-list", rows, "No friends recorded.", (row) => `
         <div class="row">
           <div class="row-head">
-            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.public_id || row.counterpart_public_id)}</div>
-            ${pill(row.relationship_state || row.relationship_kind || "friend", row.relationship_state || row.relationship_kind)}
+            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_agent_name || row.counterpart_agent_did || row.counterpart_public_id || row.remote_node_id)}</div>
+            ${pill(row.relationship_state || row.relationship_kind || "friend", row.status || row.relationship_state || row.relationship_kind)}
           </div>
-          <div class="row-body">${escapeHtml(compactId(row.counterpart_public_id || row.public_id, 28))} | ${escapeHtml(valueOrDash(row.remote_node_id))}</div>
+          <div class="row-body">
+            Public ${escapeHtml(compactId(row.counterpart_agent_public_id || row.counterpart_public_id || row.public_id, 30))}
+            | Agent ${escapeHtml(compactId(row.counterpart_agent_did, 30))}
+            | Node ${escapeHtml(compactId(row.remote_node_id, 30))}
+          </div>
+          <div class="row-meta">
+            <span>${escapeHtml(valueOrDash(row.status))}</span>
+            <span>${escapeHtml(valueOrDash(row.network_id))}</span>
+            ${skillPreview(row.counterpart_skills) ? `<span>Skills ${escapeHtml(skillPreview(row.counterpart_skills))}</span>` : ""}
+          </div>
         </div>
       `);
     }
@@ -630,10 +654,10 @@
       renderList("friend-requests-list", rows, "No pending friend requests.", (row) => `
         <div class="row">
           <div class="row-head">
-            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_public_id)}</div>
-            ${pill(row.pending_inbound ? "inbound" : "outbound", "pending")}
+            <div class="row-title">${escapeHtml(row.from || row.counterpart_display_name || row.counterpart_public_id || row.request_id)}</div>
+            ${pill("inbound", "pending")}
           </div>
-          <div class="row-body">${escapeHtml(valueOrDash(row.relationship_state))} | updated ${escapeHtml(formatTime(row.updated_at))}</div>
+          <div class="row-body">${escapeHtml(row.preview || compactId(row.request_id, 32))}</div>
         </div>
       `);
     }

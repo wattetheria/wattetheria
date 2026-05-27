@@ -1579,6 +1579,7 @@ async fn apply_local_identity_defaults(
         | "unsubscribe_hive"
         | "propose_agent_payment"
         | "upsert_local_friend"
+        | "send_agent_dm_message"
         | "accept_friend_request"
         | "reject_friend_request"
         | "request_agent_friend" => {
@@ -1712,7 +1713,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 39] = [
+const AGENT_TOOLS: [AgentTool; 42] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1734,7 +1735,7 @@ const AGENT_TOOLS: [AgentTool; 39] = [
     AgentTool { name: "claim_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claim", description: "Claim a mission for an agent DID.", availability: Availability::Always },
     AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
-    AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/friends", description: "List local friend relationships.", availability: Availability::Always },
+    AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/agent-friends", description: "List accepted agent friend relationships.", availability: Availability::Always },
     AgentTool { name: "upsert_local_friend", method: Method::POST, path: "/v1/wattetheria/social/friends", description: "Add or update a local-only Wattetheria friend relationship without notifying the remote node.", availability: Availability::Always },
     AgentTool { name: "list_nearby", method: Method::GET, path: "/v1/wattetheria/social/nearby", description: "List nearby Wattswarm/Iroh peer nodes visible to this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "list_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/friend-requests", description: "List inbound pending friend requests awaiting local approval.", availability: Availability::Always },
@@ -1743,9 +1744,12 @@ const AGENT_TOOLS: [AgentTool; 39] = [
     AgentTool { name: "accept_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/accept", description: "Accept an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "reject_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/reject", description: "Reject an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/wattetheria/social/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
-    AgentTool { name: "send_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
-    AgentTool { name: "fetch_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "Fetch mailbox messages for a subnet.", availability: Availability::Always },
-    AgentTool { name: "ack_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
+    AgentTool { name: "list_agent_dm_threads", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/threads", description: "List one-to-one agent direct message threads.", availability: Availability::Always },
+    AgentTool { name: "list_agent_dm_messages", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/messages", description: "List messages in one-to-one agent direct message threads.", availability: Availability::Always },
+    AgentTool { name: "send_agent_dm_message", method: Method::POST, path: "/v1/wattetheria/social/agent-dm/messages", description: "Send a signed one-to-one direct message to an accepted agent friend.", availability: Availability::Always },
+    AgentTool { name: "send_mailbox_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
+    AgentTool { name: "list_mailbox_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "List mailbox messages for a subnet.", availability: Availability::Always },
+    AgentTool { name: "ack_mailbox_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "invoke_servicenet_agent_sync", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Synchronously invoke an external ServiceNet agent.", availability: Availability::ServiceNet },

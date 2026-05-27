@@ -281,6 +281,14 @@ where
                 ))?;
             }
             "accepted" => {
+                retire_alias_friendships(
+                    repository,
+                    local_public_id,
+                    &view.counterpart.counterpart_public_id,
+                    &view.counterpart.remote_node_id,
+                    &request_id,
+                    updated_at,
+                )?;
                 ignore_conflict(friend_request_service::upsert_friend_request(
                     repository,
                     &FriendRequest {
@@ -835,6 +843,42 @@ fn stable_pair_id(prefix: &str, left: &str, right: &str) -> String {
     } else {
         format!("{prefix}:{right}:{left}")
     }
+}
+
+fn retire_alias_friendships<R>(
+    repository: &R,
+    local_public_id: &str,
+    canonical_remote_public_id: &str,
+    remote_node_id: &str,
+    request_id: &str,
+    updated_at: i64,
+) -> SocialResult<()>
+where
+    R: FriendshipRepository + TransportBindingRepository,
+{
+    let bindings = transport_binding_service::list_transport_bindings(repository)?;
+    for friendship in friendship_service::list_friendships(repository, local_public_id)? {
+        if friendship.state != FriendshipState::Active
+            || friendship.remote_public_id == canonical_remote_public_id
+        {
+            continue;
+        }
+        let matches_request = friendship.established_from_request_id.as_deref() == Some(request_id);
+        let matches_node = friendship.remote_public_id == remote_node_id
+            || bindings.iter().any(|binding| {
+                binding.public_id == friendship.remote_public_id
+                    && binding.transport_kind == TransportKind::Wattswarm
+                    && binding.transport_node_id == remote_node_id
+            });
+        if !matches_request && !matches_node {
+            continue;
+        }
+        let mut retired = friendship;
+        retired.state = FriendshipState::Removed;
+        retired.updated_at = retired.updated_at.max(updated_at);
+        friendship_service::upsert_friendship(repository, &retired)?;
+    }
+    Ok(())
 }
 
 fn latest_request_for_counterpart<'a>(
