@@ -519,7 +519,8 @@
       const status = String(row.status || row.relationship_state || row.relationship_kind || "").toLowerCase();
       if (status === "blocked") return "blocked";
       if (row.pending_inbound || row.pending_outbound || status === "requested" || status === "pending") return "pending";
-      if (row.connected || status === "online" || status === "friend") return "online";
+      if (row.connected === true) return "online";
+      if (status === "online" || status === "friend") return "discovered";
       if (status === "discovered") return "discovered";
       return "offline";
     }
@@ -552,17 +553,23 @@
         if (seen.has(key)) continue;
         seen.add(key);
         const relationshipState = nodeRelationshipState(node);
+        const connected = node.connected === true;
         const sourceKind = node.source_kind || at(node, ["discovery", "source_kind"]);
         const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
+        const connectionLabel = connected ? "connected" : "not connected";
+        const sourceLabel = sourceKind ? `last source: ${sourceKind}` : "";
+        const metaLines = sourceLabel ? [connectionLabel, sourceLabel] : [connectionLabel];
         rows.push({
           key,
           kind: "node",
           name: node.display_name || node.name || nodeId,
-          status: node.status || relationshipState || (node.connected ? "online" : "discovered"),
-          connected: node.connected,
+          status: node.status || relationshipState || (connected ? "online" : "discovered"),
+          connected,
           relationship_state: relationshipState,
           source_kind: sourceKind,
-          detail: sourceKind || (endpoint ? `endpoint ${compactId(endpoint, 24)}` : compactId(nodeId, 24)),
+          detail: connectionLabel,
+          meta_lines: metaLines,
+          endpoint_detail: endpoint ? `endpoint ${compactId(endpoint, 24)}` : compactId(nodeId, 24),
           updated_at: node.updated_at || at(node, ["discovery", "updated_at"]) || at(node, ["metadata", "last_identified_at"]),
         });
       }
@@ -582,6 +589,9 @@
         const label = row.kind === "request"
           ? (row.pending_inbound ? "inbound" : "request")
           : row.kind;
+        const metaLines = safeArray(row.meta_lines).length
+          ? safeArray(row.meta_lines)
+          : [row.detail || row.source_kind || status];
         return `
           <div class="nearby-item">
             <div class="nearby-line">
@@ -589,7 +599,7 @@
               <span class="nearby-name">${escapeHtml(compactId(row.name, 20))}</span>
               <span class="nearby-kind">${escapeHtml(label)}</span>
             </div>
-            <div class="nearby-meta">${escapeHtml(row.detail || row.source_kind || status)}</div>
+            <div class="nearby-meta">${metaLines.map((line) => `<div>${escapeHtml(line)}</div>`).join("")}</div>
           </div>
         `;
       }).join("");
