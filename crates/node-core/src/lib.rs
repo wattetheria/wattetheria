@@ -119,8 +119,10 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
 
     startup_recover_events(&events_path, &snapshots_path, &cli.recovery_sources).await?;
 
-    let local_db = Arc::new(LocalDb::open(cli.data_dir.join("state.db"))?);
-    let social_store = Arc::new(SocialStore::open(cli.data_dir.join("social.db"))?);
+    let local_db_path = local_db::prepare_primary_db(&cli.data_dir)?;
+    let local_db = Arc::new(LocalDb::open(&local_db_path)?);
+    let social_store = Arc::new(SocialStore::open(&local_db_path)?);
+    social_store.import_legacy_db(local_db::legacy_social_db_path(&cli.data_dir))?;
     let runtime_identity =
         wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity(&cli.data_dir)?;
     let signer: Arc<dyn PayloadSigner> = Arc::new(WalletSigner::new(

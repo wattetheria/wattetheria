@@ -3,7 +3,7 @@
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
-use wattetheria_kernel::local_db::{LocalDb, domain};
+use wattetheria_kernel::local_db::{self, LocalDb, domain};
 use wattetheria_kernel::policy_engine::{CapabilityGrant, GrantScope, PolicyState};
 
 fn run_cli(args: &[&str]) -> std::process::Output {
@@ -125,7 +125,7 @@ fn oracle_credit_publish_subscribe_pull_roundtrip() {
         .as_str()
         .unwrap()
         .to_string();
-    let db = LocalDb::open(data_dir.join("state.db")).unwrap();
+    let db = LocalDb::open(local_db::prepare_primary_db(&data_dir).unwrap()).unwrap();
     let mut policy: PolicyState = db
         .load_or_migrate(domain::POLICY, &data_dir.join("policy/state.json"))
         .unwrap();

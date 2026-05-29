@@ -2,7 +2,7 @@
 //!
 //! Phase 1 stores each domain module as a JSON blob keyed by a domain name.
 //! This replaces the per-module JSON file pattern (`load_or_new` / `persist`)
-//! with a single `.wattetheria/state.db` file.
+//! with local `SQLite` storage.
 //!
 //! `Connection` is wrapped in `std::sync::Mutex` so that `LocalDb` is both
 //! `Send` and `Sync`, which is required because `ControlPlaneState` is shared
@@ -11,10 +11,40 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, Error::QueryReturnedNoRows, params};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const SCHEMA_VERSION: i64 = 3;
+pub const PRIMARY_DB_FILE: &str = "wattetheria.db";
+pub const LEGACY_STATE_DB_FILE: &str = "state.db";
+pub const LEGACY_SOCIAL_DB_FILE: &str = "social.db";
+
+pub fn primary_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join(PRIMARY_DB_FILE)
+}
+
+pub fn legacy_state_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join(LEGACY_STATE_DB_FILE)
+}
+
+pub fn legacy_social_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
+    data_dir.as_ref().join(LEGACY_SOCIAL_DB_FILE)
+}
+
+pub fn prepare_primary_db(data_dir: impl AsRef<Path>) -> Result<PathBuf> {
+    let data_dir = data_dir.as_ref();
+    std::fs::create_dir_all(data_dir).context("create local db directory")?;
+    let primary = primary_db_path(data_dir);
+    if primary.exists() {
+        return Ok(primary);
+    }
+    let legacy_state = legacy_state_db_path(data_dir);
+    if legacy_state.exists() {
+        std::fs::copy(&legacy_state, &primary)
+            .with_context(|| format!("copy legacy state db from {}", legacy_state.display()))?;
+    }
+    Ok(primary)
+}
 
 pub mod domain {
     pub const GOVERNANCE: &str = "governance";
@@ -471,7 +501,7 @@ mod tests {
     #[test]
     fn open_file_based_db() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("state.db");
+        let db_path = dir.path().join(PRIMARY_DB_FILE);
 
         let db = LocalDb::open(&db_path).unwrap();
         db.save_domain("test", &"hello").unwrap();
@@ -480,6 +510,30 @@ mod tests {
         let db2 = LocalDb::open(&db_path).unwrap();
         let loaded: String = db2.load_domain("test").unwrap().unwrap();
         assert_eq!(loaded, "hello");
+    }
+
+    #[test]
+    fn prepare_primary_db_copies_legacy_state_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy_path = legacy_state_db_path(dir.path());
+        let legacy = LocalDb::open(&legacy_path).unwrap();
+        legacy.save_domain("legacy", &"value").unwrap();
+        drop(legacy);
+
+        let primary_path = prepare_primary_db(dir.path()).unwrap();
+        assert_eq!(primary_path, primary_db_path(dir.path()));
+
+        let db = LocalDb::open(&primary_path).unwrap();
+        let loaded: String = db.load_domain("legacy").unwrap().unwrap();
+        assert_eq!(loaded, "value");
+        db.save_domain("primary_only", &"new").unwrap();
+        drop(db);
+
+        let primary_path_again = prepare_primary_db(dir.path()).unwrap();
+        assert_eq!(primary_path_again, primary_path);
+        let db = LocalDb::open(primary_path_again).unwrap();
+        let loaded: String = db.load_domain("primary_only").unwrap().unwrap();
+        assert_eq!(loaded, "new");
     }
 
     #[test]

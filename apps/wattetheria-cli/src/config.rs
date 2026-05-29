@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use wattetheria_kernel::brain::BrainProviderConfig;
 use wattetheria_kernel::event_log::EventLog;
-use wattetheria_kernel::local_db::LocalDb;
+use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mcp::McpRegistry;
 use wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity;
 
@@ -97,7 +97,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     }
 
     let _ = McpRegistry::load_or_new(data_dir.join("mcp/servers.json"))?;
-    let _ = LocalDb::open(data_dir.join("state.db"))?;
+    let _ = LocalDb::open(local_db::prepare_primary_db(data_dir)?)?;
 
     let response = serde_json::json!({
         "status": "ok",

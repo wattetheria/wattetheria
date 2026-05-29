@@ -41,6 +41,25 @@ impl SocialStore {
         Ok(store)
     }
 
+    pub fn import_legacy_db(&self, path: impl AsRef<Path>) -> SocialResult<()> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(());
+        }
+        let path = path.to_string_lossy().to_string();
+        let conn = self.conn()?;
+        conn.execute("ATTACH DATABASE ?1 AS legacy_social", [path.as_str()])
+            .map_err(|error| SocialError::Storage(format!("attach legacy social db: {error}")))?;
+        let result = import_legacy_social_tables(&conn);
+        let detach_result = conn.execute("DETACH DATABASE legacy_social", []);
+        if let Err(error) = detach_result {
+            return Err(SocialError::Storage(format!(
+                "detach legacy social db: {error}"
+            )));
+        }
+        result
+    }
+
     pub fn open_in_memory() -> SocialResult<Self> {
         let conn = Connection::open_in_memory()
             .map_err(|error| SocialError::Storage(format!("open in-memory sqlite: {error}")))?;
@@ -61,6 +80,46 @@ impl SocialStore {
             .lock()
             .map_err(|_| SocialError::Storage("sqlite mutex poisoned".to_owned()))
     }
+}
+
+fn import_legacy_social_tables(conn: &Connection) -> SocialResult<()> {
+    for table in [
+        "public_identities",
+        "public_transport_bindings",
+        "friend_requests",
+        "friendships",
+        "public_blocks",
+        "dm_threads",
+        "dm_messages",
+        "dm_message_receipts",
+        "policy_rules",
+        "policy_decision_logs",
+    ] {
+        if !legacy_table_exists(conn, table)? {
+            continue;
+        }
+        conn.execute(
+            &format!("INSERT OR IGNORE INTO {table} SELECT * FROM legacy_social.{table}"),
+            [],
+        )
+        .map_err(|error| {
+            SocialError::Storage(format!("import legacy social table {table}: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
+fn legacy_table_exists(conn: &Connection, table: &str) -> SocialResult<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM legacy_social.sqlite_master
+            WHERE type = 'table' AND name = ?1
+        )",
+        [table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|exists| exists == 1)
+    .map_err(|error| SocialError::Storage(format!("query legacy table {table}: {error}")))
 }
 
 impl RemoteIdentityRepository for SocialStore {
@@ -1245,6 +1304,20 @@ mod tests {
     use crate::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
     use crate::policy::decisions::{PolicyDecision, PolicyDecisionLog};
     use crate::ports::repositories::PolicyDecisionLogRepository;
+    use std::path::PathBuf;
+
+    fn unique_test_db_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "wattetheria-social-{name}-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        path
+    }
 
     #[test]
     fn store_bootstraps_policy_rules_and_is_idempotent() {
@@ -1470,6 +1543,80 @@ mod tests {
                 .expect("list transport bindings by public_id"),
             vec![binding]
         );
+    }
+
+    #[test]
+    fn store_imports_legacy_social_tables_into_unified_db() {
+        let legacy_path = unique_test_db_path("legacy");
+        let unified_path = unique_test_db_path("unified");
+        let identity = RemoteIdentityProfile {
+            public_id: "did:key:bob".to_owned(),
+            agent_did: "did:key:bob".to_owned(),
+            display_name: "Bob".to_owned(),
+            description: Some("remote identity".to_owned()),
+            capabilities: vec!["dm".to_owned()],
+            skills: vec!["chat".to_owned()],
+            did_document_json: None,
+            active: true,
+            last_profile_fetched_at: None,
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        {
+            let legacy = SocialStore::open(&legacy_path).expect("open legacy store");
+            legacy
+                .upsert_remote_identity(&identity)
+                .expect("save legacy identity");
+        }
+
+        let unified = SocialStore::open(&unified_path).expect("open unified store");
+        unified
+            .import_legacy_db(&legacy_path)
+            .expect("import legacy social db");
+        unified
+            .import_legacy_db(&legacy_path)
+            .expect("import legacy social db idempotently");
+
+        assert_eq!(
+            unified
+                .list_remote_identities()
+                .expect("list imported identities"),
+            vec![identity]
+        );
+
+        let _ = std::fs::remove_file(legacy_path);
+        let _ = std::fs::remove_file(unified_path);
+    }
+
+    #[test]
+    fn store_uses_namespaced_schema_version_for_unified_db() {
+        let unified_path = unique_test_db_path("schema-version");
+        {
+            let conn = Connection::open(&unified_path).expect("open sqlite");
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (3);",
+            )
+            .expect("seed local db schema version");
+        }
+
+        let store = SocialStore::open(&unified_path).expect("open social store");
+        drop(store);
+
+        let conn = Connection::open(&unified_path).expect("open sqlite");
+        let local_version: i64 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .expect("read local schema version");
+        let social_version: i64 = conn
+            .query_row("SELECT version FROM social_schema_version", [], |row| {
+                row.get(0)
+            })
+            .expect("read social schema version");
+        assert_eq!(local_version, 3);
+        assert_eq!(social_version, schema::SCHEMA_VERSION);
+
+        let _ = std::fs::remove_file(unified_path);
     }
 
     #[test]

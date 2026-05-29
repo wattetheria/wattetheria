@@ -444,6 +444,7 @@ This split is intentional:
 
 - Nonce is required for handshake; replayed nonce is rejected
 - Event log append path uses file locking to prevent append races
+- Local Wattetheria SQLite state is opened from `<data_dir>/wattetheria.db`; startup copies legacy `<data_dir>/state.db` once when the unified database does not yet exist and imports legacy `<data_dir>/social.db` social tables into the same database.
 - Governance state is persisted on mutation paths
 - Task ledger is persisted after settlement paths
 - Mailbox state is persisted on send/ack paths

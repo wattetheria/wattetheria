@@ -33,7 +33,7 @@ use wattetheria_kernel::data_ops::{
 };
 use wattetheria_kernel::event_log::{EventLog, EventRecord};
 use wattetheria_kernel::identity::Identity;
-use wattetheria_kernel::local_db::LocalDb;
+use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mcp::{
     McpRegistry, McpServerConfig as KernelMcpServerConfig, call_tool, list_tools,
 };
@@ -1074,7 +1074,7 @@ fn slugify_agent_name(name: &str) -> String {
 #[allow(clippy::too_many_lines)]
 fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
     run_init(data_dir)?;
-    let db = LocalDb::open(data_dir.join("state.db"))?;
+    let db = LocalDb::open(local_db::prepare_primary_db(data_dir)?)?;
     let mut oracle: OracleRegistry = db.load_or_migrate(
         wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
         &data_dir.join("oracle/state.json"),
@@ -1311,7 +1311,7 @@ fn ensure_capabilities_allowed(
 }
 
 fn open_policy_engine(data_dir: &Path) -> Result<(PolicyEngine, LocalDb)> {
-    let db = LocalDb::open(data_dir.join("state.db"))?;
+    let db = LocalDb::open(local_db::prepare_primary_db(data_dir)?)?;
     let state: PolicyState = db.load_or_migrate(
         wattetheria_kernel::local_db::domain::POLICY,
         &data_dir.join("policy/state.json"),
@@ -1437,7 +1437,7 @@ async fn post_summary(
 }
 
 fn resolve_public_identity_id(data_dir: &Path, identity: &Identity) -> Option<String> {
-    let db = match LocalDb::open(data_dir.join("state.db")) {
+    let db = match local_db::prepare_primary_db(data_dir).and_then(LocalDb::open) {
         Ok(db) => db,
         Err(error) => {
             eprintln!("open local db for public identity: {error:#}");

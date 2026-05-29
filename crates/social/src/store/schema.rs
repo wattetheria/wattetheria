@@ -1,11 +1,12 @@
 use crate::types::{SocialError, SocialResult};
 use rusqlite::{Connection, OptionalExtension};
 
-const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION_TABLE: &str = "social_schema_version";
 
 pub fn migrate(conn: &Connection) -> SocialResult<()> {
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_version (
+        "CREATE TABLE IF NOT EXISTS social_schema_version (
             version INTEGER NOT NULL
         );
 
@@ -149,9 +150,11 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
     .map_err(|error| SocialError::Storage(format!("migrate sqlite schema: {error}")))?;
 
     let version: Option<i64> = conn
-        .query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            &format!("SELECT version FROM {SCHEMA_VERSION_TABLE} LIMIT 1"),
+            [],
+            |row| row.get(0),
+        )
         .optional()
         .map_err(|error| SocialError::Storage(format!("read schema version: {error}")))?;
 
@@ -183,13 +186,16 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
 
     if version.is_none() {
         conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?1)",
+            &format!("INSERT INTO {SCHEMA_VERSION_TABLE} (version) VALUES (?1)"),
             [SCHEMA_VERSION],
         )
         .map_err(|error| SocialError::Storage(format!("insert schema version: {error}")))?;
     } else {
-        conn.execute("UPDATE schema_version SET version = ?1", [SCHEMA_VERSION])
-            .map_err(|error| SocialError::Storage(format!("update schema version: {error}")))?;
+        conn.execute(
+            &format!("UPDATE {SCHEMA_VERSION_TABLE} SET version = ?1"),
+            [SCHEMA_VERSION],
+        )
+        .map_err(|error| SocialError::Storage(format!("update schema version: {error}")))?;
     }
 
     Ok(())
