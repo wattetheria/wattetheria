@@ -34,6 +34,7 @@ use wattetheria_kernel::swarm_bridge::{
 use wattetheria_social::application::{
     block_service, friend_request_service, friendship_service, message_service,
     orchestration_service, policy_service, receipt_service, thread_service,
+    transport_binding_service,
 };
 use wattetheria_social::domain::blocks::SocialBlock;
 use wattetheria_social::domain::friend_requests::{
@@ -45,6 +46,7 @@ use wattetheria_social::domain::messages::{
 };
 use wattetheria_social::domain::receipts::{MessageReceipt, ReceiptKind};
 use wattetheria_social::domain::threads::{DirectThread, ThreadState};
+use wattetheria_social::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
 use wattetheria_social::policy::decisions::PolicyDecision;
 
 struct CommitResponseArgs<'a> {
@@ -409,6 +411,20 @@ fn binding_remote_node_id(
     bindings
         .get(counterpart_public_id)
         .and_then(|binding| binding.controller_node_id.clone())
+}
+
+fn transport_binding_remote_node_id(
+    bindings: &[RemoteTransportBinding],
+    counterpart_public_id: &str,
+) -> Option<String> {
+    bindings
+        .iter()
+        .find(|binding| {
+            binding.public_id == counterpart_public_id
+                && matches!(binding.transport_kind, TransportKind::Wattswarm)
+                && !binding.transport_node_id.trim().is_empty()
+        })
+        .map(|binding| binding.transport_node_id.clone())
 }
 
 fn insert_payload_if_present(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {
@@ -850,6 +866,7 @@ fn relationship_payload_from_friendship(
     friendship: &Friendship,
     identities: &BTreeMap<String, PublicIdentity>,
     bindings: &BTreeMap<String, ControllerBinding>,
+    transport_bindings: &[RemoteTransportBinding],
 ) -> Value {
     let display_name = identities
         .get(&friendship.remote_public_id)
@@ -857,7 +874,11 @@ fn relationship_payload_from_friendship(
     json!({
         "counterpart_public_id": friendship.remote_public_id.clone(),
         "counterpart_display_name": display_name,
-        "remote_node_id": binding_remote_node_id(bindings, &friendship.remote_public_id),
+        "remote_node_id": transport_binding_remote_node_id(
+            transport_bindings,
+            &friendship.remote_public_id,
+        )
+        .or_else(|| binding_remote_node_id(bindings, &friendship.remote_public_id)),
         "relationship_state": friendship_state_label(friendship.state),
         "last_action": friendship_state_label(friendship.state),
         "initiated_by": "local",
@@ -1498,6 +1519,9 @@ pub(crate) async fn build_agent_relationship_payload(
 ) -> anyhow::Result<Vec<Value>> {
     let local = resolve_social_local_context(state, public_id).await;
     let (identities, bindings) = load_social_identity_maps(state).await;
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .unwrap_or_default();
     let bridge_views = state.swarm_bridge.list_peer_relationships().await;
     if let Ok(views) = &bridge_views {
         reconcile_swarm_relationship_views(state, &local.public_id, &identities, &bindings, views)?;
@@ -1526,8 +1550,12 @@ pub(crate) async fn build_agent_relationship_payload(
             .iter()
             .filter(|friendship| friendship.state == FriendshipState::Active)
         {
-            let mut payload =
-                relationship_payload_from_friendship(friendship, &identities, &bindings);
+            let mut payload = relationship_payload_from_friendship(
+                friendship,
+                &identities,
+                &bindings,
+                &transport_bindings,
+            );
             let view = matching_relationship_view_for_payload(bridge_view_items, &payload);
             let peer = view
                 .and_then(|view| matching_peer_for_node(&peers, Some(&view.remote_node_id)))

@@ -969,7 +969,7 @@
     }
 
     function renderOrganizations(payload) {
-      renderList("organizations-list", safeArray(payload.organizations), "No organizations recorded.", (row) => `
+      renderList("organizations-list", safeArray(payload.organizations), "No guilds recorded.", (row) => `
         <div class="row">
           <div class="row-head">
             <div class="row-title">${escapeHtml(row.name || row.id)}</div>

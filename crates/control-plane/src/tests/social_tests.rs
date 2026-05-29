@@ -1056,6 +1056,79 @@ async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
 }
 
 #[tokio::test]
+async fn agent_friends_status_uses_social_transport_binding_for_remote_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooRemotePeer".to_string();
+    let mut bridge = MockSwarmBridge::default_for(identity.agent_did.clone());
+    bridge.network_status = SwarmNetworkStatusView {
+        running: true,
+        mode: "network".to_string(),
+        peer_protocol_distribution: BTreeMap::new(),
+    };
+    bridge.peers = vec![SwarmPeerView {
+        node_id: remote_node_id.clone(),
+        connected: Some(true),
+        discovery: None,
+        metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
+        relationship: None,
+    }];
+    let bridge_handle: Arc<dyn SwarmBridge> = Arc::new(bridge);
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: remote_node_id.clone(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .expect("seed social transport binding");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("req-accepted-1".to_string()),
+            thread_id: None,
+            created_at: 1,
+            updated_at: 2,
+        },
+    )
+    .expect("seed active friendship");
+
+    let relationship_items = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(relationship_items.as_array().unwrap().len(), 1);
+    assert_eq!(
+        relationship_items[0]["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(relationship_items[0]["connected"].as_bool(), Some(true));
+    assert_eq!(relationship_items[0]["status"].as_str(), Some("online"));
+}
+
+#[tokio::test]
 async fn agent_friend_request_allows_pending_retry_but_denies_active_friendship() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
