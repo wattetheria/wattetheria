@@ -978,6 +978,7 @@ fn policy_rule_type_to_str(value: PolicyRuleType) -> &'static str {
     match value {
         PolicyRuleType::RejectBlockedAgent => "reject_blocked_agent",
         PolicyRuleType::RejectDuplicatePendingRequest => "reject_duplicate_pending_request",
+        PolicyRuleType::RejectActiveFriendship => "reject_active_friendship",
         PolicyRuleType::AllowDirectMessageForFriends => "allow_direct_message_for_friends",
         PolicyRuleType::DenyDirectMessageWhenBlocked => "deny_direct_message_when_blocked",
         PolicyRuleType::DenyDirectMessageWhenNotFriends => "deny_direct_message_when_not_friends",
@@ -988,6 +989,7 @@ fn policy_rule_type_from_str(value: &str) -> SocialResult<PolicyRuleType> {
     match value {
         "reject_blocked_agent" => Ok(PolicyRuleType::RejectBlockedAgent),
         "reject_duplicate_pending_request" => Ok(PolicyRuleType::RejectDuplicatePendingRequest),
+        "reject_active_friendship" => Ok(PolicyRuleType::RejectActiveFriendship),
         "allow_direct_message_for_friends" => Ok(PolicyRuleType::AllowDirectMessageForFriends),
         "deny_direct_message_when_blocked" => Ok(PolicyRuleType::DenyDirectMessageWhenBlocked),
         "deny_direct_message_when_not_friends" => {

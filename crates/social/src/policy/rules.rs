@@ -16,6 +16,7 @@ pub enum PolicyScope {
 pub enum PolicyRuleType {
     RejectBlockedAgent,
     RejectDuplicatePendingRequest,
+    RejectActiveFriendship,
     AllowDirectMessageForFriends,
     DenyDirectMessageWhenBlocked,
     DenyDirectMessageWhenNotFriends,

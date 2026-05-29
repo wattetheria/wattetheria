@@ -104,6 +104,7 @@ fn decision_for_rule_type(rule_type: PolicyRuleType) -> PolicyDecision {
         PolicyRuleType::AllowDirectMessageForFriends => PolicyDecision::Allow,
         PolicyRuleType::RejectBlockedAgent
         | PolicyRuleType::RejectDuplicatePendingRequest
+        | PolicyRuleType::RejectActiveFriendship
         | PolicyRuleType::DenyDirectMessageWhenBlocked
         | PolicyRuleType::DenyDirectMessageWhenNotFriends => PolicyDecision::Deny,
     }
@@ -113,6 +114,7 @@ fn default_reason_for_rule_type(rule_type: PolicyRuleType) -> &'static str {
     match rule_type {
         PolicyRuleType::RejectBlockedAgent => "blocked_agent",
         PolicyRuleType::RejectDuplicatePendingRequest => "duplicate_pending_request",
+        PolicyRuleType::RejectActiveFriendship => "already_friends",
         PolicyRuleType::AllowDirectMessageForFriends => "active_friendship",
         PolicyRuleType::DenyDirectMessageWhenBlocked => "blocked",
         PolicyRuleType::DenyDirectMessageWhenNotFriends => "friendship_required",

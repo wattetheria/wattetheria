@@ -13,7 +13,8 @@ use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
     counterpart_public_id_for_remote_node, load_social_identity_maps,
-    resolve_social_counterpart_target, resolve_social_counterpart_target_by_agent_did,
+    resolve_dm_counterpart_target, resolve_social_counterpart_target,
+    resolve_social_counterpart_target_by_agent_did,
     resolve_social_counterpart_target_by_remote_node, resolve_social_local_context,
     with_social_defaults,
 };
@@ -1349,13 +1350,17 @@ async fn send_signed_direct_message_command(
     Ok((response, agent_envelope_json, agent_signature))
 }
 
-fn ensure_outbound_friend_request_allowed(
+async fn ensure_outbound_friend_request_allowed(
     state: &ControlPlaneState,
     local_public_id: &str,
     counterpart_public_id: &str,
     remote_node_id: &str,
     now: i64,
 ) -> anyhow::Result<Option<Response>> {
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    if let Ok(views) = state.swarm_bridge.list_peer_relationships().await {
+        reconcile_swarm_relationship_views(state, local_public_id, &identities, &bindings, &views)?;
+    }
     let evaluation = policy_service::evaluate_outbound_friend_request_policy(
         &*state.social_store,
         local_public_id,
@@ -2393,7 +2398,9 @@ async fn handle_agent_relationship_action(
             &counterpart_public_id,
             &remote_node,
             now,
-        ) {
+        )
+        .await
+        {
             Ok(Some(response)) => return response,
             Ok(None) => {}
             Err(error) => return internal_error(&error),
@@ -2537,7 +2544,7 @@ async fn handle_send_agent_dm_message(
         counterpart_public_id,
         remote_node,
         target_agent,
-    } = match resolve_social_counterpart_target(&state, &body.counterpart_public_id).await {
+    } = match resolve_dm_counterpart_target(&state, &body.counterpart_public_id).await {
         Ok(counterpart) => counterpart,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();

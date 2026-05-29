@@ -17,7 +17,9 @@ use wattetheria_kernel::economy::{EconomicPolicy, WalletBoundBalance};
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
-use wattetheria_kernel::swarm_bridge::SwarmPeerView;
+use wattetheria_kernel::swarm_bridge::{
+    SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmPeerView,
+};
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
@@ -86,14 +88,69 @@ async fn build_client_peers_payload(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    Ok(state
-        .swarm_bridge
-        .peers()
+    Ok(swarm_peers_with_live_connection_status(state)
         .await?
         .into_iter()
         .take(limit)
         .map(build_client_peer_payload)
         .collect())
+}
+
+async fn swarm_peers_with_live_connection_status(
+    state: &ControlPlaneState,
+) -> anyhow::Result<Vec<SwarmPeerView>> {
+    let mut peers = state.swarm_bridge.peers().await?;
+    let overrides = live_peer_connection_status(state).await;
+    apply_live_peer_connection_status(&mut peers, &overrides);
+    Ok(peers)
+}
+
+async fn live_peer_connection_status(state: &ControlPlaneState) -> BTreeMap<String, bool> {
+    let query = SwarmDiagnosticsQuery {
+        limit: Some(1),
+        ..SwarmDiagnosticsQuery::default()
+    };
+    state
+        .swarm_bridge
+        .diagnostics(query)
+        .await
+        .map(|snapshot| peer_connection_status_from_diagnostics(&snapshot))
+        .unwrap_or_default()
+}
+
+fn peer_connection_status_from_diagnostics(
+    diagnostics: &SwarmDiagnosticsSnapshot,
+) -> BTreeMap<String, bool> {
+    diagnostics
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.get("peer_health"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let peer_id = entry
+                .get("network_peer_id")
+                .or_else(|| entry.get("node_id"))
+                .or_else(|| entry.get("remote_node_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            let connected = entry.get("connected").and_then(Value::as_bool)?;
+            Some((peer_id.to_owned(), connected))
+        })
+        .collect()
+}
+
+fn apply_live_peer_connection_status(
+    peers: &mut [SwarmPeerView],
+    connection_status: &BTreeMap<String, bool>,
+) {
+    for peer in peers {
+        if let Some(connected) = connection_status.get(&peer.node_id).copied() {
+            peer.connected = Some(connected);
+        }
+    }
 }
 
 fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
@@ -484,7 +541,7 @@ pub(crate) async fn list_nearby(
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let items = match state.swarm_bridge.peers().await {
+    let items = match swarm_peers_with_live_connection_status(&state).await {
         Ok(peers) => peers
             .into_iter()
             .take(limit)
@@ -1147,5 +1204,81 @@ fn score_for_category(scores: &CivilizationScores, category: LeaderboardCategory
         LeaderboardCategory::Trade => scores.trade,
         LeaderboardCategory::Culture => scores.culture,
         LeaderboardCategory::Contribution => scores.total_influence,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_peer_health_promotes_discovered_peer_to_connected() {
+        let diagnostics = SwarmDiagnosticsSnapshot {
+            ok: true,
+            generated_at: "1970-01-01T00:00:00Z".to_owned(),
+            network_service_started: true,
+            snapshot: Some(json!({
+                "peer_health": [
+                    {
+                        "network_peer_id": "peer-a",
+                        "connected": true
+                    }
+                ]
+            })),
+            diagnostics: Vec::new(),
+        };
+        let connection_status = peer_connection_status_from_diagnostics(&diagnostics);
+        let mut peers = vec![SwarmPeerView {
+            node_id: "peer-a".to_owned(),
+            connected: Some(false),
+            discovery: Some(json!({
+                "source_kind": "contact_material_probe"
+            })),
+            metadata: None,
+            relationship: None,
+        }];
+
+        apply_live_peer_connection_status(&mut peers, &connection_status);
+        let full_payload = build_client_peer_payload(peers[0].clone());
+        let compact_payload = compact_nearby_peer_payload(peers.remove(0));
+
+        assert_eq!(full_payload["connected"].as_bool(), Some(true));
+        assert_eq!(full_payload["status"].as_str(), Some("online"));
+        assert_eq!(compact_payload["connected"].as_bool(), Some(true));
+        assert_eq!(compact_payload["status"].as_str(), Some("online"));
+    }
+
+    #[test]
+    fn live_peer_health_demotes_stale_connected_peer_to_discovered() {
+        let diagnostics = SwarmDiagnosticsSnapshot {
+            ok: true,
+            generated_at: "1970-01-01T00:00:00Z".to_owned(),
+            network_service_started: true,
+            snapshot: Some(json!({
+                "peer_health": [
+                    {
+                        "network_peer_id": "peer-a",
+                        "connected": false
+                    }
+                ]
+            })),
+            diagnostics: Vec::new(),
+        };
+        let connection_status = peer_connection_status_from_diagnostics(&diagnostics);
+        let mut peers = vec![SwarmPeerView {
+            node_id: "peer-a".to_owned(),
+            connected: Some(true),
+            discovery: Some(json!({
+                "source_kind": "bootstrap"
+            })),
+            metadata: None,
+            relationship: None,
+        }];
+
+        apply_live_peer_connection_status(&mut peers, &connection_status);
+        let payload = build_client_peer_payload(peers.remove(0));
+
+        assert_eq!(payload["connected"].as_bool(), Some(false));
+        assert_eq!(payload["status"].as_str(), Some("discovered"));
     }
 }

@@ -1056,6 +1056,114 @@ async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
 }
 
 #[tokio::test]
+async fn agent_friend_request_allows_pending_retry_but_denies_active_friendship() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Borealis".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooRemotePeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "request-existing-pending".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            remote_node_id: Some("12D3KooRemotePeer".to_string()),
+            direction:
+                wattetheria_social::domain::friend_requests::FriendRequestDirection::Outbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: None,
+            created_at: 1,
+            updated_at: 1,
+            expires_at: None,
+        },
+    )
+    .unwrap();
+
+    let retry_status = authed_post(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/social/agent-friends",
+        json!({
+            "public_id": local_public_id,
+            "counterpart_public_id": remote_public_id,
+            "action": "request",
+            "message": {
+                "kind": "friend_request",
+                "text": "retry connect with me"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(retry_status, StatusCode::ACCEPTED);
+    assert_eq!(bridge.relationship_commands.lock().await.len(), 1);
+
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("request-existing-pending".to_string()),
+            thread_id: Some("dm:alice:borealis".to_string()),
+            created_at: 2,
+            updated_at: 2,
+        },
+    )
+    .unwrap();
+
+    let active_friend_status = authed_post(
+        app,
+        &token,
+        "/v1/wattetheria/social/agent-friends",
+        json!({
+            "public_id": local_public_id,
+            "counterpart_public_id": remote_public_id,
+            "action": "request",
+            "message": {
+                "kind": "friend_request",
+                "text": "should not send to an active friend"
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(active_friend_status, StatusCode::FORBIDDEN);
+    assert_eq!(bridge.relationship_commands.lock().await.len(), 1);
+}
+
+#[tokio::test]
 async fn agent_dm_is_denied_when_counterpart_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -1097,17 +1205,23 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
             )
             .unwrap();
     }
-    {
-        let mut bindings = state.controller_binding_registry.lock().await;
-        bindings.upsert(
-            &remote_public_id,
-            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
-            "remote-runtime".to_string(),
-            Some("12D3KooRemotePeer".to_string()),
-            wattetheria_kernel::civilization::identities::OwnershipScope::External,
-            true,
-        );
-    }
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: "12D3KooRemotePeer".to_string(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .unwrap();
     block_service::upsert_block(
         &*state.social_store,
         &wattetheria_social::domain::blocks::SocialBlock {

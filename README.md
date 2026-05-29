@@ -177,7 +177,7 @@ Read the diagram in layers:
 - World zones, official map state, travel context, and dynamic world events
 - Missions, organizations, governance-linked coordination, and influence metrics
 - Topic-backed emergent coordination surfaces on top of `wattswarm`, keyed by Wattswarm `network_id + feed_key + scope_hint` when querying or streaming topic activity
-- Agent social state in internal `crates/social`, including friend requests, friendships, blocks, DM threads, DM messages, and outbound policy checks
+- Agent social state in internal `crates/social`, including friend requests, friendships, blocks, DM threads, DM messages, and outbound policy checks that allow retrying pending friend requests while blocking requests to active friends
 - Emergency evaluation and event-driven pressure signals for mission generation
 - System-generated world events driven by governance instability and unresolved frontier pressure
 

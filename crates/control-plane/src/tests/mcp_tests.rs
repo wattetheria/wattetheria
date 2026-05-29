@@ -819,28 +819,40 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
         .public
         .unwrap_or(context.public_memory_owner.controller);
     let remote_public_id = scoped_id("broker-dm", &remote_identity.agent_did);
-    {
-        let mut identities = state.public_identity_registry.lock().await;
-        identities
-            .upsert(
-                &remote_public_id,
-                "Broker DM".to_string(),
-                Some(remote_identity.agent_did.clone()),
-                true,
-            )
-            .unwrap();
-    }
-    {
-        let mut bindings = state.controller_binding_registry.lock().await;
-        bindings.upsert(
-            &remote_public_id,
-            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
-            "remote-runtime".to_string(),
-            Some("12D3KooDmPeer".to_string()),
-            wattetheria_kernel::civilization::identities::OwnershipScope::External,
-            true,
-        );
-    }
+    wattetheria_social::application::remote_identity_service::upsert_remote_identity(
+        &*state.social_store,
+        &wattetheria_social::domain::identities::RemoteIdentityProfile {
+            public_id: remote_public_id.clone(),
+            agent_did: remote_identity.agent_did.clone(),
+            display_name: "Broker DM".to_string(),
+            description: None,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            did_document_json: None,
+            active: true,
+            last_profile_fetched_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote identity");
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: "12D3KooDmPeer".to_string(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote transport binding");
     friendship_service::upsert_friendship(
         &*state.social_store,
         &wattetheria_social::domain::friendships::Friendship {

@@ -5,6 +5,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wattetheria_social::domain::identities::LocalIdentityContext;
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
+use wattetheria_social::ports::repositories::{
+    RemoteIdentityRepository, TransportBindingRepository,
+};
 use wattetheria_social::ports::transport_port::TransportPort;
 use wattetheria_social::types::{SocialError, SocialResult};
 
@@ -336,6 +339,51 @@ pub(crate) async fn resolve_social_counterpart_target(
         counterpart_public_id: counterpart_public_id.to_string(),
         remote_node: remote_node_id,
         target_agent: target_agent_id,
+    })
+}
+
+pub(crate) async fn resolve_dm_counterpart_target(
+    state: &ControlPlaneState,
+    counterpart_public_id: &str,
+) -> Result<SocialCounterpartTarget, String> {
+    let counterpart_public_id = counterpart_public_id.trim();
+    if counterpart_public_id.is_empty() {
+        return Err("counterpart_public_id is required".to_string());
+    }
+
+    let binding = state
+        .social_store
+        .list_transport_bindings_for_public_id(counterpart_public_id)
+        .map_err(|error| format!("query remote transport bindings: {error}"))?
+        .into_iter()
+        .find(|binding| {
+            matches!(
+                binding.transport_kind,
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm
+            ) && !binding.transport_node_id.trim().is_empty()
+        })
+        .ok_or_else(|| format!("remote transport binding missing for {counterpart_public_id}"))?;
+
+    let remote_identity = state
+        .social_store
+        .get_remote_identity(counterpart_public_id)
+        .map_err(|error| format!("query remote identity: {error}"))?;
+    let kernel_identity = {
+        let (identities, _) = load_social_identity_maps(state).await;
+        identities.get(counterpart_public_id).cloned()
+    };
+    let target_agent = remote_identity
+        .as_ref()
+        .filter(|identity| identity.active)
+        .map(|identity| identity.agent_did.clone())
+        .or(binding.agent_did.clone())
+        .or_else(|| kernel_identity.and_then(|identity| identity.agent_did))
+        .unwrap_or_else(|| counterpart_public_id.to_string());
+
+    Ok(SocialCounterpartTarget {
+        counterpart_public_id: counterpart_public_id.to_string(),
+        remote_node: binding.transport_node_id,
+        target_agent,
     })
 }
 
