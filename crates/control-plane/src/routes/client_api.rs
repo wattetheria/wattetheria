@@ -42,6 +42,10 @@ use crate::state::{
 pub struct PublicClientSnapshot {
     pub generated_at: i64,
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_id: Option<String>,
     pub public_key: String,
     pub network_status: Value,
     pub nodes: Vec<Value>,
@@ -339,6 +343,7 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
         .local_db
         .load_domain_or_default::<EconomicPolicy>(local_db::domain::ECONOMIC_POLICY)
         .unwrap_or_default();
+    let public_identities = state.public_identity_registry.lock().await.list();
     let mut missions = state.mission_board.lock().await.list(None);
     missions.sort_by(|left, right| {
         right
@@ -372,6 +377,23 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
             "claimer_id": mission.claimed_by,
             "created_at": timestamp_to_rfc3339(mission.created_at),
         });
+        if let Some(object) = task.as_object_mut() {
+            if let Some(identity) =
+                identity_for_participant(&public_identities, Some(&mission.publisher))
+            {
+                insert_identity_projection(object, "created_by", identity);
+            }
+            if let Some(identity) =
+                identity_for_participant(&public_identities, mission.claimed_by.as_deref())
+            {
+                insert_identity_projection(object, "claimer", identity);
+            }
+            if let Some(identity) =
+                identity_for_participant(&public_identities, mission.completed_by.as_deref())
+            {
+                insert_identity_projection(object, "completer", identity);
+            }
+        }
         if let Some(node_id) = publisher_wattswarm_node_id.as_deref()
             && let Some(contract) =
                 build_client_task_contract_payload(state, &mission, node_id).await
@@ -397,6 +419,41 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
         tasks.push(task);
     }
     tasks
+}
+
+fn identity_for_participant<'a>(
+    identities: &'a [PublicIdentity],
+    participant_id: Option<&str>,
+) -> Option<&'a PublicIdentity> {
+    let participant_id = participant_id?.trim();
+    if participant_id.is_empty() {
+        return None;
+    }
+    identities.iter().find(|identity| {
+        identity.public_id == participant_id
+            || identity.agent_did.as_deref() == Some(participant_id)
+    })
+}
+
+fn insert_identity_projection(
+    object: &mut Map<String, Value>,
+    prefix: &str,
+    identity: &PublicIdentity,
+) {
+    object
+        .entry(format!("{prefix}_agent_identity"))
+        .or_insert_with(|| Value::String(identity.display_name.clone()));
+    object
+        .entry(format!("{prefix}_display_name"))
+        .or_insert_with(|| Value::String(identity.display_name.clone()));
+    object
+        .entry(format!("{prefix}_public_id"))
+        .or_insert_with(|| Value::String(identity.public_id.clone()));
+    if let Some(agent_did) = identity.agent_did.as_deref() {
+        object
+            .entry(format!("{prefix}_agent_did"))
+            .or_insert_with(|| Value::String(agent_did.to_string()));
+    }
 }
 
 async fn build_client_task_contract_payload(
@@ -977,6 +1034,8 @@ fn leaderboard_payload(
     identities
         .into_iter()
         .map(|(controller_id, identity)| {
+            let public_id = identity.public_id.clone();
+            let display_name = identity.display_name.clone();
             let agent_stats = agent_stats_by_controller
                 .get(&controller_id)
                 .cloned()
@@ -995,8 +1054,10 @@ fn leaderboard_payload(
                 .filter(|mission| mission.completed_by.as_deref() == Some(controller_id.as_str()))
                 .count();
             json!({
-                "agent_did": identity.public_id,
-                "display_name": identity.display_name,
+                "agent_did": public_id,
+                "agent_identity": display_name,
+                "public_id": public_id,
+                "display_name": display_name,
                 "score": score_for_category(&scores, view.category),
                 "watt_balance": agent_stats.watt,
                 "tasks_completed": tasks_completed,
@@ -1006,19 +1067,112 @@ fn leaderboard_payload(
         .collect()
 }
 
+fn source_identity_from_operator(operator: &Value) -> (Option<String>, Option<String>) {
+    let public_id = operator
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let agent_identity = operator
+        .get("display_name")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    (public_id, agent_identity)
+}
+
+fn attach_source_identity(
+    mut value: Value,
+    source_public_id: Option<&str>,
+    source_agent_identity: Option<&str>,
+) -> Value {
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    insert_source_identity_fields(object, source_public_id, source_agent_identity);
+    value
+}
+
+fn insert_source_identity_fields(
+    object: &mut Map<String, Value>,
+    source_public_id: Option<&str>,
+    source_agent_identity: Option<&str>,
+) {
+    if let Some(source_public_id) = source_public_id {
+        object
+            .entry("source_public_id".to_string())
+            .or_insert_with(|| Value::String(source_public_id.to_string()));
+    }
+    if let Some(source_agent_identity) = source_agent_identity {
+        object
+            .entry("source_agent_identity".to_string())
+            .or_insert_with(|| Value::String(source_agent_identity.to_string()));
+        object
+            .entry("source_display_name".to_string())
+            .or_insert_with(|| Value::String(source_agent_identity.to_string()));
+    }
+}
+
+fn attach_source_identity_to_values(
+    values: Vec<Value>,
+    source_public_id: Option<&str>,
+    source_agent_identity: Option<&str>,
+) -> Vec<Value> {
+    values
+        .into_iter()
+        .map(|value| attach_source_identity(value, source_public_id, source_agent_identity))
+        .collect()
+}
+
+fn attach_source_identity_to_task_activity(
+    mut value: Value,
+    source_public_id: Option<&str>,
+    source_agent_identity: Option<&str>,
+) -> Value {
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    insert_source_identity_fields(object, source_public_id, source_agent_identity);
+    for key in ["tasks", "runs"] {
+        let Some(Value::Array(items)) = object.get_mut(key) else {
+            continue;
+        };
+        for item in items {
+            if let Some(item_object) = item.as_object_mut() {
+                insert_source_identity_fields(item_object, source_public_id, source_agent_identity);
+            }
+        }
+    }
+    value
+}
+
+async fn build_public_blocks_payload(
+    state: &ControlPlaneState,
+    identity_query: &ClientIdentityQuery,
+) -> anyhow::Result<Vec<Value>> {
+    let relationship_entries =
+        build_agent_relationship_payload(state, identity_query.public_id.as_deref(), None).await?;
+    Ok(relationship_entries
+        .into_iter()
+        .filter(|entry| entry["relationship_state"].as_str() == Some("blocked"))
+        .collect())
+}
+
+fn client_export_node_limit(query: &ClientExportQuery) -> usize {
+    query
+        .node_limit
+        .or(query.peer_limit)
+        .unwrap_or(25)
+        .clamp(1, 200)
+}
+
 async fn build_public_client_snapshot(
     state: &ControlPlaneState,
     query: &ClientExportQuery,
     identity_query: &ClientIdentityQuery,
     leaderboard_category: LeaderboardCategory,
 ) -> anyhow::Result<PublicClientSnapshot> {
-    let relationship_entries =
-        build_agent_relationship_payload(state, identity_query.public_id.as_deref(), None).await?;
-    let public_blocks = relationship_entries
-        .iter()
-        .filter(|entry| entry["relationship_state"].as_str() == Some("blocked"))
-        .cloned()
-        .collect::<Vec<_>>();
+    let operator = build_client_self_payload(state, identity_query).await?;
+    let (source_public_id, source_agent_identity) = source_identity_from_operator(&operator);
+    let public_blocks = build_public_blocks_payload(state, identity_query).await?;
     let swarm_task_activity =
         build_task_activity_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
             .await
@@ -1029,48 +1183,83 @@ async fn build_public_client_snapshot(
                     "runs": Vec::<Value>::new(),
                 })
             });
-    let node_limit = query
-        .node_limit
-        .or(query.peer_limit)
-        .unwrap_or(25)
-        .clamp(1, 200);
-    let nodes = build_client_peers_payload(state, node_limit).await?;
+    let nodes = build_client_peers_payload(state, client_export_node_limit(query)).await?;
+    let source_public_id_ref = source_public_id.as_deref();
+    let source_agent_identity_ref = source_agent_identity.as_deref();
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
         node_id: state.agent_did.clone(),
+        agent_identity: source_agent_identity.clone(),
+        public_id: source_public_id.clone(),
         public_key: state.identity.public_key.clone(),
         network_status: build_client_network_status_payload(state).await?,
-        nodes: nodes.clone(),
-        peers: nodes,
-        operator: build_client_self_payload(state, identity_query).await?,
-        rpc_logs: build_client_rpc_logs_payload(
-            state,
-            query.rpc_log_limit.unwrap_or(20).clamp(1, 200),
-        )?,
-        public_blocks,
-        public_topics: build_hives_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
+        nodes: attach_source_identity_to_values(
+            nodes.clone(),
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        peers: attach_source_identity_to_values(
+            nodes,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        operator,
+        rpc_logs: attach_source_identity_to_values(
+            build_client_rpc_logs_payload(state, query.rpc_log_limit.unwrap_or(20).clamp(1, 200))?,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        public_blocks: attach_source_identity_to_values(
+            public_blocks,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        public_topics: attach_source_identity_to_values(
+            build_hives_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
+                .await
+                .unwrap_or_default(),
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        public_topic_messages: attach_source_identity_to_values(
+            build_public_topic_messages_snapshot_payload(
+                state,
+                query.rpc_log_limit.unwrap_or(100).clamp(1, 200),
+            )
             .await
             .unwrap_or_default(),
-        public_topic_messages: build_public_topic_messages_snapshot_payload(
-            state,
-            query.rpc_log_limit.unwrap_or(100).clamp(1, 200),
-        )
-        .await
-        .unwrap_or_default(),
-        swarm_task_activity,
-        tasks: build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500))
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        swarm_task_activity: attach_source_identity_to_task_activity(
+            swarm_task_activity,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        tasks: attach_source_identity_to_values(
+            build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500)).await,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        organizations: attach_source_identity_to_values(
+            build_client_organizations_payload(
+                state,
+                query.organization_limit.unwrap_or(50).clamp(1, 500),
+            )
             .await,
-        organizations: build_client_organizations_payload(
-            state,
-            query.organization_limit.unwrap_or(50).clamp(1, 500),
-        )
-        .await,
-        leaderboard: build_client_leaderboard_payload(
-            state,
-            leaderboard_category,
-            query.leaderboard_limit.unwrap_or(20).clamp(1, 200),
-        )
-        .await?,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
+        leaderboard: attach_source_identity_to_values(
+            build_client_leaderboard_payload(
+                state,
+                leaderboard_category,
+                query.leaderboard_limit.unwrap_or(20).clamp(1, 200),
+            )
+            .await?,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        ),
     })
 }
 

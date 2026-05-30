@@ -391,8 +391,9 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
-    let (_dir, app, token, _, _state) =
+    let (_dir, app, token, _, state) =
         build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+    let mut events = state.stream_tx.subscribe();
 
     let created = authed_post_json(
         app.clone(),
@@ -415,6 +416,23 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
         Some("mainnet:test@crew.chat@group:crew-7")
     );
     assert_eq!(created["hive"]["network_id"].as_str(), Some("mainnet:test"));
+    let created_by_agent_identity = created["hive"]["created_by_agent_identity"]
+        .as_str()
+        .expect("created hive includes agent identity");
+    assert_ne!(
+        Some(created_by_agent_identity),
+        created["hive"]["created_by_public_id"].as_str()
+    );
+
+    let created_event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("topic created event timeout")
+        .expect("topic created event");
+    assert_eq!(created_event.kind, "topic.created");
+    assert_eq!(
+        created_event.payload["hive"]["created_by_agent_identity"].as_str(),
+        Some(created_by_agent_identity)
+    );
 
     let hives_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/hives").await;
     assert_eq!(hives_json["hives"].as_array().unwrap().len(), 1);

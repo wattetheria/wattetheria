@@ -10,9 +10,19 @@
     let connectedWeb3Wallet = null;
     let currentWalletOperator = null;
     let selectedWalletNetwork = "base";
+    let lastConsolePayload = null;
     let lastDiagnosticEntries = [];
     let lastDiagnosticPayload = null;
     let activeLogMode = "all";
+    let activeDmThreadKey = "";
+    let dmDetailOpen = false;
+    let activeHiveKey = "";
+    let hiveMessageLoadingKey = "";
+    const hiveMessageCache = new Map();
+    const hiveMessageErrors = new Map();
+    let missionSearchQuery = "";
+    let missionPage = 1;
+    const missionPageSize = 10;
 
     const stablecoinContracts = {
       "0x1": [
@@ -292,8 +302,8 @@
         ["Friends", relationships.filter((item) => item.relationship_state === "friend" || item.relationship_kind === "friend").length],
         ["Friend Requests", requests.length],
         ["DM Messages", dmMessages.length],
-        ["Topics", topics.length],
-        ["Topic Messages", topicMessages.length],
+        ["Hives", topics.length],
+        ["Hive Messages", topicMessages.length],
         ["Published", statusCounts.published || 0],
         ["Claimed", statusCounts.claimed || 0],
         ["Completed", statusCounts.completed || 0],
@@ -419,8 +429,10 @@
     }
 
     function renderSnapshot(payload) {
+      lastConsolePayload = payload;
       const operator = payload.operator || {};
       const network = payload.network_status || {};
+      const networkId = "mainnet:watt-etheria";
       const payment = operator.active_payment_account;
       qs("identity-name").textContent = valueOrDash(operator.display_name || operator.id);
       qs("identity-detail").textContent = `Public ${compactId(operator.id)} | Controller ${compactId(operator.controller_id || operator.wallet_bound_agent_did)}`;
@@ -429,11 +441,11 @@
         ? `${valueOrDash(payment.account_kind || payment.kind)} ${compactId(payment.address || payment.account_id || payment.payment_account_ref)}`
         : "No active payment account";
       qs("network-status").textContent = valueOrDash(network.status || operator.status);
-      qs("network-detail").textContent = `${safeArray(payload.nodes).length} nodes | ${valueOrDash(operator.coordinate_source)} geo`;
+      qs("network-detail").textContent = `${networkId} | ${safeArray(payload.nodes).length} nodes | ${valueOrDash(operator.coordinate_source)} geo`;
       qs("node-id").textContent = compactId(payload.node_id);
       qs("node-detail").textContent = `Generated ${formatTime(payload.generated_at)} | public key ${compactId(payload.public_key)}`;
       qs("side-identity").textContent = compactId(operator.display_name || operator.id || "Not loaded", 20);
-      qs("side-network").textContent = valueOrDash(network.status || operator.status || "unknown");
+      qs("side-network").textContent = `${valueOrDash(network.status || operator.status || "unknown")}\n${networkId}`;
       qs("side-nodes").textContent = String(safeArray(payload.nodes).length);
 
       renderNearby(payload);
@@ -621,8 +633,50 @@
       }
     }
 
+    function missionSearchText(row) {
+      return [
+        row.status,
+        row.title,
+        row.id,
+        row.domain,
+        row.publisher_id,
+        row.claimer_id,
+        row.publisher_network_reward_watt,
+        row.executor_bounty_watt,
+        row.task_bounty_watt,
+        row.reward_watt,
+      ].map((value) => String(value ?? "")).join(" ").toLowerCase();
+    }
+
+    function filteredMissionRows(rows) {
+      const query = missionSearchQuery.trim().toLowerCase();
+      if (!query) return rows;
+      return rows.filter((row) => missionSearchText(row).includes(query));
+    }
+
+    function updateMissionControls(totalCount, filteredCount, pageCount) {
+      const searchInput = qs("missions-search");
+      if (searchInput && searchInput.value !== missionSearchQuery) {
+        searchInput.value = missionSearchQuery;
+      }
+      qs("missions-prev").disabled = missionPage <= 1;
+      qs("missions-next").disabled = missionPage >= pageCount;
+      const rangeStart = filteredCount === 0 ? 0 : ((missionPage - 1) * missionPageSize) + 1;
+      const rangeEnd = Math.min(filteredCount, missionPage * missionPageSize);
+      const countText = missionSearchQuery.trim()
+        ? `${rangeStart}-${rangeEnd} / ${filteredCount} matched, ${totalCount} total`
+        : `${rangeStart}-${rangeEnd} / ${totalCount}`;
+      qs("missions-page-status").textContent = `${countText} | Page ${missionPage} / ${pageCount}`;
+    }
+
     function renderMissions(payload) {
       const rows = safeArray(payload.tasks);
+      const filteredRows = filteredMissionRows(rows);
+      const pageCount = Math.max(1, Math.ceil(filteredRows.length / missionPageSize));
+      missionPage = Math.min(Math.max(1, missionPage), pageCount);
+      const start = (missionPage - 1) * missionPageSize;
+      const pageRows = filteredRows.slice(start, start + missionPageSize);
+      updateMissionControls(rows.length, filteredRows.length, pageCount);
       renderTable("missions-table", [
         { label: "Status", render: (row) => pill(row.status, row.status) },
         { label: "Mission", render: (row) => `<strong>${escapeHtml(row.title || row.id)}</strong><div class="subtle">${escapeHtml(row.id || "")}</div>` },
@@ -633,10 +687,11 @@
         { label: "Executor Bounty", render: (row) => escapeHtml(valueOrDash(row.executor_bounty_watt ?? row.task_bounty_watt ?? row.reward_watt)) },
         { label: "Created", render: (row) => escapeHtml(formatTime(row.created_at)) },
         { label: "Expires", render: (row) => escapeHtml(formatTime(row.expires_at ?? row.expiry_ms ?? row.task_contract?.expires_at ?? row.task_contract?.expiry_ms)) },
-      ], rows, "No missions recorded.");
+      ], pageRows, missionSearchQuery.trim() ? "No missions match this search." : "No missions recorded.");
     }
 
     function renderFriends(payload) {
+      if (!qs("friends-list")) return;
       const rows = safeArray(payload.friend_relationships)
         .filter((row) => !row.pending_inbound && !row.pending_outbound && row.relationship_state !== "blocked");
       renderList("friends-list", rows, "No friends recorded.", (row) => `
@@ -659,6 +714,59 @@
       `);
     }
 
+    function matchingFriendForConversation(payload, conversation) {
+      return safeArray(payload.friend_relationships).find((row) => {
+        const publicIds = [
+          row.counterpart_agent_public_id,
+          row.counterpart_public_id,
+          row.public_id,
+        ].filter(Boolean);
+        const remoteNodes = [row.remote_node_id, row.counterpart_node_id].filter(Boolean);
+        return publicIds.includes(conversation.counterpartPublicId)
+          || remoteNodes.includes(conversation.remoteNodeId);
+      }) || {};
+    }
+
+    function isNodeId(value) {
+      return /^[a-f0-9]{64}$/i.test(String(value || ""));
+    }
+
+    function dmMessageEnvelope(row) {
+      return row?.agent_envelope?.message || {};
+    }
+
+    function dmMessageIdentifiers(row) {
+      const message = dmMessageEnvelope(row);
+      return [
+        row.counterpart_public_id,
+        row.remote_node_id,
+        row.agent_envelope?.source_agent_id,
+        row.agent_envelope?.target_agent_id,
+        row.agent_envelope?.source_node_id,
+        row.agent_envelope?.target_node_id,
+        message.source_public_id,
+        message.target_public_id,
+      ].filter(Boolean);
+    }
+
+    function friendIdentifiers(row) {
+      return [
+        row.counterpart_agent_public_id,
+        row.counterpart_public_id,
+        row.public_id,
+        row.counterpart_agent_did,
+        row.remote_node_id,
+        row.counterpart_node_id,
+      ].filter(Boolean);
+    }
+
+    function matchingFriendForMessage(payload, message) {
+      const identifiers = new Set(dmMessageIdentifiers(message));
+      return safeArray(payload.friend_relationships).find((row) =>
+        friendIdentifiers(row).some((identifier) => identifiers.has(identifier))
+      ) || {};
+    }
+
     function renderFriendRequests(payload) {
       const rows = safeArray(payload.pending_friend_requests);
       renderList("friend-requests-list", rows, "No pending friend requests.", (row) => `
@@ -672,42 +780,508 @@
       `);
     }
 
-    function renderDmMessages(payload) {
-      const rows = safeArray(payload.dm_messages);
-      renderList("dm-list", rows, "No direct messages recorded.", (row) => `
-        <div class="row">
-          <div class="row-head">
-            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_public_id || row.remote_node_id)}</div>
-            ${pill(row.direction || row.delivery_state, row.delivery_state || row.direction)}
-          </div>
-          <div class="row-body">${escapeHtml(textFromContent(row.content) || row.encrypted_body || "No message preview")}</div>
-          <div class="subtle">${escapeHtml(formatTime(row.created_at))} | thread ${escapeHtml(compactId(row.thread_id, 24))}</div>
+    function dmConversationLabel(row) {
+      return row.counterpart_display_name
+        || row.counterpart_public_id
+        || row.remote_node_id
+        || row.thread_id
+        || "Unknown counterpart";
+    }
+
+    function dmDisplayName(value) {
+      const text = valueOrDash(value).replace(/^wattetheria\s+/i, "").trim();
+      return text || valueOrDash(value);
+    }
+
+    function dmConversationLabelForFriend(friend, row) {
+      return dmDisplayName(friend.counterpart_display_name
+        || friend.display_name
+        || friend.counterpart_agent_name
+        || friend.counterpart_agent_did
+        || friend.counterpart_agent_public_id
+        || friend.counterpart_public_id
+        || friend.public_id
+        || dmConversationLabel(row));
+    }
+
+    function dmCounterpartPublicId(friend, row) {
+      const message = dmMessageEnvelope(row);
+      const localPublicId = publicIdEl.value;
+      return friend.counterpart_agent_public_id
+        || friend.counterpart_public_id
+        || friend.public_id
+        || [row.counterpart_public_id, message.source_public_id, message.target_public_id]
+          .find((value) => value && value !== localPublicId && !isNodeId(value))
+        || row.counterpart_public_id
+        || row.remote_node_id;
+    }
+
+    function dmRemoteNodeId(friend, row) {
+      const identifiers = dmMessageIdentifiers(row);
+      return friend.remote_node_id
+        || friend.counterpart_node_id
+        || identifiers.find(isNodeId)
+        || "";
+    }
+
+    function dmConversationKey(friend, row) {
+      return dmCounterpartPublicId(friend, row)
+        || dmRemoteNodeId(friend, row)
+        || row.thread_id
+        || row.message_id
+        || "unknown";
+    }
+
+    function isAcceptedDmFriend(row) {
+      const state = String(row.relationship_state || row.relationship_kind || row.status || "").toLowerCase();
+      return !row.pending_inbound
+        && !row.pending_outbound
+        && row.active !== false
+        && state !== "blocked"
+        && (state === "friend" || state === "active" || state === "accepted" || row.active === true);
+    }
+
+    function dmAcceptedFriends(payload) {
+      const friends = [
+        ...safeArray(payload.friend_relationships),
+        ...safeArray(payload.local_client_friends),
+      ];
+      const byKey = new Map();
+      for (const friend of friends.filter(isAcceptedDmFriend)) {
+        const key = dmConversationKey(friend, {});
+        if (key && key !== "unknown" && !byKey.has(key)) {
+          byKey.set(key, friend);
+        }
+      }
+      return [...byKey.values()];
+    }
+
+    function emptyDmConversationForFriend(friend) {
+      const key = dmConversationKey(friend, {});
+      return {
+        key,
+        label: dmConversationLabelForFriend(friend, {}),
+        remoteNodeId: dmRemoteNodeId(friend, {}),
+        counterpartPublicId: dmCounterpartPublicId(friend, {}),
+        threadId: friend.dm_thread_id || friend.thread_id || "",
+        friend,
+        messageMap: new Map(),
+        messages: [],
+        latestAt: timestampValue(friend.updated_at || friend.responded_at || friend.created_at),
+      };
+    }
+
+    function isSyntheticDmMessage(row) {
+      const kind = String(row.message_kind || "").toLowerCase();
+      const content = row.content || dmMessageEnvelope(row).content || {};
+      return kind === "session_init"
+        || kind === "relationship_established"
+        || content.synthetic === true;
+    }
+
+    function dmLogicalMessageKey(row) {
+      return dmMessageEnvelope(row).message_id || row.transport_message_id || row.message_id || "";
+    }
+
+    function dmDeliveryRank(row) {
+      const state = String(row.delivery_state || "").toLowerCase();
+      if (state === "acknowledged") return 3;
+      if (state === "delivered") return 2;
+      if (state === "sent") return 1;
+      return 0;
+    }
+
+    function preferredDmMessage(current, candidate) {
+      if (!current) return candidate;
+      const currentRank = dmDeliveryRank(current);
+      const candidateRank = dmDeliveryRank(candidate);
+      if (candidateRank !== currentRank) {
+        return candidateRank > currentRank ? candidate : current;
+      }
+      return timestampValue(candidate.updated_at || candidate.created_at)
+        >= timestampValue(current.updated_at || current.created_at)
+        ? candidate
+        : current;
+    }
+
+    function timestampValue(value) {
+      if (value == null || value === "") return 0;
+      if (typeof value === "number") return value > 100000000000 ? value : value * 1000;
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    }
+
+    function groupDmConversations(payload) {
+      const groups = new Map();
+      for (const friend of dmAcceptedFriends(payload)) {
+        const conversation = emptyDmConversationForFriend(friend);
+        if (conversation.key && !groups.has(conversation.key)) {
+          groups.set(conversation.key, conversation);
+        }
+      }
+      for (const row of safeArray(payload.dm_messages).filter((message) => !isSyntheticDmMessage(message))) {
+        const friend = matchingFriendForMessage(payload, row);
+        const key = dmConversationKey(friend, row);
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            label: dmConversationLabelForFriend(friend, row),
+            remoteNodeId: dmRemoteNodeId(friend, row),
+            counterpartPublicId: dmCounterpartPublicId(friend, row),
+            threadId: row.thread_id,
+            friend,
+            messageMap: new Map(),
+            messages: [],
+          });
+        }
+        const group = groups.get(key);
+        group.friend = Object.keys(group.friend || {}).length ? group.friend : friend;
+        group.remoteNodeId = group.remoteNodeId || dmRemoteNodeId(friend, row);
+        group.counterpartPublicId = group.counterpartPublicId || dmCounterpartPublicId(friend, row);
+        group.threadId = group.threadId || row.thread_id;
+        const messageKey = dmLogicalMessageKey(row) || row.message_id || `${row.thread_id}:${row.created_at}`;
+        group.messageMap.set(messageKey, preferredDmMessage(group.messageMap.get(messageKey), row));
+      }
+      return [...groups.values()].map((group) => {
+        group.messages = [...group.messageMap.values()];
+        group.messages.sort((a, b) => timestampValue(a.created_at) - timestampValue(b.created_at));
+        group.latestMessage = group.messages[group.messages.length - 1];
+        group.latestAt = timestampValue(group.latestMessage?.created_at) || group.latestAt || 0;
+        group.threadId = group.latestMessage?.thread_id || group.threadId;
+        delete group.messageMap;
+        return group;
+      }).sort((a, b) => b.latestAt - a.latestAt);
+    }
+
+    function dmDirectionClass(direction) {
+      const value = String(direction || "").toLowerCase();
+      return value === "inbound" || value === "outbound" ? value : "unknown";
+    }
+
+    function dmDetailField(label, value) {
+      return `
+        <div class="dm-detail-field">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(valueOrDash(value))}</strong>
         </div>
-      `);
+      `;
+    }
+
+    function dmAgentInitials(name) {
+      const text = valueOrDash(name).replace(/^agent[-_\s]*/i, "").trim();
+      const parts = text.split(/[-_\s.]+/).filter(Boolean);
+      if (!parts.length) return "DM";
+      if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    }
+
+    function dmSkillLabels(skills) {
+      return safeArray(skills)
+        .map((skill) => {
+          if (typeof skill === "string") return skill;
+          return skill?.name || skill?.id || "";
+        })
+        .map((skill) => String(skill).trim())
+        .filter(Boolean);
+    }
+
+    function renderDmThread(conversation) {
+      const detail = conversation.friend || {};
+      const displayName = dmDisplayName(detail.counterpart_display_name
+        || detail.counterpart_agent_name
+        || detail.counterpart_agent_did
+        || detail.counterpart_public_id
+        || detail.remote_node_id
+        || conversation.label);
+      const publicId = conversation.counterpartPublicId || detail.counterpart_agent_public_id || detail.counterpart_public_id;
+      const agentDid = detail.counterpart_agent_did || detail.counterpart_agent_name || "-";
+      const remoteNodeId = conversation.remoteNodeId || detail.remote_node_id;
+      const status = detail.status || detail.relationship_state || detail.relationship_kind || "friend";
+      const network = detail.network_id || "-";
+      const relationshipLabel = detail.relationship_state || detail.relationship_kind || "friend";
+      const relationshipClass = detail.status || detail.relationship_state || detail.relationship_kind;
+      const skills = dmSkillLabels(detail.counterpart_skills);
+      const detailCard = `
+        <div class="dm-detail-card">
+          <div class="dm-detail-hero">
+            <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(displayName))}</div>
+            <div class="dm-detail-title-block">
+              <div class="dm-detail-title-row">
+                <h3>${escapeHtml(displayName)}</h3>
+                ${pill(relationshipLabel, relationshipClass)}
+              </div>
+              <p>${escapeHtml(compactId(publicId, 42))}</p>
+              <div class="dm-detail-meta">
+                <span>${escapeHtml(valueOrDash(status))}</span>
+                <span>${escapeHtml(valueOrDash(network))}</span>
+              </div>
+            </div>
+            <button type="button" class="secondary dm-detail-close" data-dm-detail-close>Close</button>
+          </div>
+          <div class="dm-detail-grid">
+            <section class="dm-detail-section">
+              <h4>Public Identity</h4>
+              ${dmDetailField("Public", compactId(publicId, 52))}
+              ${dmDetailField("Agent", compactId(agentDid, 52))}
+              ${dmDetailField("Node", compactId(remoteNodeId, 52))}
+            </section>
+            <section class="dm-detail-section">
+              <h4>Network</h4>
+              ${dmDetailField("Status", status)}
+              ${dmDetailField("Network", network)}
+              ${dmDetailField("Relationship", relationshipLabel)}
+            </section>
+          </div>
+          <section class="dm-detail-section dm-detail-skills">
+            <h4>Skills</h4>
+            <div class="dm-detail-skill-list">
+              ${skills.length
+                ? skills.map((skill) => `<span>${escapeHtml(skill)}</span>`).join("")
+                : "<span>-</span>"}
+            </div>
+          </section>
+        </div>
+      `;
+      return `
+        <div class="dm-thread-head-shell">
+          <button type="button" class="dm-thread-head" data-dm-detail-toggle>
+            <span>
+              <span class="row-title">${escapeHtml(displayName)}</span>
+              <span class="row-body">
+                Public ${escapeHtml(compactId(publicId, 38))}
+                | Node ${escapeHtml(compactId(remoteNodeId, 34))}
+              </span>
+            </span>
+            ${pill(status, status)}
+          </button>
+          ${dmDetailOpen ? `<div class="dm-detail-modal" data-dm-detail-modal>${detailCard}</div>` : ""}
+        </div>
+        <div class="dm-thread-context">[ thread context: ${escapeHtml(compactId(conversation.threadId, 34))} ]</div>
+        <div class="dm-bubble-list">
+          ${conversation.messages.length ? conversation.messages.map((message) => {
+            const direction = dmDirectionClass(message.direction);
+            const actor = direction === "outbound" ? "You / Operator" : compactId(conversation.label, 24);
+            return `
+              <div class="dm-bubble-row ${direction}">
+                <div class="dm-bubble-meta">
+                  <span>${escapeHtml(String(message.direction || message.delivery_state || "message").toUpperCase())}</span>
+                  <span>${escapeHtml(actor)}</span>
+                  <span>${escapeHtml(formatTime(message.created_at))}</span>
+                </div>
+                <div class="dm-bubble">${escapeHtml(textFromContent(message.content) || message.encrypted_body || "No message preview")}</div>
+              </div>
+            `;
+          }).join("") : empty("No direct messages yet.")}
+        </div>
+      `;
+    }
+
+    function renderDmMessages(payload) {
+      const target = qs("dm-list");
+      const conversations = groupDmConversations(payload);
+      if (!conversations.length) {
+        target.innerHTML = empty("No direct messages recorded.");
+        activeDmThreadKey = "";
+        return;
+      }
+      if (!conversations.some((conversation) => conversation.key === activeDmThreadKey)) {
+        activeDmThreadKey = conversations[0].key;
+      }
+      const activeConversation = conversations.find((conversation) => conversation.key === activeDmThreadKey) || conversations[0];
+      conversations.forEach((conversation) => {
+        conversation.friend = Object.keys(conversation.friend || {}).length
+          ? conversation.friend
+          : matchingFriendForConversation(payload, conversation);
+      });
+      target.innerHTML = `
+        <div class="dm-workspace">
+          <div class="dm-session-list">
+            ${conversations.map((conversation) => {
+              const active = conversation.key === activeConversation.key;
+              return `
+                <button type="button" class="dm-session-card ${active ? "active" : ""}" data-dm-thread="${escapeHtml(conversation.key)}">
+                  <span class="dm-session-title">
+                    <span>${escapeHtml(compactId(conversation.label, 32))}</span>
+                    ${pill(`${conversation.messages.length} msg`, active ? "friend" : "ready")}
+                  </span>
+                  <span class="dm-session-subtitle">Public: ${escapeHtml(compactId(conversation.counterpartPublicId || conversation.remoteNodeId, 30))}</span>
+                </button>
+              `;
+            }).join("")}
+          </div>
+          <div class="dm-thread-view">${renderDmThread(activeConversation)}</div>
+        </div>
+      `;
+      target.querySelectorAll("[data-dm-thread]").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeDmThreadKey = button.dataset.dmThread || "";
+          dmDetailOpen = false;
+          renderDmMessages(payload);
+        });
+      });
+      target.querySelector("[data-dm-detail-toggle]")?.addEventListener("click", () => {
+        dmDetailOpen = true;
+        renderDmMessages(payload);
+      });
+      target.querySelector("[data-dm-detail-close]")?.addEventListener("click", () => {
+        dmDetailOpen = false;
+        renderDmMessages(payload);
+      });
+      target.querySelector("[data-dm-detail-modal]")?.addEventListener("click", (event) => {
+        if (event.target === event.currentTarget) {
+          dmDetailOpen = false;
+          renderDmMessages(payload);
+        }
+      });
+    }
+
+    function hiveKey(row) {
+      return valueOrDash(row.topic_id || row.hive_id || `${valueOrDash(row.feed_key)}@${valueOrDash(row.scope_hint)}`);
+    }
+
+    function hiveTitle(row) {
+      return row.display_name || row.title || row.name || row.feed_key || row.topic_id || "Hive";
+    }
+
+    function hiveLabel(row) {
+      const feed = row.feed_key || hiveTitle(row);
+      return String(feed).replace(/^#/, "");
+    }
+
+    function hiveMessageCount(row) {
+      return valueOrZero(row.recent_message_count || row.message_count || row.messages_count || row.activity_count);
     }
 
     function renderTopics(payload) {
       const rows = safeArray(payload.public_topics);
-      renderTable("topics-table", [
-        { label: "Topic", render: (row) => `<strong>${escapeHtml(row.title || row.name || row.topic_id)}</strong><div class="subtle">${escapeHtml(valueOrDash(row.feed_key))} / ${escapeHtml(valueOrDash(row.scope_hint))}</div>` },
-        { label: "Kind", render: (row) => escapeHtml(valueOrDash(row.projection_kind || row.kind)) },
-        { label: "Messages", render: (row) => escapeHtml(valueOrDash(row.message_count || row.messages_count || row.activity_count)) },
-        { label: "Active", render: (row) => pill(row.active === false ? "inactive" : "active", row.active === false ? "blocked" : "ready") },
-      ], rows, "No topics recorded.");
+      const activeRows = rows.filter((row) => row.active !== false);
+      qs("hives-count").textContent = `${activeRows.length} Active`;
+      if (!rows.length) {
+        activeHiveKey = "";
+        qs("hives-list").innerHTML = empty("No hives recorded.");
+        renderTopicMessages(payload);
+        return;
+      }
+      if (!rows.some((row) => hiveKey(row) === activeHiveKey)) {
+        activeHiveKey = hiveKey(rows[0]);
+      }
+      qs("hives-list").innerHTML = rows.map((row, index) => {
+        const key = hiveKey(row);
+        const active = key === activeHiveKey;
+        const status = row.active === false ? "Locked" : "Monitor";
+        return `
+          <button class="hive-card ${active ? "active" : ""}" type="button" data-hive-index="${index}">
+            <div class="hive-card-kicker">${escapeHtml(compactId(row.topic_id || row.hive_id || row.feed_key, 40))}</div>
+            <div class="hive-card-main">
+              <span class="hive-card-title"># ${escapeHtml(hiveLabel(row))}</span>
+              ${pill(status, row.active === false ? "blocked" : "ready")}
+            </div>
+            <div class="hive-card-summary">${escapeHtml(row.summary || "No hive summary.")}</div>
+            <div class="hive-card-foot">
+              <span>Kind: ${escapeHtml(valueOrDash(row.projection_kind || row.kind))}</span>
+              <strong>${escapeHtml(hiveMessageCount(row))}</strong>
+            </div>
+          </button>
+        `;
+      }).join("");
+      qs("hives-list").querySelectorAll("[data-hive-index]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const row = rows[Number(button.dataset.hiveIndex)];
+          activeHiveKey = hiveKey(row);
+          renderTopics(payload);
+          loadHiveMessages(row);
+        });
+      });
+      const activeRow = rows.find((row) => hiveKey(row) === activeHiveKey);
+      if (activeRow && !hiveMessageCache.has(activeHiveKey) && hiveMessageLoadingKey !== activeHiveKey) {
+        loadHiveMessages(activeRow);
+      }
     }
 
     function renderTopicMessages(payload) {
-      const rows = safeArray(payload.public_topic_messages);
-      renderList("topic-messages-list", rows, "No topic messages recorded.", (row) => `
-        <div class="row">
-          <div class="row-head">
-            <div class="row-title">${escapeHtml(row.author_display_name || row.author_public_id || row.author_node_id)}</div>
-            ${pill(row.feed_key || "topic", "ready")}
+      const hives = safeArray(payload.public_topics);
+      const activeHive = hives.find((row) => hiveKey(row) === activeHiveKey);
+      if (!activeHive) {
+        qs("hive-thread-header").innerHTML = empty("Select a hive to view messages.");
+        qs("hive-messages-list").innerHTML = "";
+        return;
+      }
+      const key = hiveKey(activeHive);
+      qs("hive-thread-header").innerHTML = `
+        <div>
+          <div class="hive-thread-title"># ${escapeHtml(hiveLabel(activeHive))}</div>
+          <div class="hive-thread-meta">${escapeHtml(valueOrDash(activeHive.feed_key))}@${escapeHtml(valueOrDash(activeHive.scope_hint))}</div>
+        </div>
+        <div class="hive-thread-state">
+          <span class="status-dot"></span>
+          <span>Agents Exchanging</span>
+        </div>
+      `;
+      const loading = hiveMessageLoadingKey === key;
+      const error = hiveMessageErrors.get(key);
+      const cached = hiveMessageCache.get(key);
+      let rows = safeArray(cached);
+      if (!rows.length && !loading && !error) {
+        rows = fallbackHiveMessages(payload, activeHive);
+      }
+      if (loading && !rows.length) {
+        qs("hive-messages-list").innerHTML = empty("Loading hive messages...");
+        return;
+      }
+      if (error && !rows.length) {
+        qs("hive-messages-list").innerHTML = empty(error);
+        return;
+      }
+      renderList("hive-messages-list", rows, "No hive messages recorded.", (row) => `
+        <div class="hive-message">
+          <div class="hive-message-avatar">#</div>
+          <div class="hive-message-content">
+            <div class="hive-message-meta">
+              <strong>${escapeHtml(row.author_display_name || row.author_public_id || row.author_node_id || "Unknown Agent")}</strong>
+              ${pill("Hive", "ready")}
+              <span>${escapeHtml(formatTime(row.created_at))}</span>
+            </div>
+            <div class="hive-message-bubble">${escapeHtml(textFromContent(row.content) || row.text_preview || "No content preview")}</div>
           </div>
-          <div class="row-body">${escapeHtml(textFromContent(row.content) || "No content preview")}</div>
-          <div class="subtle">${escapeHtml(valueOrDash(row.scope_hint))} | ${escapeHtml(formatTime(row.created_at))}</div>
         </div>
       `);
+    }
+
+    function fallbackHiveMessages(payload, hive) {
+      const rows = safeArray(payload.public_topic_messages);
+      const scoped = rows.some((row) => row.topic_id || row.hive_id || row.feed_key || row.scope_hint);
+      if (!scoped) return rows;
+      const key = hiveKey(hive);
+      return rows.filter((row) =>
+        row.topic_id === hive.topic_id
+        || row.hive_id === hive.topic_id
+        || row.topic_id === key
+        || row.hive_id === key
+        || (row.feed_key === hive.feed_key && row.scope_hint === hive.scope_hint)
+      );
+    }
+
+    async function loadHiveMessages(hive) {
+      const key = hiveKey(hive);
+      if (!hive.feed_key || !hive.scope_hint || hiveMessageLoadingKey === key) return;
+      hiveMessageLoadingKey = key;
+      hiveMessageErrors.delete(key);
+      renderTopicMessages(lastConsolePayload || { public_topics: [], public_topic_messages: [] });
+      const params = new URLSearchParams({
+        feed_key: hive.feed_key,
+        scope_hint: hive.scope_hint,
+        limit: String(Math.max(1, Math.min(Number(limitEl.value) || 50, 200))),
+      });
+      if (hive.network_id) params.set("network_id", hive.network_id);
+      try {
+        const response = await fetchJson(`/v1/client/hives/messages?${params.toString()}`, { auth: true });
+        hiveMessageCache.set(key, safeArray(response.messages));
+      } catch (error) {
+        hiveMessageErrors.set(key, error.message || "Hive messages unavailable.");
+      } finally {
+        if (hiveMessageLoadingKey === key) hiveMessageLoadingKey = "";
+        renderTopicMessages(lastConsolePayload || { public_topics: [], public_topic_messages: [] });
+      }
     }
 
     function renderIdentities(rows) {
@@ -1182,6 +1756,19 @@
       refreshDiagnostics().catch((error) => setStatus(error.message, true));
     });
     document.getElementById("export-diagnostics").addEventListener("click", exportDiagnostics);
+    qs("missions-search")?.addEventListener("input", (event) => {
+      missionSearchQuery = event.target.value;
+      missionPage = 1;
+      if (lastConsolePayload) renderMissions(lastConsolePayload);
+    });
+    qs("missions-prev")?.addEventListener("click", () => {
+      missionPage = Math.max(1, missionPage - 1);
+      if (lastConsolePayload) renderMissions(lastConsolePayload);
+    });
+    qs("missions-next")?.addEventListener("click", () => {
+      missionPage += 1;
+      if (lastConsolePayload) renderMissions(lastConsolePayload);
+    });
     document.querySelectorAll("[data-log-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         activeLogMode = button.dataset.logMode || "all";

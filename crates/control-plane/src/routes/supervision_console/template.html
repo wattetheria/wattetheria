@@ -126,32 +126,44 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <section class="view-page" data-page="missions" hidden>
           <article class="panel">
             <h2>Missions</h2>
+            <div class="mission-toolbar">
+              <label>
+                Search
+                <input id="missions-search" type="search" placeholder="Search missions..." autocomplete="off">
+              </label>
+              <div class="pagination-controls">
+                <button id="missions-prev" class="secondary" type="button">Prev</button>
+                <span id="missions-page-status" class="pagination-status">Page 1 / 1</span>
+                <button id="missions-next" class="secondary" type="button">Next</button>
+              </div>
+            </div>
             <div id="missions-table" class="table-wrap"></div>
           </article>
         </section>
 
         <section class="view-page" data-page="swarm" hidden>
-          <article class="panel">
-            <h2>Topics</h2>
-            <div id="topics-table" class="table-wrap"></div>
-          </article>
-          <article class="panel">
-            <h2>Topic Messages</h2>
-            <div id="topic-messages-list" class="list"></div>
+          <article class="panel swarm-hives-panel">
+            <div class="swarm-hives-layout">
+              <aside class="hive-sidebar" aria-label="Hives">
+                <div class="hive-sidebar-head">
+                  <h2>Hives</h2>
+                  <span id="hives-count" class="pill ready">0 Active</span>
+                </div>
+                <div id="hives-list" class="hive-list"></div>
+              </aside>
+              <section class="hive-thread" aria-label="Hive messages">
+                <div id="hive-thread-header" class="hive-thread-header"></div>
+                <div id="hive-messages-list" class="hive-messages-list"></div>
+              </section>
+            </div>
           </article>
         </section>
 
         <section class="view-page" data-page="social" hidden>
-          <section class="columns">
-            <article class="panel">
-              <h2>Friends</h2>
-              <div id="friends-list" class="list"></div>
-            </article>
-            <article class="panel">
-              <h2>Friend Requests</h2>
-              <div id="friend-requests-list" class="list"></div>
-            </article>
-          </section>
+          <article class="panel">
+            <h2>Friend Requests</h2>
+            <div id="friend-requests-list" class="list"></div>
+          </article>
           <article class="panel">
             <h2>DM Messages</h2>
             <div id="dm-list" class="list"></div>

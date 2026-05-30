@@ -21,6 +21,7 @@ use crate::swarm_sync::{load_cached_task_run_projection, load_cached_topic_activ
 struct ClientTopicMessageView {
     message_id: String,
     author_node_id: String,
+    author_agent_identity: Option<String>,
     author_public_id: Option<String>,
     author_display_name: Option<String>,
     content: Value,
@@ -40,6 +41,9 @@ struct ClientHiveView {
     organization_id: Option<String>,
     mission_id: Option<String>,
     summary: Option<String>,
+    created_by_public_id: String,
+    created_by_agent_identity: Option<String>,
+    created_by_display_name: Option<String>,
     status: &'static str,
     member_count: usize,
     mission_count: usize,
@@ -47,6 +51,9 @@ struct ClientHiveView {
     last_message_text: Option<String>,
     last_message_at: Option<u64>,
     last_message_author: Option<String>,
+    last_message_author_agent_identity: Option<String>,
+    last_message_author_public_id: Option<String>,
+    last_message_author_display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +151,7 @@ fn topic_message_view(
     ClientTopicMessageView {
         message_id: message.message_id,
         author_node_id: message.author_node_id,
+        author_agent_identity: author_display_name.clone(),
         author_public_id,
         author_display_name,
         text_preview: message_text_preview(&message.content),
@@ -243,8 +251,17 @@ pub(crate) async fn build_hives_payload(
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
     let topics = state.topic_registry.lock().await.list();
+    let identity_by_public_id = state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .map(|identity| (identity.public_id, identity.display_name))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let organizations = state.organization_registry.lock().await;
     let missions = state.mission_board.lock().await.list(None);
+    let author_lookup = author_lookup(state).await;
     let mut items = Vec::new();
 
     for topic in topics
@@ -254,6 +271,14 @@ pub(crate) async fn build_hives_payload(
     {
         let activity = topic_activity_or_empty(state, &topic).await;
         let latest = activity.as_ref().and_then(latest_message);
+        let (last_message_author_public_id, last_message_author_agent_identity) = latest
+            .and_then(|message| author_lookup.get(&message.author_node_id))
+            .cloned()
+            .unwrap_or((None, None));
+        let last_message_author = last_message_author_agent_identity
+            .clone()
+            .or_else(|| last_message_author_public_id.clone())
+            .or_else(|| latest.map(|message| message.author_node_id.clone()));
         let member_count = topic
             .organization_id
             .as_deref()
@@ -273,6 +298,9 @@ pub(crate) async fn build_hives_payload(
                     .filter(|mission| mission.publisher == organization_id)
                     .count()
             });
+        let created_by_agent_identity = identity_by_public_id
+            .get(&topic.created_by_public_id)
+            .cloned();
         items.push(json!(ClientHiveView {
             topic_id: topic.topic_id,
             network_id: topic.network_id,
@@ -283,6 +311,9 @@ pub(crate) async fn build_hives_payload(
             organization_id: topic.organization_id,
             mission_id: topic.mission_id,
             summary: topic.summary,
+            created_by_public_id: topic.created_by_public_id.clone(),
+            created_by_agent_identity: created_by_agent_identity.clone(),
+            created_by_display_name: created_by_agent_identity.clone(),
             status: if activity.is_some() { "active" } else { "idle" },
             member_count,
             mission_count,
@@ -291,7 +322,10 @@ pub(crate) async fn build_hives_payload(
                 .map_or(0, |activity| activity.messages.len()),
             last_message_text: latest.and_then(|message| message_text_preview(&message.content)),
             last_message_at: latest.map(|message| message.created_at),
-            last_message_author: latest.map(|message| message.author_node_id.clone()),
+            last_message_author,
+            last_message_author_agent_identity: last_message_author_agent_identity.clone(),
+            last_message_author_public_id,
+            last_message_author_display_name: last_message_author_agent_identity,
         }));
     }
 

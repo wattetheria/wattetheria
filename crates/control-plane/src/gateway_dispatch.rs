@@ -107,12 +107,6 @@ fn non_push_stream_decision(kind: &str, payload: &Value) -> Option<GatewayDispat
             GatewayPushDisposition::PullOnlyFallback,
             GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
         )),
-        "topic.message.posted" => Some(topic_non_push_decision(
-            payload,
-            GatewayDataKind::HiveMessagePosted,
-            GatewayPushDisposition::NotPubliclyExported,
-            GatewayProvisionalExportPolicy::EphemeralOnly,
-        )),
         "civilization.agent_relationship.command" => {
             Some(private_non_push_decision(payload, "remote_node_id"))
         }
@@ -424,6 +418,32 @@ fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> 
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
         }),
+        "topic.message.posted" => {
+            let topic_id = payload
+                .get("topic_id")
+                .or_else(|| payload.get("hive_id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)?;
+            let message_id = payload
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)?;
+            Some(GatewayDispatchPlan {
+                data_kind: GatewayDataKind::HiveActivity,
+                visibility: GatewayVisibility::Public,
+                provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+                scope: GatewayEventScope {
+                    node_id: None,
+                    topic_id: Some(topic_id),
+                    organization_id: payload
+                        .get("organization_id")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    task_id: None,
+                },
+                identity_key: Some(message_id),
+            })
+        }
         _ => None,
     }
 }
@@ -516,21 +536,35 @@ mod tests {
     }
 
     #[test]
-    fn topic_message_posts_are_not_gateway_pushed_directly() {
-        let event = StreamEvent {
+    fn topic_message_posts_are_gateway_pushed_as_hive_activity() {
+        let incomplete_event = StreamEvent {
             kind: "topic.message.posted".to_string(),
             timestamp: 1_710_000_000,
             payload: json!({"feed_key":"topic"}),
         };
-        assert!(plan_stream_event(&event).is_none());
+        assert!(describe_stream_event(&incomplete_event).is_none());
+
+        let event = StreamEvent {
+            kind: "topic.message.posted".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "message_id": "msg-1",
+                "topic_id": "topic-1",
+                "feed_key": "topic",
+            }),
+        };
+        let plan = plan_stream_event(&event).expect("topic message plan");
+        assert_eq!(plan.data_kind, GatewayDataKind::HiveActivity);
+        assert_eq!(plan.scope.topic_id.as_deref(), Some("topic-1"));
+        assert_eq!(plan.identity_key.as_deref(), Some("msg-1"));
         let decision = describe_stream_event(&event).expect("topic decision");
         assert_eq!(
             decision.mechanism_path,
-            GatewayMechanismPath::WattswarmFirst
+            GatewayMechanismPath::DirectProjection
         );
         assert_eq!(
             decision.push_disposition,
-            GatewayPushDisposition::NotPubliclyExported
+            GatewayPushDisposition::PushEligible
         );
         assert_eq!(
             decision.confirmation_requirement,

@@ -481,7 +481,10 @@ where
             .as_ref()
             .map(|thread| thread.created_at)
             .unwrap_or(view.created_at);
-        let updated_at = view.acknowledged_at.unwrap_or(view.created_at);
+        let updated_at = view
+            .acknowledged_at
+            .unwrap_or(view.created_at)
+            .max(view.created_at);
         ignore_conflict(thread_service::upsert_thread(
             repository,
             &DirectThread {
@@ -1005,5 +1008,37 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].delivery_state, DeliveryState::Delivered);
         assert_eq!(receipts.len(), 2);
+    }
+
+    #[test]
+    fn reconcile_dm_message_clamps_acknowledged_before_created() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        reconcile_dm_messages(
+            &store,
+            "did:key:alice",
+            &[DmMessageSyncView {
+                counterpart: counterpart(20),
+                transport_thread_id: "dm:alice:bob".to_string(),
+                message_id: "msg-early-ack".to_string(),
+                message_kind: "message".to_string(),
+                direction: "inbound".to_string(),
+                delivery_state: "delivered".to_string(),
+                a2a_protocol: "google_a2a".to_string(),
+                content: serde_json::json!({"text":"hello"}),
+                encrypted_body: None,
+                content_encoding: None,
+                agent_envelope_json: None,
+                agent_signature: None,
+                created_at: 20,
+                acknowledged_at: Some(19),
+            }],
+        )
+        .expect("reconcile dm messages");
+
+        let threads = thread_service::list_threads(&store, "did:key:alice").expect("threads");
+        let messages =
+            message_service::list_thread_messages(&store, &threads[0].thread_id).expect("messages");
+        assert_eq!(threads[0].updated_at, 20);
+        assert_eq!(messages[0].updated_at, 20);
     }
 }

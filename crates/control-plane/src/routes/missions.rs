@@ -18,6 +18,7 @@ use crate::state::{
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::{CivilMission, MissionStatus};
+use wattetheria_kernel::identities::PublicIdentity;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
     SwarmTaskProposeCandidateCommand,
@@ -593,6 +594,71 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
     payload
 }
 
+async fn mission_gateway_payload_with_identities(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    task_contract: Option<&TaskContract>,
+) -> Value {
+    let mut payload = mission_gateway_payload(mission, task_contract);
+    let identities = state.public_identity_registry.lock().await.list();
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+    if let Some(identity) = mission_identity_for_participant(&identities, Some(&mission.publisher))
+    {
+        insert_mission_identity_projection(object, "created_by", identity);
+    }
+    if let Some(identity) =
+        mission_identity_for_participant(&identities, mission.claimed_by.as_deref())
+    {
+        insert_mission_identity_projection(object, "claimer", identity);
+    }
+    if let Some(identity) =
+        mission_identity_for_participant(&identities, mission.completed_by.as_deref())
+    {
+        insert_mission_identity_projection(object, "completer", identity);
+    }
+    if let Some(identity) = mission_identity_for_participant(&identities, Some(&state.agent_did)) {
+        insert_mission_identity_projection(object, "source", identity);
+    }
+    payload
+}
+
+fn mission_identity_for_participant<'a>(
+    identities: &'a [PublicIdentity],
+    participant_id: Option<&str>,
+) -> Option<&'a PublicIdentity> {
+    let participant_id = participant_id?.trim();
+    if participant_id.is_empty() {
+        return None;
+    }
+    identities.iter().find(|identity| {
+        identity.public_id == participant_id
+            || identity.agent_did.as_deref() == Some(participant_id)
+    })
+}
+
+fn insert_mission_identity_projection(
+    object: &mut serde_json::Map<String, Value>,
+    prefix: &str,
+    identity: &PublicIdentity,
+) {
+    object
+        .entry(format!("{prefix}_agent_identity"))
+        .or_insert_with(|| Value::String(identity.display_name.clone()));
+    object
+        .entry(format!("{prefix}_display_name"))
+        .or_insert_with(|| Value::String(identity.display_name.clone()));
+    object
+        .entry(format!("{prefix}_public_id"))
+        .or_insert_with(|| Value::String(identity.public_id.clone()));
+    if let Some(agent_did) = identity.agent_did.as_deref() {
+        object
+            .entry(format!("{prefix}_agent_did"))
+            .or_insert_with(|| Value::String(agent_did.to_string()));
+    }
+}
+
 async fn mission_gateway_payload_with_current_contract(
     state: &ControlPlaneState,
     mission: &CivilMission,
@@ -613,7 +679,7 @@ async fn mission_gateway_payload_with_current_contract(
             }),
         Err(_) => None,
     };
-    mission_gateway_payload(mission, task_contract.as_ref())
+    mission_gateway_payload_with_identities(state, mission, task_contract.as_ref()).await
 }
 
 fn mission_complete_command(
@@ -973,7 +1039,9 @@ pub(crate) async fn mission_publish(
         published_task_contract = Some(contract);
     }
 
-    let payload = mission_gateway_payload(&mission, published_task_contract.as_ref());
+    let payload =
+        mission_gateway_payload_with_identities(&state, &mission, published_task_contract.as_ref())
+            .await;
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.published".to_string(),
         timestamp: Utc::now().timestamp(),

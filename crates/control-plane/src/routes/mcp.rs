@@ -1364,7 +1364,9 @@ async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
     };
     let payload = present_tool_response_payload(tool_name, payload);
-    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+    let structured_content = structured_content_payload(&payload);
+    let text = serde_json::to_string_pretty(&structured_content)
+        .unwrap_or_else(|_| structured_content.to_string());
     json!({
         "content": [
             {
@@ -1372,7 +1374,7 @@ async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
                 "text": text
             }
         ],
-        "structuredContent": payload,
+        "structuredContent": structured_content,
         "isError": !status.is_success(),
         "_meta": {
             "httpStatus": status.as_u16()
@@ -1381,7 +1383,9 @@ async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
 }
 
 fn tool_error(payload: &Value) -> Value {
-    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+    let structured_content = structured_content_payload(payload);
+    let text = serde_json::to_string_pretty(&structured_content)
+        .unwrap_or_else(|_| structured_content.to_string());
     json!({
         "content": [
             {
@@ -1389,13 +1393,15 @@ fn tool_error(payload: &Value) -> Value {
                 "text": text
             }
         ],
-        "structuredContent": payload,
+        "structuredContent": structured_content,
         "isError": true
     })
 }
 
 fn tool_success(payload: &Value) -> Value {
-    let text = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let structured_content = structured_content_payload(payload);
+    let text = serde_json::to_string_pretty(&structured_content)
+        .unwrap_or_else(|_| structured_content.to_string());
     json!({
         "content": [
             {
@@ -1403,9 +1409,18 @@ fn tool_success(payload: &Value) -> Value {
                 "text": text
             }
         ],
-        "structuredContent": payload,
+        "structuredContent": structured_content,
         "isError": false
     })
+}
+
+fn structured_content_payload(payload: &Value) -> Value {
+    match payload {
+        Value::Object(_) => payload.clone(),
+        Value::Array(_) => json!({ "items": payload }),
+        Value::Null => json!({}),
+        _ => json!({ "value": payload }),
+    }
 }
 
 fn mcp_error(id: Option<&Value>, code: i64, message: impl Into<String>) -> Value {

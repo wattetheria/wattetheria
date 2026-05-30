@@ -47,6 +47,7 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
     SwarmTopicCursorView, SwarmTopicMessageView,
 };
+use wattetheria_kernel::swarm_sync::SwarmTopicActivitySnapshot;
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::open_local_wallet;
 use wattetheria_social::application::{
@@ -888,6 +889,33 @@ impl SwarmBridge for MockSwarmBridge {
             last_event_seq: self.messages.lock().await.len() as u64,
             updated_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),
         }))
+    }
+
+    async fn topic_activity_snapshot(
+        &self,
+        network_id: Option<&str>,
+        feed_key: &str,
+        scope_hint: &str,
+        limit: usize,
+        subscriber_node_id: Option<&str>,
+    ) -> anyhow::Result<SwarmTopicActivitySnapshot> {
+        let messages = self
+            .list_topic_messages(network_id, feed_key, scope_hint, limit, None, None)
+            .await?;
+        Ok(SwarmTopicActivitySnapshot {
+            generated_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),
+            subscriber_node_id: subscriber_node_id
+                .unwrap_or(&self.local_node_id)
+                .to_string(),
+            network_id: network_id.map_or_else(
+                || format!("local:{}", self.local_node_id),
+                ToOwned::to_owned,
+            ),
+            feed_key: feed_key.to_string(),
+            scope_hint: scope_hint.to_string(),
+            messages,
+            cursor: None,
+        })
     }
 
     async fn network_status(&self) -> anyhow::Result<SwarmNetworkStatusView> {

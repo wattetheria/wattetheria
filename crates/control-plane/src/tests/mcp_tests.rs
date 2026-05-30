@@ -662,6 +662,42 @@ async fn mcp_tools_call_writes_product_diagnostics() {
 }
 
 #[tokio::test]
+async fn mcp_array_payload_tools_return_object_structured_content() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    for (id, tool_name) in [
+        (1, "list_friends"),
+        (2, "list_agent_dm_threads"),
+        (3, "list_agent_dm_messages"),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": {}
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+        let structured_content = &response["result"]["structuredContent"];
+        assert!(structured_content.is_object(), "{tool_name}");
+        assert!(structured_content["items"].is_array(), "{tool_name}");
+        let text_payload: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert!(text_payload.is_object(), "{tool_name}");
+        assert!(text_payload["items"].is_array(), "{tool_name}");
+    }
+}
+
+#[tokio::test]
 async fn mcp_request_agent_friend_sends_relationship_action_to_remote_node() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -1394,6 +1430,12 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let create_hive = find_tool(tools, "create_hive");
     assert_schema_omits(create_hive, &["public_id"]);
+    assert_eq!(
+        create_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
+        Some(
+            "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`."
+        )
+    );
     let post_hive_message = find_tool(tools, "post_hive_message");
     assert_schema_omits(post_hive_message, &["public_id"]);
     let subscribe_hive = find_tool(tools, "subscribe_hive");
@@ -1638,7 +1680,7 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
                 "arguments": {
                     "public_id": "wrong-manual-value",
                     "feed_key": "mcp-topic-feed",
-                    "scope_hint": "local-test",
+                    "scope_hint": "group:mcp-topic-feed",
                     "display_name": "MCP Hive",
                     "projection_kind": "chat_room"
                 }
@@ -1652,6 +1694,52 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
     assert_eq!(
         content["hive"]["created_by_public_id"].as_str(),
         Some(local_public_id)
+    );
+}
+
+#[tokio::test]
+async fn mcp_create_hive_rejects_invalid_scope_hint_with_actionable_error() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_hive",
+                "arguments": {
+                    "feed_key": "wattetheria.hives",
+                    "scope_hint": "topic:bad-hive",
+                    "display_name": "Bad Hive Scope",
+                    "projection_kind": "chat_room"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["_meta"]["httpStatus"].as_u64(),
+        Some(400)
+    );
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["field"].as_str(), Some("scope_hint"));
+    assert_eq!(content["received"].as_str(), Some("topic:bad-hive"));
+    assert_eq!(
+        content["error"].as_str(),
+        Some(
+            "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>"
+        )
+    );
+    assert!(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("group:<id>")
     );
 }
 
@@ -1676,7 +1764,7 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates
                 "arguments": {
                     "public_id": "wrong-manual-value",
                     "feed_key": "codex_topic_smoke_test",
-                    "scope_hint": "global",
+                    "scope_hint": "group:codex-topic-smoke-test",
                     "display_name": "Codex Hive",
                     "projection_kind": "chat_room"
                 }
@@ -1710,7 +1798,7 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates
     let subscriptions = bridge.subscriptions.lock().await;
     assert_eq!(subscriptions.len(), 2);
     assert_eq!(subscriptions[1].2, "codex_topic_smoke_test");
-    assert_eq!(subscriptions[1].3, "global");
+    assert_eq!(subscriptions[1].3, "group:codex-topic-smoke-test");
     assert!(!subscriptions[1].4);
 }
 

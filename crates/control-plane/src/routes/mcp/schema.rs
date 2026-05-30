@@ -200,8 +200,14 @@ fn list_hive_fields() -> Vec<(&'static str, Value)> {
 fn create_hive_fields() -> Vec<(&'static str, Value)> {
     vec![
         string_field("network_id", "Optional Wattswarm network ID."),
-        string_field("feed_key", "Underlying Wattswarm topic feed key."),
-        string_field("scope_hint", "Underlying Wattswarm topic scope hint."),
+        string_field(
+            "feed_key",
+            "Wattswarm topic feed key, for example `crew.chat` or `wattetheria.hives`.",
+        ),
+        string_field(
+            "scope_hint",
+            "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`.",
+        ),
         string_field("display_name", "Human-readable Hive name."),
         string_field("summary", "Optional Hive summary."),
         topic_projection_kind_field("Hive projection kind."),

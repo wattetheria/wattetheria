@@ -270,6 +270,13 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
         tasks_json[0]["publisher_network_reward_watt"].as_i64(),
         Some(3)
     );
+    assert!(
+        tasks_json[0]["created_by_agent_identity"]
+            .as_str()
+            .is_some()
+    );
+    assert!(tasks_json[0]["claimer_agent_identity"].as_str().is_some());
+    assert!(tasks_json[0]["claimer_public_id"].as_str().is_some());
 
     let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
         .local_db
@@ -616,7 +623,16 @@ async fn client_export_excludes_local_friends_and_dm() {
             relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
-        messages: Mutex::new(Vec::new()),
+        messages: Mutex::new(vec![SwarmTopicMessageView {
+            message_id: "topic-msg-1".to_string(),
+            network_id: "local:test".to_string(),
+            feed_key: "hive.general".to_string(),
+            scope_hint: "org:crew".to_string(),
+            author_node_id: remote_node_id.clone(),
+            content: json!({"text": "remote crew update"}),
+            reply_to_message_id: None,
+            created_at: 1_710_000_115,
+        }]),
         relationship_views: Mutex::new(vec![SwarmPeerRelationshipView {
             remote_node_id: remote_node_id.clone(),
             relationship_state: "requested".to_string(),
@@ -766,6 +782,22 @@ async fn client_export_excludes_local_friends_and_dm() {
         1
     );
     assert_eq!(
+        export_json["payload"]["public_topics"][0]["last_message_author_agent_identity"].as_str(),
+        Some("Broker Borealis")
+    );
+    assert_eq!(
+        export_json["payload"]["public_topics"][0]["last_message_author"].as_str(),
+        Some("Broker Borealis")
+    );
+    assert_eq!(
+        export_json["payload"]["public_topics"][0]["created_by_agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
+        export_json["payload"]["public_topic_messages"][0]["author_agent_identity"].as_str(),
+        Some("Broker Borealis")
+    );
+    assert_eq!(
         export_json["payload"]["swarm_task_activity"]["tasks"]
             .as_array()
             .unwrap()
@@ -782,6 +814,18 @@ async fn client_export_excludes_local_friends_and_dm() {
     assert_eq!(
         export_json["payload"]["swarm_task_activity"]["tasks"][0]["task_type"].as_str(),
         Some("topic_consensus")
+    );
+    assert_eq!(
+        export_json["payload"]["public_topics"][0]["source_agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
+        export_json["payload"]["swarm_task_activity"]["tasks"][0]["source_agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
+        export_json["payload"]["swarm_task_activity"]["runs"][0]["source_agent_identity"].as_str(),
+        Some("Captain Aurora")
     );
 }
 
@@ -835,6 +879,10 @@ async fn client_export_is_public_and_signed() {
         )
         .await;
     assert_eq!(
+        export_json["payload"]["agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
         export_json["payload"]["operator"]["display_name"].as_str(),
         Some("Captain Aurora")
     );
@@ -843,6 +891,10 @@ async fn client_export_is_public_and_signed() {
         Some(2)
     );
     assert_eq!(export_json["payload"]["nodes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        export_json["payload"]["nodes"][0]["source_agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
     assert!(export_json["payload"]["nodes"][0].get("lat").is_none());
     assert!(export_json["payload"]["nodes"][0].get("lng").is_none());
     let verified = verify_payload(
@@ -910,6 +962,9 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
 #[tokio::test]
 async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let (_dir, app, token, _, state) = build_test_app(20);
+    let publisher_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    let mut events = state.stream_tx.subscribe();
     let created = authed_post_json(
         app.clone(),
         &token,
@@ -917,7 +972,7 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
         json!({
             "title": "Network lifecycle",
             "description": "Keep gateway lifecycle payloads complete",
-            "publisher": "publisher-public",
+            "publisher": publisher_public_id,
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
@@ -933,7 +988,21 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let mission_id = created["mission_id"].as_str().unwrap();
     let agent_did = "agent-worker";
 
-    let mut events = state.stream_tx.subscribe();
+    let published = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("publish event timeout")
+        .expect("publish event");
+    assert_eq!(published.kind, "mission.published");
+    assert_eq!(
+        published.payload["created_by_agent_identity"].as_str(),
+        Some("Captain Aurora")
+    );
+    assert!(
+        published.payload["source_agent_identity"]
+            .as_str()
+            .is_some()
+    );
+
     let _ = authed_post_json(
         app.clone(),
         &token,

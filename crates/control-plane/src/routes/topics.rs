@@ -7,6 +7,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::topics::{TopicCreateSpec, TopicProfile};
+use wattswarm_protocol::types::ScopeHint;
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{identity_context_response, resolve_identity_context};
@@ -14,6 +15,8 @@ use crate::state::{
     ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody, StreamEvent,
     TopicCreateBody, TopicMessageBody, TopicsQuery,
 };
+
+const HIVE_SCOPE_HINT_ERROR: &str = "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>";
 
 #[derive(Debug, Clone, Serialize)]
 struct TopicMessageView {
@@ -41,6 +44,36 @@ fn hive_profile_payload(topic: &TopicProfile) -> Value {
             .or_insert_with(|| Value::String(topic.topic_id.clone()));
     }
     value
+}
+
+fn attach_hive_creator_identity(
+    mut value: Value,
+    created_by_agent_identity: Option<&str>,
+) -> Value {
+    let Some(created_by_agent_identity) = created_by_agent_identity else {
+        return value;
+    };
+    if let Value::Object(object) = &mut value {
+        object
+            .entry("created_by_agent_identity".to_string())
+            .or_insert_with(|| Value::String(created_by_agent_identity.to_string()));
+        object
+            .entry("created_by_display_name".to_string())
+            .or_insert_with(|| Value::String(created_by_agent_identity.to_string()));
+    }
+    value
+}
+
+fn invalid_hive_scope_hint_response(scope_hint: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": HIVE_SCOPE_HINT_ERROR,
+            "field": "scope_hint",
+            "received": scope_hint,
+        })),
+    )
+        .into_response()
 }
 
 async fn resolve_network_id(
@@ -107,6 +140,9 @@ pub(crate) async fn create_hive(
         )
             .into_response();
     }
+    if ScopeHint::parse(&body.scope_hint).is_none() {
+        return invalid_hive_scope_hint_response(&body.scope_hint);
+    }
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
     let Some(public_id) = context.public_memory_owner.public.clone() else {
         return (
@@ -153,7 +189,14 @@ pub(crate) async fn create_hive(
         Err(error) => return internal_error(&error),
     };
 
-    let hive_payload = hive_profile_payload(&topic);
+    let created_by_agent_identity = context
+        .public_identity
+        .as_ref()
+        .map(|identity| identity.display_name.clone());
+    let hive_payload = attach_hive_creator_identity(
+        hive_profile_payload(&topic),
+        created_by_agent_identity.as_deref(),
+    );
     let payload = json!({"hive": hive_payload, "topic": topic.clone(), "public_id": public_id, "network_id": network_id});
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.created".to_string(),
@@ -177,7 +220,10 @@ pub(crate) async fn create_hive(
 
     Json(json!({
         "identity": identity_context_response(&context),
-        "hive": hive_profile_payload(&topic),
+        "hive": attach_hive_creator_identity(
+            hive_profile_payload(&topic),
+            created_by_agent_identity.as_deref(),
+        ),
     }))
     .into_response()
 }
@@ -473,15 +519,37 @@ pub(crate) async fn post_hive_message(
         return internal_error(&error);
     }
 
+    let created_at = Utc::now();
+    let controller_id = context.public_memory_owner.controller.clone();
+    let author_public_id = context.public_memory_owner.public.clone();
+    let author_agent_did = context.public_memory_owner.agent_did.clone();
+    let author_agent_identity = context
+        .public_identity
+        .as_ref()
+        .map(|identity| identity.display_name.clone());
+    let message_id = format!(
+        "{}:{}:{}",
+        hive.topic_id,
+        controller_id,
+        created_at.timestamp_millis()
+    );
     let hive_topic_id = hive.topic_id.clone();
     let payload = json!({
-        "controller_id": context.public_memory_owner.controller,
+        "message_id": message_id,
+        "controller_id": controller_id,
+        "author_id": author_public_id.clone().unwrap_or_else(|| author_agent_did.clone().unwrap_or_else(|| state.agent_did.clone())),
+        "author_agent_identity": author_agent_identity.clone(),
+        "author_display_name": author_agent_identity,
+        "author_public_id": author_public_id,
+        "author_node_id": author_agent_did.unwrap_or_else(|| state.agent_did.clone()),
         "network_id": network_id,
         "hive_id": hive_topic_id,
         "topic_id": hive.topic_id,
         "feed_key": hive.feed_key,
         "scope_hint": hive.scope_hint,
+        "content": body.content,
         "reply_to_message_id": body.reply_to_message_id,
+        "created_at": created_at.timestamp(),
     });
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.message.posted".to_string(),
