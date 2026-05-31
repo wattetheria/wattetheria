@@ -26,7 +26,7 @@ use wattetheria_kernel::civilization::identities::{
 use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
-use wattetheria_kernel::civilization::topics::TopicRegistry;
+use wattetheria_kernel::civilization::topics::HiveRegistry;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::{
     GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
@@ -197,7 +197,7 @@ fn build_test_state_with_bridge(
         wattetheria_kernel::relationships::RelationshipRegistry::default(),
     ));
     let organization_registry = Arc::new(Mutex::new(OrganizationRegistry::default()));
-    let topic_registry = Arc::new(Mutex::new(TopicRegistry::default()));
+    let hive_registry = Arc::new(Mutex::new(HiveRegistry::default()));
     let galaxy_state_loaded = GalaxyState::default_with_core_zones();
     let mut galaxy_map_registry_loaded = GalaxyMapRegistry::default();
     galaxy_map_registry_loaded
@@ -279,7 +279,7 @@ fn build_test_state_with_bridge(
         citizen_registry,
         relationship_registry,
         organization_registry,
-        topic_registry,
+        hive_registry,
         payment_ledger,
         galaxy_state,
         galaxy_map_registry,

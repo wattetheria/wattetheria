@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::topics::{TopicProfile, TopicProjectionKind};
+use wattetheria_kernel::civilization::topics::{HiveProfile, TopicProjectionKind};
 use wattetheria_kernel::relationships::RelationshipKind;
 use wattetheria_kernel::swarm_sync::{SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot};
 
@@ -114,7 +114,7 @@ fn latest_message(
 
 async fn topic_activity_or_empty(
     state: &ControlPlaneState,
-    topic: &TopicProfile,
+    topic: &HiveProfile,
 ) -> Option<SwarmTopicActivitySnapshot> {
     if let Some(snapshot) = load_cached_topic_activity(
         &state.local_db,
@@ -276,7 +276,7 @@ pub(crate) async fn build_hives_payload(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    let topics = state.topic_registry.lock().await.list();
+    let topics = state.hive_registry.lock().await.list();
     let identity_by_public_id = state
         .public_identity_registry
         .lock()
@@ -374,7 +374,7 @@ pub(crate) async fn build_public_topic_messages_snapshot_payload(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    let topics = state.topic_registry.lock().await.list();
+    let topics = state.hive_registry.lock().await.list();
     let author_lookup = author_lookup(state).await;
     let mut items = Vec::new();
     for topic in topics.into_iter().filter(|topic| topic.active).take(limit) {

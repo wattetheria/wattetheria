@@ -35,7 +35,7 @@ use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
-use wattetheria_kernel::civilization::topics::TopicRegistry;
+use wattetheria_kernel::civilization::topics::HiveRegistry;
 use wattetheria_kernel::economy::{EconomicPolicy, WalletBalanceState};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
@@ -68,7 +68,7 @@ struct CivilizationRuntimeState {
     citizen_registry: CitizenRegistry,
     relationship_registry: RelationshipRegistry,
     organization_registry: OrganizationRegistry,
-    topic_registry: TopicRegistry,
+    hive_registry: HiveRegistry,
     payment_ledger: PaymentLedger,
     galaxy_state: GalaxyState,
     galaxy_map_registry: GalaxyMapRegistry,
@@ -273,7 +273,7 @@ async fn build_control_state(
         citizen_registry: Arc::new(Mutex::new(civilization_state.citizen_registry)),
         relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
-        topic_registry: Arc::new(Mutex::new(civilization_state.topic_registry)),
+        hive_registry: Arc::new(Mutex::new(civilization_state.hive_registry)),
         payment_ledger: Arc::new(Mutex::new(civilization_state.payment_ledger)),
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
@@ -345,10 +345,7 @@ fn load_civilization_runtime_state(
         local_db::domain::ORGANIZATION_REGISTRY,
         &cli.data_dir.join("civilization/organizations.json"),
     )?;
-    let topic_registry: TopicRegistry = local_db.load_or_migrate(
-        local_db::domain::TOPIC_REGISTRY,
-        &cli.data_dir.join("civilization/topics.json"),
-    )?;
+    let hive_registry = load_or_migrate_hive_registry(local_db, cli)?;
     let payment_ledger: PaymentLedger = local_db.load_or_migrate(
         local_db::domain::PAYMENT_LEDGER,
         &cli.data_dir.join("payments/ledger.json"),
@@ -413,12 +410,34 @@ fn load_civilization_runtime_state(
         citizen_registry,
         relationship_registry,
         organization_registry,
-        topic_registry,
+        hive_registry,
         payment_ledger,
         galaxy_state,
         galaxy_map_registry,
         travel_state_registry,
     })
+}
+
+fn load_or_migrate_hive_registry(local_db: &LocalDb, cli: &Cli) -> Result<HiveRegistry> {
+    if let Some(registry) = local_db.load_domain::<HiveRegistry>(local_db::domain::HIVE_REGISTRY)? {
+        return Ok(registry);
+    }
+    if let Some(registry) =
+        local_db.load_domain::<HiveRegistry>(local_db::domain::LEGACY_TOPIC_REGISTRY)?
+    {
+        local_db.save_domain(local_db::domain::HIVE_REGISTRY, &registry)?;
+        return Ok(registry);
+    }
+    let legacy_json_path = cli.data_dir.join("civilization/topics.json");
+    if legacy_json_path.exists() {
+        let registry = HiveRegistry::load_or_new(&legacy_json_path)?;
+        local_db.save_domain(local_db::domain::HIVE_REGISTRY, &registry)?;
+        return Ok(registry);
+    }
+    local_db.load_or_migrate(
+        local_db::domain::HIVE_REGISTRY,
+        &cli.data_dir.join("civilization/hives.json"),
+    )
 }
 
 fn load_or_migrate_galaxy(

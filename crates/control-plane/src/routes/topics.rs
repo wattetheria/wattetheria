@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::topics::{TopicCreateSpec, TopicProfile};
+use wattetheria_kernel::civilization::topics::{HiveProfile, TopicCreateSpec};
 use wattswarm_protocol::types::ScopeHint;
 
 use crate::auth::{authorize, internal_error};
@@ -36,7 +36,7 @@ fn normalized_network_id(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn hive_profile_payload(topic: &TopicProfile) -> Value {
+fn hive_profile_payload(topic: &HiveProfile) -> Value {
     let mut value = serde_json::to_value(topic).unwrap_or_else(|_| json!({}));
     if let Value::Object(object) = &mut value {
         object
@@ -95,7 +95,7 @@ pub(crate) async fn list_hives(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let topics = state.topic_registry.lock().await;
+    let topics = state.hive_registry.lock().await;
     let mut items = topics.list_filtered(
         normalized_network_id(query.network_id.as_deref()),
         query.projection_kind.as_ref(),
@@ -233,9 +233,9 @@ async fn persist_created_topic(
     body: TopicCreateBody,
     public_id: &str,
     network_id: &str,
-) -> anyhow::Result<TopicProfile> {
-    let mut topics = state.topic_registry.lock().await;
-    let topic = topics.upsert_topic(TopicCreateSpec {
+) -> anyhow::Result<HiveProfile> {
+    let mut topics = state.hive_registry.lock().await;
+    let topic = topics.upsert_hive(TopicCreateSpec {
         network_id: Some(network_id.to_owned()),
         feed_key: body.feed_key,
         scope_hint: body.scope_hint,
@@ -250,7 +250,7 @@ async fn persist_created_topic(
         active: true,
     });
     state.local_db.save_domain(
-        wattetheria_kernel::local_db::domain::TOPIC_REGISTRY,
+        wattetheria_kernel::local_db::domain::HIVE_REGISTRY,
         &*topics,
     )?;
     Ok(topic)
@@ -577,8 +577,8 @@ async fn resolve_hive_profile(
     state: &ControlPlaneState,
     hive_id: &str,
     requested_network_id: Option<&str>,
-) -> Result<(TopicProfile, String), Response> {
-    let Some(hive) = state.topic_registry.lock().await.get(hive_id) else {
+) -> Result<(HiveProfile, String), Response> {
+    let Some(hive) = state.hive_registry.lock().await.get(hive_id) else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "hive not found", "hive_id": hive_id})),

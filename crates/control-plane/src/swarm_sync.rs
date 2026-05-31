@@ -14,7 +14,7 @@ use tokio::time::sleep;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Code, Request, Status};
 use tracing::{debug, warn};
-use wattetheria_kernel::civilization::topics::TopicProfile;
+use wattetheria_kernel::civilization::topics::HiveProfile;
 use wattetheria_kernel::local_db::LocalDb;
 use wattetheria_kernel::swarm_sync::{
     SwarmSocialProjectionSnapshot, SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot,
@@ -300,7 +300,7 @@ async fn run_topic_projection_supervisor(state: ControlPlaneState, grpc_endpoint
     let mut topic_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
 
     loop {
-        let topics = state.topic_registry.lock().await.list();
+        let topics = state.hive_registry.lock().await.list();
         let active_keys = topics
             .iter()
             .filter(|topic| topic.active)
@@ -337,7 +337,7 @@ async fn run_topic_projection_supervisor(state: ControlPlaneState, grpc_endpoint
 async fn run_topic_projection_stream(
     state: ControlPlaneState,
     grpc_endpoint: String,
-    topic: TopicProfile,
+    topic: HiveProfile,
 ) {
     loop {
         match topic_projection_session(state.clone(), &grpc_endpoint, &topic).await {
@@ -369,7 +369,7 @@ async fn run_topic_projection_stream(
 async fn topic_projection_session(
     state: ControlPlaneState,
     grpc_endpoint: &str,
-    topic: &TopicProfile,
+    topic: &HiveProfile,
 ) -> Result<()> {
     let mut client = connect_client(grpc_endpoint).await?;
     let request = Request::new(ProjectionStreamRequest {
@@ -569,7 +569,7 @@ fn topic_activity_cache_domain(
     }
 }
 
-fn topic_stream_key(topic: &TopicProfile) -> String {
+fn topic_stream_key(topic: &HiveProfile) -> String {
     match topic
         .network_id
         .as_deref()
@@ -597,7 +597,7 @@ mod tests {
 
     #[test]
     fn topic_stream_key_uses_feed_and_scope() {
-        let topic = TopicProfile {
+        let topic = HiveProfile {
             topic_id: "topic-1".to_string(),
             network_id: None,
             feed_key: "guild.chat".to_string(),

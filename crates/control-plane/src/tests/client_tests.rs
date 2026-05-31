@@ -818,8 +818,8 @@ async fn client_export_excludes_local_friends_and_dm() {
         );
     }
     {
-        let mut topics = state.topic_registry.lock().await;
-        topics.upsert_topic(wattetheria_kernel::civilization::topics::TopicCreateSpec {
+        let mut topics = state.hive_registry.lock().await;
+        topics.upsert_hive(wattetheria_kernel::civilization::topics::TopicCreateSpec {
             network_id: None,
             feed_key: "hive.general".to_string(),
             scope_hint: "org:crew".to_string(),

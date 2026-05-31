@@ -26,7 +26,7 @@ use wattetheria_kernel::civilization::profiles::{
     CitizenRegistry, Faction, RolePath, StrategyProfile,
 };
 use wattetheria_kernel::civilization::relationships::{RelationshipKind, RelationshipRegistry};
-use wattetheria_kernel::civilization::topics::{TopicProjectionKind, TopicRegistry};
+use wattetheria_kernel::civilization::topics::{HiveRegistry, TopicProjectionKind};
 use wattetheria_kernel::event_log::{EventLog, EventRecord};
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::IdentityCompatView;
@@ -123,7 +123,7 @@ pub struct ControlPlaneState {
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
     pub relationship_registry: Arc<Mutex<RelationshipRegistry>>,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
-    pub topic_registry: Arc<Mutex<TopicRegistry>>,
+    pub hive_registry: Arc<Mutex<HiveRegistry>>,
     pub payment_ledger: Arc<Mutex<PaymentLedger>>,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
     pub galaxy_map_registry: Arc<Mutex<GalaxyMapRegistry>>,

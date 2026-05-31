@@ -55,7 +55,8 @@ pub mod domain {
     pub const CITIZEN_REGISTRY: &str = "citizen_registry";
     pub const RELATIONSHIP_REGISTRY: &str = "relationship_registry";
     pub const ORGANIZATION_REGISTRY: &str = "organization_registry";
-    pub const TOPIC_REGISTRY: &str = "topic_registry";
+    pub const HIVE_REGISTRY: &str = "hive_registry";
+    pub const LEGACY_TOPIC_REGISTRY: &str = "topic_registry";
     pub const PAYMENT_LEDGER: &str = "payment_ledger";
     pub const GALAXY_STATE: &str = "galaxy_state";
     pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";

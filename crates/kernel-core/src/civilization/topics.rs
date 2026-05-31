@@ -17,7 +17,7 @@ pub enum TopicProjectionKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TopicProfile {
+pub struct HiveProfile {
     pub topic_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network_id: Option<String>,
@@ -54,41 +54,41 @@ pub struct TopicCreateSpec {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct TopicRegistry {
-    topics: BTreeMap<String, TopicProfile>,
+pub struct HiveRegistry {
+    #[serde(default, alias = "topics")]
+    hives: BTreeMap<String, HiveProfile>,
 }
 
-impl TopicRegistry {
+impl HiveRegistry {
     pub fn load_or_new(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create topic registry directory")?;
+            fs::create_dir_all(parent).context("create hive registry directory")?;
         }
         if !path.as_ref().exists() {
             return Ok(Self::default());
         }
-        let raw = fs::read_to_string(path.as_ref()).context("read topic registry")?;
+        let raw = fs::read_to_string(path.as_ref()).context("read hive registry")?;
         if raw.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_json::from_str(&raw).context("parse topic registry")
+        serde_json::from_str(&raw).context("parse hive registry")
     }
 
     pub fn persist(&self, path: impl AsRef<Path>) -> Result<()> {
         if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create topic registry directory")?;
+            fs::create_dir_all(parent).context("create hive registry directory")?;
         }
-        fs::write(path.as_ref(), serde_json::to_string_pretty(self)?)
-            .context("write topic registry")
+        fs::write(path.as_ref(), serde_json::to_string_pretty(self)?).context("write hive registry")
     }
 
-    pub fn upsert_topic(&mut self, spec: TopicCreateSpec) -> TopicProfile {
+    pub fn upsert_hive(&mut self, spec: TopicCreateSpec) -> HiveProfile {
         let topic_id = topic_id_for(spec.network_id.as_deref(), &spec.feed_key, &spec.scope_hint);
         let now = Utc::now().timestamp();
         let created_at = self
-            .topics
+            .hives
             .get(&topic_id)
             .map_or(now, |topic| topic.created_at);
-        let profile = TopicProfile {
+        let profile = HiveProfile {
             topic_id: topic_id.clone(),
             network_id: spec.network_id,
             feed_key: spec.feed_key,
@@ -105,18 +105,18 @@ impl TopicRegistry {
             created_at,
             updated_at: now,
         };
-        self.topics.insert(topic_id, profile.clone());
+        self.hives.insert(topic_id, profile.clone());
         profile
     }
 
     #[must_use]
-    pub fn get(&self, topic_id: &str) -> Option<TopicProfile> {
-        self.topics.get(topic_id).cloned()
+    pub fn get(&self, topic_id: &str) -> Option<HiveProfile> {
+        self.hives.get(topic_id).cloned()
     }
 
     #[must_use]
-    pub fn list(&self) -> Vec<TopicProfile> {
-        self.topics.values().cloned().collect()
+    pub fn list(&self) -> Vec<HiveProfile> {
+        self.hives.values().cloned().collect()
     }
 
     #[must_use]
@@ -127,9 +127,9 @@ impl TopicRegistry {
         organization_id: Option<&str>,
         mission_id: Option<&str>,
         include_inactive: bool,
-    ) -> Vec<TopicProfile> {
+    ) -> Vec<HiveProfile> {
         let network_id = normalized_network_id(network_id);
-        self.topics
+        self.hives
             .values()
             .filter(|topic| include_inactive || topic.active)
             .filter(|topic| {
@@ -162,12 +162,12 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn topic_registry_roundtrip_and_filtering_work() {
+    fn hive_registry_roundtrip_and_filtering_work() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("topics.json");
-        let mut registry = TopicRegistry::default();
+        let path = dir.path().join("hives.json");
+        let mut registry = HiveRegistry::default();
 
-        let topic = registry.upsert_topic(TopicCreateSpec {
+        let topic = registry.upsert_hive(TopicCreateSpec {
             network_id: Some("mainnet:test".to_string()),
             feed_key: "crew.chat".to_string(),
             scope_hint: "group:crew-7".to_string(),
@@ -183,7 +183,7 @@ mod tests {
         });
         registry.persist(&path).unwrap();
 
-        let loaded = TopicRegistry::load_or_new(&path).unwrap();
+        let loaded = HiveRegistry::load_or_new(&path).unwrap();
         assert_eq!(
             loaded.get(&topic.topic_id).unwrap().display_name,
             "Crew Seven"
@@ -193,7 +193,7 @@ mod tests {
             Some("mainnet:test")
         );
         assert_eq!(topic.topic_id, "mainnet:test@crew.chat@group:crew-7");
-        let subnet_topic = registry.upsert_topic(TopicCreateSpec {
+        let subnet_topic = registry.upsert_hive(TopicCreateSpec {
             network_id: Some("subnet:alpha".to_string()),
             feed_key: "crew.chat".to_string(),
             scope_hint: "group:crew-7".to_string(),
