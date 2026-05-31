@@ -527,6 +527,8 @@ pub struct TopicMessagesQuery {
 #[derive(Debug, Deserialize)]
 pub struct HiveMessagesQuery {
     pub network_id: Option<String>,
+    pub feed_key: Option<String>,
+    pub scope_hint: Option<String>,
     pub limit: Option<usize>,
     pub before_created_at: Option<u64>,
     pub before_message_id: Option<String>,
@@ -537,6 +539,14 @@ pub struct HiveMessagesQuery {
 pub struct HiveSubscriptionBody {
     pub public_id: Option<String>,
     pub network_id: Option<String>,
+    pub feed_key: Option<String>,
+    pub scope_hint: Option<String>,
+    pub display_name: Option<String>,
+    pub summary: Option<String>,
+    pub projection_kind: Option<TopicProjectionKind>,
+    pub organization_id: Option<String>,
+    pub mission_id: Option<String>,
+    pub why_this_exists: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -553,6 +563,8 @@ pub struct TopicMessageBody {
 pub struct HiveMessageBody {
     pub public_id: Option<String>,
     pub network_id: Option<String>,
+    pub feed_key: Option<String>,
+    pub scope_hint: Option<String>,
     pub content: Value,
     pub reply_to_message_id: Option<String>,
 }

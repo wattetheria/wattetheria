@@ -707,6 +707,7 @@ async fn client_export_excludes_local_friends_and_dm() {
             feed_key: "hive.general".to_string(),
             scope_hint: "org:crew".to_string(),
             author_node_id: remote_node_id.clone(),
+            agent_envelope: None,
             content: json!({"text": "remote crew update"}),
             reply_to_message_id: None,
             created_at: 1_710_000_115,

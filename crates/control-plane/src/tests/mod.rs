@@ -759,7 +759,14 @@ fn scoped_id(slug: &str, agent_did: &str) -> String {
     build_scoped_public_id(slug, &fp)
 }
 
-type TopicSubscriptionRecord = (Option<String>, String, String, String, bool);
+type TopicSubscriptionRecord = (
+    Option<String>,
+    String,
+    String,
+    String,
+    bool,
+    Option<SwarmAgentEnvelope>,
+);
 
 struct MockSwarmBridge {
     local_node_id: String,
@@ -817,6 +824,7 @@ impl SwarmBridge for MockSwarmBridge {
         feed_key: &str,
         scope_hint: &str,
         active: bool,
+        _agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> anyhow::Result<()> {
         self.subscriptions.lock().await.push((
             network_id.map(ToOwned::to_owned),
@@ -824,6 +832,7 @@ impl SwarmBridge for MockSwarmBridge {
             feed_key.to_string(),
             scope_hint.to_string(),
             active,
+            _agent_envelope,
         ));
         Ok(())
     }
@@ -835,6 +844,7 @@ impl SwarmBridge for MockSwarmBridge {
         scope_hint: &str,
         content: Value,
         reply_to_message_id: Option<String>,
+        agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> anyhow::Result<()> {
         let mut messages = self.messages.lock().await;
         let next_id = messages.len() + 1;
@@ -847,6 +857,7 @@ impl SwarmBridge for MockSwarmBridge {
             feed_key: feed_key.to_string(),
             scope_hint: scope_hint.to_string(),
             author_node_id: self.local_node_id.clone(),
+            agent_envelope,
             content,
             reply_to_message_id,
             created_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),

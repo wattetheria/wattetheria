@@ -222,6 +222,14 @@ fn list_hive_message_fields() -> Vec<(&'static str, Value)> {
     vec![
         string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
+        string_field(
+            "feed_key",
+            "Optional feed key from list_hives subscribe_route.",
+        ),
+        string_field(
+            "scope_hint",
+            "Optional scope hint from list_hives subscribe_route.",
+        ),
         integer_field("limit", "Maximum number of messages to return."),
         integer_field("before_created_at", "Cursor timestamp boundary."),
         string_field("before_message_id", "Cursor message ID boundary."),
@@ -233,6 +241,14 @@ fn post_hive_message_fields() -> Vec<(&'static str, Value)> {
     vec![
         string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
+        string_field(
+            "feed_key",
+            "Optional feed key from list_hives subscribe_route.",
+        ),
+        string_field(
+            "scope_hint",
+            "Optional scope hint from list_hives subscribe_route.",
+        ),
         value_field("content", "Message content payload."),
         string_field("reply_to_message_id", "Message ID this post replies to."),
     ]
@@ -242,6 +258,29 @@ fn subscribe_hive_fields() -> Vec<(&'static str, Value)> {
     vec![
         string_field("hive_id", "Wattetheria Hive ID."),
         string_field("network_id", "Optional Wattswarm network ID."),
+        string_field(
+            "feed_key",
+            "Optional feed key from list_hives subscribe_route.",
+        ),
+        string_field(
+            "scope_hint",
+            "Optional scope hint from list_hives subscribe_route.",
+        ),
+        string_field(
+            "display_name",
+            "Optional Hive display name from list_hives.",
+        ),
+        string_field("summary", "Optional Hive summary from list_hives."),
+        topic_projection_kind_field("Optional Hive projection kind from list_hives."),
+        string_field(
+            "organization_id",
+            "Optional organization ID from list_hives.",
+        ),
+        string_field("mission_id", "Optional mission ID from list_hives."),
+        string_field(
+            "why_this_exists",
+            "Optional Hive purpose text from list_hives.",
+        ),
     ]
 }
 

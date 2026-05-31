@@ -1,8 +1,8 @@
 //! SQLite-backed local storage for wattetheria agent state.
 //!
-//! Phase 1 stores each domain module as a JSON blob keyed by a domain name.
-//! This replaces the per-module JSON file pattern (`load_or_new` / `persist`)
-//! with local `SQLite` storage.
+//! Domain modules are stored in dedicated `SQLite` tables inside `wattetheria.db`.
+//! This replaces the earlier generic `domain_state` blob table and the
+//! per-module JSON file pattern (`load_or_new` / `persist`).
 //!
 //! `Connection` is wrapped in `std::sync::Mutex` so that `LocalDb` is both
 //! `Send` and `Sync`, which is required because `ControlPlaneState` is shared
@@ -14,17 +14,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 pub const PRIMARY_DB_FILE: &str = "wattetheria.db";
-pub const LEGACY_STATE_DB_FILE: &str = "state.db";
 pub const LEGACY_SOCIAL_DB_FILE: &str = "social.db";
 
 pub fn primary_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
     data_dir.as_ref().join(PRIMARY_DB_FILE)
-}
-
-pub fn legacy_state_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
-    data_dir.as_ref().join(LEGACY_STATE_DB_FILE)
 }
 
 pub fn legacy_social_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
@@ -34,16 +29,7 @@ pub fn legacy_social_db_path(data_dir: impl AsRef<Path>) -> PathBuf {
 pub fn prepare_primary_db(data_dir: impl AsRef<Path>) -> Result<PathBuf> {
     let data_dir = data_dir.as_ref();
     std::fs::create_dir_all(data_dir).context("create local db directory")?;
-    let primary = primary_db_path(data_dir);
-    if primary.exists() {
-        return Ok(primary);
-    }
-    let legacy_state = legacy_state_db_path(data_dir);
-    if legacy_state.exists() {
-        std::fs::copy(&legacy_state, &primary)
-            .with_context(|| format!("copy legacy state db from {}", legacy_state.display()))?;
-    }
-    Ok(primary)
+    Ok(primary_db_path(data_dir))
 }
 
 pub mod domain {
@@ -56,7 +42,6 @@ pub mod domain {
     pub const RELATIONSHIP_REGISTRY: &str = "relationship_registry";
     pub const ORGANIZATION_REGISTRY: &str = "organization_registry";
     pub const HIVE_REGISTRY: &str = "hive_registry";
-    pub const LEGACY_TOPIC_REGISTRY: &str = "topic_registry";
     pub const PAYMENT_LEDGER: &str = "payment_ledger";
     pub const GALAXY_STATE: &str = "galaxy_state";
     pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";
@@ -67,6 +52,95 @@ pub mod domain {
     pub const ECONOMIC_POLICY: &str = "economic_policy";
     pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
     pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
+}
+
+const DOMAIN_TABLES: &[(&str, &str)] = &[
+    (domain::GOVERNANCE, "governance_state"),
+    (domain::MAILBOX, "mailbox_state"),
+    (domain::MISSION_BOARD, "mission_board"),
+    (
+        domain::PUBLIC_IDENTITY_REGISTRY,
+        "public_identity_registry_state",
+    ),
+    (
+        domain::CONTROLLER_BINDING_REGISTRY,
+        "controller_binding_registry_state",
+    ),
+    (domain::CITIZEN_REGISTRY, "citizen_registry_state"),
+    (domain::RELATIONSHIP_REGISTRY, "relationship_registry_state"),
+    (domain::ORGANIZATION_REGISTRY, "organization_registry_state"),
+    (domain::HIVE_REGISTRY, "hive_registry"),
+    (domain::PAYMENT_LEDGER, "payment_ledger_state"),
+    (domain::GALAXY_STATE, "galaxy_state"),
+    (domain::GALAXY_MAP_REGISTRY, "galaxy_map_registry"),
+    (domain::TRAVEL_STATE_REGISTRY, "travel_state_registry"),
+    (domain::ORACLE_REGISTRY, "oracle_registry_state"),
+    (domain::ONLINE_PROOF, "online_proof_state"),
+    (domain::POLICY, "policy_state"),
+    (domain::ECONOMIC_POLICY, "economic_policy_state"),
+    (domain::WATT_BALANCE_STATE, "watt_balance_state"),
+    (domain::COLLECTIVE_MISSION_RUNS, "collective_mission_runs"),
+];
+
+fn domain_table_name(domain: &str) -> String {
+    DOMAIN_TABLES
+        .iter()
+        .find_map(|(key, table)| (*key == domain).then_some((*table).to_owned()))
+        .unwrap_or_else(|| format!("domain_{}", hex_encode(domain.as_bytes())))
+}
+
+fn domain_from_table_name(table: &str) -> Option<String> {
+    DOMAIN_TABLES
+        .iter()
+        .find_map(|(domain, known_table)| (*known_table == table).then_some((*domain).to_owned()))
+        .or_else(|| {
+            table
+                .strip_prefix("domain_")
+                .and_then(hex_decode)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        })
+}
+
+fn quote_ident(identifier: &str) -> String {
+    debug_assert!(
+        identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+    format!("\"{identifier}\"")
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_decode(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    let chars = value.as_bytes();
+    for chunk in chars.chunks_exact(2) {
+        let high = hex_value(chunk[0])?;
+        let low = hex_value(chunk[1])?;
+        bytes.push((high << 4) | low);
+    }
+    Some(bytes)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,19 +213,6 @@ impl LocalDb {
                 Err(error) => return Err(error).context("read schema version"),
             };
 
-        if current.unwrap_or(0) >= SCHEMA_VERSION {
-            return Ok(());
-        }
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS domain_state (
-                domain TEXT PRIMARY KEY,
-                payload TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );",
-        )
-        .context("create domain_state table")?;
-
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_action_commit_log (
                 commit_id TEXT PRIMARY KEY,
@@ -174,12 +235,13 @@ impl LocalDb {
         )
         .context("create agent_action_commit_log table")?;
 
-        // v1 → v2: convert integer timestamps to UTC strings.
-        if current == Some(1) {
-            conn.execute_batch(
-                "UPDATE domain_state SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', updated_at, 'unixepoch') WHERE typeof(updated_at) = 'integer';",
-            )
-            .context("migrate updated_at to UTC string")?;
+        for (_, table) in DOMAIN_TABLES {
+            Self::create_domain_table(&conn, table)?;
+        }
+
+        if current.unwrap_or(0) < SCHEMA_VERSION {
+            conn.execute_batch("DROP TABLE IF EXISTS domain_state;")
+                .context("drop legacy domain_state table")?;
         }
 
         if current.is_none() {
@@ -201,19 +263,23 @@ impl LocalDb {
 
     pub fn load_domain<T: serde::de::DeserializeOwned>(&self, domain: &str) -> Result<Option<T>> {
         let conn = self.conn();
+        let table = domain_table_name(domain);
+        if !Self::table_exists(&conn, &table)? {
+            return Ok(None);
+        }
         let json: String = match conn.query_row(
-            "SELECT payload FROM domain_state WHERE domain = ?1",
-            params![domain],
+            &format!("SELECT payload FROM {} WHERE id = 1", quote_ident(&table)),
+            [],
             |row| row.get(0),
         ) {
             Ok(json) => json,
             Err(QueryReturnedNoRows) => return Ok(None),
             Err(error) => {
-                return Err(error).with_context(|| format!("query domain state: {domain}"));
+                return Err(error).with_context(|| format!("query domain table: {domain}"));
             }
         };
         let value = serde_json::from_str(&json)
-            .with_context(|| format!("deserialize domain state: {domain}"))?;
+            .with_context(|| format!("deserialize domain table: {domain}"))?;
         Ok(Some(value))
     }
 
@@ -223,15 +289,22 @@ impl LocalDb {
         max_age_sec: i64,
     ) -> Result<Option<T>> {
         let conn = self.conn();
+        let table = domain_table_name(domain);
+        if !Self::table_exists(&conn, &table)? {
+            return Ok(None);
+        }
         let row: (String, String) = match conn.query_row(
-            "SELECT payload, updated_at FROM domain_state WHERE domain = ?1",
-            params![domain],
+            &format!(
+                "SELECT payload, updated_at FROM {} WHERE id = 1",
+                quote_ident(&table)
+            ),
+            [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         ) {
             Ok(row) => row,
             Err(QueryReturnedNoRows) => return Ok(None),
             Err(error) => {
-                return Err(error).with_context(|| format!("query domain state: {domain}"));
+                return Err(error).with_context(|| format!("query domain table: {domain}"));
             }
         };
         let updated = chrono::NaiveDateTime::parse_from_str(&row.1, "%Y-%m-%dT%H:%M:%SZ")
@@ -243,7 +316,7 @@ impl LocalDb {
             return Ok(None);
         }
         let value = serde_json::from_str(&row.0)
-            .with_context(|| format!("deserialize domain state: {domain}"))?;
+            .with_context(|| format!("deserialize domain table: {domain}"))?;
         Ok(Some(value))
     }
 
@@ -256,26 +329,29 @@ impl LocalDb {
 
     pub fn save_domain<T: serde::Serialize>(&self, domain: &str, value: &T) -> Result<()> {
         let json = serde_json::to_string(value)
-            .with_context(|| format!("serialize domain state: {domain}"))?;
+            .with_context(|| format!("serialize domain table: {domain}"))?;
         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        self.conn()
-            .execute(
-                "INSERT INTO domain_state (domain, payload, updated_at)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT (domain) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
-                params![domain, json, now],
-            )
-            .with_context(|| format!("upsert domain state: {domain}"))?;
+        let table = domain_table_name(domain);
+        let conn = self.conn();
+        Self::create_domain_table(&conn, &table)?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {} (id, payload, updated_at)
+                 VALUES (1, ?1, ?2)
+                 ON CONFLICT (id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                quote_ident(&table)
+            ),
+            params![json, now],
+        )
+        .with_context(|| format!("upsert domain table: {domain}"))?;
         Ok(())
     }
 
     pub fn delete_domain(&self, domain: &str) -> Result<()> {
+        let table = domain_table_name(domain);
         self.conn()
-            .execute(
-                "DELETE FROM domain_state WHERE domain = ?1",
-                params![domain],
-            )
-            .with_context(|| format!("delete domain state: {domain}"))?;
+            .execute(&format!("DROP TABLE IF EXISTS {}", quote_ident(&table)), [])
+            .with_context(|| format!("drop domain table: {domain}"))?;
         Ok(())
     }
 
@@ -397,16 +473,58 @@ impl LocalDb {
     pub fn list_domains(&self) -> Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT domain FROM domain_state ORDER BY domain")
-            .context("prepare list domains")?;
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .context("prepare list domain tables")?;
         let rows = stmt
             .query_map([], |row| row.get(0))
-            .context("query domains")?;
+            .context("query domain tables")?;
         let mut domains = Vec::new();
         for row in rows {
-            domains.push(row.context("read domain row")?);
+            let table: String = row.context("read domain table row")?;
+            let Some(domain) = domain_from_table_name(&table) else {
+                continue;
+            };
+            let has_payload: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM {} WHERE id = 1)",
+                        quote_ident(&table)
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .with_context(|| format!("query domain table payload: {domain}"))?;
+            if has_payload != 0 {
+                domains.push(domain);
+            }
         }
+        domains.sort();
         Ok(domains)
+    }
+
+    fn create_domain_table(conn: &Connection, table: &str) -> Result<()> {
+        conn.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS {} (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                payload TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );",
+            quote_ident(table)
+        ))
+        .with_context(|| format!("create domain table: {table}"))
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                )",
+                params![table],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("check domain table exists: {table}"))?;
+        Ok(exists != 0)
     }
 }
 
@@ -435,6 +553,22 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_does_not_create_domain_state() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let domain_state_exists: i64 = db
+            .conn()
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'domain_state'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(domain_state_exists, 0);
     }
 
     #[test]
@@ -501,6 +635,22 @@ mod tests {
     }
 
     #[test]
+    fn save_domain_uses_dedicated_table() {
+        let db = LocalDb::open_in_memory().unwrap();
+        db.save_domain(domain::HIVE_REGISTRY, &"hives").unwrap();
+
+        let saved: String = db
+            .conn()
+            .query_row(
+                "SELECT payload FROM hive_registry WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "\"hives\"");
+    }
+
+    #[test]
     fn open_file_based_db() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join(PRIMARY_DB_FILE);
@@ -515,9 +665,9 @@ mod tests {
     }
 
     #[test]
-    fn prepare_primary_db_copies_legacy_state_once() {
+    fn prepare_primary_db_ignores_legacy_state() {
         let dir = tempfile::tempdir().unwrap();
-        let legacy_path = legacy_state_db_path(dir.path());
+        let legacy_path = dir.path().join("state.db");
         let legacy = LocalDb::open(&legacy_path).unwrap();
         legacy.save_domain("legacy", &"value").unwrap();
         drop(legacy);
@@ -526,8 +676,8 @@ mod tests {
         assert_eq!(primary_path, primary_db_path(dir.path()));
 
         let db = LocalDb::open(&primary_path).unwrap();
-        let loaded: String = db.load_domain("legacy").unwrap().unwrap();
-        assert_eq!(loaded, "value");
+        let loaded: Option<String> = db.load_domain("legacy").unwrap();
+        assert!(loaded.is_none());
         db.save_domain("primary_only", &"new").unwrap();
         drop(db);
 

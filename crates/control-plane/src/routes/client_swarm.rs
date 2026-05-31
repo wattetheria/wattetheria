@@ -30,6 +30,39 @@ struct ClientTopicMessageView {
     created_at: u64,
 }
 
+fn envelope_author_public_id(
+    envelope: Option<&wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope>,
+) -> Option<String> {
+    envelope.and_then(|envelope| {
+        envelope
+            .message
+            .get("author_public_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| envelope.source_agent_id.clone())
+    })
+}
+
+fn envelope_author_display_name(
+    envelope: Option<&wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope>,
+) -> Option<String> {
+    envelope.and_then(|envelope| {
+        envelope
+            .message
+            .get("author_display_name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                envelope
+                    .source_agent_card
+                    .as_ref()
+                    .and_then(|card| card.card.get("name"))
+                    .and_then(Value::as_str)
+                    .map(|name| name.strip_prefix("Wattetheria ").unwrap_or(name).to_owned())
+            })
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ClientHiveView {
     topic_id: String,
@@ -148,6 +181,10 @@ fn topic_message_view(
         .get(&message.author_node_id)
         .cloned()
         .unwrap_or((None, None));
+    let envelope = message.agent_envelope.as_ref();
+    let author_public_id = author_public_id.or_else(|| envelope_author_public_id(envelope));
+    let author_display_name =
+        author_display_name.or_else(|| envelope_author_display_name(envelope));
     ClientTopicMessageView {
         message_id: message.message_id,
         author_node_id: message.author_node_id,

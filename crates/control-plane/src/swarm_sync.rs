@@ -657,6 +657,7 @@ mod tests {
                 feed_key: "guild.chat".to_string(),
                 scope_hint: "guild:defi".to_string(),
                 author_node_id: "node-1".to_string(),
+                agent_envelope: None,
                 content: json!({"text": "hello"}),
                 reply_to_message_id: None,
                 created_at: 10,

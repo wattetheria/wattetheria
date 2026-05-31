@@ -1639,7 +1639,7 @@
         if (activeLogMode === "mcp" && !diagnosticIsMcpTool(row)) return false;
         if (activeLogMode === "callbacks" && !diagnosticIsAgentCallback(row)) return false;
         if (activeLogMode === "eventbus" && !diagnosticIsEventBus(row)) return false;
-        if (activeLogMode === "wattswarm" && row.source !== "wattswarm") return false;
+        if (activeLogMode === "wattswarm" && (row.source !== "wattswarm" || diagnosticIsError(row))) return false;
         if (activeLogMode === "errors" && !diagnosticIsError(row)) return false;
         return true;
       });

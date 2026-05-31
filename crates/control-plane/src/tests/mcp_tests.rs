@@ -2029,6 +2029,95 @@ async fn mcp_list_hives_reads_configured_gateway_hives() {
     assert_gateway_hive_topic(&response);
 }
 
+#[tokio::test]
+async fn mcp_subscribe_hive_uses_gateway_subscribe_route_when_hive_is_not_local() {
+    let gateway_url = spawn_gateway_hives_server(gateway_hives_fixture()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+    std::fs::write(
+        dir.path().join("config.json"),
+        json!({"gateway_urls": [gateway_url]}).to_string(),
+    )
+    .unwrap();
+
+    let list_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_hives",
+                "arguments": {
+                    "limit": 2,
+                    "projection_kind": "working_group"
+                }
+            }
+        }),
+    )
+    .await;
+    let hive = &list_response["result"]["structuredContent"]["hives"][0];
+    let route = &hive["subscribe_route"];
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "subscribe_hive",
+                "arguments": {
+                    "hive_id": hive["hive_id"],
+                    "network_id": route["network_id"],
+                    "feed_key": route["feed_key"],
+                    "scope_hint": route["scope_hint"],
+                    "display_name": hive["display_name"],
+                    "summary": hive["summary"],
+                    "projection_kind": hive["projection_kind"],
+                    "organization_id": hive["organization_id"]
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let subscriptions = bridge.subscriptions.lock().await;
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].2, "wattetheria.hives");
+    assert_eq!(subscriptions[0].3, "group:hive-two");
+    assert!(subscriptions[0].4);
+
+    let client_hives = authed_get_json(app, &token, "/v1/client/hives?limit=10").await;
+    let hives = client_hives.as_array().unwrap();
+    let subscribed = hives
+        .iter()
+        .find(|item| {
+            item["feed_key"].as_str() == Some("wattetheria.hives")
+                && item["scope_hint"].as_str() == Some("group:hive-two")
+        })
+        .expect("subscribed gateway Hive is persisted locally");
+    assert_eq!(
+        subscribed["display_name"].as_str(),
+        Some("Gateway Hive Two")
+    );
+    assert_eq!(
+        subscribed["summary"].as_str(),
+        Some("Gateway Hive Two summary")
+    );
+    assert_eq!(
+        subscribed["projection_kind"].as_str(),
+        Some("working_group")
+    );
+}
+
 async fn spawn_gateway_hives_server(payload: Value) -> String {
     let gateway_app = axum::Router::new().route(
         "/api/hives",
@@ -2050,16 +2139,17 @@ fn gateway_hives_fixture() -> Value {
             "projection_kind": "guild",
             "status": "active",
             "feed_key": "wattetheria.hives",
-            "scope_hint": "hive:one",
+            "scope_hint": "group:hive-one",
             "source_node_id": "node-alpha"
         },
         {
             "topic_id": "hive-gateway-2",
             "display_name": "Gateway Hive Two",
+            "summary": "Gateway Hive Two summary",
             "projection_kind": "working_group",
             "status": "active",
             "feed_key": "wattetheria.hives",
-            "scope_hint": "hive:two",
+            "scope_hint": "group:hive-two",
             "source_node_id": "node-beta",
             "organization_id": "org-filter"
         },
@@ -2069,7 +2159,7 @@ fn gateway_hives_fixture() -> Value {
             "projection_kind": "guild",
             "status": "inactive",
             "feed_key": "wattetheria.hives",
-            "scope_hint": "hive:inactive"
+            "scope_hint": "group:hive-inactive"
         }
     ])
 }
@@ -2087,7 +2177,7 @@ fn assert_gateway_hive_topic(response: &Value) {
     );
     assert_eq!(
         hives[0]["subscribe_route"]["scope_hint"].as_str(),
-        Some("hive:two")
+        Some("group:hive-two")
     );
     assert_eq!(
         hives[0]["subscribe_route"]["subscribe_ready"].as_bool(),

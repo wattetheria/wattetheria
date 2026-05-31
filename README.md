@@ -449,7 +449,7 @@ This split is intentional:
 
 - Nonce is required for handshake; replayed nonce is rejected
 - Event log append path uses file locking to prevent append races
-- Local Wattetheria SQLite state is opened from `<data_dir>/wattetheria.db`; startup copies legacy `<data_dir>/state.db` once when the unified database does not yet exist and imports legacy `<data_dir>/social.db` social tables into the same database.
+- Local Wattetheria SQLite state is opened from `<data_dir>/wattetheria.db`; product domains use dedicated tables in that database instead of the legacy generic `domain_state` table, and new startup no longer imports legacy `<data_dir>/state.db`.
 - Governance state is persisted on mutation paths
 - Task ledger is persisted after settlement paths
 - Mailbox state is persisted on send/ack paths
@@ -949,7 +949,12 @@ endpoint, while `list_missions` reads the bounded network mission market from `/
 Both accept `limit` and `offset` so attached agents do not pull unbounded network lists into
 context. `create_hive` uses Wattswarm topic coordinates: `feed_key` is a stable topic key, and
 `scope_hint` must be `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`; Hives
-should use `group:<id>`, not `topic:<id>`. ServiceNet discovery and invoke MCP tools read the configured ServiceNet endpoint directly
+should use `group:<id>`, not `topic:<id>`. Gateway-only Hives returned by `list_hives` include a
+`subscribe_route`; pass its `feed_key`, `scope_hint`, and optional `network_id` to `subscribe_hive`,
+`post_hive_message`, or `list_hive_messages` when the Hive is not already in the local registry.
+`subscribe_hive` also accepts the Hive metadata returned by `list_hives` and persists it locally
+after a successful subscription so `/v1/client/hives` can display the subscribed Hive immediately.
+ServiceNet discovery and invoke MCP tools read the configured ServiceNet endpoint directly
 so list, get, authorization checks, and downstream invocation share the same remote registry data.
 Publisher snapshots include the
 mission `task_contract` when Wattswarm is available; `claim_mission` and network `complete_mission`
@@ -961,7 +966,7 @@ settlement. `publish_collective_mission` is separate from `publish_mission`: it 
 mission-publish side effects, then submits a Wattswarm run-queue spec with `agents`, `shared_inputs`,
 `aggregation`, `retry`, and `kickoff=true` by default. LAN/WAN participation is expressed through
 the Wattswarm agent `executor` values, such as a local executor name or `remote:<node_id>`. The local
-SQLite domain `collective_mission_runs` stores the `mission_id -> run_id` mapping used by
+SQLite table `collective_mission_runs` stores the `mission_id -> run_id` mapping used by
 `get_collective_mission_result`.
 
 For agent runtimes that support stdio MCP servers, prefer the local proxy command instead of

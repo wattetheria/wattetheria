@@ -422,18 +422,6 @@ fn load_or_migrate_hive_registry(local_db: &LocalDb, cli: &Cli) -> Result<HiveRe
     if let Some(registry) = local_db.load_domain::<HiveRegistry>(local_db::domain::HIVE_REGISTRY)? {
         return Ok(registry);
     }
-    if let Some(registry) =
-        local_db.load_domain::<HiveRegistry>(local_db::domain::LEGACY_TOPIC_REGISTRY)?
-    {
-        local_db.save_domain(local_db::domain::HIVE_REGISTRY, &registry)?;
-        return Ok(registry);
-    }
-    let legacy_json_path = cli.data_dir.join("civilization/topics.json");
-    if legacy_json_path.exists() {
-        let registry = HiveRegistry::load_or_new(&legacy_json_path)?;
-        local_db.save_domain(local_db::domain::HIVE_REGISTRY, &registry)?;
-        return Ok(registry);
-    }
     local_db.load_or_migrate(
         local_db::domain::HIVE_REGISTRY,
         &cli.data_dir.join("civilization/hives.json"),

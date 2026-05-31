@@ -371,25 +371,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
-    let bridge = Arc::new(MockSwarmBridge {
-        fail_accept_and_finalize: false,
-        local_node_id: identity.agent_did.clone(),
-        agent_stats: BTreeMap::new(),
-        network_status: SwarmNetworkStatusView {
-            running: true,
-            mode: "local".to_string(),
-            peer_protocol_distribution: BTreeMap::new(),
-        },
-        peers: Vec::new(),
-        subscriptions: Mutex::new(Vec::new()),
-        messages: Mutex::new(Vec::new()),
-        relationship_views: Mutex::new(Vec::new()),
-        relationship_commands: Mutex::new(Vec::new()),
-        dm_threads: Mutex::new(Vec::new()),
-        dm_messages: Mutex::new(BTreeMap::new()),
-        dm_commands: Mutex::new(Vec::new()),
-        payment_commands: Mutex::new(Vec::new()),
-    });
+    let bridge = topic_routes_mock_bridge(&identity);
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
         build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
@@ -454,10 +436,64 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
         Some(created["hive"]["created_by_public_id"].as_str().unwrap())
     );
 
+    assert_hive_proxy_bridge_calls(&bridge, created_by_agent_identity).await;
+}
+
+fn topic_routes_mock_bridge(identity: &Identity) -> Arc<MockSwarmBridge> {
+    Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
+        local_node_id: identity.agent_did.clone(),
+        agent_stats: BTreeMap::new(),
+        network_status: SwarmNetworkStatusView {
+            running: true,
+            mode: "local".to_string(),
+            peer_protocol_distribution: BTreeMap::new(),
+        },
+        peers: Vec::new(),
+        subscriptions: Mutex::new(Vec::new()),
+        messages: Mutex::new(Vec::new()),
+        relationship_views: Mutex::new(Vec::new()),
+        relationship_commands: Mutex::new(Vec::new()),
+        dm_threads: Mutex::new(Vec::new()),
+        dm_messages: Mutex::new(BTreeMap::new()),
+        dm_commands: Mutex::new(Vec::new()),
+        payment_commands: Mutex::new(Vec::new()),
+    })
+}
+
+async fn assert_hive_proxy_bridge_calls(
+    bridge: &Arc<MockSwarmBridge>,
+    created_by_agent_identity: &str,
+) {
     let subscriptions = bridge.subscriptions.lock().await;
     assert_eq!(subscriptions.len(), 1);
     assert_eq!(subscriptions[0].0.as_deref(), Some("mainnet:test"));
     assert_eq!(subscriptions[0].2, "crew.chat");
+    let subscription_envelope = subscriptions[0]
+        .5
+        .as_ref()
+        .expect("hive create subscription carries agent envelope");
+    assert_eq!(
+        subscription_envelope.capability.as_deref(),
+        Some("hive.create")
+    );
+    assert_eq!(
+        subscription_envelope.message["author_display_name"].as_str(),
+        Some(created_by_agent_identity)
+    );
     drop(subscriptions);
-    assert_eq!(bridge.messages.lock().await.len(), 1);
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 1);
+    let message_envelope = messages[0]
+        .agent_envelope
+        .as_ref()
+        .expect("hive initial message carries agent envelope");
+    assert_eq!(
+        message_envelope.capability.as_deref(),
+        Some("hive.message.post")
+    );
+    assert_eq!(
+        message_envelope.message["author_display_name"].as_str(),
+        Some(created_by_agent_identity)
+    );
 }

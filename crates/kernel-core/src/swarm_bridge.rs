@@ -8,7 +8,7 @@ use crate::swarm_sync::{
 use crate::types::AgentStats;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,8 @@ pub struct SwarmTopicMessageView {
     pub feed_key: String,
     pub scope_hint: String,
     pub author_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
     pub content: Value,
     pub reply_to_message_id: Option<String>,
     pub created_at: u64,
@@ -128,11 +130,50 @@ pub struct SwarmAgentEnvelope {
     pub capability: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_agent_card: Option<SwarmSourceAgentCard>,
+    #[serde(
+        default,
+        alias = "message_json",
+        deserialize_with = "deserialize_envelope_json"
+    )]
     pub message: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "extensions_json",
+        deserialize_with = "deserialize_optional_envelope_json"
+    )]
     pub extensions: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+fn deserialize_envelope_json<'de, D>(deserializer: D) -> std::result::Result<Value, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        Some(Value::String(raw)) if raw.trim().is_empty() => Ok(Value::Null),
+        Some(Value::String(raw)) => serde_json::from_str(&raw).map_err(serde::de::Error::custom),
+        Some(value) => Ok(value),
+        None => Ok(Value::Null),
+    }
+}
+
+fn deserialize_optional_envelope_json<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::String(raw)) if raw.trim().is_empty() => Ok(None),
+        Some(Value::String(raw)) => serde_json::from_str(&raw)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(value) => Ok(Some(value)),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -265,6 +306,7 @@ pub trait SwarmBridge: Send + Sync {
         _feed_key: &str,
         _scope_hint: &str,
         _active: bool,
+        _agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         Err(anyhow!("wattswarm topic subscriptions are not configured"))
     }
@@ -276,6 +318,7 @@ pub trait SwarmBridge: Send + Sync {
         _scope_hint: &str,
         _content: Value,
         _reply_to_message_id: Option<String>,
+        _agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         Err(anyhow!("wattswarm topic messages are not configured"))
     }
@@ -480,9 +523,17 @@ impl SwarmBridge for HybridSwarmBridge {
         feed_key: &str,
         scope_hint: &str,
         active: bool,
+        agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         self.topic_api()?
-            .subscribe_topic(network_id, subscriber_id, feed_key, scope_hint, active)
+            .subscribe_topic(
+                network_id,
+                subscriber_id,
+                feed_key,
+                scope_hint,
+                active,
+                agent_envelope,
+            )
             .await
     }
 
@@ -493,6 +544,7 @@ impl SwarmBridge for HybridSwarmBridge {
         scope_hint: &str,
         content: Value,
         reply_to_message_id: Option<String>,
+        agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         self.topic_api()?
             .post_topic_message(
@@ -501,6 +553,7 @@ impl SwarmBridge for HybridSwarmBridge {
                 scope_hint,
                 content,
                 reply_to_message_id,
+                agent_envelope,
             )
             .await
     }
@@ -714,6 +767,7 @@ impl HttpWattswarmApi {
         feed_key: &str,
         scope_hint: &str,
         active: bool,
+        agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         self.client
             .post(format!("{}/api/topic/subscriptions", self.base_url))
@@ -723,6 +777,7 @@ impl HttpWattswarmApi {
                 "feed_key": feed_key,
                 "scope_hint": scope_hint,
                 "active": active,
+                "agent_envelope": agent_envelope,
             }))
             .send()
             .await?
@@ -737,6 +792,7 @@ impl HttpWattswarmApi {
         scope_hint: &str,
         content: Value,
         reply_to_message_id: Option<String>,
+        agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> Result<()> {
         self.client
             .post(format!("{}/api/topic/messages", self.base_url))
@@ -746,6 +802,7 @@ impl HttpWattswarmApi {
                 "scope_hint": scope_hint,
                 "content": content,
                 "reply_to_message_id": reply_to_message_id,
+                "agent_envelope": agent_envelope,
             }))
             .send()
             .await?
