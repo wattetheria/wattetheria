@@ -1076,6 +1076,14 @@
       `;
     }
 
+    function scrollDmThreadToLatest(container) {
+      const bubbleList = container.querySelector(".dm-bubble-list");
+      if (!bubbleList) return;
+      requestAnimationFrame(() => {
+        bubbleList.scrollTop = bubbleList.scrollHeight;
+      });
+    }
+
     function renderDmMessages(payload) {
       const target = qs("dm-list");
       const conversations = groupDmConversations(payload);
@@ -1112,6 +1120,7 @@
           <div class="dm-thread-view">${renderDmThread(activeConversation)}</div>
         </div>
       `;
+      scrollDmThreadToLatest(target);
       target.querySelectorAll("[data-dm-thread]").forEach((button) => {
         button.addEventListener("click", () => {
           activeDmThreadKey = button.dataset.dmThread || "";
@@ -1219,9 +1228,9 @@
       `;
       const loading = hiveMessageLoadingKey === key;
       const error = hiveMessageErrors.get(key);
-      const cached = hiveMessageCache.get(key);
-      let rows = safeArray(cached);
-      if (!rows.length && !loading && !error) {
+      const hasCached = hiveMessageCache.has(key);
+      let rows = hasCached ? safeArray(hiveMessageCache.get(key)) : [];
+      if (!hasCached && !loading && !error) {
         rows = fallbackHiveMessages(payload, activeHive);
       }
       if (loading && !rows.length) {
@@ -1250,7 +1259,7 @@
     function fallbackHiveMessages(payload, hive) {
       const rows = safeArray(payload.public_topic_messages);
       const scoped = rows.some((row) => row.topic_id || row.hive_id || row.feed_key || row.scope_hint);
-      if (!scoped) return rows;
+      if (!scoped) return [];
       const key = hiveKey(hive);
       return rows.filter((row) =>
         row.topic_id === hive.topic_id

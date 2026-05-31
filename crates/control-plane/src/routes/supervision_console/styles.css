@@ -12,6 +12,8 @@
       --green: #2b8a3e;
       --red: #9f1f1f;
       --blue: #1f4e8b;
+      --console-thread-workspace-height: min(44rem, calc(100vh - 18rem));
+      --console-social-stack-offset: 10.9rem;
     }
 
     * { box-sizing: border-box; }
@@ -331,14 +333,18 @@
     .swarm-hives-layout {
       display: grid;
       grid-template-columns: minmax(20rem, 0.42fr) minmax(0, 1fr);
-      min-height: min(68vh, 48rem);
+      height: calc(var(--console-thread-workspace-height) + var(--console-social-stack-offset));
+      min-height: 28rem;
+      overflow: hidden;
     }
 
     .hive-sidebar {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       gap: 0;
+      min-height: 0;
       min-width: 0;
+      overflow: hidden;
       border-right: 3px solid var(--line);
       background: var(--surface);
     }
@@ -360,12 +366,12 @@
     }
 
     .hive-list {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 0.75rem;
       min-height: 0;
-      max-height: 68vh;
-      overflow: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
       padding: 0.9rem;
     }
 
@@ -378,6 +384,7 @@
       border: 2px solid rgba(43, 37, 32, 0.35);
       background: rgba(255, 246, 232, 0.78);
       color: var(--ink);
+      flex: 0 0 auto;
       font: inherit;
       text-align: left;
       cursor: pointer;
@@ -435,7 +442,9 @@
     .hive-thread {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      min-height: 0;
       min-width: 0;
+      overflow: hidden;
       background: #fffaf0;
     }
 
@@ -485,12 +494,12 @@
     }
 
     .hive-messages-list {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 1.15rem;
       min-height: 0;
-      max-height: 68vh;
-      overflow: auto;
+      overflow-x: hidden;
+      overflow-y: auto;
       padding: 1.35rem 1.25rem;
     }
 
@@ -499,6 +508,7 @@
       grid-template-columns: auto minmax(0, 1fr);
       gap: 0.85rem;
       align-items: start;
+      flex: 0 0 auto;
     }
 
     .hive-message-avatar {
@@ -1099,7 +1109,7 @@
     .dm-workspace {
       display: grid;
       grid-template-columns: minmax(13rem, 19rem) minmax(0, 1fr);
-      height: min(44rem, calc(100vh - 18rem));
+      height: var(--console-thread-workspace-height);
       min-height: 28rem;
       border: 2px solid var(--line);
       background: #fff;
@@ -1107,8 +1117,8 @@
     }
 
     .dm-session-list {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 0.55rem;
       padding: 0.65rem;
       border-right: 2px solid var(--line);
@@ -1126,6 +1136,7 @@
       border: 2px solid var(--line);
       background: #fff;
       color: var(--ink);
+      flex: 0 0 auto;
       text-align: left;
       text-transform: none;
       letter-spacing: 0;
@@ -1165,10 +1176,11 @@
 
     .dm-thread-view {
       display: grid;
-      grid-template-rows: auto auto 1fr;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      min-height: 0;
       min-width: 0;
       background: #fffdf4;
-      overflow-y: auto;
+      overflow: hidden;
     }
 
     .dm-thread-head-shell {
@@ -1365,16 +1377,19 @@
     }
 
     .dm-bubble-list {
-      display: grid;
-      align-content: start;
+      display: flex;
+      flex-direction: column;
       gap: 1.2rem;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
       padding: 1rem 1.1rem 1.4rem;
-      min-height: 22rem;
     }
 
     .dm-bubble-row {
       display: grid;
       gap: 0.35rem;
+      flex: 0 0 auto;
       max-width: min(34rem, 76%);
     }
 
@@ -1464,11 +1479,6 @@
       .hive-sidebar {
         border-right: 0;
         border-bottom: 3px solid var(--line);
-      }
-
-      .hive-list,
-      .hive-messages-list {
-        max-height: none;
       }
 
       .hive-thread-header {

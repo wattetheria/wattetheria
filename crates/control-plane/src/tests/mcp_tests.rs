@@ -1429,7 +1429,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
 
     let create_hive = find_tool(tools, "create_hive");
-    assert_schema_omits(create_hive, &["public_id"]);
+    assert_schema_omits(create_hive, &["public_id", "initial_message"]);
     assert_eq!(
         create_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
         Some(

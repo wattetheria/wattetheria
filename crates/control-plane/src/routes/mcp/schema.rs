@@ -215,7 +215,6 @@ fn create_hive_fields() -> Vec<(&'static str, Value)> {
         string_field("mission_id", "Mission linked to this Hive."),
         string_array_field("participant_public_ids", "Initial participant public IDs."),
         string_field("why_this_exists", "Reason this Hive exists."),
-        value_field("initial_message", "Optional first Hive message payload."),
     ]
 }
 
