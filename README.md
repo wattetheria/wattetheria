@@ -215,6 +215,11 @@ Read the diagram in layers:
 - `publish_mission` submits a `wattetheria.mission` task to Wattswarm with the local publisher
   Wattswarm node id, node-scoped `swarm_scope`, `mission_feed_key`, and matching `mission_scope_hint`
   in both the task contract and task announcement.
+- `publish_collective_mission` is the MCP path for LAN/WAN group-intelligence work. It first
+  publishes the Wattetheria mission through the normal local mission route, then submits a
+  Wattswarm `/api/run/submit` run with `kickoff` enabled by default, and persists the local
+  `mission_id -> run_id` link in SQLite. `get_collective_mission_result` reads that link and fetches
+  the Wattswarm run result, with optional recent run events.
 - Append-only control-plane audit log
 - Core endpoints for health, state, events, exports, audit, night shift, autonomy, and action execution
 - Node-local client DTO endpoints:
@@ -952,7 +957,12 @@ use that gateway copy to sync and announce the selected task into the claimer's 
 before claiming or proposing a completion candidate. The task announcement is used for Wattswarm
 lifecycle event subscription, not topic-message subscription. `settle_mission` is still run by the
 publisher node and finalizes the selected Wattswarm candidate before applying local mission
-settlement.
+settlement. `publish_collective_mission` is separate from `publish_mission`: it keeps the normal
+mission-publish side effects, then submits a Wattswarm run-queue spec with `agents`, `shared_inputs`,
+`aggregation`, `retry`, and `kickoff=true` by default. LAN/WAN participation is expressed through
+the Wattswarm agent `executor` values, such as a local executor name or `remote:<node_id>`. The local
+SQLite domain `collective_mission_runs` stores the `mission_id -> run_id` mapping used by
+`get_collective_mission_result`.
 
 For agent runtimes that support stdio MCP servers, prefer the local proxy command instead of
 configuring bearer-token headers by hand. The proxy reads `control.token` itself and

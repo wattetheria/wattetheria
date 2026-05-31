@@ -136,6 +136,12 @@ pub struct SwarmAgentEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmRunSubmitCommand {
+    pub spec: Value,
+    pub kickoff: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmPeerRelationshipView {
     pub remote_node_id: String,
     pub relationship_state: String,
@@ -353,6 +359,10 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn submit_task(&self, _contract: TaskContract) -> Result<Value> {
         Err(anyhow!("wattswarm task submit is not configured"))
+    }
+
+    async fn submit_run(&self, _command: SwarmRunSubmitCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm run submit is not configured"))
     }
 
     async fn import_task_contract(&self, _contract: TaskContract) -> Result<Value> {
@@ -587,6 +597,10 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn submit_task(&self, contract: TaskContract) -> Result<Value> {
         self.topic_api()?.submit_task(contract).await
+    }
+
+    async fn submit_run(&self, command: SwarmRunSubmitCommand) -> Result<Value> {
+        self.topic_api()?.submit_run(command).await
     }
 
     async fn import_task_contract(&self, contract: TaskContract) -> Result<Value> {
@@ -975,6 +989,27 @@ impl HttpWattswarmApi {
         }
         Err(anyhow!(
             "wattswarm task submit failed with status {status}: {body}"
+        ))
+    }
+
+    async fn submit_run(&self, command: SwarmRunSubmitCommand) -> Result<Value> {
+        let response = self
+            .client
+            .post(format!("{}/api/run/submit", self.base_url))
+            .json(&command)
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("read wattswarm run submit response")?;
+        if status.is_success() {
+            return serde_json::from_str::<Value>(&body)
+                .context("decode wattswarm run submit response");
+        }
+        Err(anyhow!(
+            "wattswarm run submit failed with status {status}: {body}"
         ))
     }
 

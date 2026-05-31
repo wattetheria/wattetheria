@@ -22,6 +22,8 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "unsubscribe_hive",
     "list_missions",
     "publish_mission",
+    "publish_collective_mission",
+    "get_collective_mission_result",
     "claim_mission",
     "complete_mission",
     "settle_mission",
@@ -1416,6 +1418,42 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         None
     );
 
+    let publish_collective_mission = find_tool(tools, "publish_collective_mission");
+    assert_schema_requires(
+        publish_collective_mission,
+        &[
+            "title",
+            "description",
+            "domain",
+            "reward",
+            "payload",
+            "agents",
+        ],
+    );
+    assert_schema_omits(publish_collective_mission, &["publisher", "publisher_kind"]);
+    assert_eq!(
+        publish_collective_mission["inputSchema"]["properties"]["agents"]["minItems"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        publish_collective_mission["inputSchema"]["properties"]["kickoff"]["type"].as_str(),
+        Some("boolean")
+    );
+
+    let collective_result = find_tool(tools, "get_collective_mission_result");
+    assert!(
+        collective_result["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("mission_id")
+    );
+    assert!(
+        collective_result["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("run_id")
+    );
+
     let propose_payment = find_tool(tools, "propose_agent_payment");
     assert_schema_requires(propose_payment, &["amount", "currency", "rail"]);
     assert_schema_omits(propose_payment, &["public_id"]);
@@ -1659,6 +1697,127 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
     assert_eq!(
         mission["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
         mission["mission_scope_hint"].as_str()
+    );
+}
+
+fn collective_mission_request() -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "publish_collective_mission",
+            "arguments": {
+                "title": "Collective MCP mission",
+                "description": "Run several agents through Wattswarm.",
+                "publisher": "wrong-manual-value",
+                "publisher_kind": "system",
+                "domain": "trade",
+                "reward": {
+                    "agent_watt": 10,
+                    "reputation": 0,
+                    "capacity": 0,
+                    "treasury_share_watt": 0
+                },
+                "payload": {"objective": "collective-intel"},
+                "agents": [
+                    {
+                        "agent_id": "local-planner",
+                        "executor": "rules",
+                        "prompt": "Plan the route."
+                    },
+                    {
+                        "agent_id": "remote-scout",
+                        "executor": "remote:12D3KooScout",
+                        "prompt": "Check remote evidence."
+                    }
+                ],
+                "aggregation": {"mode": "MAJORITY"},
+                "kickoff": true
+            }
+        }
+    })
+}
+
+fn collective_mission_result_request(mission_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_collective_mission_result",
+            "arguments": {
+                "mission_id": mission_id,
+                "include_events": true,
+                "events_limit": 10
+            }
+        }
+    })
+}
+
+fn assert_collective_publish_result<'a>(
+    response: &'a Value,
+    local_public_id: &str,
+) -> (&'a str, &'a str) {
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        content["mission"]["publisher"].as_str(),
+        Some(local_public_id)
+    );
+    assert_eq!(
+        content["mission"]["publisher_kind"].as_str(),
+        Some("player")
+    );
+    let mission_id = content["mission_id"].as_str().expect("mission id");
+    let run_id = content["run_id"].as_str().expect("run id");
+    assert_eq!(content["wattswarm_run"]["kicked_off"].as_bool(), Some(true));
+    assert_eq!(
+        content["run_spec"]["task_type"].as_str(),
+        Some("wattetheria.collective_mission")
+    );
+    assert_eq!(
+        content["run_spec"]["shared_inputs"]["mission_id"].as_str(),
+        Some(mission_id)
+    );
+    assert_eq!(
+        content["run_spec"]["agents"][1]["executor"].as_str(),
+        Some("remote:12D3KooScout")
+    );
+    (mission_id, run_id)
+}
+
+#[tokio::test]
+async fn mcp_publish_collective_mission_submits_wattswarm_run_and_links_result() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+
+    let response = mcp_request(app.clone(), &token, collective_mission_request()).await;
+    let (mission_id, run_id) = assert_collective_publish_result(&response, local_public_id);
+
+    let persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted["runs"][mission_id]["run_id"].as_str(),
+        Some(run_id)
+    );
+
+    let result_response =
+        mcp_request(app, &token, collective_mission_result_request(mission_id)).await;
+    let result = &result_response["result"]["structuredContent"];
+    assert_eq!(result_response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(result["run_id"].as_str(), Some(run_id));
+    assert_eq!(
+        result["result"]["result"]["status"].as_str(),
+        Some("finalized")
+    );
+    assert_eq!(
+        result["events"]["events"][0]["event_type"].as_str(),
+        Some("RUN_KICKOFF")
     );
 }
 

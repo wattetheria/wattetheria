@@ -43,11 +43,13 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
     SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand, SwarmSourceAgentCard,
-    SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskProposeCandidateCommand,
-    SwarmTopicCursorView, SwarmTopicMessageView,
+    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
+    SwarmRunSubmitCommand, SwarmSourceAgentCard, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
+    SwarmTaskProposeCandidateCommand, SwarmTopicCursorView, SwarmTopicMessageView,
 };
-use wattetheria_kernel::swarm_sync::SwarmTopicActivitySnapshot;
+use wattetheria_kernel::swarm_sync::{
+    SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTopicActivitySnapshot,
+};
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::open_local_wallet;
 use wattetheria_social::application::{
@@ -1094,6 +1096,19 @@ impl SwarmBridge for MockSwarmBridge {
         }))
     }
 
+    async fn submit_run(&self, command: SwarmRunSubmitCommand) -> anyhow::Result<Value> {
+        let run_id = command
+            .spec
+            .get("run_id")
+            .and_then(Value::as_str)
+            .unwrap_or("mock-collective-run");
+        Ok(json!({
+            "ok": true,
+            "run_id": run_id,
+            "kicked_off": command.kickoff,
+        }))
+    }
+
     async fn import_task_contract(&self, contract: TaskContract) -> anyhow::Result<Value> {
         let scope_hint = contract
             .inputs
@@ -1162,6 +1177,33 @@ impl SwarmBridge for MockSwarmBridge {
             "task_id": task_id,
             "candidate_id": candidate_id,
         }))
+    }
+
+    async fn run_result_snapshot(&self, run_id: &str) -> anyhow::Result<SwarmRunResultSnapshot> {
+        Ok(SwarmRunResultSnapshot {
+            ok: true,
+            result: json!({
+                "run_id": run_id,
+                "status": "finalized",
+                "aggregation": {
+                    "final_answer": "mock collective result"
+                }
+            }),
+        })
+    }
+
+    async fn run_events_snapshot(
+        &self,
+        run_id: &str,
+        _limit: usize,
+    ) -> anyhow::Result<SwarmRunEventsSnapshot> {
+        Ok(SwarmRunEventsSnapshot {
+            ok: true,
+            events: vec![json!({
+                "run_id": run_id,
+                "event_type": "RUN_KICKOFF"
+            })],
+        })
     }
 }
 

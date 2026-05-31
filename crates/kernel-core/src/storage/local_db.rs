@@ -65,6 +65,7 @@ pub mod domain {
     pub const POLICY: &str = "policy";
     pub const ECONOMIC_POLICY: &str = "economic_policy";
     pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
+    pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

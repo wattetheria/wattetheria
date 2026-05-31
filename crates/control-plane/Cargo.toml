@@ -36,7 +36,7 @@ wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
 watt-did = { path = "../../../watt-did" }
 watt-wallet = { path = "../../../watt-wallet" }
-wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", rev = "9965eea30b88b4ebb16a4e6a855f4d37ecb70284", package = "wattswarm-protocol" }
+wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
 [build-dependencies]
 prost-build = "0.13"

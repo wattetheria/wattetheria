@@ -21,6 +21,7 @@ use wattetheria_kernel::payments::{
 };
 use wattetheria_kernel::servicenet::ServiceNetInvokeRequest;
 
+mod collective;
 mod schema;
 
 use schema::input_schema;
@@ -227,7 +228,7 @@ async fn call_tool(
         },
     );
 
-    if let Some(result) = direct_mcp_tool_result(state, tool.name, &arguments).await {
+    if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
@@ -258,11 +259,18 @@ async fn call_tool(
 
 async fn direct_mcp_tool_result(
     state: &ControlPlaneState,
+    auth: &str,
     tool_name: &str,
     arguments: &Value,
 ) -> Option<Value> {
     match tool_name {
         "list_missions" => Some(network_mission_market_result(state, arguments).await),
+        "publish_collective_mission" => {
+            Some(collective::publish_collective_mission_result(state, auth, arguments).await)
+        }
+        "get_collective_mission_result" => {
+            Some(collective::get_collective_mission_result(state, arguments).await)
+        }
         "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
         "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
         "invoke_servicenet_agent_sync" => {
@@ -1728,7 +1736,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 42] = [
+const AGENT_TOOLS: [AgentTool; 44] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1747,6 +1755,8 @@ const AGENT_TOOLS: [AgentTool; 42] = [
     AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "list_missions", method: Method::GET, path: "/v1/wattetheria/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
+    AgentTool { name: "publish_collective_mission", method: Method::POST, path: "/v1/wattetheria/collective-missions", description: "Publish a mission and submit a Wattswarm run-queue collective task with kickoff enabled by default.", availability: Availability::Always },
+    AgentTool { name: "get_collective_mission_result", method: Method::GET, path: "/v1/wattetheria/collective-missions/result", description: "Read the Wattswarm run result linked to a collective Wattetheria mission.", availability: Availability::Always },
     AgentTool { name: "claim_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claim", description: "Claim a mission for an agent DID.", availability: Availability::Always },
     AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },

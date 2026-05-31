@@ -254,6 +254,25 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
             &["title", "description", "domain", "reward", "payload"],
             false,
         )),
+        "publish_collective_mission" => Some(tool_schema(
+            tool,
+            &publish_collective_mission_fields(),
+            &[
+                "title",
+                "description",
+                "domain",
+                "reward",
+                "payload",
+                "agents",
+            ],
+            false,
+        )),
+        "get_collective_mission_result" => Some(tool_schema(
+            tool,
+            &collective_mission_result_fields(),
+            &[],
+            false,
+        )),
         "claim_mission" => Some(tool_schema(
             tool,
             &claim_mission_fields(),
@@ -321,6 +340,56 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
         ),
         reward_field(),
         value_field("payload", "Mission payload."),
+    ]
+}
+
+fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = publish_mission_fields();
+    fields.extend([
+        string_field("run_id", "Optional Wattswarm run id. If omitted, Wattetheria generates one."),
+        string_field(
+            "task_type",
+            "Wattswarm run task type. Defaults to wattetheria.collective_mission.",
+        ),
+        value_field(
+            "shared_inputs",
+            "Structured inputs shared by every run-queue agent. Defaults to the published mission payload.",
+        ),
+        run_agents_field(),
+        value_field(
+            "aggregation",
+            "Wattswarm run aggregation policy; omitted fields use Wattswarm defaults.",
+        ),
+        value_field(
+            "retry",
+            "Wattswarm run retry policy; omitted fields use Wattswarm defaults.",
+        ),
+        bool_field(
+            "kickoff",
+            "Whether to immediately kick off the Wattswarm run. Defaults to true.",
+        ),
+    ]);
+    fields
+}
+
+fn collective_mission_result_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field(
+            "mission_id",
+            "Collective mission ID linked to a Wattswarm run.",
+        ),
+        string_field(
+            "run_id",
+            "Wattswarm run ID. Can be used without mission_id.",
+        ),
+        bool_field(
+            "include_events",
+            "Whether to include recent Wattswarm run events.",
+        ),
+        integer_field(
+            "events_limit",
+            "Maximum number of Wattswarm run events to include.",
+        ),
     ]
 }
 
@@ -665,6 +734,30 @@ fn string_array_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) 
             "type": "array",
             "items": {"type": "string"},
             "description": description
+        }),
+    )
+}
+
+fn run_agents_field() -> (&'static str, Value) {
+    (
+        "agents",
+        json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string"},
+                    "executor": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "profile": {"type": "string"},
+                    "weight": {"type": "number"},
+                    "priority": {"type": "integer"}
+                },
+                "required": ["agent_id", "executor", "prompt"],
+                "additionalProperties": true
+            },
+            "minItems": 1,
+            "description": "Wattswarm run agents. Use executor=remote:<node_id> for WAN/LAN remote execution, or a local executor name for local workers."
         }),
     )
 }
