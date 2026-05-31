@@ -451,7 +451,7 @@ async fn network_hive_market_payload(
     let has_more = next_offset < all_hives.len();
 
     Ok(json!({
-        "source": "wattetheria-gateway.v1_hives",
+        "source": "wattetheria-gateway.api_hives",
         "scope": "network",
         "gateway_url": gateway_url,
         "gateway_endpoint": gateway_endpoint,
@@ -898,7 +898,7 @@ async fn network_mission_market_payload(
     let has_more = next_offset < all_missions.len();
 
     Ok(json!({
-        "source": "wattetheria-gateway.v1_missions",
+        "source": "wattetheria-gateway.api_missions",
         "scope": "network",
         "gateway_url": gateway_url,
         "gateway_endpoint": gateway_endpoint,
@@ -916,11 +916,11 @@ pub(crate) async fn fetch_gateway_tasks(
     gateway_endpoint: &str,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    fetch_gateway_array(gateway_endpoint, limit, "/v1/wattetheria/missions").await
+    fetch_gateway_array(gateway_endpoint, limit, "/api/missions").await
 }
 
 async fn fetch_gateway_hives(gateway_endpoint: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
-    fetch_gateway_array(gateway_endpoint, limit, "/v1/wattetheria/hives").await
+    fetch_gateway_array(gateway_endpoint, limit, "/api/hives").await
 }
 
 async fn fetch_gateway_array(
@@ -1302,24 +1302,26 @@ fn normalize_gateway_base_url(gateway_url: &str) -> String {
 }
 
 pub(crate) fn normalized_gateway_tasks_url(gateway_url: &str) -> String {
-    let trimmed = gateway_url.trim_end_matches('/');
-    if trimmed.ends_with("/v1/wattetheria/missions") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/v1/wattetheria/missions")
-    }
+    normalized_gateway_api_resource_url(gateway_url, "/api/missions", "/v1/wattetheria/missions")
 }
 
 fn normalized_gateway_hives_url(gateway_url: &str) -> String {
-    let trimmed = gateway_url
-        .trim_end_matches('/')
-        .strip_suffix("/api")
-        .unwrap_or_else(|| gateway_url.trim_end_matches('/'));
-    if trimmed.ends_with("/v1/wattetheria/hives") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/v1/wattetheria/hives")
-    }
+    normalized_gateway_api_resource_url(gateway_url, "/api/hives", "/v1/wattetheria/hives")
+}
+
+fn normalized_gateway_api_resource_url(
+    gateway_url: &str,
+    resource_path: &str,
+    legacy_resource_path: &str,
+) -> String {
+    let trimmed = gateway_url.trim_end_matches('/');
+    let base = trimmed
+        .strip_suffix(resource_path)
+        .or_else(|| trimmed.strip_suffix(legacy_resource_path))
+        .or_else(|| trimmed.strip_suffix("/api"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    format!("{base}{resource_path}")
 }
 async fn dispatch_loopback_tool(
     state: ControlPlaneState,
@@ -1747,13 +1749,13 @@ const AGENT_TOOLS: [AgentTool; 44] = [
     AgentTool { name: "settle_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/settle", description: "Record settlement success and receipt for a payment session.", availability: Availability::Always },
     AgentTool { name: "reject_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/reject", description: "Reject an inbound payment request.", availability: Availability::Always },
     AgentTool { name: "cancel_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/cancel", description: "Cancel an outbound payment request.", availability: Availability::Always },
-    AgentTool { name: "list_hives", method: Method::GET, path: "/v1/wattetheria/hives", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
+    AgentTool { name: "list_hives", method: Method::GET, path: "/api/hives", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "create_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a Wattetheria Hive and subscribe the local controller.", availability: Availability::TopicBridge },
     AgentTool { name: "list_hive_messages", method: Method::GET, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "List messages for a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "post_hive_message", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "Post a message to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "subscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/subscribe", description: "Subscribe the local controller to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
-    AgentTool { name: "list_missions", method: Method::GET, path: "/v1/wattetheria/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
+    AgentTool { name: "list_missions", method: Method::GET, path: "/api/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
     AgentTool { name: "publish_collective_mission", method: Method::POST, path: "/v1/wattetheria/collective-missions", description: "Publish a mission and submit a Wattswarm run-queue collective task with kickoff enabled by default.", availability: Availability::Always },
     AgentTool { name: "get_collective_mission_result", method: Method::GET, path: "/v1/wattetheria/collective-missions/result", description: "Read the Wattswarm run result linked to a collective Wattetheria mission.", availability: Availability::Always },

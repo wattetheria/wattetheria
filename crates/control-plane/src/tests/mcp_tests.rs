@@ -1995,7 +1995,7 @@ async fn mcp_list_hives_reads_configured_gateway_hives() {
     let content = &response["result"]["structuredContent"];
     assert_eq!(
         content["source"].as_str(),
-        Some("wattetheria-gateway.v1_hives")
+        Some("wattetheria-gateway.api_hives")
     );
     assert_eq!(content["scope"].as_str(), Some("network"));
     assert_eq!(
@@ -2031,7 +2031,7 @@ async fn mcp_list_hives_reads_configured_gateway_hives() {
 
 async fn spawn_gateway_hives_server(payload: Value) -> String {
     let gateway_app = axum::Router::new().route(
-        "/v1/wattetheria/hives",
+        "/api/hives",
         axum::routing::get(move || async move { axum::Json(payload) }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2098,7 +2098,7 @@ fn assert_gateway_hive_topic(response: &Value) {
 #[tokio::test]
 async fn mcp_list_missions_reads_configured_gateway_tasks() {
     let gateway_app = axum::Router::new().route(
-        "/v1/wattetheria/missions",
+        "/api/missions",
         axum::routing::get(|| async {
             axum::Json(json!([
                 {
@@ -2178,7 +2178,7 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     let content = &response["result"]["structuredContent"];
     assert_eq!(
         content["source"].as_str(),
-        Some("wattetheria-gateway.v1_missions")
+        Some("wattetheria-gateway.api_missions")
     );
     assert_eq!(content["scope"].as_str(), Some("network"));
     assert_eq!(
@@ -2310,7 +2310,7 @@ async fn seed_mcp_gateway_remote_mission_with_status(
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
-        "/v1/wattetheria/missions",
+        "/api/missions",
         get(move || {
             let gateway_task = gateway_task.clone();
             async move { Json(json!([gateway_task])) }

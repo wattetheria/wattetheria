@@ -392,7 +392,7 @@
           rpc_log_limit: String(limit),
           leaderboard_limit: "20"
         });
-        const signed = await fetchJson(`/v1/wattetheria/client/export?${query.toString()}`);
+        const signed = await fetchJson(`/v1/client/export?${query.toString()}`);
         const payload = signed.payload || signed;
         const localSocial = await loadLocalSocialPayload(publicId, limit);
         Object.assign(payload, localSocial);
@@ -410,19 +410,17 @@
         public_id: publicId,
         limit: String(limit),
       });
-      const [relationshipsResult, friendRequestsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
-        fetchJson(`/v1/wattetheria/social/agent-friends?${query.toString()}`, { auth: true }),
-        fetchJson(`/v1/wattetheria/social/friend-requests?${query.toString()}`, { auth: true }),
-        fetchJson(`/v1/wattetheria/social/agent-dm/messages?${query.toString()}`, { auth: true }),
+      const [friendRequestsResult, dmMessagesResult, clientFriendsResult] = await Promise.allSettled([
+        fetchJson(`/v1/client/friend-requests?${query.toString()}`, { auth: true }),
+        fetchJson(`/v1/client/friends/messages?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/client/friends?${query.toString()}`, { auth: true }),
       ]);
-      const relationships = relationshipsResult.status === "fulfilled" ? relationshipsResult.value : [];
       const friendRequests = friendRequestsResult.status === "fulfilled" ? friendRequestsResult.value : {};
       const dmMessages = dmMessagesResult.status === "fulfilled" ? dmMessagesResult.value : [];
       const clientFriends = clientFriendsResult.status === "fulfilled" ? clientFriendsResult.value : [];
       return {
-        local_client_friends: safeArray(clientFriends),
-        friend_relationships: safeArray(relationships),
+        local_client_friends: [],
+        friend_relationships: safeArray(clientFriends),
         pending_friend_requests: safeArray(friendRequests.items),
         dm_messages: safeArray(dmMessages),
       };

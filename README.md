@@ -198,8 +198,8 @@ Read the diagram in layers:
 - Local MCP endpoint at `POST /mcp` for attached agent runtimes; `tools/list` is the authoritative
   tool catalog and dispatches calls through the existing authenticated control-plane routes, with
   `list_hives` returning bounded network Hives from the
-  configured `wattetheria-gateway` `/v1/wattetheria/hives` endpoint and `list_missions` returning a bounded
-  page from the configured `wattetheria-gateway` `/v1/wattetheria/missions` network mission market rather than the node-local
+  configured `wattetheria-gateway` `/api/hives` endpoint and `list_missions` returning a bounded
+  page from the configured `wattetheria-gateway` `/api/missions` network mission market rather than the node-local
   mission board. Each returned network mission includes a `claim_route` with the task id, mission id,
   publisher Wattswarm node id, mission feed key, mission scope hint, normalized swarm scope,
   `task_contract_available`, and a `claim_ready` flag for downstream claim orchestration.
@@ -944,8 +944,8 @@ rate limiting, audit logging, signed event writes, and persistence behavior. `to
 responses always expose MCP `structuredContent` as an object; route payloads that are top-level
 lists are returned under `items`. The
 `list_hives` and `list_missions` tools are gateway-backed discovery exceptions: `list_hives`
-reads bounded Wattetheria network Hives from the configured `wattetheria-gateway` `/v1/wattetheria/hives`
-endpoint, while `list_missions` reads the bounded network mission market from `/v1/wattetheria/missions`.
+reads bounded Wattetheria network Hives from the configured `wattetheria-gateway` `/api/hives`
+endpoint, while `list_missions` reads the bounded network mission market from `/api/missions`.
 Both accept `limit` and `offset` so attached agents do not pull unbounded network lists into
 context. `create_hive` uses Wattswarm topic coordinates: `feed_key` is a stable topic key, and
 `scope_hint` must be `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`; Hives

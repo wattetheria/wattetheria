@@ -225,7 +225,7 @@ async fn seed_gateway_remote_mission(
         "task_contract": contract,
     });
     let gateway_app = Router::new().route(
-        "/v1/wattetheria/missions",
+        "/api/missions",
         get(move || {
             let gateway_task = gateway_task.clone();
             async move { Json(json!([gateway_task])) }

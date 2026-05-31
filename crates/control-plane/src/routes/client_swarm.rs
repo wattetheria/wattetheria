@@ -12,8 +12,8 @@ use wattetheria_kernel::swarm_sync::{SwarmTaskRunProjectionSnapshot, SwarmTopicA
 use crate::auth::{authorize, internal_error};
 use crate::routes::civilization::{
     build_agent_dm_messages_payload, build_agent_dm_threads_payload,
+    build_agent_relationship_payload,
 };
-use crate::routes::identity::resolve_identity_context;
 use crate::state::{ClientIdentityQuery, ClientListQuery, ControlPlaneState, TopicMessagesQuery};
 use crate::swarm_sync::{load_cached_task_run_projection, load_cached_topic_activity};
 
@@ -230,6 +230,32 @@ fn dm_threads_by_counterpart(threads: &[Value]) -> std::collections::BTreeMap<St
         }
     }
     indexed
+}
+
+fn active_friend_relationship(relationship: &Value) -> bool {
+    matches!(
+        relationship
+            .get("relationship_state")
+            .and_then(Value::as_str),
+        Some("accepted" | "active" | "friend")
+    )
+}
+
+fn relationship_status(relationship: &Value) -> &'static str {
+    match relationship.get("status").and_then(Value::as_str) {
+        Some("online") => "online",
+        Some("offline") => "offline",
+        Some("discovered") => "discovered",
+        Some("blocked") => "blocked",
+        _ if relationship
+            .get("connected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false) =>
+        {
+            "online"
+        }
+        _ => "unknown",
+    }
 }
 
 fn peer_status(
@@ -460,39 +486,8 @@ async fn build_friends_payload(
     query: &ClientIdentityQuery,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
-    let context = resolve_identity_context(
-        state,
-        query.public_id.as_deref(),
-        query.agent_did.as_deref(),
-    )
-    .await;
-    let local_public_id = context.public_identity.as_ref().map_or_else(
-        || context.public_memory_owner.controller.clone(),
-        |identity| identity.public_id.clone(),
-    );
-    let public_identities = state.public_identity_registry.lock().await.list();
-    let identity_by_public_id = public_identities
-        .into_iter()
-        .map(|identity| (identity.public_id.clone(), identity))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let connected_node_ids = state
-        .swarm_bridge
-        .peers()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|peer| peer.node_id)
-        .collect::<std::collections::BTreeSet<_>>();
-    let bindings = state.controller_binding_registry.lock().await.list();
-    let binding_by_public_id = bindings
-        .into_iter()
-        .map(|binding| (binding.public_id.clone(), binding))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    let relationships = state
-        .relationship_registry
-        .lock()
-        .await
-        .list_for_public(&local_public_id);
+    let relationships =
+        build_agent_relationship_payload(state, query.public_id.as_deref(), None).await?;
     let dm_threads = build_agent_dm_threads_payload(state, query.public_id.as_deref())
         .await
         .unwrap_or_default();
@@ -504,30 +499,31 @@ async fn build_friends_payload(
     let latest_by_thread = latest_dm_messages_by_thread(&dm_messages);
 
     let mut items = Vec::new();
-    for edge in relationships.into_iter().take(limit) {
-        let dm_thread = dm_threads_by_counterpart.get(&edge.counterpart_public_id);
+    for relationship in relationships
+        .into_iter()
+        .filter(active_friend_relationship)
+        .take(limit)
+    {
+        let Some(counterpart_public_id) = relationship
+            .get("counterpart_public_id")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let dm_thread = dm_threads_by_counterpart.get(counterpart_public_id);
         let latest = dm_thread
             .and_then(|thread| thread.get("thread_id").and_then(Value::as_str))
             .and_then(|thread_id| latest_by_thread.get(thread_id));
-        let display_name = identity_by_public_id
-            .get(&edge.counterpart_public_id)
-            .map(|identity| identity.display_name.clone());
-        let status = binding_by_public_id
-            .get(&edge.counterpart_public_id)
-            .and_then(|binding| binding.controller_node_id.as_deref())
-            .map_or("unknown", |controller_id| {
-                if controller_id == state.agent_did || connected_node_ids.contains(controller_id) {
-                    "online"
-                } else {
-                    "offline"
-                }
-            });
         items.push(json!(ClientFriendView {
-            public_id: edge.counterpart_public_id.clone(),
-            display_name,
-            relationship_kind: edge.kind,
-            status,
-            active: edge.active,
+            public_id: counterpart_public_id.to_string(),
+            display_name: relationship
+                .get("counterpart_display_name")
+                .or_else(|| relationship.get("counterpart_agent_name"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            relationship_kind: RelationshipKind::Friend,
+            status: relationship_status(&relationship),
+            active: true,
             has_dm_thread: dm_thread.is_some(),
             dm_thread_id: dm_thread
                 .and_then(|thread| thread.get("thread_id").and_then(Value::as_str))

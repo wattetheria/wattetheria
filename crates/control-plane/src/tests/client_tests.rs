@@ -594,6 +594,84 @@ async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() 
     );
 }
 
+#[tokio::test]
+async fn client_friends_uses_social_friendships_as_canonical_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Borealis".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: None,
+            thread_id: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed social friendship");
+    {
+        let mut registry = state.relationship_registry.lock().await;
+        registry.upsert(
+            &local_public_id,
+            "legacy-remote-node-id",
+            wattetheria_kernel::civilization::relationships::RelationshipKind::Friend,
+            true,
+        );
+    }
+
+    let friends = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/client/friends?public_id={local_public_id}"),
+    )
+    .await;
+
+    let items = friends.as_array().expect("client friends array");
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0]["public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(items[0]["display_name"].as_str(), Some("Broker Borealis"));
+    assert_eq!(items[0]["relationship_kind"].as_str(), Some("friend"));
+}
+
+#[tokio::test]
+async fn client_alias_routes_cover_console_social_reads() {
+    let (_dir, app, token, _, _state) = build_test_app(20);
+
+    let export_json = public_get_json(app.clone(), "/v1/client/export?node_limit=1").await;
+    assert!(export_json["payload"].is_object());
+    assert!(export_json["signature"].is_string());
+
+    let friend_requests = authed_get_json(app, &token, "/v1/client/friend-requests").await;
+    assert_eq!(friend_requests["items"].as_array().map(Vec::len), Some(0));
+    assert_eq!(friend_requests["count"].as_u64(), Some(0));
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn client_export_excludes_local_friends_and_dm() {

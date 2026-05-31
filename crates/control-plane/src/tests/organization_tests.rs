@@ -528,7 +528,12 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Wattetheria Node Console"));
     assert!(body.contains("/v1/civilization/identities"));
-    assert!(body.contains("/v1/wattetheria/client/export"));
+    assert!(body.contains("/v1/client/export"));
+    assert!(body.contains("/v1/client/friend-requests"));
+    assert!(body.contains("/v1/client/friends/messages"));
+    assert!(!body.contains("/v1/wattetheria/client/export"));
+    assert!(!body.contains("/v1/wattetheria/social/friend-requests"));
+    assert!(!body.contains("/v1/wattetheria/social/agent-dm/messages"));
     assert!(body.contains("node_limit"));
     assert!(body.contains("Nodes"));
     assert!(!body.contains("id=\"nodes-list\""));

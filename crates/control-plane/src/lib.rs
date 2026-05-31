@@ -159,6 +159,10 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             get(routes::civilization::list_friend_requests),
         )
         .route(
+            "/v1/client/friend-requests",
+            get(routes::civilization::list_friend_requests),
+        )
+        .route(
             "/v1/wattetheria/social/sent-friend-requests",
             get(routes::civilization::list_sent_friend_requests),
         )
@@ -207,6 +211,7 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/client/export",
             get(routes::client_api::client_export),
         )
+        .route("/v1/client/export", get(routes::client_api::client_export))
 }
 
 fn game_router() -> Router<ControlPlaneState> {
