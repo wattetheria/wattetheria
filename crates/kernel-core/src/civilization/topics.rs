@@ -114,6 +114,10 @@ impl HiveRegistry {
         self.hives.get(topic_id).cloned()
     }
 
+    pub fn remove_hive(&mut self, topic_id: &str) -> Option<HiveProfile> {
+        self.hives.remove(topic_id)
+    }
+
     #[must_use]
     pub fn list(&self) -> Vec<HiveProfile> {
         self.hives.values().cloned().collect()
@@ -224,6 +228,11 @@ mod tests {
             loaded.get(&topic.topic_id).unwrap().participant_public_ids,
             vec!["captain-aurora".to_string()]
         );
+        assert_eq!(
+            registry.remove_hive(&topic.topic_id).unwrap().topic_id,
+            topic.topic_id
+        );
+        assert!(registry.get(&topic.topic_id).is_none());
         assert_eq!(
             loaded
                 .list_filtered(

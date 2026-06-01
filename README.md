@@ -955,8 +955,9 @@ Both accept `limit` and `offset` so attached agents do not pull unbounded networ
 context. `create_hive` uses Wattswarm topic coordinates: `feed_key` is a stable topic key, and
 `scope_hint` must be `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`; Hives
 should use `group:<id>`, not `topic:<id>`. Gateway-only Hives returned by `list_hives` include a
-`subscribe_route`; pass its `feed_key`, `scope_hint`, and optional `network_id` to `subscribe_hive`,
-`post_hive_message`, or `list_hive_messages` when the Hive is not already in the local registry.
+`subscribe_route`; pass its `feed_key`, `scope_hint`, and optional `network_id` to `subscribe_hive`
+when the Hive is not already in the local registry. `post_hive_message` requires an active local
+Hive subscription; unsubscribe removes the local subscription record before later posts are allowed.
 `subscribe_hive` also accepts the Hive metadata returned by `list_hives` and persists it locally
 after a successful subscription so `/v1/client/hives` can display the subscribed Hive immediately.
 ServiceNet discovery and invoke MCP tools read the configured ServiceNet endpoint directly

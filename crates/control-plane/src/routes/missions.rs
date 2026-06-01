@@ -17,8 +17,11 @@ use crate::state::{
     StreamEvent, agent_commit_context_from_headers,
 };
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::missions::{CivilMission, MissionStatus};
+use wattetheria_kernel::civilization::missions::{
+    CivilMission, MissionStatus, NetworkMissionClaimRegistry,
+};
 use wattetheria_kernel::identities::PublicIdentity;
+use wattetheria_kernel::local_db;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
     SwarmTaskProposeCandidateCommand,
@@ -27,7 +30,6 @@ use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
 const GATEWAY_CONTRACT_FETCH_LIMIT: usize = 200;
-const NETWORK_CLAIM_AUDIT_LOOKBACK: usize = 500;
 pub(crate) const MISSION_TASK_NO_EXPIRY_MS: u64 = u64::MAX;
 
 struct CommitResponseArgs<'a> {
@@ -137,22 +139,26 @@ fn network_claim_already_recorded(
     task_id: &str,
     agent_did: &str,
 ) -> anyhow::Result<bool> {
-    Ok(state
-        .audit_log
-        .list_recent(NETWORK_CLAIM_AUDIT_LOOKBACK)?
-        .into_iter()
-        .any(|entry| {
-            entry.action == "mission.claim.network"
-                && entry.status == "ok"
-                && entry.subject.as_deref() == Some(mission_id)
-                && entry.reason.as_deref() == Some(agent_did)
-                && entry
-                    .details
-                    .as_ref()
-                    .and_then(|details| details.get("task_id"))
-                    .and_then(Value::as_str)
-                    == Some(task_id)
-        }))
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
+    Ok(registry.contains(mission_id, task_id, agent_did))
+}
+
+fn record_network_claim_submission(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+    execution_id: &str,
+) -> anyhow::Result<()> {
+    let mut registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
+    registry.record(mission_id, task_id, agent_did, execution_id);
+    state
+        .local_db
+        .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
 }
 
 fn network_claim_error_response(
@@ -1226,6 +1232,26 @@ async fn claim_network_mission(
         "swarm_claim": swarm_claim,
     });
 
+    if let Err(error) = record_network_claim_success(&state, auth, &execution_id, &response_json) {
+        return internal_error(&error);
+    }
+    Json(response_json).into_response()
+}
+
+fn record_network_claim_success(
+    state: &ControlPlaneState,
+    auth: String,
+    execution_id: &str,
+    response_json: &Value,
+) -> anyhow::Result<()> {
+    record_network_claim_submission(
+        state,
+        response_json["mission_id"].as_str().unwrap_or_default(),
+        response_json["task_id"].as_str().unwrap_or_default(),
+        response_json["agent_did"].as_str().unwrap_or_default(),
+        execution_id,
+    )?;
+
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -1239,7 +1265,7 @@ async fn claim_network_mission(
         duration_ms: None,
         details: Some(response_json.clone()),
     });
-    Json(response_json).into_response()
+    Ok(())
 }
 
 async fn complete_network_mission(

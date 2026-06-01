@@ -53,6 +53,7 @@ pub mod domain {
     pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
     pub const CONTRIBUTION_EVENT_LOG: &str = "contribution_event_log";
     pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
+    pub const NETWORK_MISSION_CLAIMS: &str = "network_mission_claims";
 }
 
 const DOMAIN_TABLES: &[(&str, &str)] = &[
@@ -82,6 +83,7 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::WATT_BALANCE_STATE, "watt_balance_state"),
     (domain::CONTRIBUTION_EVENT_LOG, "contribution_event_log"),
     (domain::COLLECTIVE_MISSION_RUNS, "collective_mission_runs"),
+    (domain::NETWORK_MISSION_CLAIMS, "network_mission_claims"),
 ];
 
 fn domain_table_name(domain: &str) -> String {

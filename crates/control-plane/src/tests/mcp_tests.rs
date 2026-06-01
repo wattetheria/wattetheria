@@ -1944,7 +1944,91 @@ async fn mcp_create_hive_rejects_invalid_scope_hint_with_actionable_error() {
 }
 
 #[tokio::test]
-async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates() {
+async fn mcp_post_hive_message_requires_local_subscription() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+
+    let blocked = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "post_hive_message",
+                "arguments": {
+                    "hive_id": "mainnet:test@crew.chat@group:crew-7",
+                    "network_id": "mainnet:test",
+                    "feed_key": "crew.chat",
+                    "scope_hint": "group:crew-7",
+                    "content": {"text": "blocked"}
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(blocked["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(blocked["result"]["_meta"]["httpStatus"].as_u64(), Some(403));
+    assert_eq!(
+        blocked["result"]["structuredContent"]["error"].as_str(),
+        Some("hive subscription required")
+    );
+    assert!(bridge.messages.lock().await.is_empty());
+
+    let create_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "create_hive",
+                "arguments": {
+                    "feed_key": "crew.chat",
+                    "scope_hint": "group:crew-7",
+                    "display_name": "Crew Seven",
+                    "projection_kind": "chat_room",
+                    "network_id": "mainnet:test"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(create_response["result"]["isError"].as_bool(), Some(false));
+
+    let posted = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "post_hive_message",
+                "arguments": {
+                    "hive_id": "mainnet:test@crew.chat@group:crew-7",
+                    "content": {"text": "allowed"}
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(posted["result"]["isError"].as_bool(), Some(false));
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].content["text"].as_str(), Some("allowed"));
+}
+
+#[tokio::test]
+async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_removes_local_subscription() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
@@ -1977,7 +2061,7 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates
         .unwrap();
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -2000,6 +2084,15 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_deactivates
     assert_eq!(subscriptions[1].2, "codex_topic_smoke_test");
     assert_eq!(subscriptions[1].3, "group:codex-topic-smoke-test");
     assert!(!subscriptions[1].4);
+
+    let hives = authed_get_json(app, &token, "/v1/wattetheria/hives?include_inactive=true").await;
+    assert!(
+        hives["hives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["topic_id"].as_str() != Some(hive_id))
+    );
 }
 
 #[tokio::test]
@@ -2338,6 +2431,7 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
     let mission_id = "mission-mcp-duplicate-claim";
     let agent_did = state.agent_did.clone();
     seed_mcp_gateway_remote_mission(dir.path(), &state, mission_id).await;
+    append_bad_audit_row(dir.path());
 
     let first = mcp_claim_mission(app.clone(), &token, mission_id, &agent_did).await;
     assert_eq!(first["result"]["isError"].as_bool(), Some(false));
@@ -2394,6 +2488,14 @@ async fn mcp_claim_mission(app: Router, token: &str, mission_id: &str, agent_did
         }),
     )
     .await
+}
+
+fn append_bad_audit_row(data_dir: &std::path::Path) {
+    use std::io::Write as _;
+
+    let path = data_dir.join("audit/control_plane.jsonl");
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    file.write_all(b"{not-valid-audit-json}\n").unwrap();
 }
 
 async fn seed_mcp_gateway_remote_mission(

@@ -668,6 +668,9 @@ async fn update_hive_subscription(
     {
         return internal_error(&error);
     }
+    if !active && let Err(error) = remove_subscribed_hive_profile(&state, &hive.topic_id).await {
+        return internal_error(&error);
+    }
 
     let hive_topic_id = hive.topic_id.clone();
     let payload = json!({
@@ -813,12 +816,40 @@ pub(crate) async fn post_hive_message(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
+    if let Err(response) = require_active_hive_subscription(&state, &hive).await {
+        return response;
+    }
     if let Err(response) =
         post_hive_message_to_swarm(&state, &context, &hive, &network_id, &body).await
     {
         return response;
     }
+    if let Err(response) = record_hive_message_post_success(
+        &state,
+        &context,
+        &auth,
+        &hive_id,
+        &hive,
+        &network_id,
+        &body,
+    )
+    .await
+    {
+        return response;
+    }
 
+    Json(json!({"ok": true})).into_response()
+}
+
+async fn record_hive_message_post_success(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+    auth: &str,
+    request_hive_id: &str,
+    hive: &HiveProfile,
+    network_id: &str,
+    body: &HiveMessageBody,
+) -> Result<(), Response> {
     let created_at = Utc::now();
     let controller_id = context.public_memory_owner.controller.clone();
     let author_public_id = context.public_memory_owner.public.clone();
@@ -844,11 +875,11 @@ pub(crate) async fn post_hive_message(
         "author_node_id": author_agent_did.unwrap_or_else(|| state.agent_did.clone()),
         "network_id": network_id,
         "hive_id": hive_topic_id,
-        "topic_id": hive.topic_id,
-        "feed_key": hive.feed_key,
-        "scope_hint": hive.scope_hint,
-        "content": body.content,
-        "reply_to_message_id": body.reply_to_message_id,
+        "topic_id": hive.topic_id.clone(),
+        "feed_key": hive.feed_key.clone(),
+        "scope_hint": hive.scope_hint.clone(),
+        "content": body.content.clone(),
+        "reply_to_message_id": body.reply_to_message_id.clone(),
         "created_at": created_at.timestamp(),
     });
     let _ = state.stream_tx.send(StreamEvent {
@@ -862,17 +893,16 @@ pub(crate) async fn post_hive_message(
         category: "hive".to_string(),
         action: "hive.message.post".to_string(),
         status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(hive_id),
+        actor: Some(auth.to_owned()),
+        subject: Some(request_hive_id.to_owned()),
         capability: None,
         reason: None,
         duration_ms: None,
         details: Some(payload),
     });
-    let (actor_controller_id, actor_public_id, agent_identity) =
-        contribution_actor(&state, &context);
+    let (actor_controller_id, actor_public_id, agent_identity) = contribution_actor(state, context);
     if let Err(error) = record_contribution_event(
-        &state,
+        state,
         ContributionEventArgs {
             action_type: message_action_type(body.reply_to_message_id.as_deref(), "hive"),
             source_id: &message_id,
@@ -891,10 +921,10 @@ pub(crate) async fn post_hive_message(
     )
     .await
     {
-        return internal_error(&error);
+        return Err(internal_error(&error));
     }
 
-    Json(json!({"ok": true})).into_response()
+    Ok(())
 }
 
 async fn post_hive_message_to_swarm(
@@ -941,6 +971,30 @@ async fn post_hive_message_to_swarm(
         .map_err(|error| internal_error(&error))
 }
 
+async fn require_active_hive_subscription(
+    state: &ControlPlaneState,
+    hive: &HiveProfile,
+) -> Result<(), Response> {
+    let subscribed = state
+        .hive_registry
+        .lock()
+        .await
+        .get(&hive.topic_id)
+        .is_some_and(|profile| profile.active);
+    if subscribed {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "hive subscription required",
+            "hive_id": hive.topic_id,
+            "message": "subscribe to this hive before posting messages"
+        })),
+    )
+        .into_response())
+}
+
 async fn persist_subscribed_hive_profile(
     state: &ControlPlaneState,
     hive: &HiveProfile,
@@ -979,6 +1033,19 @@ async fn persist_subscribed_hive_profile(
         &*topics,
     )?;
     Ok(profile)
+}
+
+async fn remove_subscribed_hive_profile(
+    state: &ControlPlaneState,
+    hive_id: &str,
+) -> anyhow::Result<Option<HiveProfile>> {
+    let mut topics = state.hive_registry.lock().await;
+    let removed = topics.remove_hive(hive_id);
+    state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::HIVE_REGISTRY,
+        &*topics,
+    )?;
+    Ok(removed)
 }
 
 fn normalized_owned(value: Option<&str>) -> Option<String> {

@@ -2,7 +2,10 @@ use anyhow::Context;
 use chrono::Utc;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use wattetheria_kernel::economy::{ContributionEvent, ContributionEventLog, WalletBalanceState};
+use wattetheria_kernel::economy::{
+    ContributionEvent, ContributionEventLog, WalletBalanceState, ranking_compute, ranking_prestige,
+    ranking_score, ranking_score_tenths,
+};
 use wattetheria_kernel::local_db;
 
 use crate::routes::identity::IdentityContextView;
@@ -114,14 +117,22 @@ fn publish_ranking_update(
     let balance_stats = balance.balance().stats();
     let public_id = event.public_id.as_deref().unwrap_or(&event.controller_id);
     let display_name = event.agent_identity.as_deref().unwrap_or(public_id);
+    let compute = ranking_compute(&balance_stats);
+    let prestige = ranking_prestige(&balance_stats);
     let payload = json!({
         "agent_did": public_id,
         "agent_identity": display_name,
         "public_id": public_id,
         "display_name": display_name,
-        "score": balance_stats.watt,
+        "score": ranking_score(&balance_stats),
+        "score_tenths": ranking_score_tenths(&balance_stats),
+        "score_formula": "watts*0.1+compute*10+prestige*100",
         "watt_balance": balance_stats.watt,
+        "compute": compute,
+        "compute_score": compute,
         "tasks_completed": 0,
+        "prestige": prestige,
+        "prestige_level": prestige,
         "reputation": balance_stats.reputation,
         "capacity": balance_stats.capacity,
         "reward_event_id": event.event_id,

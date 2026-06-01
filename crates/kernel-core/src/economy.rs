@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const DEFAULT_ECONOMIC_POLICY_VERSION: u64 = 1;
+const DEFAULT_AGENT_COMPUTE: i64 = 1;
+const DEFAULT_AGENT_PRESTIGE: i64 = 0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EconomicPolicy {
@@ -118,12 +120,35 @@ impl WalletBoundBalance {
     #[must_use]
     pub fn stats(&self) -> AgentStats {
         AgentStats {
-            power: (1 + (self.capacity / 10)).max(0),
+            power: (DEFAULT_AGENT_COMPUTE + (self.capacity / 10)).max(DEFAULT_AGENT_COMPUTE),
             watt: self.watt,
             reputation: self.reputation,
             capacity: self.capacity,
         }
     }
+}
+
+#[must_use]
+pub fn ranking_compute(stats: &AgentStats) -> i64 {
+    stats.power.max(DEFAULT_AGENT_COMPUTE)
+}
+
+#[must_use]
+pub fn ranking_prestige(_stats: &AgentStats) -> i64 {
+    DEFAULT_AGENT_PRESTIGE
+}
+
+#[must_use]
+pub fn ranking_score_tenths(stats: &AgentStats) -> i64 {
+    stats
+        .watt
+        .saturating_add(ranking_compute(stats).saturating_mul(100))
+        .saturating_add(ranking_prestige(stats).saturating_mul(1_000))
+}
+
+#[must_use]
+pub fn ranking_score(stats: &AgentStats) -> i64 {
+    ranking_score_tenths(stats).saturating_add(5).div_euclid(10)
 }
 
 impl WalletBalanceState {
@@ -468,6 +493,11 @@ mod tests {
         assert_eq!(balance.watt, 2);
         assert_eq!(balance.reputation, 0);
         assert_eq!(balance.capacity, 0);
+        let stats = balance.stats();
+        assert_eq!(ranking_compute(&stats), 1);
+        assert_eq!(ranking_prestige(&stats), 0);
+        assert_eq!(ranking_score_tenths(&stats), 102);
+        assert_eq!(ranking_score(&stats), 10);
     }
 
     #[test]

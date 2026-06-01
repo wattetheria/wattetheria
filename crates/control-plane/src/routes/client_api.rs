@@ -13,7 +13,10 @@ use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scor
 use wattetheria_kernel::civilization::missions::{
     CivilMission, MissionDomain, MissionPublisherKind, MissionStatus,
 };
-use wattetheria_kernel::economy::{EconomicPolicy, WalletBoundBalance};
+use wattetheria_kernel::economy::{
+    EconomicPolicy, WalletBoundBalance, ranking_compute, ranking_prestige, ranking_score,
+    ranking_score_tenths,
+};
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
@@ -1053,14 +1056,24 @@ fn leaderboard_payload(
                 .iter()
                 .filter(|mission| mission.completed_by.as_deref() == Some(controller_id.as_str()))
                 .count();
+            let compute = ranking_compute(&agent_stats);
+            let prestige = ranking_prestige(&agent_stats);
             json!({
                 "agent_did": public_id,
                 "agent_identity": display_name,
                 "public_id": public_id,
                 "display_name": display_name,
-                "score": score_for_category(&scores, view.category),
+                "score": ranking_score(&agent_stats),
+                "score_tenths": ranking_score_tenths(&agent_stats),
+                "score_formula": "watts*0.1+compute*10+prestige*100",
+                "category": view.category.as_str(),
+                "category_score": score_for_category(&scores, view.category),
                 "watt_balance": agent_stats.watt,
+                "compute": compute,
+                "compute_score": compute,
                 "tasks_completed": tasks_completed,
+                "prestige": prestige,
+                "prestige_level": prestige,
                 "reputation": agent_stats.reputation,
             })
         })

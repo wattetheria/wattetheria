@@ -71,6 +71,58 @@ pub struct MissionBoard {
     missions: BTreeMap<String, CivilMission>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkMissionClaimRecord {
+    pub mission_id: String,
+    pub task_id: String,
+    pub agent_did: String,
+    pub execution_id: String,
+    pub claimed_at: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NetworkMissionClaimRegistry {
+    claims: BTreeMap<String, NetworkMissionClaimRecord>,
+}
+
+impl NetworkMissionClaimRegistry {
+    #[must_use]
+    pub fn contains(&self, mission_id: &str, task_id: &str, agent_did: &str) -> bool {
+        self.claims
+            .contains_key(&network_claim_key(mission_id, task_id, agent_did))
+    }
+
+    pub fn record(
+        &mut self,
+        mission_id: &str,
+        task_id: &str,
+        agent_did: &str,
+        execution_id: &str,
+    ) -> NetworkMissionClaimRecord {
+        let record = NetworkMissionClaimRecord {
+            mission_id: mission_id.to_string(),
+            task_id: task_id.to_string(),
+            agent_did: agent_did.to_string(),
+            execution_id: execution_id.to_string(),
+            claimed_at: Utc::now().timestamp(),
+        };
+        self.claims.insert(
+            network_claim_key(mission_id, task_id, agent_did),
+            record.clone(),
+        );
+        record
+    }
+}
+
+fn network_claim_key(mission_id: &str, task_id: &str, agent_did: &str) -> String {
+    format!(
+        "{}:{}:{}",
+        mission_id.trim(),
+        task_id.trim(),
+        agent_did.trim()
+    )
+}
+
 impl MissionBoard {
     pub fn load_or_new(path: impl AsRef<Path>) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
@@ -221,5 +273,17 @@ mod tests {
         assert_eq!(completed.status, MissionStatus::Completed);
         let settled = board.settle(&mission.mission_id).unwrap();
         assert_eq!(settled.status, MissionStatus::Settled);
+    }
+
+    #[test]
+    fn network_mission_claim_registry_records_claims_by_mission_task_and_agent() {
+        let mut registry = NetworkMissionClaimRegistry::default();
+        assert!(!registry.contains("mission-1", "task-1", "agent-a"));
+
+        let record = registry.record("mission-1", "task-1", "agent-a", "exec-1");
+
+        assert_eq!(record.execution_id, "exec-1");
+        assert!(registry.contains("mission-1", "task-1", "agent-a"));
+        assert!(!registry.contains("mission-1", "task-1", "agent-b"));
     }
 }
