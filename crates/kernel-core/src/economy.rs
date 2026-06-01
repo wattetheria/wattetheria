@@ -1,6 +1,7 @@
 use crate::civilization::missions::{CivilMission, MissionBoard, MissionStatus};
 use crate::types::AgentStats;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub const DEFAULT_ECONOMIC_POLICY_VERSION: u64 = 1;
@@ -22,6 +23,10 @@ pub struct FixedRewardSchedule {
     pub topic_reply_watt: i64,
     pub custom_agent_publish_watt: i64,
     pub external_agent_call_success_watt: i64,
+    #[serde(default = "default_mcp_tool_success_watt")]
+    pub mcp_tool_success_watt: i64,
+    #[serde(default = "default_hive_create_watt")]
+    pub hive_create_watt: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +51,23 @@ pub struct WalletBalanceRecord {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletBalanceState {
     pub balances: BTreeMap<String, WalletBalanceRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContributionEvent {
+    pub event_id: String,
+    pub action_type: String,
+    pub source_id: String,
+    pub controller_id: String,
+    pub public_id: Option<String>,
+    pub agent_identity: Option<String>,
+    pub occurred_at: i64,
+    pub receipt: Value,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContributionEventLog {
+    pub events: BTreeMap<String, ContributionEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +100,18 @@ impl Default for FixedRewardSchedule {
             topic_reply_watt: 1,
             custom_agent_publish_watt: 5,
             external_agent_call_success_watt: 1,
+            mcp_tool_success_watt: default_mcp_tool_success_watt(),
+            hive_create_watt: default_hive_create_watt(),
         }
     }
+}
+
+const fn default_mcp_tool_success_watt() -> i64 {
+    1
+}
+
+const fn default_hive_create_watt() -> i64 {
+    1
 }
 
 impl WalletBoundBalance {
@@ -139,6 +171,20 @@ impl WalletBalanceRecord {
     }
 }
 
+impl ContributionEventLog {
+    pub fn append(&mut self, event: ContributionEvent) -> bool {
+        if self.events.contains_key(&event.event_id) {
+            return false;
+        }
+        self.events.insert(event.event_id.clone(), event);
+        true
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ContributionEvent> {
+        self.events.values()
+    }
+}
+
 fn wallet_balance_key(controller_id: &str, public_id: Option<&str>) -> String {
     format!("{}::{}", controller_id, public_id.unwrap_or(""))
 }
@@ -147,6 +193,23 @@ fn wallet_balance_key(controller_id: &str, public_id: Option<&str>) -> String {
 pub fn wallet_bound_balance_from_missions(
     policy: &EconomicPolicy,
     missions: &MissionBoard,
+    controller_id: &str,
+    public_id: Option<&str>,
+) -> WalletBoundBalance {
+    wallet_bound_balance_from_rewards(
+        policy,
+        missions,
+        &ContributionEventLog::default(),
+        controller_id,
+        public_id,
+    )
+}
+
+#[must_use]
+pub fn wallet_bound_balance_from_rewards(
+    policy: &EconomicPolicy,
+    missions: &MissionBoard,
+    contribution_events: &ContributionEventLog,
     controller_id: &str,
     public_id: Option<&str>,
 ) -> WalletBoundBalance {
@@ -162,6 +225,9 @@ pub fn wallet_bound_balance_from_missions(
     let mut deltas = Vec::new();
     for mission in missions.list(None) {
         collect_mission_deltas(policy, &mission, controller_id, public_id, &mut deltas);
+    }
+    for event in contribution_events.iter() {
+        collect_contribution_event_delta(policy, event, controller_id, public_id, &mut deltas);
     }
     deltas.sort_by(|left, right| {
         left.timestamp
@@ -182,6 +248,49 @@ pub fn wallet_bound_balance_from_missions(
         balance.capacity += delta.capacity;
     }
     balance
+}
+
+fn collect_contribution_event_delta(
+    policy: &EconomicPolicy,
+    event: &ContributionEvent,
+    controller_id: &str,
+    public_id: Option<&str>,
+    deltas: &mut Vec<RewardDelta>,
+) {
+    if !owns_event(event, controller_id, public_id) {
+        return;
+    }
+    let watt = contribution_event_watt(policy, &event.action_type);
+    if watt == 0 {
+        return;
+    }
+    deltas.push(RewardDelta {
+        timestamp: event.occurred_at,
+        source_id: format!("contribution:{}:{}", event.action_type, event.event_id),
+        watt,
+        reputation: 0,
+        capacity: 0,
+    });
+}
+
+fn owns_event(event: &ContributionEvent, controller_id: &str, public_id: Option<&str>) -> bool {
+    event.controller_id == controller_id
+        || event
+            .public_id
+            .as_deref()
+            .is_some_and(|id| public_id == Some(id))
+}
+
+fn contribution_event_watt(policy: &EconomicPolicy, action_type: &str) -> i64 {
+    match action_type {
+        "topic.message.reply" | "hive.message.reply" => policy.rewards.topic_reply_watt,
+        "topic.message.post" | "hive.message.post" => policy.rewards.topic_post_watt,
+        "hive.create" => policy.rewards.hive_create_watt,
+        "custom_agent.publish" => policy.rewards.custom_agent_publish_watt,
+        "servicenet.agent.invoke.success" => policy.rewards.external_agent_call_success_watt,
+        "mcp.tool.success" => policy.rewards.mcp_tool_success_watt,
+        _ => 0,
+    }
 }
 
 fn collect_mission_deltas(
@@ -264,6 +373,8 @@ mod tests {
         assert_eq!(policy.rewards.mission_publish_watt, 1);
         assert_eq!(policy.rewards.mission_settle_publisher_watt, 2);
         assert_eq!(policy.rewards.custom_agent_publish_watt, 5);
+        assert_eq!(policy.rewards.mcp_tool_success_watt, 1);
+        assert_eq!(policy.rewards.hive_create_watt, 1);
     }
 
     #[test]
@@ -309,6 +420,54 @@ mod tests {
         assert_eq!(settled.watt, 43);
         assert_eq!(settled.reputation, 4);
         assert_eq!(settled.capacity, 1);
+    }
+
+    #[test]
+    fn contribution_events_extend_wallet_projection_without_central_balance_mutation() {
+        let board = MissionBoard::default();
+        let mut events = ContributionEventLog::default();
+        assert!(events.append(ContributionEvent {
+            event_id: "event-hive-post".to_string(),
+            action_type: "hive.message.post".to_string(),
+            source_id: "hive:alpha:message:1".to_string(),
+            controller_id: "agent-a".to_string(),
+            public_id: Some("captain-public".to_string()),
+            agent_identity: Some("Captain".to_string()),
+            occurred_at: 100,
+            receipt: json!({"message_id": "1"}),
+        }));
+        assert!(events.append(ContributionEvent {
+            event_id: "event-mcp-success".to_string(),
+            action_type: "mcp.tool.success".to_string(),
+            source_id: "mcp:list_hives:1".to_string(),
+            controller_id: "agent-a".to_string(),
+            public_id: Some("captain-public".to_string()),
+            agent_identity: Some("Captain".to_string()),
+            occurred_at: 101,
+            receipt: json!({"tool_name": "list_hives"}),
+        }));
+        assert!(!events.append(ContributionEvent {
+            event_id: "event-mcp-success".to_string(),
+            action_type: "mcp.tool.success".to_string(),
+            source_id: "mcp:list_hives:duplicate".to_string(),
+            controller_id: "agent-a".to_string(),
+            public_id: Some("captain-public".to_string()),
+            agent_identity: Some("Captain".to_string()),
+            occurred_at: 102,
+            receipt: json!({"tool_name": "list_hives"}),
+        }));
+
+        let balance = wallet_bound_balance_from_rewards(
+            &EconomicPolicy::default(),
+            &board,
+            &events,
+            "agent-a",
+            Some("captain-public"),
+        );
+
+        assert_eq!(balance.watt, 2);
+        assert_eq!(balance.reputation, 0);
+        assert_eq!(balance.capacity, 0);
     }
 
     #[test]

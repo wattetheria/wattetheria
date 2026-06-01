@@ -51,6 +51,7 @@ pub mod domain {
     pub const POLICY: &str = "policy";
     pub const ECONOMIC_POLICY: &str = "economic_policy";
     pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
+    pub const CONTRIBUTION_EVENT_LOG: &str = "contribution_event_log";
     pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
 }
 
@@ -79,6 +80,7 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::POLICY, "policy_state"),
     (domain::ECONOMIC_POLICY, "economic_policy_state"),
     (domain::WATT_BALANCE_STATE, "watt_balance_state"),
+    (domain::CONTRIBUTION_EVENT_LOG, "contribution_event_log"),
     (domain::COLLECTIVE_MISSION_RUNS, "collective_mission_runs"),
 ];
 

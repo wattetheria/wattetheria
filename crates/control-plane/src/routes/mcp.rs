@@ -14,6 +14,9 @@ use uuid::Uuid;
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::resolve_identity_context;
+use crate::routes::reward_events::{
+    ContributionEventArgs, contribution_actor, record_contribution_event,
+};
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
@@ -229,7 +232,7 @@ async fn call_tool(
     );
 
     if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
-        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
+        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
         return Ok(result);
     }
 
@@ -253,7 +256,7 @@ async fn call_tool(
         }
     };
     let result = response_to_tool_result(tool.name, response).await;
-    record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
+    record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
     Ok(result)
 }
 
@@ -285,13 +288,13 @@ async fn direct_mcp_tool_result(
     }
 }
 
-fn record_mcp_tool_result(
+async fn record_mcp_tool_result(
     state: &ControlPlaneState,
     tool_name: &str,
     arguments: &Value,
     result: &Value,
     started_at: Instant,
-) {
+) -> Result<(), Response> {
     let is_error = result
         .get("isError")
         .and_then(Value::as_bool)
@@ -316,6 +319,51 @@ fn record_mcp_tool_result(
             result_kind: "tool_result",
         },
     );
+    if !is_error
+        && let Err(error) =
+            record_mcp_success_contribution(state, tool_name, arguments, result).await
+    {
+        return Err(internal_error(&error));
+    }
+    Ok(())
+}
+
+async fn record_mcp_success_contribution(
+    state: &ControlPlaneState,
+    tool_name: &str,
+    arguments: &Value,
+    result: &Value,
+) -> anyhow::Result<()> {
+    let public_id = arguments.get("public_id").and_then(Value::as_str);
+    let context = resolve_identity_context(state, public_id, None).await;
+    let (controller_id, actor_public_id, agent_identity) = contribution_actor(state, &context);
+    let source_id = format!("mcp:{tool_name}:{}", Uuid::new_v4());
+    record_contribution_event(
+        state,
+        ContributionEventArgs {
+            action_type: mcp_success_action_type(tool_name),
+            source_id: &source_id,
+            controller_id,
+            public_id: actor_public_id,
+            agent_identity,
+            receipt: json!({
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": result,
+            }),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+fn mcp_success_action_type(tool_name: &str) -> &'static str {
+    match tool_name {
+        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => {
+            "servicenet.agent.invoke.success"
+        }
+        _ => "mcp.tool.success",
+    }
 }
 
 struct McpToolDiagnosticEvent<'a> {

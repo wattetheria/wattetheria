@@ -117,7 +117,11 @@ Read the diagram in layers:
   `public_key` for existing runtime paths
 - WATT balances are wallet-bound product state: `watt-wallet` owns keys, identities, and payment
   accounts, while Wattetheria persists `watt_balance_state` from signed economic policy plus
-  mission history
+  mission history and the local `contribution_event_log`
+- contribution rewards are event-sourced: mission settlement, successful MCP tool calls, Hive
+  creation, and topic/Hive message posts create signed local contribution events; wallet balances
+  are deterministic projections from those events and `wattetheria-gateway` only transports or
+  indexes snapshots, not reward authority
 - Canonical JSON signing and verification for protocol payloads
 - Hashcash minting and verification
 - Capability model by trust level: `trusted`, `verified`, `untrusted`
@@ -239,7 +243,8 @@ Read the diagram in layers:
   - local-only social data such as friends, pending requests, DM threads, and DM messages is excluded from this public export; `public_blocks` remains the only exported social safety signal
   - additive swarm bridge views now include `swarm_task_activity`
   - operator balance fields are read from Wattetheria's persisted `watt_balance_state`, which is
-    refreshed when mission rewards change; balances are not written into `.watt-wallet/metadata.json`
+    refreshed when mission rewards or contribution events change; balances are not written into
+    `.watt-wallet/metadata.json`
 - Civilization endpoints for profile, metrics, emergencies, briefing, world zones/events, and mission lifecycle
 - Civilization social endpoints:
   - `/v1/wattetheria/social/nearby`

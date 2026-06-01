@@ -13,6 +13,9 @@ use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{
     IdentityContextView, identity_context_response, resolve_identity_context,
 };
+use crate::routes::reward_events::{
+    ContributionEventArgs, contribution_actor, message_action_type, record_contribution_event,
+};
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
     ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody, StreamEvent,
@@ -327,6 +330,10 @@ pub(crate) async fn create_hive(
         duration_ms: None,
         details: Some(payload),
     });
+    if let Err(error) = record_hive_create_contribution(&state, &context, &topic, &network_id).await
+    {
+        return internal_error(&error);
+    }
 
     Json(json!({
         "identity": identity_context_response(&context),
@@ -336,6 +343,33 @@ pub(crate) async fn create_hive(
         ),
     }))
     .into_response()
+}
+
+async fn record_hive_create_contribution(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+    topic: &HiveProfile,
+    network_id: &str,
+) -> anyhow::Result<()> {
+    let (controller_id, actor_public_id, agent_identity) = contribution_actor(state, context);
+    record_contribution_event(
+        state,
+        ContributionEventArgs {
+            action_type: "hive.create",
+            source_id: &topic.topic_id,
+            controller_id,
+            public_id: actor_public_id,
+            agent_identity,
+            receipt: json!({
+                "hive_id": topic.topic_id,
+                "network_id": network_id,
+                "feed_key": topic.feed_key,
+                "scope_hint": topic.scope_hint,
+            }),
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 async fn subscribe_created_hive(
@@ -681,6 +715,7 @@ pub(crate) async fn post_topic_message(
         Ok(network_id) => network_id,
         Err(error) => return internal_error(&error),
     };
+    let created_at = Utc::now();
     if let Err(error) = state
         .swarm_bridge
         .post_topic_message(
@@ -696,8 +731,9 @@ pub(crate) async fn post_topic_message(
         return internal_error(&error);
     }
 
+    let controller_id = context.public_memory_owner.controller.clone();
     let payload = json!({
-        "controller_id": context.public_memory_owner.controller,
+        "controller_id": controller_id,
         "network_id": network_id,
         "feed_key": body.feed_key,
         "scope_hint": body.scope_hint,
@@ -721,6 +757,35 @@ pub(crate) async fn post_topic_message(
         duration_ms: None,
         details: Some(payload),
     });
+    let (actor_controller_id, actor_public_id, agent_identity) =
+        contribution_actor(&state, &context);
+    let source_id = format!(
+        "topic:{}:{}:{}:{}",
+        network_id,
+        body.feed_key,
+        controller_id,
+        created_at.timestamp_millis()
+    );
+    if let Err(error) = record_contribution_event(
+        &state,
+        ContributionEventArgs {
+            action_type: message_action_type(body.reply_to_message_id.as_deref(), "topic"),
+            source_id: &source_id,
+            controller_id: actor_controller_id,
+            public_id: actor_public_id,
+            agent_identity,
+            receipt: json!({
+                "network_id": network_id,
+                "feed_key": body.feed_key,
+                "scope_hint": body.scope_hint,
+                "reply_to_message_id": body.reply_to_message_id,
+            }),
+        },
+    )
+    .await
+    {
+        return internal_error(&error);
+    }
 
     Json(json!({"ok": true})).into_response()
 }
@@ -804,6 +869,30 @@ pub(crate) async fn post_hive_message(
         duration_ms: None,
         details: Some(payload),
     });
+    let (actor_controller_id, actor_public_id, agent_identity) =
+        contribution_actor(&state, &context);
+    if let Err(error) = record_contribution_event(
+        &state,
+        ContributionEventArgs {
+            action_type: message_action_type(body.reply_to_message_id.as_deref(), "hive"),
+            source_id: &message_id,
+            controller_id: actor_controller_id,
+            public_id: actor_public_id,
+            agent_identity,
+            receipt: json!({
+                "message_id": message_id,
+                "hive_id": hive_topic_id,
+                "network_id": network_id,
+                "feed_key": hive.feed_key,
+                "scope_hint": hive.scope_hint,
+                "reply_to_message_id": body.reply_to_message_id,
+            }),
+        },
+    )
+    .await
+    {
+        return internal_error(&error);
+    }
 
     Json(json!({"ok": true})).into_response()
 }

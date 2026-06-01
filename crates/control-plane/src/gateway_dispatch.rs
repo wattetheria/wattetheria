@@ -74,6 +74,7 @@ pub fn describe_stream_event(event: &StreamEvent) -> Option<GatewayDispatchDecis
         .or_else(|| plan_organization_event(kind, payload))
         .or_else(|| plan_governance_event(kind, payload))
         .or_else(|| plan_topic_event(kind, payload))
+        .or_else(|| plan_ranking_event(kind, payload))
         .or_else(|| plan_public_block_event(kind, payload))
         .or_else(|| plan_galaxy_event(kind, payload))
     {
@@ -448,6 +449,30 @@ fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> 
     }
 }
 
+fn plan_ranking_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
+    if kind != "ranking.updated" {
+        return None;
+    }
+    let identity_key = payload
+        .get("public_id")
+        .or_else(|| payload.get("agent_did"))
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    Some(GatewayDispatchPlan {
+        data_kind: GatewayDataKind::RankingProjection,
+        visibility: GatewayVisibility::Public,
+        provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+        scope: GatewayEventScope {
+            node_id: None,
+            topic_id: None,
+            organization_id: None,
+            task_id: None,
+        },
+        identity_key,
+    })
+}
+
 fn plan_public_block_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
     if kind != "civilization.relationship.updated"
         || payload.get("relationship_state").and_then(Value::as_str) != Some("blocked")
@@ -584,6 +609,32 @@ mod tests {
         assert_eq!(
             decision.push_disposition,
             GatewayPushDisposition::PullOnlyFallback
+        );
+    }
+
+    #[test]
+    fn ranking_updates_are_gateway_pushed_as_ranking_projection() {
+        let event = StreamEvent {
+            kind: "ranking.updated".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "public_id": "agent-public-1",
+                "agent_identity": "Agent One",
+                "watt_balance": 7,
+                "score": 7,
+            }),
+        };
+        let plan = plan_stream_event(&event).expect("ranking plan");
+        assert_eq!(plan.data_kind, GatewayDataKind::RankingProjection);
+        assert_eq!(plan.identity_key.as_deref(), Some("agent-public-1"));
+        let decision = describe_stream_event(&event).expect("ranking decision");
+        assert_eq!(
+            decision.push_disposition,
+            GatewayPushDisposition::PushEligible
+        );
+        assert_eq!(
+            decision.mechanism_path,
+            GatewayMechanismPath::DirectProjection
         );
     }
 

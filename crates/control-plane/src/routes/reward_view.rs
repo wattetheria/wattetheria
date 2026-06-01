@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::civilization::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::economy::{
-    EconomicPolicy, WalletBalanceState, WalletBoundBalance, wallet_bound_balance_from_missions,
+    ContributionEventLog, EconomicPolicy, WalletBalanceState, WalletBoundBalance,
+    wallet_bound_balance_from_rewards,
 };
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::wallet_identity::{active_payment_account, open_local_wallet};
@@ -35,7 +36,14 @@ pub(crate) async fn persist_wallet_balance_for_identity(
 ) -> anyhow::Result<wattetheria_kernel::economy::WalletBalanceRecord> {
     let policy = load_economic_policy(state)?;
     let missions = state.mission_board.lock().await;
-    let balance = wallet_bound_balance_from_missions(&policy, &missions, controller_id, public_id);
+    let contribution_events = load_contribution_event_log(state)?;
+    let balance = wallet_bound_balance_from_rewards(
+        &policy,
+        &missions,
+        &contribution_events,
+        controller_id,
+        public_id,
+    );
     drop(missions);
     let mut balance_state: WalletBalanceState = state
         .local_db
@@ -51,14 +59,16 @@ pub(crate) async fn refresh_known_wallet_balances(state: &ControlPlaneState) -> 
     let subjects = wallet_balance_subjects(state).await;
     let policy = load_economic_policy(state)?;
     let missions = state.mission_board.lock().await;
+    let contribution_events = load_contribution_event_log(state)?;
     let mut balance_state: WalletBalanceState = state
         .local_db
         .load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
     let updated_at = Utc::now().timestamp();
     for (controller_id, public_id) in subjects {
-        let balance = wallet_bound_balance_from_missions(
+        let balance = wallet_bound_balance_from_rewards(
             &policy,
             &missions,
+            &contribution_events,
             &controller_id,
             public_id.as_deref(),
         );
@@ -68,6 +78,12 @@ pub(crate) async fn refresh_known_wallet_balances(state: &ControlPlaneState) -> 
     state
         .local_db
         .save_domain(local_db::domain::WATT_BALANCE_STATE, &balance_state)
+}
+
+fn load_contribution_event_log(state: &ControlPlaneState) -> anyhow::Result<ContributionEventLog> {
+    state
+        .local_db
+        .load_domain_or_default(local_db::domain::CONTRIBUTION_EVENT_LOG)
 }
 
 async fn wallet_balance_subjects(state: &ControlPlaneState) -> Vec<(String, Option<String>)> {

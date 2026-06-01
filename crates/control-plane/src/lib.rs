@@ -26,6 +26,7 @@ pub mod routes {
     pub(crate) mod payment_chain;
     pub(crate) mod payments;
     pub(crate) mod policy;
+    pub(crate) mod reward_events;
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;

@@ -96,6 +96,47 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
 }
 
 #[tokio::test]
+async fn mcp_success_records_contribution_reward_event() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "client_export",
+                "arguments": {}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let log: wattetheria_kernel::economy::ContributionEventLog = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap();
+    let event = log
+        .events
+        .values()
+        .find(|event| event.action_type == "mcp.tool.success")
+        .unwrap();
+    assert_eq!(event.receipt["tool_name"].as_str(), Some("client_export"));
+
+    let balances: wattetheria_kernel::economy::WalletBalanceState = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .unwrap();
+    let balance = balances
+        .get(&event.controller_id, event.public_id.as_deref())
+        .unwrap();
+    assert_eq!(balance.watt_balance, 1);
+}
+
+#[tokio::test]
 async fn mcp_tools_list_surfaces_tool_availability_metadata() {
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
