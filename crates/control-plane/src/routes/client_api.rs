@@ -996,10 +996,10 @@ async fn build_client_leaderboard_payload(
     let mut payload =
         leaderboard_payload(identities, &agent_stats_by_controller, &leaderboard_view);
     payload.sort_by(|left, right| {
-        right["score"]
+        right["score_tenths"]
             .as_i64()
             .unwrap_or_default()
-            .cmp(&left["score"].as_i64().unwrap_or_default())
+            .cmp(&left["score_tenths"].as_i64().unwrap_or_default())
             .then_with(|| {
                 right["watt_balance"]
                     .as_i64()
@@ -1058,13 +1058,14 @@ fn leaderboard_payload(
                 .count();
             let compute = ranking_compute(&agent_stats);
             let prestige = ranking_prestige(&agent_stats);
+            let score_tenths = ranking_score_tenths(&agent_stats);
             json!({
                 "agent_did": public_id,
                 "agent_identity": display_name,
                 "public_id": public_id,
                 "display_name": display_name,
                 "score": ranking_score(&agent_stats),
-                "score_tenths": ranking_score_tenths(&agent_stats),
+                "score_tenths": score_tenths,
                 "score_formula": "watts*0.1+compute*10+prestige*100",
                 "category": view.category.as_str(),
                 "category_score": score_for_category(&scores, view.category),

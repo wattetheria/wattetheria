@@ -147,8 +147,16 @@ pub fn ranking_score_tenths(stats: &AgentStats) -> i64 {
 }
 
 #[must_use]
-pub fn ranking_score(stats: &AgentStats) -> i64 {
-    ranking_score_tenths(stats).saturating_add(5).div_euclid(10)
+pub fn ranking_score(stats: &AgentStats) -> f64 {
+    score_from_tenths(ranking_score_tenths(stats))
+}
+
+fn score_from_tenths(score_tenths: i64) -> f64 {
+    let whole = score_tenths.div_euclid(10);
+    let tenths = score_tenths.rem_euclid(10);
+    format!("{whole}.{tenths}")
+        .parse::<f64>()
+        .expect("ranking score with one decimal is finite")
 }
 
 impl WalletBalanceState {
@@ -497,7 +505,7 @@ mod tests {
         assert_eq!(ranking_compute(&stats), 1);
         assert_eq!(ranking_prestige(&stats), 0);
         assert_eq!(ranking_score_tenths(&stats), 102);
-        assert_eq!(ranking_score(&stats), 10);
+        assert!((ranking_score(&stats) - 10.2).abs() < f64::EPSILON);
     }
 
     #[test]

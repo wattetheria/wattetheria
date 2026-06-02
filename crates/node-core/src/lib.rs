@@ -925,6 +925,47 @@ mod tests {
     }
 
     #[test]
+    fn resolve_wattswarm_executor_registration_uses_agent_host_data_dir_for_commit_token() {
+        let cli = Cli {
+            data_dir: ".wattetheria".into(),
+            recovery_sources: Vec::new(),
+            control_plane_bind: "127.0.0.1:7777".to_owned(),
+            wattswarm_ui_base_url: Some("http://wattswarm-kernel:7788".to_owned()),
+            wattswarm_sync_grpc_endpoint: None,
+            wattswarm_agent_event_callback_base_url: Some("http://kernel:7777".to_owned()),
+            agent_control_plane_endpoint: Some("http://127.0.0.1:7777".to_owned()),
+            agent_wattswarm_ui_base_url: None,
+            agent_wattswarm_sync_grpc_endpoint: None,
+            agent_host_data_dir: Some("/var/lib/wattetheria".to_owned()),
+            gateway_urls: Vec::new(),
+            gateway_config_path: None,
+            gateway_snapshot_interval_sec: 45,
+            control_plane_rate_limit: 60,
+            brain_provider_kind: "openai-compatible".to_owned(),
+            brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+            brain_model: "model".to_owned(),
+            brain_api_key_env: None,
+            autonomy_enabled: false,
+            autonomy_interval_sec: 30,
+        };
+
+        let registration = resolve_wattswarm_executor_registration(
+            &cli,
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: "http://127.0.0.1:8787/v1/".to_owned(),
+                model: "model".to_owned(),
+                api_key_env: None,
+            },
+        )
+        .expect("registration");
+
+        assert_eq!(
+            registration.commit_plane_token_file,
+            "/var/lib/wattetheria/control.token"
+        );
+    }
+
+    #[test]
     fn resolve_gateway_urls_reads_config_file_when_cli_urls_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let config_path = dir.path().join("startup_config.json");

@@ -119,13 +119,14 @@ fn publish_ranking_update(
     let display_name = event.agent_identity.as_deref().unwrap_or(public_id);
     let compute = ranking_compute(&balance_stats);
     let prestige = ranking_prestige(&balance_stats);
+    let score_tenths = ranking_score_tenths(&balance_stats);
     let payload = json!({
         "agent_did": public_id,
         "agent_identity": display_name,
         "public_id": public_id,
         "display_name": display_name,
         "score": ranking_score(&balance_stats),
-        "score_tenths": ranking_score_tenths(&balance_stats),
+        "score_tenths": score_tenths,
         "score_formula": "watts*0.1+compute*10+prestige*100",
         "watt_balance": balance_stats.watt,
         "compute": compute,

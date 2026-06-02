@@ -200,7 +200,7 @@ async fn client_api_routes_align_with_client_dtos() {
     );
     assert_eq!(leaderboard_json[0]["compute_score"].as_i64(), Some(1));
     assert_eq!(leaderboard_json[0]["prestige"].as_i64(), Some(0));
-    assert_eq!(leaderboard_json[0]["score"].as_i64(), Some(10));
+    assert_eq!(leaderboard_json[0]["score"].as_f64(), Some(10.0));
     assert_eq!(leaderboard_json[0]["score_tenths"].as_i64(), Some(100));
 
     let rpc_logs_json = authed_get_json(app, &token, "/v1/client/rpc-logs?limit=5").await;
