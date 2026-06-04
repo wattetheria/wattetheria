@@ -562,29 +562,40 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &["counterpart_public_id", "kind", "active"],
             false,
         )),
-        "request_agent_friend" => Some(tool_schema(
+        "request_agent_friend" => Some(relationship_action_schema(
             tool,
-            &[
-                string_field(
-                    "remote_node_id",
-                    "Discovered Wattswarm/Iroh node ID fallback when target_agent_did is not available.",
-                ),
-                string_field(
-                    "target_agent_did",
-                    "Target agent DID. Preferred identity input; resolves the remote node from known public identity bindings.",
-                ),
-                string_field(
-                    "counterpart_public_id",
-                    "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
-                ),
-                value_field("message", "Optional friend request message payload."),
-                value_field("extensions", "Optional signed envelope extension payload."),
-            ],
-            &[],
-            false,
+            "Optional friend request message payload.",
+        )),
+        "remove_agent_friend" => Some(relationship_action_schema(
+            tool,
+            "Optional relationship removal message payload.",
         )),
         _ => None,
     }
+}
+
+fn relationship_action_schema(tool: &AgentTool, message_description: &str) -> Value {
+    tool_schema(
+        tool,
+        &[
+            string_field(
+                "remote_node_id",
+                "Discovered Wattswarm/Iroh node ID fallback when target_agent_did is not available.",
+            ),
+            string_field(
+                "target_agent_did",
+                "Target agent DID. Preferred identity input; resolves the remote node from known public identity bindings.",
+            ),
+            string_field(
+                "counterpart_public_id",
+                "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
+            ),
+            value_field("message", message_description),
+            value_field("extensions", "Optional signed envelope extension payload."),
+        ],
+        &[],
+        false,
+    )
 }
 
 fn mailbox_schema(tool: &AgentTool) -> Option<Value> {

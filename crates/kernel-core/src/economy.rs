@@ -29,6 +29,12 @@ pub struct FixedRewardSchedule {
     pub mcp_tool_success_watt: i64,
     #[serde(default = "default_hive_create_watt")]
     pub hive_create_watt: i64,
+    #[serde(default = "default_system_puzzle_propose_success_watt")]
+    pub system_puzzle_propose_success_watt: i64,
+    #[serde(default = "default_system_puzzle_solve_watt")]
+    pub system_puzzle_solve_watt: i64,
+    #[serde(default = "default_system_puzzle_verify_success_watt")]
+    pub system_puzzle_verify_success_watt: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +110,9 @@ impl Default for FixedRewardSchedule {
             external_agent_call_success_watt: 1,
             mcp_tool_success_watt: default_mcp_tool_success_watt(),
             hive_create_watt: default_hive_create_watt(),
+            system_puzzle_propose_success_watt: default_system_puzzle_propose_success_watt(),
+            system_puzzle_solve_watt: default_system_puzzle_solve_watt(),
+            system_puzzle_verify_success_watt: default_system_puzzle_verify_success_watt(),
         }
     }
 }
@@ -114,6 +123,18 @@ const fn default_mcp_tool_success_watt() -> i64 {
 
 const fn default_hive_create_watt() -> i64 {
     1
+}
+
+const fn default_system_puzzle_propose_success_watt() -> i64 {
+    1
+}
+
+const fn default_system_puzzle_solve_watt() -> i64 {
+    8
+}
+
+const fn default_system_puzzle_verify_success_watt() -> i64 {
+    2
 }
 
 impl WalletBoundBalance {
@@ -322,6 +343,9 @@ fn contribution_event_watt(policy: &EconomicPolicy, action_type: &str) -> i64 {
         "custom_agent.publish" => policy.rewards.custom_agent_publish_watt,
         "servicenet.agent.invoke.success" => policy.rewards.external_agent_call_success_watt,
         "mcp.tool.success" => policy.rewards.mcp_tool_success_watt,
+        "system_puzzle.propose.success" => policy.rewards.system_puzzle_propose_success_watt,
+        "system_puzzle.solve" => policy.rewards.system_puzzle_solve_watt,
+        "system_puzzle.verify.success" => policy.rewards.system_puzzle_verify_success_watt,
         _ => 0,
     }
 }
@@ -408,6 +432,9 @@ mod tests {
         assert_eq!(policy.rewards.custom_agent_publish_watt, 5);
         assert_eq!(policy.rewards.mcp_tool_success_watt, 1);
         assert_eq!(policy.rewards.hive_create_watt, 1);
+        assert_eq!(policy.rewards.system_puzzle_propose_success_watt, 1);
+        assert_eq!(policy.rewards.system_puzzle_solve_watt, 8);
+        assert_eq!(policy.rewards.system_puzzle_verify_success_watt, 2);
     }
 
     #[test]
@@ -441,7 +468,9 @@ mod tests {
         assert_eq!(published.watt, 1);
 
         board.claim(&mission.mission_id, "agent-a").unwrap();
-        board.complete(&mission.mission_id, "agent-a").unwrap();
+        board
+            .complete(&mission.mission_id, "agent-a", None)
+            .unwrap();
         board.settle(&mission.mission_id).unwrap();
 
         let settled = wallet_bound_balance_from_missions(
@@ -479,6 +508,16 @@ mod tests {
             occurred_at: 101,
             receipt: json!({"tool_name": "list_hives"}),
         }));
+        assert!(events.append(ContributionEvent {
+            event_id: "event-system-puzzle-solve".to_string(),
+            action_type: "system_puzzle.solve".to_string(),
+            source_id: "system-puzzle:mission-1:solution-1:solve".to_string(),
+            controller_id: "agent-a".to_string(),
+            public_id: Some("captain-public".to_string()),
+            agent_identity: Some("Captain".to_string()),
+            occurred_at: 103,
+            receipt: json!({"challenge_id": "challenge-1"}),
+        }));
         assert!(!events.append(ContributionEvent {
             event_id: "event-mcp-success".to_string(),
             action_type: "mcp.tool.success".to_string(),
@@ -498,14 +537,14 @@ mod tests {
             Some("captain-public"),
         );
 
-        assert_eq!(balance.watt, 2);
+        assert_eq!(balance.watt, 10);
         assert_eq!(balance.reputation, 0);
         assert_eq!(balance.capacity, 0);
         let stats = balance.stats();
         assert_eq!(ranking_compute(&stats), 1);
         assert_eq!(ranking_prestige(&stats), 0);
-        assert_eq!(ranking_score_tenths(&stats), 102);
-        assert!((ranking_score(&stats) - 10.2).abs() < f64::EPSILON);
+        assert_eq!(ranking_score_tenths(&stats), 110);
+        assert!((ranking_score(&stats) - 11.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -588,10 +627,10 @@ mod tests {
             json!({}),
         );
         board.claim(&first.mission_id, "agent-a").unwrap();
-        board.complete(&first.mission_id, "agent-a").unwrap();
+        board.complete(&first.mission_id, "agent-a", None).unwrap();
         board.settle(&first.mission_id).unwrap();
         board.claim(&second.mission_id, "agent-a").unwrap();
-        board.complete(&second.mission_id, "agent-a").unwrap();
+        board.complete(&second.mission_id, "agent-a", None).unwrap();
         board.settle(&second.mission_id).unwrap();
 
         let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a", None);

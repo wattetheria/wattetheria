@@ -1485,7 +1485,9 @@ mod tests {
             json!({}),
         );
         board.claim(&mission.mission_id, "agent-a").unwrap();
-        board.complete(&mission.mission_id, "agent-a").unwrap();
+        board
+            .complete(&mission.mission_id, "agent-a", None)
+            .unwrap();
         board.settle(&mission.mission_id).unwrap();
         board.persist(&mission_board_path).unwrap();
 

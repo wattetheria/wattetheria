@@ -309,7 +309,9 @@ mod tests {
             serde_json::json!({}),
         );
         board.claim(&mission.mission_id, "agent-a").unwrap();
-        board.complete(&mission.mission_id, "agent-a").unwrap();
+        board
+            .complete(&mission.mission_id, "agent-a", None)
+            .unwrap();
         board.settle(&mission.mission_id).unwrap();
 
         let profile = CitizenProfile {

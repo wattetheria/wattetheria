@@ -35,6 +35,7 @@ require_text "$COMPOSE_FILE" '${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var
 require_text "$ENV_FILE" "WATTSWARM_HOST_STATE_DIR=./data/wattswarm" "release env template must define the Wattswarm host state directory"
 require_text "$ENV_FILE" "WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL=http://kernel:7777" "release env template must define the internal agent event callback base URL"
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_API_KEY=" "release env template must include the concrete brain API key value slot"
+require_text "$ENV_FILE" "WATTSWARM_IROH_PUBLISH_DIRECT_ADDRS=true" "release env template must publish Iroh direct addresses by default"
 require_text "$ENV_FILE" "WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS=120000" "release env template must define the Iroh data plane startup timeout"
 require_text "$ENV_FILE" "WATTETHERIA_GATEWAY_CONFIG_PATH=/var/lib/wattswarm/startup_config.json" "release env template must expose the gateway config path"
 

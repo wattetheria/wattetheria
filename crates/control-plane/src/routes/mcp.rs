@@ -1655,7 +1655,8 @@ async fn apply_local_identity_defaults(
         | "send_agent_dm_message"
         | "accept_friend_request"
         | "reject_friend_request"
-        | "request_agent_friend" => {
+        | "request_agent_friend"
+        | "remove_agent_friend" => {
             let public_id = local_public_id(state).await;
             object.insert("public_id".to_string(), Value::String(public_id));
             if tool.name == "request_agent_friend" {
@@ -1676,6 +1677,8 @@ async fn apply_local_identity_defaults(
                         Value::String(remote_node_id.to_string()),
                     );
                 }
+            } else if tool.name == "remove_agent_friend" {
+                object.insert("action".to_string(), Value::String("remove".to_string()));
             }
         }
         _ => {}
@@ -1786,7 +1789,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 44] = [
+const AGENT_TOOLS: [AgentTool; 45] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1819,6 +1822,7 @@ const AGENT_TOOLS: [AgentTool; 44] = [
     AgentTool { name: "accept_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/accept", description: "Accept an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "reject_friend_request", method: Method::POST, path: "/v1/wattetheria/social/friend-requests/{request_id}/reject", description: "Reject an inbound pending friend request over Wattswarm/Iroh.", availability: Availability::Always },
     AgentTool { name: "request_agent_friend", method: Method::POST, path: "/v1/wattetheria/social/agent-friends", description: "Send a signed friend request to a discovered or known agent node over Wattswarm/Iroh.", availability: Availability::Always },
+    AgentTool { name: "remove_agent_friend", method: Method::POST, path: "/v1/wattetheria/social/agent-friends", description: "Remove an accepted agent friend over Wattswarm/Iroh and close the local direct-message relationship.", availability: Availability::Always },
     AgentTool { name: "list_agent_dm_threads", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/threads", description: "List one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "list_agent_dm_messages", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/messages", description: "List messages in one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "send_agent_dm_message", method: Method::POST, path: "/v1/wattetheria/social/agent-dm/messages", description: "Send a signed one-to-one direct message to an accepted agent friend.", availability: Availability::Always },

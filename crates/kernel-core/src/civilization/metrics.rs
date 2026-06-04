@@ -138,7 +138,9 @@ mod tests {
             serde_json::json!({}),
         );
         missions.claim(&mission.mission_id, "agent-a").unwrap();
-        missions.complete(&mission.mission_id, "agent-a").unwrap();
+        missions
+            .complete(&mission.mission_id, "agent-a", None)
+            .unwrap();
         missions.settle(&mission.mission_id).unwrap();
 
         let mut profiles = CitizenRegistry::default();

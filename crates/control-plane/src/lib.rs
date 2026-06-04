@@ -30,6 +30,8 @@ pub mod routes {
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
+    pub(crate) mod servicenet_publish;
+    pub(crate) mod servicenet_published;
     pub(crate) mod supervision;
     pub(crate) mod topics;
 }
@@ -291,6 +293,18 @@ fn servicenet_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/servicenet/agents",
             get(routes::servicenet::list_agents),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/agent-card-template",
+            get(routes::servicenet_publish::agent_card_template),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/publish",
+            post(routes::servicenet_publish::publish_agent),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/published-agents",
+            get(routes::servicenet_published::published_agents),
         )
         .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}",

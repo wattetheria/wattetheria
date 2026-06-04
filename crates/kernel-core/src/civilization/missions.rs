@@ -62,6 +62,8 @@ pub struct CivilMission {
     pub created_at: i64,
     pub claimed_by: Option<String>,
     pub completed_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_result: Option<Value>,
     pub settled_at: Option<i64>,
     pub status: MissionStatus,
 }
@@ -176,6 +178,7 @@ impl MissionBoard {
             created_at: Utc::now().timestamp(),
             claimed_by: None,
             completed_by: None,
+            completion_result: None,
             settled_at: None,
             status: MissionStatus::Open,
         };
@@ -197,7 +200,12 @@ impl MissionBoard {
         Ok(mission.clone())
     }
 
-    pub fn complete(&mut self, mission_id: &str, agent_did: &str) -> Result<CivilMission> {
+    pub fn complete(
+        &mut self,
+        mission_id: &str,
+        agent_did: &str,
+        result: Option<Value>,
+    ) -> Result<CivilMission> {
         let mission = self
             .missions
             .get_mut(mission_id)
@@ -209,6 +217,7 @@ impl MissionBoard {
             bail!("mission claimed by different agent");
         }
         mission.completed_by = Some(agent_did.to_string());
+        mission.completion_result = result;
         mission.status = MissionStatus::Completed;
         Ok(mission.clone())
     }
@@ -269,8 +278,18 @@ mod tests {
 
         let claimed = board.claim(&mission.mission_id, "agent-z").unwrap();
         assert_eq!(claimed.status, MissionStatus::Claimed);
-        let completed = board.complete(&mission.mission_id, "agent-z").unwrap();
+        let completed = board
+            .complete(
+                &mission.mission_id,
+                "agent-z",
+                Some(serde_json::json!({"ok": true})),
+            )
+            .unwrap();
         assert_eq!(completed.status, MissionStatus::Completed);
+        assert_eq!(
+            completed.completion_result,
+            Some(serde_json::json!({"ok": true}))
+        );
         let settled = board.settle(&mission.mission_id).unwrap();
         assert_eq!(settled.status, MissionStatus::Settled);
     }

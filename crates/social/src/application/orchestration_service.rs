@@ -462,12 +462,14 @@ pub fn reconcile_dm_messages<R>(
 where
     R: RemoteIdentityRepository
         + TransportBindingRepository
+        + FriendshipRepository
         + ThreadRepository
         + MessageRepository
         + MessageReceiptRepository,
 {
     for view in views {
         cache_counterpart(repository, &view.counterpart)?;
+        ensure_inbound_dm_allowed(repository, local_public_id, view)?;
         let existing_thread = thread_service::find_thread(
             repository,
             local_public_id,
@@ -545,6 +547,34 @@ where
                 },
             ))?;
         }
+    }
+    Ok(())
+}
+
+fn ensure_inbound_dm_allowed<R>(
+    repository: &R,
+    local_public_id: &str,
+    view: &DmMessageSyncView,
+) -> SocialResult<()>
+where
+    R: FriendshipRepository,
+{
+    if message_direction_from_swarm(&view.direction) != MessageDirection::Inbound {
+        return Ok(());
+    }
+    let counterpart_public_id = &view.counterpart.counterpart_public_id;
+    let Some(friendship) = repository.find_friendship(local_public_id, counterpart_public_id)?
+    else {
+        return Err(SocialError::Conflict(format!(
+            "inbound_dm_rejected_not_active_friendship: local_public_id={local_public_id}, remote_public_id={counterpart_public_id}, message_id={}",
+            view.message_id
+        )));
+    };
+    if friendship.state != FriendshipState::Active {
+        return Err(SocialError::Conflict(format!(
+            "inbound_dm_rejected_not_active_friendship: local_public_id={local_public_id}, remote_public_id={counterpart_public_id}, state={:?}, message_id={}",
+            friendship.state, view.message_id
+        )));
     }
     Ok(())
 }
@@ -950,6 +980,23 @@ mod tests {
         }
     }
 
+    fn seed_friendship(store: &SocialStore, state: FriendshipState) {
+        friendship_service::upsert_friendship(
+            store,
+            &Friendship {
+                friendship_id: "friendship:did:key:alice:did:key:bob".to_string(),
+                local_public_id: "did:key:alice".to_string(),
+                remote_public_id: "did:key:bob".to_string(),
+                state,
+                established_from_request_id: Some("req-1".to_string()),
+                thread_id: Some("dm:alice:bob".to_string()),
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .expect("seed friendship");
+    }
+
     #[test]
     fn persist_relationship_accept_creates_friendship_and_thread() {
         let store = SocialStore::open_in_memory().expect("social store");
@@ -978,6 +1025,7 @@ mod tests {
     #[test]
     fn reconcile_dm_message_creates_thread_message_and_receipt() {
         let store = SocialStore::open_in_memory().expect("social store");
+        seed_friendship(&store, FriendshipState::Active);
         reconcile_dm_messages(
             &store,
             "did:key:alice",
@@ -1013,6 +1061,7 @@ mod tests {
     #[test]
     fn reconcile_dm_message_clamps_acknowledged_before_created() {
         let store = SocialStore::open_in_memory().expect("social store");
+        seed_friendship(&store, FriendshipState::Active);
         reconcile_dm_messages(
             &store,
             "did:key:alice",
@@ -1040,5 +1089,49 @@ mod tests {
             message_service::list_thread_messages(&store, &threads[0].thread_id).expect("messages");
         assert_eq!(threads[0].updated_at, 20);
         assert_eq!(messages[0].updated_at, 20);
+    }
+
+    #[test]
+    fn reconcile_dm_message_rejects_inbound_when_friendship_is_removed() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        seed_friendship(&store, FriendshipState::Removed);
+
+        let error = reconcile_dm_messages(
+            &store,
+            "did:key:alice",
+            &[DmMessageSyncView {
+                counterpart: counterpart(20),
+                transport_thread_id: "dm:alice:bob".to_string(),
+                message_id: "msg-after-remove".to_string(),
+                message_kind: "message".to_string(),
+                direction: "inbound".to_string(),
+                delivery_state: "delivered".to_string(),
+                a2a_protocol: "google_a2a".to_string(),
+                content: serde_json::json!({"text":"should be rejected"}),
+                encrypted_body: None,
+                content_encoding: None,
+                agent_envelope_json: None,
+                agent_signature: None,
+                created_at: 20,
+                acknowledged_at: Some(21),
+            }],
+        )
+        .expect_err("reject inbound dm");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inbound_dm_rejected_not_active_friendship")
+        );
+        assert!(
+            thread_service::list_threads(&store, "did:key:alice")
+                .expect("threads")
+                .is_empty()
+        );
+        assert!(
+            receipt_service::list_message_receipts(&store, "msg-after-remove")
+                .expect("receipts")
+                .is_empty()
+        );
     }
 }

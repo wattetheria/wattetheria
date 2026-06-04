@@ -976,6 +976,7 @@ fn agent_card_template_jsonc() -> &'static str {
   // Optional A2A x402 payment discovery. This is static/default settlement info.
   // The callee agent can still request per-invocation payment through the A2A task flow.
   // payTo is the callee/merchant settlement receiving address, not the caller wallet.
+  // asset is optional; when omitted, compatible clients may resolve it from network + currency.
   // resource names the paid ServiceNet resource; use this card's agent name, not a registry agent_id.
   // "capabilities": {
   //   "extensions": [
@@ -988,7 +989,6 @@ fn agent_card_template_jsonc() -> &'static str {
   //           {
   //             "scheme": "exact",
   //             "network": "base",
-  //             "asset": "0x0000000000000000000000000000000000000000",
   //             "payTo": "0x0000000000000000000000000000000000000000",
   //             "maxAmountRequired": "0",
   //             "resource": "servicenet:agent:<agent_name>",

@@ -560,6 +560,49 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
             }),
         )
         .route(
+            "/v1/providers/ownership-challenges",
+            post(|Json(body): Json<Value>| async move {
+                Json(json!({
+                    "challenge_id": "00000000-0000-0000-0000-000000000123",
+                    "challenge": "mock-challenge",
+                    "provider_id": "provider-ui",
+                    "provider_did": body["provider_did"],
+                }))
+            }),
+        )
+        .route(
+            "/v1/providers/register",
+            post(|Json(body): Json<Value>| async move {
+                Json(json!({
+                    "schema_version": 1,
+                    "provider_id": body["provider_id"],
+                    "provider_did": body["provider_did"],
+                    "display_name": body["display_name"],
+                    "status": "active",
+                    "registered_at": "2026-06-04T00:00:00Z",
+                }))
+            }),
+        )
+        .route(
+            "/v1/agent-submissions",
+            post(|Json(body): Json<Value>| async move {
+                Json(json!({
+                    "submission_id": "00000000-0000-0000-0000-000000000456",
+                    "provider_id": body["provider_id"],
+                    "agent_id": body["agent_id"],
+                    "version": body["version"],
+                    "status": "approved",
+                    "agent_card": body["agent_card"],
+                    "deployment": body["deployment"],
+                    "review": body["review"],
+                    "artifacts": body["artifacts"],
+                    "attestations": body["attestations"],
+                    "submitted_at": "2026-06-04T00:00:00Z",
+                    "updated_at": "2026-06-04T00:00:00Z",
+                }))
+            }),
+        )
+        .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
                 if agent_id == "agent-oauth" {

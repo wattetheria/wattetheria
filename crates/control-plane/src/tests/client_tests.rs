@@ -303,6 +303,147 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
+    use sha2::Digest as _;
+    use wattetheria_kernel::economy::ContributionEventLog;
+    use wattetheria_kernel::tasks::system_puzzle::{
+        PROOF_SCHEME_ZK_HASHCASH_V1, SYSTEM_PUZZLE_CHALLENGE_TASK_KIND,
+        SYSTEM_PUZZLE_VERIFICATION_TASK_KIND, SystemPuzzleChallenge, SystemPuzzleProofEnvelope,
+        SystemPuzzleRewardPolicy, SystemPuzzleVerificationMissionPayload,
+        SystemPuzzleVerificationReceipt, VERIFICATION_VERDICT_VALID, proof_hash,
+    };
+
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let identity = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let agent_did = identity["wallet_bound_agent_did"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let solver_public_id = bootstrap_broker_identity(app.clone(), &token, &agent_did).await;
+    let verifier_public_id = "agent-verifier-public";
+    let challenge = SystemPuzzleChallenge {
+        task_kind: SYSTEM_PUZZLE_CHALLENGE_TASK_KIND.to_string(),
+        challenge_id: "challenge-2026-06-01T00-00Z".to_string(),
+        slot_id: "slot-2026-06-01T00-00Z".to_string(),
+        template_id: "zk-hashcash-demo".to_string(),
+        challenge_seed: "seed-2026-06-01T00-00Z".to_string(),
+        difficulty_bits: 0,
+        proof_scheme: PROOF_SCHEME_ZK_HASHCASH_V1.to_string(),
+        proposer_public_id: "system-proposer".to_string(),
+        proposer_agent_identity: Some("System-Proposer".to_string()),
+        issued_at: 1,
+        reward_policy: SystemPuzzleRewardPolicy::default(),
+    };
+    let nonce = "nonce-1";
+    let digest = hex::encode(sha2::Sha256::digest(
+        format!(
+            "{}:{}:{}",
+            challenge.challenge_seed, solver_public_id, nonce
+        )
+        .as_bytes(),
+    ));
+    let proof = SystemPuzzleProofEnvelope {
+        proof_scheme: PROOF_SCHEME_ZK_HASHCASH_V1.to_string(),
+        public_inputs: json!({
+            "challenge_id": challenge.challenge_id,
+            "challenge_seed": challenge.challenge_seed,
+            "difficulty_bits": challenge.difficulty_bits,
+            "solver_public_id": solver_public_id,
+        }),
+        public_output: json!({"digest": digest}),
+        proof: json!({"nonce": nonce, "digest": digest}),
+    };
+    let payload = SystemPuzzleVerificationMissionPayload {
+        task_kind: SYSTEM_PUZZLE_VERIFICATION_TASK_KIND.to_string(),
+        challenge: challenge.clone(),
+        solver_public_id: solver_public_id.clone(),
+        solver_agent_identity: Some("Agent-Solver".to_string()),
+        solution_id: "solution-1".to_string(),
+        proof: proof.clone(),
+    };
+    let receipt = SystemPuzzleVerificationReceipt {
+        task_kind: SYSTEM_PUZZLE_VERIFICATION_TASK_KIND.to_string(),
+        challenge_id: challenge.challenge_id.clone(),
+        solution_id: "solution-1".to_string(),
+        solver_public_id: solver_public_id.clone(),
+        verifier_public_id: verifier_public_id.to_string(),
+        verifier_agent_identity: Some("Agent-Verifier".to_string()),
+        verdict: VERIFICATION_VERDICT_VALID.to_string(),
+        proof_hash: proof_hash(&proof).unwrap(),
+        verified_at: 2,
+        verifier_notes: None,
+    };
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Verify system puzzle solution",
+            "description": "Verify a submitted system puzzle proof.",
+            "publisher": solver_public_id,
+            "publisher_kind": "system",
+            "domain": "power",
+            "subnet_id": null,
+            "zone_id": null,
+            "required_role": null,
+            "required_faction": null,
+            "reward": {
+                "agent_watt": 0,
+                "reputation": 0,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": payload
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap();
+    let _claimed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": verifier_public_id}),
+    )
+    .await;
+    let completed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": verifier_public_id,
+            "result": receipt
+        }),
+    )
+    .await;
+    assert_eq!(
+        completed["completion_result"]["verdict"].as_str(),
+        Some(VERIFICATION_VERDICT_VALID)
+    );
+    let _settled = authed_post_json(
+        app,
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+        json!({"mission_id": mission_id}),
+    )
+    .await;
+
+    let log: ContributionEventLog = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap()
+        .unwrap();
+    let action_types = log
+        .iter()
+        .map(|event| event.action_type.as_str())
+        .collect::<Vec<_>>();
+    assert!(action_types.contains(&"system_puzzle.propose.success"));
+    assert!(action_types.contains(&"system_puzzle.solve"));
+    assert!(action_types.contains(&"system_puzzle.verify.success"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn wallet_page_can_create_agent_payment_account() {
     let (_dir, app, token, _, _state) = build_test_app(20);
     let created = authed_post_json(

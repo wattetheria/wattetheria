@@ -540,6 +540,9 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(!body.contains("renderNodes(payload)"));
     assert!(body.contains("identityRecordPublicIdentity"));
     assert!(body.contains("isAgentIdentityRecord"));
+    assert!(body.contains("selectPreferredIdentity"));
+    assert!(body.contains("identitiesByPublicId.has(savedPublicId)"));
+    assert!(body.contains("firstPublicId"));
     assert!(
         body.contains("publicId.startsWith(&quot;agent-&quot;)")
             || body.contains("publicId.startsWith(\"agent-\")")

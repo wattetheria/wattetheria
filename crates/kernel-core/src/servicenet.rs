@@ -106,6 +106,14 @@ struct ServiceNetListAgentsResponseBody {
     known_count: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceNetOwnershipChallenge {
+    pub challenge_id: Uuid,
+    pub challenge: String,
+    pub provider_id: String,
+    pub provider_did: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServiceNetListAgentsResponse {
     pub items: Vec<Value>,
@@ -233,6 +241,49 @@ impl ServiceNetClient {
             self.endpoint(&["v1", "agents", agent_id])
                 .map_err(|error| Self::client_error(&error))?,
             Option::<&Value>::None,
+        )
+        .await
+    }
+
+    pub async fn create_provider_ownership_challenge(
+        &self,
+        provider_did: &str,
+        operation: &str,
+    ) -> std::result::Result<ServiceNetOwnershipChallenge, ServiceNetClientError> {
+        self.request_json(
+            Method::POST,
+            self.endpoint(&["v1", "providers", "ownership-challenges"])
+                .map_err(|error| Self::client_error(&error))?,
+            Some(&serde_json::json!({
+                "provider_did": provider_did,
+                "operation": operation,
+            })),
+        )
+        .await
+    }
+
+    pub async fn register_provider(
+        &self,
+        request: &Value,
+    ) -> std::result::Result<Value, ServiceNetClientError> {
+        self.request_json(
+            Method::POST,
+            self.endpoint(&["v1", "providers", "register"])
+                .map_err(|error| Self::client_error(&error))?,
+            Some(request),
+        )
+        .await
+    }
+
+    pub async fn submit_agent(
+        &self,
+        request: &Value,
+    ) -> std::result::Result<Value, ServiceNetClientError> {
+        self.request_json(
+            Method::POST,
+            self.endpoint(&["v1", "agent-submissions"])
+                .map_err(|error| Self::client_error(&error))?,
+            Some(request),
         )
         .await
     }

@@ -42,11 +42,24 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <a class="side-link" href="#swarm" data-view="swarm"><span>Hives</span><span class="hint">05</span></a>
         <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">06</span></a>
         <a class="side-link" href="#organizations" data-view="organizations"><span>Guilds</span><span class="hint">07</span></a>
-        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">08</span></a>
-        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">09</span></a>
-        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">10</span></a>
-        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">11</span></a>
+        <a class="side-link" href="#servicenet" data-view="servicenet"><span>ServiceNet</span><span class="hint">08</span></a>
+        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">09</span></a>
+        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">10</span></a>
+        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">11</span></a>
+        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">12</span></a>
       </nav>
+
+      <div class="theme-picker" aria-label="Accent color theme">
+        <span class="theme-picker-label">Theme color</span>
+        <div class="theme-swatches" role="group" aria-label="Choose accent color">
+          <button class="theme-swatch" type="button" data-theme-swatch="teal" style="--swatch:#0d9488" title="Teal" aria-label="Teal theme"></button>
+          <button class="theme-swatch" type="button" data-theme-swatch="emerald" style="--swatch:#10b981" title="Emerald" aria-label="Emerald theme"></button>
+          <button class="theme-swatch" type="button" data-theme-swatch="forest" style="--swatch:#16a34a" title="Forest" aria-label="Forest green theme"></button>
+          <button class="theme-swatch" type="button" data-theme-swatch="blue-royal" style="--swatch:#2563eb" title="Royal blue" aria-label="Royal blue theme"></button>
+          <button class="theme-swatch" type="button" data-theme-swatch="blue-sky" style="--swatch:#0ea5e9" title="Sky blue" aria-label="Sky blue theme"></button>
+          <button class="theme-swatch" type="button" data-theme-swatch="indigo" style="--swatch:#4f46e5" title="Indigo" aria-label="Indigo theme"></button>
+        </div>
+      </div>
 
       <div class="sidebar-footer">
         <a href="#logs" data-view="logs">Raw Snapshot</a>
@@ -188,6 +201,158 @@ __SUPERVISION_CONSOLE_CSS__  </style>
           <article class="panel">
             <h2>Guilds</h2>
             <div id="organizations-list" class="list"></div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="servicenet" hidden>
+          <article id="servicenet-list-view" class="panel servicenet-panel">
+            <div class="section-head">
+              <h2>ServiceNet</h2>
+              <div class="section-actions">
+                <button id="servicenet-refresh" class="secondary" type="button">Refresh</button>
+                <button id="servicenet-new" type="button">Publish New</button>
+              </div>
+            </div>
+            <div id="servicenet-list-status" class="status-text"></div>
+            <div id="servicenet-list" class="list"></div>
+          </article>
+
+          <article id="servicenet-detail-view" class="panel servicenet-panel" hidden>
+            <div class="section-head">
+              <div class="section-title-stack">
+                <button id="servicenet-back" class="secondary" type="button">Back</button>
+                <h2 id="servicenet-form-title">Publish Agent</h2>
+              </div>
+              <span id="servicenet-form-mode" class="pill ready">new</span>
+            </div>
+            <form id="servicenet-form" class="servicenet-form">
+              <input id="servicenet-agent-id" type="hidden">
+              <input id="servicenet-provider-id" type="hidden">
+
+              <section class="form-section">
+                <div class="form-section-title">Agent Card</div>
+                <div class="form-grid">
+                  <label>
+                    Name
+                    <input id="servicenet-name" required placeholder="Acme Support Agent">
+                    <span class="field-note">Public name shown in ServiceNet listings.</span>
+                  </label>
+                  <label>
+                    Endpoint URL
+                    <input id="servicenet-url" required type="url" placeholder="https://agent.example.com/a2a">
+                    <span class="field-note">Public HTTPS JSON-RPC endpoint. Localhost and private IPs are rejected.</span>
+                  </label>
+                  <label class="wide">
+                    Description
+                    <textarea id="servicenet-description" required rows="3" placeholder="What this agent can do."></textarea>
+                    <span class="field-note">Short summary shown before invocation.</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-title">Classification</div>
+                <div class="form-grid four">
+                  <label>
+                    Scope
+                    <select id="servicenet-scope">
+                      <option value="real_world">real_world</option>
+                      <option value="wattetheria_native">wattetheria_native</option>
+                    </select>
+                    <span class="field-note">Use native when publishing from a Wattetheria node runtime.</span>
+                  </label>
+                  <label>
+                    Origin
+                    <select id="servicenet-origin"></select>
+                    <span class="field-note">Options depend on scope.</span>
+                  </label>
+                  <label>
+                    Domain
+                    <select id="servicenet-domain"></select>
+                    <span class="field-note">Controls ServiceNet UI grouping.</span>
+                  </label>
+                  <label>
+                    Supports Task
+                    <select id="servicenet-supports-task">
+                      <option value="false">false</option>
+                      <option value="true">true</option>
+                    </select>
+                    <span class="field-note">True when callers can poll a returned Task.</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-title">Pricing And Review</div>
+                <div class="form-grid four">
+                  <label>
+                    Cost
+                    <input id="servicenet-cost" type="number" min="0" step="1" value="0">
+                    <span class="field-note">Amount charged for invocation.</span>
+                  </label>
+                  <label>
+                    Currency
+                    <select id="servicenet-currency">
+                      <option value="USDC">USDC</option>
+                      <option value="USDT">USDT</option>
+                    </select>
+                    <span class="field-note">Accepted ServiceNet settlement currency.</span>
+                  </label>
+                  <label>
+                    Version
+                    <input id="servicenet-version" value="0.1.0">
+                    <span class="field-note">Bump this when updating a published agent.</span>
+                  </label>
+                  <label>
+                    Risk
+                    <select id="servicenet-risk">
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                    <span class="field-note">Review profile risk level.</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-head">
+                  <div class="form-section-title">Skills</div>
+                  <button id="servicenet-add-skill" class="secondary" type="button">Add Skill</button>
+                </div>
+                <div id="servicenet-skills" class="skill-editor"></div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-title">x402 Payment Discovery</div>
+                <label class="toggle-row">
+                  <input id="servicenet-x402-enabled" type="checkbox">
+                  Publish static x402 accepts metadata
+                </label>
+                <div id="servicenet-x402-fields" class="form-grid" hidden>
+                  <label>
+                    Network
+                    <input id="servicenet-x402-network" value="base">
+                  </label>
+                  <label>
+                    Pay To
+                    <input id="servicenet-x402-pay-to" placeholder="0x...">
+                    <span class="field-note">Callee settlement receiving address.</span>
+                  </label>
+                  <label>
+                    Max Amount
+                    <input id="servicenet-x402-amount" value="0">
+                  </label>
+                </div>
+              </section>
+
+              <div class="config-actions">
+                <button id="servicenet-submit" type="submit">Publish</button>
+                <button id="servicenet-cancel" class="secondary" type="button">Cancel</button>
+                <button id="servicenet-reset" class="secondary" type="button">Reset</button>
+                <span id="servicenet-status" class="status-text"></span>
+              </div>
+            </form>
           </article>
         </section>
 

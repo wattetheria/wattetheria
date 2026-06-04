@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
@@ -142,6 +143,240 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     callback_server.abort();
     servicenet_server.abort();
 }
+
+fn console_agent_publish_body(
+    agent_id: Option<&str>,
+    provider_id: Option<&str>,
+    version: &str,
+    risk_level: &str,
+    description: &str,
+    supports_task: bool,
+) -> Value {
+    let mut body = json!({
+        "version": version,
+        "risk_level": risk_level,
+        "agent_card": {
+            "name": "Console Agent",
+            "description": description,
+            "url": "https://console-agent.example.com/a2a",
+            "preferredTransport": "JSONRPC",
+            "protocolVersion": "1.0",
+            "scope": "real_world",
+            "origin": "custom_built",
+            "domain": "GENERAL",
+            "cost": if supports_task { 20 } else { 18 },
+            "currency": "USDC",
+            "supportsTask": supports_task,
+            "skills": [{"name": "Lookup", "description": "Looks up records"}],
+            "securitySchemes": {"none": {"type": "none"}},
+            "security": [{"none": []}]
+        }
+    });
+    if let Some(agent_id) = agent_id {
+        body["agent_id"] = json!(agent_id);
+    }
+    if let Some(provider_id) = provider_id {
+        body["provider_id"] = json!(provider_id);
+    }
+    body
+}
+
+fn assert_servicenet_template(template: &Value) {
+    assert_eq!(
+        template["defaults"]["preferredTransport"].as_str(),
+        Some("JSONRPC")
+    );
+    assert!(
+        template["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"].as_str() == Some("skills"))
+    );
+}
+
+fn assert_published_console_agent(published_json: &Value, target_agent_id: &str, owner_did: &str) {
+    assert_eq!(published_json["count"].as_u64(), Some(1));
+    assert_eq!(published_json["provider_did"].as_str(), Some(owner_did));
+    assert_eq!(
+        published_json["items"][0]["agent_id"].as_str(),
+        Some(target_agent_id)
+    );
+    assert_eq!(
+        published_json["items"][0]["agent_card"]["name"].as_str(),
+        Some("Console Agent")
+    );
+}
+
+async fn spawn_list_counting_servicenet() -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<AtomicUsize>,
+) {
+    let list_calls = Arc::new(AtomicUsize::new(0));
+    let app = axum::Router::new().route(
+        "/v1/agents",
+        axum::routing::get({
+            let list_calls = Arc::clone(&list_calls);
+            move || {
+                let list_calls = Arc::clone(&list_calls);
+                async move {
+                    list_calls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({"items": [], "count": 0, "limit": 100, "offset": 0}))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, server, list_calls)
+}
+
+#[tokio::test]
+async fn servicenet_published_agents_uses_local_publisher_state_only() {
+    let (servicenet_addr, servicenet_server, list_calls) = spawn_list_counting_servicenet().await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let publisher_dir = state.data_dir.join("servicenet");
+    fs::create_dir_all(&publisher_dir).unwrap();
+    fs::write(
+        publisher_dir.join("publisher-state.json"),
+        serde_json::to_vec(&json!({
+            "registrations": [{
+                "provider_id": "provider-local",
+                "provider_did": state.agent_did,
+                "agent_id": "agent-local-only",
+                "card_hash": "sha256:local",
+                "version": "0.1.0",
+                "updated_at": "2026-06-04T00:00:00Z",
+                "agent_card": {
+                    "name": "Local Only Agent",
+                    "description": "Only this node published it",
+                    "url": "https://local-only.example.com/a2a"
+                },
+                "deployment": {},
+                "review": {"risk_level": "low"}
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let published = authed_get_json(
+        app(state),
+        &token,
+        "/v1/wattetheria/servicenet/published-agents",
+    )
+    .await;
+    assert_eq!(published["count"].as_u64(), Some(1));
+    assert_eq!(
+        published["items"][0]["agent_id"].as_str(),
+        Some("agent-local-only")
+    );
+    assert_eq!(list_calls.load(Ordering::SeqCst), 0);
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn servicenet_template_and_publish_routes_support_console_flow() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let template = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/agent-card-template",
+    )
+    .await;
+    assert_servicenet_template(&template);
+
+    let publish_json = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        console_agent_publish_body(
+            None,
+            None,
+            "0.1.0",
+            "low",
+            "Published from the console",
+            false,
+        ),
+    )
+    .await;
+    assert_eq!(publish_json["status"].as_str(), Some("ok"));
+    assert_eq!(publish_json["provider_id"].as_str(), Some("provider-ui"));
+    assert_eq!(
+        publish_json["provider_did"].as_str(),
+        Some(state.agent_did.as_str())
+    );
+    let agent_id = publish_json["agent_id"].as_str().unwrap();
+    assert!(agent_id.starts_with("console-agent-"));
+    assert_eq!(
+        publish_json["submission"]["attestations"]["provider_attester_did"].as_str(),
+        Some(state.agent_did.as_str())
+    );
+
+    let published_json = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/published-agents",
+    )
+    .await;
+    assert_published_console_agent(&published_json, agent_id, &state.agent_did);
+
+    let update_json = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        console_agent_publish_body(
+            Some(agent_id),
+            Some("provider-ui"),
+            "0.1.1",
+            "medium",
+            "Updated from the console",
+            true,
+        ),
+    )
+    .await;
+    assert_eq!(update_json["status"].as_str(), Some("ok"));
+    assert_eq!(update_json["agent_id"].as_str(), Some(agent_id));
+    assert_eq!(update_json["provider_id"].as_str(), Some("provider-ui"));
+    assert_eq!(update_json["submission"]["version"].as_str(), Some("0.1.1"));
+
+    let forbidden_update = authed_post(
+        app,
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        console_agent_publish_body(
+            Some(agent_id),
+            Some("provider-other"),
+            "0.1.2",
+            "medium",
+            "Rejected update",
+            true,
+        ),
+    )
+    .await;
+    assert_eq!(forbidden_update, StatusCode::FORBIDDEN);
+
+    servicenet_server.abort();
+}
+
 #[tokio::test]
 async fn servicenet_callback_decision_routes_into_mission_commit() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;

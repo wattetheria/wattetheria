@@ -36,6 +36,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "accept_friend_request",
     "reject_friend_request",
     "request_agent_friend",
+    "remove_agent_friend",
     "list_agent_dm_threads",
     "list_agent_dm_messages",
     "send_agent_dm_message",
@@ -882,6 +883,125 @@ async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_friendship() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller);
+    let remote_public_id = scoped_id("broker-remove", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Remove".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooRemovePeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("request-remove-1".to_string()),
+            thread_id: Some(format!("dm:{local_public_id}:{remote_public_id}")),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed active friendship");
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "remove_agent_friend",
+                "arguments": {
+                    "target_agent_did": remote_identity.agent_did,
+                    "message": {
+                        "kind": "friend_remove",
+                        "text": "remove friend"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, "12D3KooRemovePeer");
+    assert_eq!(
+        serde_json::to_value(&command.action).unwrap().as_str(),
+        Some("remove")
+    );
+    assert_eq!(
+        command.agent_envelope.capability.as_deref(),
+        Some("social.friend.remove")
+    );
+    assert_eq!(
+        command.agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("source_public_id")
+            .and_then(Value::as_str),
+        Some(local_public_id.as_str())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("target_public_id")
+            .and_then(Value::as_str),
+        Some(remote_public_id.as_str())
+    );
+    drop(commands);
+
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("list friendships after remove");
+    assert!(friendships.iter().any(|friendship| {
+        friendship.remote_public_id == remote_public_id
+            && friendship.state == wattetheria_social::domain::friendships::FriendshipState::Removed
+    }));
+}
+
+#[tokio::test]
 async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -1593,6 +1713,25 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .any(|field| field.as_str() == Some("remote_node_id"))
     );
     assert_schema_omits(request_agent_friend, &["public_id", "action"]);
+    let remove_agent_friend = find_tool(tools, "remove_agent_friend");
+    assert!(
+        remove_agent_friend["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("target_agent_did")
+    );
+    assert!(
+        !remove_agent_friend["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("remote_node_id"))
+    );
+    assert_schema_omits(remove_agent_friend, &["public_id", "action"]);
+    assert_eq!(
+        remove_agent_friend["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/agent-friends")
+    );
     let list_agent_dm_threads = find_tool(tools, "list_agent_dm_threads");
     assert_eq!(
         list_agent_dm_threads["_meta"]["wattetheria"]["path"].as_str(),

@@ -39,11 +39,11 @@ struct ThirdPartyAgentEvent {
     allowed_actions: Vec<String>,
 }
 
-fn servicenet_client(state: &ControlPlaneState) -> Option<&ServiceNetClient> {
+pub(crate) fn servicenet_client(state: &ControlPlaneState) -> Option<&ServiceNetClient> {
     state.servicenet_client.as_deref()
 }
 
-fn servicenet_unavailable_response() -> Response {
+pub(crate) fn servicenet_unavailable_response() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(json!({"error": "servicenet is not configured"})),
@@ -417,7 +417,7 @@ fn append_query_audit(state: &ControlPlaneState, auth: String, action: &str, sub
     });
 }
 
-fn servicenet_error_response(error: &ServiceNetClientError) -> Response {
+pub(crate) fn servicenet_error_response(error: &ServiceNetClientError) -> Response {
     if error.status().is_none() {
         return internal_error(&anyhow::anyhow!(error.to_string()));
     }
