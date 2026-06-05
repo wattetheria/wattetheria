@@ -38,7 +38,7 @@ use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::servicenet::ServiceNetClient;
-use wattetheria_kernel::signing::verify_payload;
+use wattetheria_kernel::signing::{canonical_bytes, sign_payload, verify_payload};
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
@@ -709,6 +709,21 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         }
                     },
                     "review": {"risk_level": "low"},
+                }))
+            }),
+        )
+        .route(
+            "/v1/agents/{agent_id}/unpublish",
+            post(|Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                Json(json!({
+                    "agent_id": agent_id,
+                    "provider_id": body["provider_id"],
+                    "provider_did": body["provider_did"],
+                    "status": "revoked",
+                    "review": {
+                        "notes": body["reason"],
+                    },
+                    "updated_at": "2026-06-04T00:00:00Z",
                 }))
             }),
         )

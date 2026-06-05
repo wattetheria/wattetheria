@@ -490,6 +490,74 @@
       return publicIdentity?.active !== false && publicId.startsWith("agent-");
     }
 
+    function identityRecordControllerBinding(record) {
+      const context = identityContext(record);
+      return context.controller_binding || record?.controller_binding || null;
+    }
+
+    function identityRecordProfile(record) {
+      const context = identityContext(record);
+      return context.profile || record?.profile || null;
+    }
+
+    function identityRecordPublicMemoryOwner(record) {
+      const context = identityContext(record);
+      return context.public_memory_owner || record?.public_memory_owner || null;
+    }
+
+    function publicIdFingerprint(publicId) {
+      const match = String(publicId || "").match(/\.([0-9a-fA-F]{16})$/);
+      return match ? match[1].toLowerCase() : "";
+    }
+
+    function didMethod(agentDid) {
+      const match = String(agentDid || "").match(/^did:([^:]+):/);
+      return match ? `did:${match[1]}` : "";
+    }
+
+    function identityProtectionBadges(identity, binding) {
+      const publicId = identity.public_id || "";
+      const agentDid = identity.agent_did || "";
+      const fingerprint = publicIdFingerprint(publicId);
+      const selfCertifying = publicId.startsWith("did:key:") || Boolean(fingerprint);
+      const method = didMethod(agentDid);
+      return [
+        {
+          label: selfCertifying ? "Self-certifying public_id" : "Plain public_id",
+          state: selfCertifying ? "verified" : "needs fingerprint",
+          className: selfCertifying ? "ready" : "pending",
+        },
+        {
+          label: agentDid ? "Agent DID bound" : "Agent DID missing",
+          state: method || "unbound",
+          className: agentDid ? "ready" : "pending",
+        },
+        {
+          label: binding?.active === false ? "Controller inactive" : "Controller active",
+          state: valueOrDash(binding?.controller_kind),
+          className: binding?.active === false ? "blocked" : "ready",
+        },
+      ];
+    }
+
+    function identityFieldRows(rows) {
+      return rows.map(([label, value]) => `
+        <div class="identity-field">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(valueOrDash(value))}</strong>
+        </div>
+      `).join("");
+    }
+
+    function identityCompactList(items, getLabel, emptyLabel) {
+      const labels = safeArray(items)
+        .map(getLabel)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      if (!labels.length) return `<span>${escapeHtml(emptyLabel)}</span>`;
+      return labels.slice(0, 4).map((label) => `<span>${escapeHtml(label)}</span>`).join("");
+    }
+
     function selectPreferredIdentity() {
       const savedPublicId = publicIdEl.dataset.savedPublicId || "";
       if (savedPublicId && identitiesByPublicId.has(savedPublicId)) {
@@ -1527,17 +1595,76 @@
 
     function renderIdentities(rows) {
       renderList("identities-list", rows, "No agent identities loaded.", (row) => {
-        const identity = identityRecordPublicIdentity(row) || {};
-        const owner = at(row, ["identity", "public_memory_owner"]) || {};
-        const profile = at(row, ["identity", "profile"]) || {};
+        const record = row || {};
+        const identity = identityRecordPublicIdentity(record) || {};
+        const binding = identityRecordControllerBinding(record) || {};
+        const owner = identityRecordPublicMemoryOwner(record) || {};
+        const profile = identityRecordProfile(record) || {};
+        const travel = record.travel_state || {};
+        const currentPosition = travel.current_position || {};
+        const organizations = safeArray(record.organizations);
+        const agentDid = identity.agent_did || owner.agent_did || profile.agent_did;
+        const controllerId = binding.controller_node_id || owner.controller_id || owner.controller;
+        const protectionBadges = identityProtectionBadges(identity, binding);
+        const fingerprint = publicIdFingerprint(identity.public_id);
         return `
-          <div class="row">
+          <div class="row identity-row">
             <div class="row-head">
               <div class="row-title">${escapeHtml(identity.display_name || identity.public_id || "Unnamed identity")}</div>
               ${pill(identity.active === false ? "inactive" : "active", identity.active === false ? "blocked" : "ready")}
             </div>
-            <div class="row-body">${escapeHtml(compactId(identity.public_id || owner.public_id, 32))}</div>
-            <div class="subtle">controller ${escapeHtml(compactId(owner.controller_id || owner.controller, 24))} | ${escapeHtml(valueOrDash(profile.role))}</div>
+            <div class="row-body identity-public-id">${escapeHtml(identity.public_id || owner.public_id || "-")}</div>
+            <div class="subtle">controller ${escapeHtml(compactId(controllerId, 28))} | ${escapeHtml(valueOrDash(profile.role))}</div>
+            <div class="identity-protection" aria-label="Identity protection">
+              ${protectionBadges.map((badge) => `
+                <div class="identity-protection-item ${escapeHtml(badge.className)}">
+                  <span>${escapeHtml(badge.label)}</span>
+                  <strong>${escapeHtml(badge.state)}</strong>
+                </div>
+              `).join("")}
+            </div>
+            <div class="identity-detail-grid">
+              <section class="identity-detail-section">
+                <div class="identity-detail-title">Public Identity</div>
+                ${identityFieldRows([
+                  ["agent_did", compactId(agentDid, 36)],
+                  ["fingerprint", fingerprint || "-"],
+                  ["created_at", formatTime(identity.created_at)],
+                  ["updated_at", formatTime(identity.updated_at)],
+                ])}
+              </section>
+              <section class="identity-detail-section">
+                <div class="identity-detail-title">Controller Binding</div>
+                ${identityFieldRows([
+                  ["controller_kind", binding.controller_kind],
+                  ["controller_ref", binding.controller_ref],
+                  ["controller_node_id", compactId(controllerId, 36)],
+                  ["ownership_scope", binding.ownership_scope],
+                ])}
+              </section>
+              <section class="identity-detail-section">
+                <div class="identity-detail-title">Profile</div>
+                ${identityFieldRows([
+                  ["faction", profile.faction],
+                  ["role", profile.role],
+                  ["strategy", profile.strategy],
+                  ["home_subnet_id", profile.home_subnet_id],
+                  ["home_zone_id", profile.home_zone_id],
+                ])}
+              </section>
+              <section class="identity-detail-section">
+                <div class="identity-detail-title">Travel</div>
+                ${identityFieldRows([
+                  ["system_id", currentPosition.system_id || travel.system_id],
+                  ["zone_id", currentPosition.zone_id || travel.zone_id],
+                  ["status", travel.status || travel.travel_status],
+                  ["updated_at", formatTime(travel.updated_at || travel.last_updated_at)],
+                ])}
+              </section>
+            </div>
+            <div class="row-meta identity-orgs" aria-label="Identity organizations">
+              ${identityCompactList(organizations, (org) => org.name || org.organization_name || org.id || org.organization_id, "No guilds")}
+            </div>
           </div>
         `;
       });
@@ -1590,6 +1717,132 @@
         && String(account?.rail || "x402").toLowerCase() === targetRail
         && account?.can_sign
       )) || null;
+    }
+
+    function walletActiveIdentity(operator = currentWalletOperator) {
+      const identities = safeArray(operator?.wallet_identities);
+      return identities.find((identity) => identity?.active)
+        || identities.find((identity) => String(identity?.status || "").toLowerCase() === "active")
+        || null;
+    }
+
+    function walletTagList(values, emptyLabel = "-") {
+      const labels = safeArray(values)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+      if (!labels.length) return `<span class="subtle">${escapeHtml(emptyLabel)}</span>`;
+      return `<div class="wallet-tags">${labels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}</div>`;
+    }
+
+    function renderWalletIdentity(operator) {
+      const identity = walletActiveIdentity(operator);
+      const identities = safeArray(operator?.wallet_identities);
+      return `
+        <section class="wallet-section identity">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">Wallet Identity</div>
+            ${pill(identity ? "DID backed" : "missing", identity ? "ready" : "pending")}
+          </div>
+          ${walletSummaryRows([
+            ["Active Identity", identity?.identity_id || "none"],
+            ["DID", identity?.did || operator.wallet_bound_agent_did],
+            ["Status", identity?.status || (identity ? "active" : "none")],
+            ["Created", formatTime(identity?.created_at_ms)],
+          ])}
+          <div class="wallet-subsection">
+            <div class="wallet-subsection-title">Purposes</div>
+            ${walletTagList(identity?.purposes, "No purposes recorded")}
+          </div>
+          <div class="wallet-subtle-line">${escapeHtml(identities.length ? `${identities.length} local identity record${identities.length === 1 ? "" : "s"}` : "No local wallet identities loaded.")}</div>
+        </section>
+      `;
+    }
+
+    function renderWalletPaymentAccounts(operator) {
+      const accounts = walletPaymentAccounts(operator);
+      if (!accounts.length) {
+        return `<div class="empty">No payment accounts recorded.</div>`;
+      }
+      const activeAccountId = operator.active_payment_account?.account_id || "";
+      return `
+        <div class="table-wrap wallet-account-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Address</th>
+                <th>Rail</th>
+                <th>Network</th>
+                <th>Custody</th>
+                <th>Authority</th>
+                <th>Capabilities</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${accounts.map((account) => `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(compactId(account.account_id, 18))}</strong>
+                    ${account.account_id === activeAccountId ? pill("active", "ready") : ""}
+                  </td>
+                  <td class="wallet-address-cell">${escapeHtml(valueOrDash(account.address || "none"))}</td>
+                  <td>${escapeHtml(valueOrDash(account.rail))}</td>
+                  <td>${escapeHtml(valueOrDash(account.network))}</td>
+                  <td>${escapeHtml(valueOrDash(account.custody))}</td>
+                  <td>${escapeHtml(account.can_sign ? "can sign" : account.receive_only ? "receive only" : "no signing")}</td>
+                  <td>${walletTagList(account.capabilities, "none")}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function walletBindingStatus(operator, selectedPayment) {
+      const binding = operator.payment_account_binding || {};
+      const proofAvailable = Boolean(binding.proof_available || selectedPayment?.can_sign);
+      const status = binding.status || (proofAvailable ? "ready" : selectedPayment ? "watch_only" : "missing_payment_account");
+      return {
+        binding,
+        proofAvailable,
+        status,
+        pillClass: proofAvailable ? "ready" : selectedPayment ? "pending" : "blocked",
+        pillText: proofAvailable ? "proof ready" : selectedPayment ? "watch only" : "missing",
+      };
+    }
+
+    function renderWalletBinding(operator, selectedPayment) {
+      const { binding, proofAvailable, status, pillClass, pillText } = walletBindingStatus(operator, selectedPayment);
+      const agentDid = binding.agent_did || operator.wallet_bound_agent_did;
+      const paymentAddress = binding.payment_address || selectedPayment?.address;
+      return `
+        <section class="wallet-section binding">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">DID Payment Binding</div>
+            ${pill(pillText, pillClass)}
+          </div>
+          <div class="wallet-binding-chain">
+            <span>Agent DID</span>
+            <strong>${escapeHtml(compactId(agentDid, 30))}</strong>
+            <span>Wallet identity key</span>
+            <strong>${escapeHtml(proofAvailable ? "local Ed25519 signer" : "not proof-ready")}</strong>
+            <span>Payment account</span>
+            <strong>${escapeHtml(compactId(paymentAddress || "none", 30))}</strong>
+          </div>
+          ${walletSummaryRows([
+            ["Binding Status", status],
+            ["Custody", binding.custody || selectedPayment?.custody],
+            ["Agent Proof", binding.agent_proof_algorithm || (agentDid ? "ed25519-binding" : "none")],
+            ["Payment Proof", binding.payment_proof_algorithm || (proofAvailable ? "secp256k1-binding" : "none")],
+            ["Receive Only", binding.receive_only ? "yes" : "no"],
+          ])}
+          <div class="wallet-subsection">
+            <div class="wallet-subsection-title">Binding Capabilities</div>
+            ${walletTagList(binding.capabilities || selectedPayment?.capabilities, "none")}
+          </div>
+        </section>
+      `;
     }
 
     function stablecoinTokensFor(networkRef) {
@@ -1732,6 +1985,7 @@
             ["Controller", operator.controller_id],
           ])}
         </section>
+        ${renderWalletIdentity(operator)}
         <section class="wallet-section web3">
           <div class="wallet-section-head">
             <div class="wallet-section-title">Agent Payment Account</div>
@@ -1768,6 +2022,14 @@
           <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No agent payment account created.")}</div>
           <div id="web3-token-balances" class="wallet-token-grid"></div>
         </section>
+        <section class="wallet-section accounts">
+          <div class="wallet-section-head">
+            <div class="wallet-section-title">Payment Accounts</div>
+            ${pill(`${walletPaymentAccounts(operator).length} accounts`, walletPaymentAccounts(operator).length ? "ready" : "pending")}
+          </div>
+          ${renderWalletPaymentAccounts(operator)}
+        </section>
+        ${renderWalletBinding(operator, selectedPayment)}
         <section class="wallet-section web2">
           <div class="wallet-section-head">
             <div class="wallet-section-title">Web2 Payments</div>
@@ -2006,11 +2268,11 @@
               <br>Agent ${escapeHtml(compactId(row.agent_id, 30))} | Provider ${escapeHtml(compactId(row.provider_id, 30))}
             </div>
             <div class="row-meta">
-              <span>${escapeHtml(valueOrDash(row.version))}</span>
+              <span>v ${escapeHtml(valueOrDash(row.version))}</span>
               <span>${escapeHtml(valueOrDash(card.domain))}</span>
               <span>${escapeHtml(valueOrDash(card.currency))} ${escapeHtml(valueOrDash(card.cost))}</span>
-              ${skillPreview(card.skills) ? `<span>${escapeHtml(skillPreview(card.skills))}</span>` : ""}
             </div>
+            ${skillTags(card.skills) ? `<div class="row-tags">${skillTags(card.skills)}</div>` : ""}
             <div class="row-actions">
               <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Update</button>
             </div>

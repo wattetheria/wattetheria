@@ -127,6 +127,22 @@ async fn client_wattswarm_diagnostics_proxies_swarm_bridge_snapshot() {
 #[tokio::test]
 async fn agent_event_callback_writes_diagnostics() {
     let (_dir, app, _token, _, state) = build_test_app(20);
+    let agent_envelope = crate::social_host::build_signed_agent_envelope_for_nodes(
+        &state,
+        crate::social_host::SignedAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            target_agent_id: Some(state.agent_did.clone()),
+            source_node_id: Some("claimer-node".to_owned()),
+            target_node_id: None,
+            capability: "task.claim".to_owned(),
+            message: json!({
+                "task_id": "task-claim-1",
+                "event_kind": "task_claimed"
+            }),
+            extensions: None,
+        },
+    )
+    .expect("signed agent envelope");
     let response = app
         .oneshot(
             axum::http::Request::post("/agent-events")
@@ -142,6 +158,7 @@ async fn agent_event_callback_writes_diagnostics() {
                                 "task_id": "task-claim-1",
                                 "event_kind": "task_claimed"
                             },
+                            "agent_envelope": agent_envelope,
                             "requires_commit": false,
                             "allowed_actions": ["inspect_task", "decide_claim"],
                             "correlation_id": "task-claim-1",

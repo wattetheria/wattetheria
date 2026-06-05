@@ -45,6 +45,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "ack_mailbox_message",
     "list_servicenet_agents",
     "get_servicenet_agent",
+    "delete_servicenet_agent",
     "invoke_servicenet_agent_sync",
     "invoke_servicenet_agent_async",
     "get_servicenet_agent_task",
@@ -135,6 +136,99 @@ async fn mcp_success_records_contribution_reward_event() {
         .get(&event.controller_id, event.public_id.as_deref())
         .unwrap();
     assert_eq!(balance.watt_balance, 1);
+}
+
+#[tokio::test]
+async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent_sync",
+                "arguments": {
+                    "agent_id": "agent-alpha",
+                    "message": "hello servicenet",
+                    "auth_token": "servicenet-secret-token",
+                    "auth_context_id": "00000000-0000-0000-0000-00000000abcd",
+                    "input": {
+                        "api_key": "input-api-secret",
+                        "safe_value": "kept"
+                    },
+                    "settlement": {
+                        "layer": "web3",
+                        "rail": "x402",
+                        "request": {
+                            "client_secret": "settlement-client-secret",
+                            "payment_account_ref": "payment-account-123"
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let log: wattetheria_kernel::economy::ContributionEventLog = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap();
+    let event = log
+        .events
+        .values()
+        .find(|event| event.action_type == "servicenet.agent.invoke.success")
+        .unwrap();
+    let receipt = &event.receipt;
+    assert_eq!(
+        receipt["arguments"]["auth_token"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        receipt["arguments"]["auth_context_id"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        receipt["arguments"]["input"]["api_key"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        receipt["arguments"]["input"]["safe_value"].as_str(),
+        Some("kept")
+    );
+    assert_eq!(
+        receipt["arguments"]["settlement"]["request"]["client_secret"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        receipt["result"]["structuredContent"]["settlement"]["request"]["client_secret"].as_str(),
+        Some("[REDACTED]")
+    );
+    assert_eq!(
+        receipt["result"]["structuredContent"]["settlement"]["request"]["payment_account_ref"]
+            .as_str(),
+        Some("payment-account-123")
+    );
+    let receipt_json = serde_json::to_string(receipt).unwrap();
+    assert!(!receipt_json.contains("servicenet-secret-token"));
+    assert!(!receipt_json.contains("00000000-0000-0000-0000-00000000abcd"));
+    assert!(!receipt_json.contains("input-api-secret"));
+    assert!(!receipt_json.contains("settlement-client-secret"));
+
+    servicenet_server.abort();
 }
 
 #[tokio::test]
@@ -1771,6 +1865,9 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let get_servicenet_receipt = find_tool(tools, "get_servicenet_receipt");
     assert_schema_requires(get_servicenet_receipt, &["receipt_id"]);
+
+    let delete_servicenet_agent = find_tool(tools, "delete_servicenet_agent");
+    assert_schema_requires(delete_servicenet_agent, &["agent_id"]);
 
     let list_mailbox_messages = find_tool(tools, "list_mailbox_messages");
     assert_schema_requires(list_mailbox_messages, &["subnet_id"]);

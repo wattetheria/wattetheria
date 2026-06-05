@@ -288,6 +288,20 @@ impl ServiceNetClient {
         .await
     }
 
+    pub async fn unpublish_agent(
+        &self,
+        agent_id: &str,
+        request: &Value,
+    ) -> std::result::Result<Value, ServiceNetClientError> {
+        self.request_json(
+            Method::POST,
+            self.endpoint(&["v1", "agents", agent_id, "unpublish"])
+                .map_err(|error| Self::client_error(&error))?,
+            Some(request),
+        )
+        .await
+    }
+
     pub async fn invoke_agent(
         &self,
         agent_id: &str,

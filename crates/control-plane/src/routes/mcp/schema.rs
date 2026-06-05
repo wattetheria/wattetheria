@@ -642,6 +642,15 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             false,
         )),
         "get_servicenet_agent" => Some(empty_tool_schema(tool)),
+        "delete_servicenet_agent" => Some(tool_schema(
+            tool,
+            &[string_field(
+                "reason",
+                "Optional reason for unpublishing the ServiceNet agent.",
+            )],
+            &["agent_id"],
+            false,
+        )),
         "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => Some(tool_schema(
             tool,
             &[

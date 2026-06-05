@@ -5,7 +5,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
-use watt_did::{PaymentAccountBindingProof, VerifiedAgentContext};
+use watt_did::{Did, PaymentAccountBindingProof, VerifiedAgentContext};
 use watt_wallet::verify_payment_account_binding_proof;
 use wattetheria_kernel::brain::AgentEventResolution;
 use wattetheria_kernel::local_db;
@@ -13,6 +13,8 @@ use wattetheria_kernel::payments::{
     PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
     source_payment_account_binding_required,
 };
+use wattetheria_kernel::signing::verify_payload;
+use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
 
 pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
 
@@ -35,6 +37,8 @@ pub(crate) struct AgentEventEnvelope {
     pub target_agent_id: Option<String>,
     #[serde(default)]
     pub target_executor: Option<String>,
+    #[serde(default)]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
     pub payload: Value,
     #[serde(default)]
     pub requires_commit: bool,
@@ -45,6 +49,28 @@ pub(crate) struct AgentEventEnvelope {
     #[serde(default)]
     pub dedupe_key: Option<String>,
     pub created_at: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SignedAgentEnvelopePayload<'a> {
+    protocol: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_profile: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_agent_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_node_id: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capability: Option<&'a String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_agent_card_hash: Option<&'a String>,
+    message_json: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extensions_json: Option<&'a String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -110,6 +136,7 @@ fn build_brain_event_input(state: &ControlPlaneState, event: &AgentEventEnvelope
         "correlation_id": event.correlation_id,
         "dedupe_key": event.dedupe_key,
         "created_at": event.created_at,
+        "agent_envelope": event.agent_envelope,
         "payload": event.payload,
     })
 }
@@ -219,9 +246,48 @@ fn payment_event_bad_request(message: impl Into<String>) -> Response {
 
 fn payment_value_from_event(event: &AgentEventEnvelope) -> Option<&Value> {
     event
-        .payload
-        .get("payment")
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.message.get("payment"))
+        .or_else(|| event.payload.get("payment"))
         .or_else(|| event.payload.pointer("/agent_envelope/message/payment"))
+}
+
+fn payment_message_value_from_event<'a>(
+    event: &'a AgentEventEnvelope,
+    key: &str,
+) -> Option<&'a Value> {
+    event
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.message.get(key))
+        .or_else(|| {
+            event
+                .payload
+                .pointer(&format!("/agent_envelope/message/{key}"))
+        })
+        .or_else(|| event.payload.get(key))
+}
+
+fn payment_envelope_field_from_event<'a>(
+    event: &'a AgentEventEnvelope,
+    key: &str,
+) -> Option<&'a str> {
+    let top_level = event
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| match key {
+            "source_agent_id" => envelope.source_agent_id.as_deref(),
+            "target_agent_id" => envelope.target_agent_id.as_deref(),
+            "source_node_id" => envelope.source_node_id.as_deref(),
+            _ => None,
+        });
+    top_level.or_else(|| {
+        event
+            .payload
+            .pointer(&format!("/agent_envelope/{key}"))
+            .and_then(Value::as_str)
+    })
 }
 
 fn payment_message_kind_from_str(value: &str) -> Option<PaymentMessageKind> {
@@ -252,10 +318,7 @@ fn payment_message_kind_from_event(
     event: &AgentEventEnvelope,
     payment: &PaymentTransaction,
 ) -> Option<PaymentMessageKind> {
-    event
-        .payload
-        .pointer("/agent_envelope/message/message_kind")
-        .or_else(|| event.payload.get("message_kind"))
+    payment_message_value_from_event(event, "message_kind")
         .and_then(Value::as_str)
         .and_then(payment_message_kind_from_str)
         .or_else(|| {
@@ -268,20 +331,14 @@ fn payment_message_kind_from_event(
 }
 
 fn payment_event_source_agent_did(event: &AgentEventEnvelope) -> Option<String> {
-    event
-        .payload
-        .pointer("/agent_envelope/source_agent_id")
-        .and_then(Value::as_str)
+    payment_envelope_field_from_event(event, "source_agent_id")
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
 
 fn payment_event_target_agent_did(event: &AgentEventEnvelope) -> Option<String> {
-    event
-        .payload
-        .pointer("/agent_envelope/target_agent_id")
-        .and_then(Value::as_str)
+    payment_envelope_field_from_event(event, "target_agent_id")
         .or(event.target_agent_id.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -295,10 +352,7 @@ fn looks_like_full_payment_payload(value: &Value) -> bool {
 }
 
 fn payment_event_source_node_id(event: &AgentEventEnvelope) -> Option<String> {
-    event
-        .payload
-        .pointer("/agent_envelope/source_node_id")
-        .and_then(Value::as_str)
+    payment_envelope_field_from_event(event, "source_node_id")
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -318,6 +372,166 @@ fn extract_verified_agent_context(
                 "invalid {VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY} payload: {error}"
             ))
         })
+}
+
+fn remote_event_requires_signed_agent_envelope(event: &AgentEventEnvelope) -> bool {
+    matches!(
+        event.event_type.as_str(),
+        "payment_request"
+            | "payment_update"
+            | "friend_request"
+            | "dm_received"
+            | "task_claim_received"
+            | "task_result_received"
+            | "topic_message_requires_reply"
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn verify_agent_event_signed_envelope(
+    event: &AgentEventEnvelope,
+) -> Result<Option<VerifiedAgentContext>, Response> {
+    let Some(envelope) = event.agent_envelope.as_ref() else {
+        return Ok(None);
+    };
+    let signature = envelope
+        .signature
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| payment_event_bad_request("agent_envelope.signature is required"))?;
+    let source_agent_id = envelope
+        .source_agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| payment_event_bad_request("agent_envelope.source_agent_id is required"))?;
+    let source_node_id = envelope
+        .source_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| payment_event_bad_request("agent_envelope.source_node_id is required"))?;
+    if let Some(event_source_node_id) = event.source_node_id.as_deref()
+        && event_source_node_id != source_node_id
+    {
+        return Err(payment_event_bad_request(
+            "event.source_node_id does not match signed agent_envelope.source_node_id",
+        ));
+    }
+    if let Some(event_target_agent_id) = event.target_agent_id.as_deref()
+        && let Some(envelope_target_agent_id) = envelope.target_agent_id.as_deref()
+        && event_target_agent_id != envelope_target_agent_id
+    {
+        return Err(payment_event_bad_request(
+            "event.target_agent_id does not match signed agent_envelope.target_agent_id",
+        ));
+    }
+    verify_payload_agent_envelope_matches_signed(event, envelope)?;
+    let message_json = serde_json::to_string(&envelope.message).map_err(|error| {
+        payment_event_bad_request(format!("invalid agent_envelope.message: {error}"))
+    })?;
+    let extensions_json = envelope
+        .extensions
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| {
+            payment_event_bad_request(format!("invalid agent_envelope.extensions: {error}"))
+        })?;
+    let signed_payload = SignedAgentEnvelopePayload {
+        protocol: &envelope.protocol,
+        transport_profile: envelope.transport_profile.as_ref(),
+        source_agent_id: envelope.source_agent_id.as_ref(),
+        target_agent_id: envelope.target_agent_id.as_ref(),
+        source_node_id: envelope.source_node_id.as_ref(),
+        target_node_id: envelope.target_node_id.as_ref(),
+        capability: envelope.capability.as_ref(),
+        source_agent_card_hash: envelope
+            .source_agent_card
+            .as_ref()
+            .map(|card| &card.card_hash),
+        message_json: &message_json,
+        extensions_json: extensions_json.as_ref(),
+    };
+    let verified =
+        verify_payload(&signed_payload, signature, source_agent_id).map_err(|error| {
+            payment_event_bad_request(format!(
+                "agent_envelope signature verification failed: {error}"
+            ))
+        })?;
+    if !verified {
+        return Err(payment_event_bad_request(
+            "agent_envelope signature verification failed",
+        ));
+    }
+    let context = VerifiedAgentContext {
+        agent_did: Did::parse(source_agent_id).map_err(|error| {
+            payment_event_bad_request(format!("invalid source agent DID: {error}"))
+        })?,
+        controller_node_id: source_node_id.to_owned(),
+        source_node_id: Some(source_node_id.to_owned()),
+        envelope_verified: true,
+        source_node_verified: true,
+        controller_binding_verified: false,
+        controller_binding_proof: None,
+        payment_account_binding: None,
+        verified_at_ms: Utc::now().timestamp_millis().max(0).cast_unsigned(),
+        expires_at_ms: None,
+    };
+    context
+        .validate_basic()
+        .map_err(|error| payment_event_bad_request(format!("invalid verified context: {error}")))?;
+    Ok(Some(context))
+}
+
+#[allow(clippy::result_large_err)]
+fn verify_payload_agent_envelope_matches_signed(
+    event: &AgentEventEnvelope,
+    signed_envelope: &SwarmAgentEnvelope,
+) -> Result<(), Response> {
+    let Some(payload_envelope_value) = event.payload.get("agent_envelope") else {
+        return Ok(());
+    };
+    let payload_envelope =
+        serde_json::from_value::<SwarmAgentEnvelope>(payload_envelope_value.clone()).map_err(
+            |error| payment_event_bad_request(format!("invalid payload agent_envelope: {error}")),
+        )?;
+    if payload_envelope.source_agent_id != signed_envelope.source_agent_id
+        || payload_envelope.target_agent_id != signed_envelope.target_agent_id
+        || payload_envelope.source_node_id != signed_envelope.source_node_id
+        || payload_envelope.target_node_id != signed_envelope.target_node_id
+        || payload_envelope.capability != signed_envelope.capability
+        || payload_envelope.message != signed_envelope.message
+    {
+        return Err(payment_event_bad_request(
+            "payload agent_envelope does not match signed agent_envelope",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn verified_context_for_event(
+    event: &AgentEventEnvelope,
+) -> Result<Option<VerifiedAgentContext>, Response> {
+    let signed_context = verify_agent_event_signed_envelope(event)?;
+    let payload_context = extract_verified_agent_context(event)?;
+    match (signed_context, payload_context) {
+        (Some(context), Some(payload_context)) => {
+            verify_context_against_payment_event(
+                &payload_context,
+                &context.agent_did.to_string(),
+                context.source_node_id.as_deref(),
+            )?;
+            Ok(Some(context))
+        }
+        (Some(context), None) => Ok(Some(context)),
+        (None, Some(_)) => Err(payment_event_bad_request(
+            "signed agent_envelope is required for verified agent context",
+        )),
+        (None, None) => Ok(None),
+    }
 }
 
 #[allow(clippy::result_large_err)]
@@ -352,8 +566,14 @@ fn extract_payment_account_binding(
     event: &AgentEventEnvelope,
 ) -> Result<Option<PaymentAccountBindingProof>, Response> {
     let Some(value) = event
-        .payload
-        .pointer("/agent_envelope/message/payment_account_binding")
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.message.get("payment_account_binding"))
+        .or_else(|| {
+            event
+                .payload
+                .pointer("/agent_envelope/message/payment_account_binding")
+        })
     else {
         return Ok(None);
     };
@@ -429,6 +649,7 @@ fn verify_inbound_payment_account_binding(
 async fn sync_payment_event_to_ledger(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
+    verified_context: Option<&VerifiedAgentContext>,
 ) -> Result<(), Response> {
     if !matches!(
         event.event_type.as_str(),
@@ -470,13 +691,16 @@ async fn sync_payment_event_to_ledger(
             "payment event missing agent_envelope.source_agent_id",
         ));
     };
-    if let Some(context) = extract_verified_agent_context(event)? {
-        verify_context_against_payment_event(
-            &context,
-            &source_agent_did,
-            payment_event_source_node_id(event).as_deref(),
-        )?;
-    }
+    let Some(context) = verified_context else {
+        return Err(payment_event_bad_request(
+            "signed agent_envelope is required for payment event",
+        ));
+    };
+    verify_context_against_payment_event(
+        context,
+        &source_agent_did,
+        payment_event_source_node_id(event).as_deref(),
+    )?;
     let require_sender_binding =
         source_payment_account_binding_required(&kind, &payment, &source_agent_did);
     if let Some(binding) = extract_payment_account_binding(event)? {
@@ -834,6 +1058,7 @@ fn selected_action_response(
 fn response_from_resolution(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
+    verified_context: Option<&VerifiedAgentContext>,
     resolution: Option<AgentEventResolution>,
     acked_at: u64,
 ) -> Response {
@@ -848,6 +1073,14 @@ fn response_from_resolution(
     let Some(route) = map_route(&event.event_type, &action) else {
         return unsupported_route_response(state, event, &action, &resolution, acked_at);
     };
+    if route == "wattetheria_commit"
+        && remote_event_requires_signed_agent_envelope(event)
+        && verified_context.is_none()
+    {
+        return payment_event_bad_request(
+            "signed agent_envelope is required for remote commit event",
+        );
+    }
     if !event.allowed_actions.iter().any(|a| a == &action)
         && !internal_mission_action_allowed(event, original_action.as_deref(), &action)
     {
@@ -862,7 +1095,18 @@ pub(crate) async fn callback(
 ) -> Response {
     let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
     let mut event = body.event;
-    if let Err(response) = sync_payment_event_to_ledger(&state, &event).await {
+    let verified_context = match verified_context_for_event(&event) {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if remote_event_requires_signed_agent_envelope(&event) && verified_context.is_none() {
+        return payment_event_bad_request(
+            "signed agent_envelope is required for remote agent event",
+        );
+    }
+    if let Err(response) =
+        sync_payment_event_to_ledger(&state, &event, verified_context.as_ref()).await
+    {
         return response;
     }
     let callback_request = json!({ "event": &event });
@@ -914,5 +1158,11 @@ pub(crate) async fn callback(
             return Json(response).into_response();
         }
     };
-    response_from_resolution(&state, &event, resolution, acked_at)
+    response_from_resolution(
+        &state,
+        &event,
+        verified_context.as_ref(),
+        resolution,
+        acked_at,
+    )
 }

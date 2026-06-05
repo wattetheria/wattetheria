@@ -41,6 +41,7 @@ const DEFAULT_SERVICENET_AGENT_LIMIT: usize = 50;
 const MAX_SERVICENET_AGENT_LIMIT: usize = 100;
 const A2A_X402_EXTENSION_URI: &str = "https://github.com/google-a2a/a2a-x402/v0.1";
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
+const MCP_RECEIPT_REDACTED_VALUE: &str = "[REDACTED]";
 #[derive(Debug, Clone)]
 struct AgentTool {
     name: &'static str,
@@ -338,6 +339,8 @@ async fn record_mcp_success_contribution(
     let context = resolve_identity_context(state, public_id, None).await;
     let (controller_id, actor_public_id, agent_identity) = contribution_actor(state, &context);
     let source_id = format!("mcp:{tool_name}:{}", Uuid::new_v4());
+    let redacted_arguments = redact_mcp_receipt_value(arguments);
+    let redacted_result = redact_mcp_receipt_value(result);
     record_contribution_event(
         state,
         ContributionEventArgs {
@@ -348,13 +351,61 @@ async fn record_mcp_success_contribution(
             agent_identity,
             receipt: json!({
                 "tool_name": tool_name,
-                "arguments": arguments,
-                "result": result,
+                "arguments": redacted_arguments,
+                "result": redacted_result,
             }),
         },
     )
     .await?;
     Ok(())
+}
+
+fn redact_mcp_receipt_value(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let value = if mcp_receipt_key_is_sensitive(key) {
+                        Value::String(MCP_RECEIPT_REDACTED_VALUE.to_owned())
+                    } else {
+                        redact_mcp_receipt_value(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect::<Map<_, _>>(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_mcp_receipt_value).collect()),
+        Value::String(text) => redact_json_string_value(text).unwrap_or_else(|| value.clone()),
+        _ => value.clone(),
+    }
+}
+
+fn redact_json_string_value(text: &str) -> Option<Value> {
+    let parsed = serde_json::from_str::<Value>(text).ok()?;
+    let redacted = redact_mcp_receipt_value(&parsed);
+    serde_json::to_string_pretty(&redacted)
+        .or_else(|_| serde_json::to_string(&redacted))
+        .ok()
+        .map(Value::String)
+}
+
+fn mcp_receipt_key_is_sensitive(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect::<String>();
+    normalized == "authcontextid"
+        || normalized == "authorization"
+        || normalized.contains("authtoken")
+        || normalized.contains("bearer")
+        || normalized.contains("credential")
+        || normalized.contains("privatekey")
+        || normalized.contains("password")
+        || normalized.contains("secret")
+        || normalized.contains("apikey")
+        || normalized.ends_with("token")
 }
 
 fn mcp_success_action_type(tool_name: &str) -> &'static str {
@@ -1789,7 +1840,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 45] = [
+const AGENT_TOOLS: [AgentTool; 46] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1831,6 +1882,7 @@ const AGENT_TOOLS: [AgentTool; 45] = [
     AgentTool { name: "ack_mailbox_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },
     AgentTool { name: "invoke_servicenet_agent_sync", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Synchronously invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "invoke_servicenet_agent_async", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async", description: "Submit an external ServiceNet agent invocation and poll the returned receipt.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },

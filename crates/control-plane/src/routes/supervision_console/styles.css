@@ -529,6 +529,10 @@
       grid-column: 1 / -1;
     }
 
+    .servicenet-x402-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .servicenet-form label,
     .toggle-row {
       display: grid;
@@ -1302,12 +1306,14 @@
 
     .wallet-grid {
       display: grid;
-      gap: 1rem;
+      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+      align-items: start;
+      gap: 0.9rem;
     }
 
     .wallet-section {
       display: grid;
-      gap: 0.8rem;
+      gap: 0.7rem;
       padding: 1rem;
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -1318,7 +1324,18 @@
       border-left: 3px solid var(--accent);
     }
 
+    .wallet-section.identity,
+    .wallet-section.binding {
+      border-left: 3px solid var(--green);
+    }
+
+    .wallet-section.accounts {
+      grid-column: 1 / -1;
+      border-left: 3px solid var(--accent-strong);
+    }
+
     .wallet-section.web2 {
+      grid-column: 2;
       border-left: 3px solid var(--line-strong);
       opacity: 0.92;
     }
@@ -1346,10 +1363,125 @@
       gap: 0.55rem;
     }
 
+    .wallet-section > .row {
+      min-height: 0;
+      padding: 0.62rem 0.7rem;
+      background: var(--surface-inset);
+      box-shadow: none;
+    }
+
+    .wallet-section > .row .row-head {
+      padding-bottom: 0.15rem;
+      border-bottom: 0;
+    }
+
+    .wallet-section > .row .row-title {
+      font-size: 0.68rem;
+      color: var(--faint);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .wallet-section > .row .row-body {
+      font-size: 0.84rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .wallet-subsection {
+      display: grid;
+      gap: 0.45rem;
+      padding-top: 0.2rem;
+    }
+
+    .wallet-subsection-title {
+      color: var(--faint);
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .wallet-subtle-line {
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .wallet-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .wallet-tags span {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 1.55rem;
+      padding: 0.22rem 0.45rem;
+      border-radius: 999px;
+      background: var(--surface-alt);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .wallet-account-table td {
+      vertical-align: top;
+    }
+
+    .wallet-account-table td:first-child {
+      min-width: 12rem;
+    }
+
+    .wallet-account-table .wallet-address-cell {
+      min-width: 24rem;
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .wallet-account-table strong {
+      display: inline-block;
+      margin-right: 0.35rem;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .wallet-binding-chain {
+      display: grid;
+      grid-template-columns: minmax(6rem, 0.28fr) minmax(0, 1fr);
+      gap: 0.45rem 0.7rem;
+      padding: 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-inset);
+    }
+
+    .wallet-binding-chain span {
+      color: var(--faint);
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .wallet-binding-chain strong {
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
     .wallet-fields {
       display: grid;
       gap: 0.8rem;
-      grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.45fr) minmax(120px, 0.32fr);
+      grid-template-columns: minmax(180px, 1fr) minmax(135px, 0.45fr) minmax(110px, 0.32fr);
     }
 
     .wallet-token-grid {
@@ -1733,6 +1865,114 @@
 
     .row-details .code {
       margin-top: 0.55rem;
+    }
+
+    .identity-row {
+      display: grid;
+      gap: 0.75rem;
+    }
+
+    .identity-public-id {
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      color: var(--ink);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .identity-protection {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+
+    .identity-protection-item {
+      display: grid;
+      gap: 0.25rem;
+      min-width: 0;
+      padding: 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-alt);
+    }
+
+    .identity-protection-item.ready {
+      border-color: transparent;
+      background: var(--green-soft);
+    }
+
+    .identity-protection-item.pending {
+      border-color: transparent;
+      background: var(--amber-soft);
+    }
+
+    .identity-protection-item.blocked {
+      border-color: transparent;
+      background: var(--red-soft);
+    }
+
+    .identity-protection-item span {
+      color: var(--faint);
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .identity-protection-item strong {
+      color: var(--ink);
+      font-size: 0.86rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .identity-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+
+    .identity-detail-section {
+      display: grid;
+      gap: 0.55rem;
+      min-width: 0;
+      padding: 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-inset);
+    }
+
+    .identity-detail-title {
+      color: var(--accent-strong);
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .identity-field {
+      display: grid;
+      gap: 0.15rem;
+      min-width: 0;
+    }
+
+    .identity-field span {
+      color: var(--faint);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .identity-field strong {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 500;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .identity-orgs {
+      margin-top: 0;
     }
 
     .dm-workspace {
@@ -2127,8 +2367,13 @@
         margin-top: 0;
       }
 
-      .toolbar, .log-toolbar, .mission-toolbar, .summary, .content-grid, .columns, .wallet-fields, .dm-workspace, .swarm-hives-layout, .form-grid, .form-grid.four {
+      .toolbar, .log-toolbar, .mission-toolbar, .summary, .content-grid, .columns, .wallet-grid, .wallet-fields, .wallet-binding-chain, .identity-protection, .identity-detail-grid, .dm-workspace, .swarm-hives-layout, .form-grid, .form-grid.four {
         grid-template-columns: 1fr;
+      }
+
+      .wallet-section.accounts,
+      .wallet-section.web2 {
+        grid-column: auto;
       }
 
       .hive-sidebar {

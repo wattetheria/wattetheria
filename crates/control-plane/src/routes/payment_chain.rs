@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use sha3::{Digest, Keccak256};
 use std::path::Path;
 use watt_wallet::{KeyStore, PaymentAccountKind};
-use wattetheria_kernel::payments::{PaymentTransaction, SettlementLayer};
+use wattetheria_kernel::payments::{
+    PaymentTransaction, SettlementLayer, validate_x402_settlement_receipt,
+};
 use wattetheria_kernel::wallet_identity::open_local_wallet;
 
 const ERC20_TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
@@ -14,11 +16,15 @@ const BASE_SEPOLIA_RPC_URL: &str = "https://sepolia.base.org";
 const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const BASE_USDT: &str = "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2";
 const BASE_SEPOLIA_USDC: &str = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const ERC20_TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+#[cfg(test)]
+static TEST_BASE_SEPOLIA_RPC_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 struct ChainConfig {
     chain_id: u64,
     network: &'static str,
-    rpc_url: &'static str,
+    rpc_url: String,
     asset: String,
 }
 
@@ -31,6 +37,34 @@ struct Erc20TransferRequest<'a> {
     token: &'a str,
     to: &'a str,
     amount: u128,
+}
+
+struct EvmReceiptExpectations<'a> {
+    tx_hash: &'a str,
+    token: &'a str,
+    from: &'a str,
+    to: &'a str,
+    amount: u128,
+}
+
+#[cfg(test)]
+pub(crate) struct TestBaseSepoliaRpcUrlGuard {
+    previous: Option<String>,
+}
+
+#[cfg(test)]
+impl Drop for TestBaseSepoliaRpcUrlGuard {
+    fn drop(&mut self) {
+        let mut override_url = TEST_BASE_SEPOLIA_RPC_URL.lock().expect("test rpc url lock");
+        *override_url = self.previous.take();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_base_sepolia_rpc_url(value: String) -> TestBaseSepoliaRpcUrlGuard {
+    let mut override_url = TEST_BASE_SEPOLIA_RPC_URL.lock().expect("test rpc url lock");
+    let previous = override_url.replace(value);
+    TestBaseSepoliaRpcUrlGuard { previous }
 }
 
 pub(crate) async fn submit_x402_erc20_payment(
@@ -56,7 +90,7 @@ pub(crate) async fn submit_x402_erc20_payment(
 
     let secret = export_payment_secret(data_dir, payment, sender_address)?;
     submit_erc20_transfer(Erc20TransferRequest {
-        rpc_url: config.rpc_url,
+        rpc_url: &config.rpc_url,
         chain_id: config.chain_id,
         network: config.network,
         secret,
@@ -69,6 +103,42 @@ pub(crate) async fn submit_x402_erc20_payment(
     .map(Some)
 }
 
+pub(crate) async fn verify_x402_erc20_settlement_receipt(
+    payment: &PaymentTransaction,
+    receipt: &Value,
+) -> Result<()> {
+    if !payment.rail.eq_ignore_ascii_case("x402") || !matches!(payment.layer, SettlementLayer::Web3)
+    {
+        return Ok(());
+    }
+
+    validate_x402_settlement_receipt(payment, receipt)?;
+    let config = resolve_chain_config(payment)?;
+    let tx_hash = required_receipt_string(receipt, &["transaction", "tx_hash", "txHash"])
+        .context("read x402 settlement transaction hash")?;
+    if !is_evm_transaction_hash(tx_hash) {
+        bail!("x402 settlement transaction must be an EVM transaction hash");
+    }
+    let sender_address = required_payment_address(payment.sender_address.as_deref(), "sender")?;
+    let recipient_address =
+        required_payment_address(payment.recipient_address.as_deref(), "recipient")?;
+    let amount = payment
+        .amount
+        .parse::<u128>()
+        .context("parse payment amount as token base units")?;
+    verify_erc20_transfer_receipt(
+        &config,
+        EvmReceiptExpectations {
+            tx_hash,
+            token: &config.asset,
+            from: sender_address,
+            to: recipient_address,
+            amount,
+        },
+    )
+    .await
+}
+
 fn resolve_chain_config(payment: &PaymentTransaction) -> Result<ChainConfig> {
     let network = payment
         .network
@@ -76,8 +146,8 @@ fn resolve_chain_config(payment: &PaymentTransaction) -> Result<ChainConfig> {
         .map(canonical_network)
         .ok_or_else(|| anyhow::anyhow!("x402 chain payment requires network"))?;
     let (chain_id, rpc_url) = match network.as_str() {
-        "base" => (8453, BASE_RPC_URL),
-        "base-sepolia" => (84532, BASE_SEPOLIA_RPC_URL),
+        "base" => (8453, chain_rpc_url("base", BASE_RPC_URL)),
+        "base-sepolia" => (84532, chain_rpc_url("base-sepolia", BASE_SEPOLIA_RPC_URL)),
         _ => bail!("x402 chain payment does not support network {network}"),
     };
     let asset = metadata_asset(payment).or_else(|| default_asset(&network, &payment.currency));
@@ -98,6 +168,20 @@ fn resolve_chain_config(payment: &PaymentTransaction) -> Result<ChainConfig> {
         rpc_url,
         asset,
     })
+}
+
+fn chain_rpc_url(network: &str, default_url: &str) -> String {
+    let _ = network;
+    #[cfg(test)]
+    if network == "base-sepolia"
+        && let Some(value) = TEST_BASE_SEPOLIA_RPC_URL
+            .lock()
+            .expect("test rpc url lock")
+            .clone()
+    {
+        return value;
+    }
+    default_url.to_owned()
 }
 
 fn metadata_asset(payment: &PaymentTransaction) -> Option<String> {
@@ -214,6 +298,47 @@ async fn submit_erc20_transfer(request: Erc20TransferRequest<'_>) -> Result<Valu
     }))
 }
 
+async fn verify_erc20_transfer_receipt(
+    config: &ChainConfig,
+    expected: EvmReceiptExpectations<'_>,
+) -> Result<()> {
+    let client = Client::new();
+    let rpc_chain_id = rpc_hex_u64(&client, &config.rpc_url, "eth_chainId", json!([])).await?;
+    if rpc_chain_id != config.chain_id {
+        bail!(
+            "RPC chain id {rpc_chain_id} does not match payment network chain id {}",
+            config.chain_id
+        );
+    }
+    let receipt = rpc_value(
+        &client,
+        &config.rpc_url,
+        "eth_getTransactionReceipt",
+        json!([expected.tx_hash]),
+    )
+    .await?;
+    if receipt.is_null() {
+        bail!("x402 settlement transaction was not found on chain");
+    }
+    if receipt.get("status").and_then(Value::as_str) != Some("0x1") {
+        bail!("x402 settlement transaction did not succeed on chain");
+    }
+    if let Some(transaction_hash) = receipt.get("transactionHash").and_then(Value::as_str)
+        && !transaction_hash.eq_ignore_ascii_case(expected.tx_hash)
+    {
+        bail!("x402 settlement receipt transactionHash does not match receipt transaction");
+    }
+    if let Some(token_address) = receipt.get("to").and_then(Value::as_str)
+        && !token_address.eq_ignore_ascii_case(expected.token)
+    {
+        bail!("x402 settlement transaction target does not match payment asset");
+    }
+    if !receipt_has_matching_erc20_transfer(&receipt, &expected)? {
+        bail!("x402 settlement receipt missing matching ERC20 Transfer event");
+    }
+    Ok(())
+}
+
 async fn rpc_hex_u64(client: &Client, rpc_url: &str, method: &str, params: Value) -> Result<u64> {
     let value = rpc_string(client, rpc_url, method, params).await?;
     parse_hex_u64(&value).with_context(|| format!("parse {method} response"))
@@ -224,7 +349,7 @@ async fn rpc_hex_u128(client: &Client, rpc_url: &str, method: &str, params: Valu
     parse_hex_u128(&value).with_context(|| format!("parse {method} response"))
 }
 
-async fn rpc_string(client: &Client, rpc_url: &str, method: &str, params: Value) -> Result<String> {
+async fn rpc_value(client: &Client, rpc_url: &str, method: &str, params: Value) -> Result<Value> {
     let response = client
         .post(rpc_url)
         .json(&json!({
@@ -249,7 +374,14 @@ async fn rpc_string(client: &Client, rpc_url: &str, method: &str, params: Value)
     }
     payload
         .get("result")
-        .and_then(Value::as_str)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("{method} RPC response missing result"))
+}
+
+async fn rpc_string(client: &Client, rpc_url: &str, method: &str, params: Value) -> Result<String> {
+    rpc_value(client, rpc_url, method, params)
+        .await?
+        .as_str()
         .map(ToOwned::to_owned)
         .ok_or_else(|| anyhow::anyhow!("{method} RPC response missing string result"))
 }
@@ -321,6 +453,59 @@ fn decode_evm_address(address: &str) -> Result<[u8; 20]> {
         .map_err(|_| anyhow::anyhow!("invalid EVM address length"))
 }
 
+fn receipt_has_matching_erc20_transfer(
+    receipt: &Value,
+    expected: &EvmReceiptExpectations<'_>,
+) -> Result<bool> {
+    let Some(logs) = receipt.get("logs").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    let expected_from = decode_evm_address(expected.from)?;
+    let expected_to = decode_evm_address(expected.to)?;
+    for log in logs {
+        if !log
+            .get("address")
+            .and_then(Value::as_str)
+            .is_some_and(|address| address.eq_ignore_ascii_case(expected.token))
+        {
+            continue;
+        }
+        let Some(topics) = log.get("topics").and_then(Value::as_array) else {
+            continue;
+        };
+        if topics.len() < 3
+            || topics[0]
+                .as_str()
+                .is_none_or(|topic| !topic.eq_ignore_ascii_case(ERC20_TRANSFER_TOPIC))
+        {
+            continue;
+        }
+        if !indexed_address_topic_matches(&topics[1], &expected_from)
+            || !indexed_address_topic_matches(&topics[2], &expected_to)
+        {
+            continue;
+        }
+        if let Some(amount) = log.get("data").and_then(Value::as_str)
+            && parse_hex_u128(amount)? == expected.amount
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn indexed_address_topic_matches(topic: &Value, expected: &[u8; 20]) -> bool {
+    let Some(topic) = topic.as_str() else {
+        return false;
+    };
+    let topic = topic.trim_start_matches("0x");
+    topic.len() == 64
+        && topic[..24].chars().all(|value| value == '0')
+        && hex::decode(&topic[24..])
+            .ok()
+            .is_some_and(|address| address.as_slice() == expected)
+}
+
 fn required_payment_address<'a>(address: Option<&'a str>, name: &str) -> Result<&'a str> {
     let address =
         address.ok_or_else(|| anyhow::anyhow!("x402 chain payment requires {name} address"))?;
@@ -345,6 +530,23 @@ fn parse_hex_u64(value: &str) -> Result<u64> {
 
 fn parse_hex_u128(value: &str) -> Result<u128> {
     u128::from_str_radix(value.trim_start_matches("0x"), 16).context("parse hex u128")
+}
+
+fn required_receipt_string<'a>(receipt: &'a Value, keys: &[&str]) -> Result<&'a str> {
+    keys.iter()
+        .find_map(|key| receipt.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("x402 settlement receipt missing {}", keys[0]))
+}
+
+fn is_evm_transaction_hash(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value
+            .chars()
+            .skip(2)
+            .all(|character| character.is_ascii_hexdigit())
 }
 
 fn canonical_network(network: &str) -> String {
@@ -432,6 +634,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     const TEST_TX_HASH: &str = "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9";
+    const TEST_SENDER: &str = "0x1111111111111111111111111111111111111111";
+    const TEST_RECIPIENT: &str = "0x2222222222222222222222222222222222222222";
 
     #[test]
     fn erc20_transfer_calldata_encodes_recipient_and_amount() {
@@ -487,6 +691,77 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn verify_erc20_transfer_receipt_accepts_matching_onchain_transfer() {
+        let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let app = Router::new()
+            .route("/", post(mock_rpc))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        verify_erc20_transfer_receipt(
+            &ChainConfig {
+                chain_id: 84532,
+                network: "eip155:84532",
+                rpc_url: format!("http://{addr}"),
+                asset: BASE_SEPOLIA_USDC.to_owned(),
+            },
+            EvmReceiptExpectations {
+                tx_hash: TEST_TX_HASH,
+                token: BASE_SEPOLIA_USDC,
+                from: TEST_SENDER,
+                to: TEST_RECIPIENT,
+                amount: 2_500_000,
+            },
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn verify_erc20_transfer_receipt_rejects_mismatched_transfer() {
+        let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let app = Router::new()
+            .route("/", post(mock_rpc))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let error = verify_erc20_transfer_receipt(
+            &ChainConfig {
+                chain_id: 84532,
+                network: "eip155:84532",
+                rpc_url: format!("http://{addr}"),
+                asset: BASE_SEPOLIA_USDC.to_owned(),
+            },
+            EvmReceiptExpectations {
+                tx_hash: TEST_TX_HASH,
+                token: BASE_SEPOLIA_USDC,
+                from: TEST_SENDER,
+                to: TEST_RECIPIENT,
+                amount: 1,
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("missing matching ERC20 Transfer event")
+        );
+        server.abort();
+    }
+
     async fn mock_rpc(
         State(calls): State<Arc<Mutex<Vec<Value>>>>,
         Json(payload): Json<Value>,
@@ -498,6 +773,7 @@ mod tests {
             "eth_gasPrice" => json!("0x3b9aca00"),
             "eth_estimateGas" => json!("0x186a0"),
             "eth_sendRawTransaction" => json!(TEST_TX_HASH),
+            "eth_getTransactionReceipt" => json!(matching_transaction_receipt()),
             method => json!({"unexpected": method}),
         };
         Json(json!({
@@ -509,5 +785,30 @@ mod tests {
 
     fn hex_secret(value: &str) -> [u8; 32] {
         hex::decode(value).unwrap().try_into().unwrap()
+    }
+
+    fn matching_transaction_receipt() -> Value {
+        json!({
+            "transactionHash": TEST_TX_HASH,
+            "status": "0x1",
+            "to": BASE_SEPOLIA_USDC,
+            "logs": [{
+                "address": BASE_SEPOLIA_USDC,
+                "topics": [
+                    ERC20_TRANSFER_TOPIC,
+                    indexed_address_topic(TEST_SENDER),
+                    indexed_address_topic(TEST_RECIPIENT)
+                ],
+                "data": u256_hex(2_500_000)
+            }]
+        })
+    }
+
+    fn indexed_address_topic(address: &str) -> String {
+        format!("0x{}{}", "0".repeat(24), address.trim_start_matches("0x"))
+    }
+
+    fn u256_hex(value: u128) -> String {
+        format!("0x{value:064x}")
     }
 }

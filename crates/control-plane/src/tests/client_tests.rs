@@ -159,6 +159,14 @@ async fn client_api_routes_align_with_client_dtos() {
         Some(identity.agent_did.as_str())
     );
     assert!(self_json["active_payment_account"].is_null());
+    assert_eq!(
+        self_json["wallet_identities"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        self_json["payment_account_binding"]["status"].as_str(),
+        Some("missing_payment_account")
+    );
 
     let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
@@ -499,6 +507,36 @@ async fn wallet_page_can_create_agent_payment_account() {
         Some(true)
     );
     assert!(
+        self_json["active_payment_account"]["capabilities"]
+            .as_array()
+            .is_some_and(|capabilities| capabilities.iter().any(|value| value == "send"))
+    );
+    assert!(
+        self_json["wallet_identities"]
+            .as_array()
+            .is_some_and(|identities| identities.iter().any(|identity| {
+                identity["active"].as_bool() == Some(true)
+                    && identity["did"]
+                        .as_str()
+                        .is_some_and(|did| did.starts_with("did:key:"))
+                    && identity["purposes"]
+                        .as_array()
+                        .is_some_and(|purposes| purposes.iter().any(|value| value == "general"))
+            }))
+    );
+    assert_eq!(
+        self_json["payment_account_binding"]["status"].as_str(),
+        Some("ready")
+    );
+    assert_eq!(
+        self_json["payment_account_binding"]["proof_available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        self_json["payment_account_binding"]["payment_proof_algorithm"].as_str(),
+        Some("secp256k1-binding")
+    );
+    assert!(
         self_json["payment_accounts"]
             .as_array()
             .is_some_and(|accounts| accounts.iter().any(|account| {
@@ -506,6 +544,11 @@ async fn wallet_page_can_create_agent_payment_account() {
                     == created["active_payment_account"]["account_id"].as_str()
                     && account["network"].as_str() == Some("base")
                     && account["can_sign"].as_bool() == Some(true)
+                    && account["capabilities"]
+                        .as_array()
+                        .is_some_and(|capabilities| {
+                            capabilities.iter().any(|value| value == "receive")
+                        })
             }))
     );
 
@@ -846,17 +889,30 @@ async fn client_export_excludes_local_friends_and_dm() {
             relationship: None,
         }],
         subscriptions: Mutex::new(Vec::new()),
-        messages: Mutex::new(vec![SwarmTopicMessageView {
-            message_id: "topic-msg-1".to_string(),
-            network_id: "local:test".to_string(),
-            feed_key: "hive.general".to_string(),
-            scope_hint: "org:crew".to_string(),
-            author_node_id: remote_node_id.clone(),
-            agent_envelope: None,
-            content: json!({"text": "remote crew update"}),
-            reply_to_message_id: None,
-            created_at: 1_710_000_115,
-        }]),
+        messages: Mutex::new(vec![
+            SwarmTopicMessageView {
+                message_id: "topic-msg-1".to_string(),
+                network_id: "local:test".to_string(),
+                feed_key: "hive.general".to_string(),
+                scope_hint: "org:crew".to_string(),
+                author_node_id: remote_node_id.clone(),
+                agent_envelope: None,
+                content: json!({"text": "remote crew update"}),
+                reply_to_message_id: None,
+                created_at: 1_710_000_115,
+            },
+            SwarmTopicMessageView {
+                message_id: "dm-topic-msg-1".to_string(),
+                network_id: "local:test".to_string(),
+                feed_key: "wattswarm.dm".to_string(),
+                scope_hint: "group:dm-private".to_string(),
+                author_node_id: remote_node_id.clone(),
+                agent_envelope: None,
+                content: json!({"text": "private dm topic update"}),
+                reply_to_message_id: None,
+                created_at: 1_710_000_116,
+            },
+        ]),
         relationship_views: Mutex::new(vec![SwarmPeerRelationshipView {
             remote_node_id: remote_node_id.clone(),
             relationship_state: "requested".to_string(),
@@ -980,6 +1036,21 @@ async fn client_export_excludes_local_friends_and_dm() {
             why_this_exists: Some("coordination".to_string()),
             active: true,
         });
+        topics.upsert_hive(wattetheria_kernel::civilization::topics::TopicCreateSpec {
+            network_id: None,
+            feed_key: "wattswarm.dm".to_string(),
+            scope_hint: "group:dm-private".to_string(),
+            display_name: "Private DM".to_string(),
+            summary: Some("private direct conversation".to_string()),
+            projection_kind:
+                wattetheria_kernel::civilization::topics::TopicProjectionKind::DirectConversation,
+            organization_id: None,
+            mission_id: None,
+            participant_public_ids: vec![local_public_id.clone(), remote_public_id.clone()],
+            created_by_public_id: local_public_id.clone(),
+            why_this_exists: Some("private conversation".to_string()),
+            active: true,
+        });
     }
 
     let export_json = public_get_json(
@@ -1020,6 +1091,14 @@ async fn client_export_excludes_local_friends_and_dm() {
     assert_eq!(
         export_json["payload"]["public_topic_messages"][0]["author_agent_identity"].as_str(),
         Some("Broker Borealis")
+    );
+    let public_topic_messages = export_json["payload"]["public_topic_messages"]
+        .as_array()
+        .unwrap();
+    assert_eq!(public_topic_messages.len(), 1);
+    assert_eq!(
+        public_topic_messages[0]["content"]["text"].as_str(),
+        Some("remote crew update")
     );
     assert_eq!(
         export_json["payload"]["swarm_task_activity"]["tasks"]

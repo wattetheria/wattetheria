@@ -1,5 +1,49 @@
 use super::*;
 
+const TEST_X402_TX_HASH: &str =
+    "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9";
+const TEST_X402_RECIPIENT: &str = "0x2222222222222222222222222222222222222222";
+const TEST_X402_BASE_SEPOLIA_USDC: &str = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const TEST_X402_TRANSFER_TOPIC: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+async fn mock_x402_settle_rpc(
+    axum::extract::State(sender_address): axum::extract::State<String>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let result = match payload["method"].as_str().unwrap_or_default() {
+        "eth_chainId" => json!("0x14a34"),
+        "eth_getTransactionReceipt" => json!({
+            "transactionHash": TEST_X402_TX_HASH,
+            "status": "0x1",
+            "to": TEST_X402_BASE_SEPOLIA_USDC,
+            "logs": [{
+                "address": TEST_X402_BASE_SEPOLIA_USDC,
+                "topics": [
+                    TEST_X402_TRANSFER_TOPIC,
+                    indexed_address_topic(&sender_address),
+                    indexed_address_topic(TEST_X402_RECIPIENT)
+                ],
+                "data": u256_hex(2_500_000)
+            }]
+        }),
+        method => json!({"unexpected": method}),
+    };
+    Json(json!({
+        "jsonrpc": "2.0",
+        "id": payload["id"].clone(),
+        "result": result,
+    }))
+}
+
+fn indexed_address_topic(address: &str) -> String {
+    format!("0x{}{}", "0".repeat(24), address.trim_start_matches("0x"))
+}
+
+fn u256_hex(value: u128) -> String {
+    format!("0x{value:064x}")
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
@@ -368,10 +412,11 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
             "amount": "2500000",
-            "currency": "USDT",
+            "currency": "USDC",
             "rail": "x402",
             "layer": "web3",
             "network": "base-sepolia",
+            "recipient_address": TEST_X402_RECIPIENT,
         }),
     )
     .await;
@@ -530,10 +575,11 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
             "public_id": local_public_id,
             "counterpart_public_id": remote_public_id,
             "amount": "2500000",
-            "currency": "USDT",
+            "currency": "USDC",
             "rail": "x402",
             "layer": "web3",
             "network": "base-sepolia",
+            "recipient_address": TEST_X402_RECIPIENT,
         }),
     )
     .await;
@@ -575,6 +621,21 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
         );
     }
 
+    let rpc_app = Router::new()
+        .route("/", post(mock_x402_settle_rpc))
+        .with_state(sender_address.clone());
+    let rpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind x402 rpc listener");
+    let rpc_addr = rpc_listener.local_addr().expect("x402 rpc addr");
+    let rpc_server = tokio::spawn(async move {
+        axum::serve(rpc_listener, rpc_app)
+            .await
+            .expect("serve x402 rpc mock");
+    });
+    let _rpc_url_guard =
+        crate::routes::payment_chain::set_test_base_sepolia_rpc_url(format!("http://{rpc_addr}"));
+
     let settled = authed_post_json(
         app.clone(),
         &token,
@@ -583,18 +644,24 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
             "settlement_receipt": {
                 "success": true,
                 "payer": sender_address,
-                "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+                "transaction": TEST_X402_TX_HASH,
                 "network": "eip155:84532",
-                "amount": "2500000"
+                "amount": "2500000",
+                "payTo": TEST_X402_RECIPIENT
             }
         }),
     )
     .await;
-    assert_eq!(settled["status"].as_str(), Some("settled"));
+    assert_eq!(
+        settled["status"].as_str(),
+        Some("settled"),
+        "expected settled response, got {settled}"
+    );
 
     let payment_commands = bridge.payment_commands.lock().await;
     assert_eq!(payment_commands.len(), 3);
     assert_eq!(payment_commands[2].message_kind, "payment_settled");
+    rpc_server.abort();
 }
 
 #[tokio::test]

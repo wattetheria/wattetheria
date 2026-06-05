@@ -414,7 +414,11 @@ pub(crate) async fn build_public_topic_messages_snapshot_payload(
     let topics = state.hive_registry.lock().await.list();
     let author_lookup = author_lookup(state).await;
     let mut items = Vec::new();
-    for topic in topics.into_iter().filter(|topic| topic.active).take(limit) {
+    for topic in topics
+        .into_iter()
+        .filter(|topic| topic.active && is_hive_topic(&topic.projection_kind))
+        .take(limit)
+    {
         let Some(activity) = topic_activity_or_empty(state, &topic).await else {
             continue;
         };

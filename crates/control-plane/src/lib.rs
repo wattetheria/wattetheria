@@ -311,6 +311,10 @@ fn servicenet_router() -> Router<ControlPlaneState> {
             get(routes::servicenet::get_agent),
         )
         .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish",
+            post(routes::servicenet_publish::unpublish_agent),
+        )
+        .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
             post(routes::servicenet::invoke_agent),
         )

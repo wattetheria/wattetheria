@@ -285,6 +285,7 @@ async fn servicenet_published_agents_uses_local_publisher_state_only() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn servicenet_template_and_publish_routes_support_console_flow() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _router, token, _, state) = build_test_app(20);
@@ -359,7 +360,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     assert_eq!(update_json["submission"]["version"].as_str(), Some("0.1.1"));
 
     let forbidden_update = authed_post(
-        app,
+        app.clone(),
         &token,
         "/v1/wattetheria/servicenet/publish",
         console_agent_publish_body(
@@ -373,6 +374,31 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     )
     .await;
     assert_eq!(forbidden_update, StatusCode::FORBIDDEN);
+
+    let unpublish_json = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/servicenet/agents/{agent_id}/unpublish"),
+        json!({
+            "reason": "console cleanup"
+        }),
+    )
+    .await;
+    assert_eq!(unpublish_json["status"].as_str(), Some("ok"));
+    assert_eq!(unpublish_json["agent_id"].as_str(), Some(agent_id));
+    assert_eq!(unpublish_json["provider_id"].as_str(), Some("provider-ui"));
+    assert_eq!(
+        unpublish_json["unpublished"]["status"].as_str(),
+        Some("revoked")
+    );
+    assert_eq!(
+        unpublish_json["unpublished"]["review"]["notes"].as_str(),
+        Some("console cleanup")
+    );
+
+    let published_after_unpublish =
+        authed_get_json(app, &token, "/v1/wattetheria/servicenet/published-agents").await;
+    assert_eq!(published_after_unpublish["count"].as_u64(), Some(0));
 
     servicenet_server.abort();
 }

@@ -540,6 +540,12 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(!body.contains("renderNodes(payload)"));
     assert!(body.contains("identityRecordPublicIdentity"));
     assert!(body.contains("isAgentIdentityRecord"));
+    assert!(body.contains("identityRecordControllerBinding"));
+    assert!(body.contains("identityProtectionBadges"));
+    assert!(body.contains("Self-certifying public_id"));
+    assert!(body.contains("Controller Binding"));
+    assert!(body.contains("Public Identity"));
+    assert!(body.contains("identity-detail-grid"));
     assert!(body.contains("selectPreferredIdentity"));
     assert!(body.contains("identitiesByPublicId.has(savedPublicId)"));
     assert!(body.contains("firstPublicId"));
@@ -561,6 +567,13 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("network connection established"));
     assert!(body.contains("remote_addr"));
     assert!(body.contains("WATT Balance"));
+    assert!(body.contains("Wallet Identity"));
+    assert!(body.contains("Payment Accounts"));
+    assert!(body.contains("DID Payment Binding"));
+    assert!(body.contains("wallet_identities"));
+    assert!(body.contains("payment_account_binding"));
+    assert!(body.contains("walletActiveIdentity"));
+    assert!(body.contains("proof ready"));
     assert!(body.contains("Agent Payment Account"));
     assert!(body.contains("Create Agent Wallet"));
     assert!(body.contains("id=\"web3-wallet-network\""));
@@ -586,7 +599,7 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("Open Swarm Console"));
     assert!(body.contains("id=\"open-swarm-console\""));
     assert!(body.contains(":7788"));
-    assert!(body.contains("box-shadow: 8px 8px 0 var(--line);"));
+    assert!(body.contains("box-shadow: var(--shadow-sm);"));
     assert!(body.contains("bootstrapControlToken"));
     assert!(body.contains("Auto-loaded for this local node"));
     assert!(body.contains("normalizeToken"));

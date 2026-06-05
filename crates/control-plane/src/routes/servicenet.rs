@@ -163,6 +163,7 @@ async fn notify_local_agent_of_third_party_result(
                 source_node_id: None,
                 target_agent_id: None,
                 target_executor: Some(CORE_AGENT_EXECUTOR_NAME.to_owned()),
+                agent_envelope: None,
                 payload: event.payload.clone(),
                 requires_commit: event.requires_commit,
                 allowed_actions: event.allowed_actions.clone(),

@@ -829,6 +829,18 @@ pub(crate) async fn settle_agent_payment(
         Ok(token) => token,
         Err(response) => return response,
     };
+    let current = match payment_snapshot_for_settle(&state, &payment_id).await {
+        Ok(payment) => payment,
+        Err(response) => return response,
+    };
+    if let Err(error) = super::payment_chain::verify_x402_erc20_settlement_receipt(
+        &current,
+        &body.settlement_receipt,
+    )
+    .await
+    {
+        return payment_error_response(StatusCode::BAD_REQUEST, &error.to_string());
+    }
     let updated = match mutate_payment(&state, &payment_id, |ledger, payment| {
         ensure_payment_participant(payment, &state)?;
         ledger.settle(SettlePaymentRequest {
@@ -870,6 +882,42 @@ pub(crate) async fn settle_agent_payment(
         return internal_error(&error);
     }
     Json(response_json).into_response()
+}
+
+async fn payment_snapshot_for_settle(
+    state: &ControlPlaneState,
+    payment_id: &str,
+) -> Result<PaymentTransaction, Response> {
+    let ledger = state.payment_ledger.lock().await;
+    let current = match ledger.get(payment_id) {
+        Some(payment) => payment.clone(),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("payment not found: {payment_id}")})),
+            )
+                .into_response());
+        }
+    };
+    if let Err(error) = ensure_payment_participant(&current, state) {
+        return Err(payment_error_response(
+            StatusCode::BAD_REQUEST,
+            &error.to_string(),
+        ));
+    }
+    if !matches!(
+        current.status,
+        PaymentStatus::Submitted | PaymentStatus::Authorized
+    ) {
+        return Err(payment_error_response(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "payment {payment_id} is not in a settleable state (current: {:?})",
+                current.status
+            ),
+        ));
+    }
+    Ok(current)
 }
 
 pub(crate) async fn reject_agent_payment(

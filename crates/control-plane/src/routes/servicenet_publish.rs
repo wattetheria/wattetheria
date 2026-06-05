@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -33,6 +33,14 @@ pub(crate) struct PublishAgentBody {
     #[serde(default)]
     ttl_minutes: Option<u64>,
     agent_card: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UnpublishAgentBody {
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    ttl_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -454,7 +462,7 @@ pub(crate) fn load_publisher_state(data_dir: &FsPath) -> anyhow::Result<ServiceN
     Ok(serde_json::from_str(&raw)?)
 }
 
-fn save_publisher_state(
+pub(crate) fn save_publisher_state(
     data_dir: &FsPath,
     publisher_state: &ServiceNetPublisherState,
 ) -> anyhow::Result<()> {
@@ -464,6 +472,16 @@ fn save_publisher_state(
     }
     fs::write(path, serde_json::to_vec_pretty(publisher_state)?)?;
     Ok(())
+}
+
+fn remove_registration(
+    publisher_state: &mut ServiceNetPublisherState,
+    agent_id: &str,
+    owner_did: &str,
+) {
+    publisher_state.registrations.retain(|registration| {
+        registration.agent_id != agent_id || !registration_matches_identity(registration, owner_did)
+    });
 }
 
 fn upsert_registration(
@@ -705,6 +723,107 @@ pub(crate) async fn publish_agent(
         "provider_id": request["provider_id"],
         "provider_did": state.agent_did,
         "submission": response,
+    }))
+    .into_response()
+}
+
+pub(crate) async fn unpublish_agent(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(body): Json<UnpublishAgentBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(client) = servicenet_client(&state) else {
+        return crate::routes::servicenet::servicenet_unavailable_response();
+    };
+    let mut publisher_state = match load_publisher_state(&state.data_dir) {
+        Ok(state) => state,
+        Err(error) => return internal_error(&error),
+    };
+    let Some(registration) = publisher_state
+        .registrations
+        .iter()
+        .find(|registration| {
+            registration.agent_id == agent_id
+                && registration_matches_identity(registration, &state.agent_did)
+        })
+        .cloned()
+    else {
+        return forbidden("agent is not published by the current Wattetheria identity");
+    };
+    let reason = body
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let issued_at_ms = now_ms();
+    let expires_at_ms = issued_at_ms.saturating_add(
+        body.ttl_minutes
+            .unwrap_or(DEFAULT_SERVICENET_TTL_MINUTES)
+            .saturating_mul(60_000),
+    );
+    let nonce = Uuid::new_v4().to_string();
+    let unpublish_payload = json!({
+        "action": "unpublish_agent",
+        "provider_id": registration.provider_id.clone(),
+        "provider_did": state.agent_did.clone(),
+        "agent_id": agent_id.clone(),
+        "nonce": nonce.clone(),
+        "issued_at_ms": issued_at_ms,
+        "expires_at_ms": expires_at_ms,
+        "reason": reason.clone(),
+    });
+    let unpublish_bytes = match serde_jcs::to_vec(&unpublish_payload) {
+        Ok(bytes) => bytes,
+        Err(error) => return internal_error(&anyhow::anyhow!(error)),
+    };
+    let signature = match state.signer.sign_bytes(&unpublish_bytes) {
+        Ok(signature) => signature,
+        Err(error) => return internal_error(&error),
+    };
+    let request = json!({
+        "provider_id": registration.provider_id,
+        "provider_did": state.agent_did.clone(),
+        "signature": signature,
+        "nonce": nonce,
+        "issued_at_ms": issued_at_ms,
+        "expires_at_ms": expires_at_ms,
+        "reason": reason,
+    });
+    let response = match client.unpublish_agent(&agent_id, &request).await {
+        Ok(response) => response,
+        Err(error) => return servicenet_error_response(&error),
+    };
+    remove_registration(&mut publisher_state, &agent_id, &state.agent_did);
+    if let Err(error) = save_publisher_state(&state.data_dir, &publisher_state) {
+        return internal_error(&error);
+    }
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: Utc::now().timestamp(),
+        category: "servicenet".to_string(),
+        action: "servicenet.agents.unpublish".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(agent_id.clone()),
+        capability: Some("net.outbound".to_string()),
+        reason: Some("servicenet.unpublish".to_string()),
+        duration_ms: None,
+        details: Some(json!({
+            "provider_id": request["provider_id"],
+        })),
+    });
+    Json(json!({
+        "status": "ok",
+        "agent_id": agent_id,
+        "provider_id": request["provider_id"],
+        "provider_did": state.agent_did,
+        "unpublished": response,
     }))
     .into_response()
 }
