@@ -80,6 +80,7 @@ async fn hive_agent_envelope(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: context_agent_did(state, context),
+            source_display_name: Some(context_agent_display_name(state, context)),
             target_agent_id: None,
             source_node_id: state.swarm_bridge.local_node_id().await.ok(),
             target_node_id: None,
@@ -142,12 +143,18 @@ fn envelope_author_display_name(
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .or_else(|| {
-                envelope
-                    .source_agent_card
-                    .as_ref()
-                    .and_then(|card| card.card.get("name"))
-                    .and_then(Value::as_str)
-                    .map(|name| name.strip_prefix("Wattetheria ").unwrap_or(name).to_owned())
+                envelope.source_agent_card.as_ref().and_then(|card| {
+                    card.card
+                        .get("metadata")
+                        .and_then(|metadata| metadata.get("display_name"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| {
+                            card.card.get("name").and_then(Value::as_str).map(|name| {
+                                name.strip_prefix("Wattetheria ").unwrap_or(name).to_owned()
+                            })
+                        })
+                })
             })
             .or_else(|| {
                 envelope
@@ -1110,4 +1117,44 @@ async fn resolve_hive_profile_with_route(
             .map_err(|error| internal_error(&error))?,
     };
     Ok((hive, network_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wattetheria_kernel::swarm_bridge::{SwarmAgentEnvelope, SwarmSourceAgentCard};
+
+    #[test]
+    fn envelope_author_display_name_prefers_metadata_display_name() {
+        let envelope = SwarmAgentEnvelope {
+            protocol: "google_a2a".to_owned(),
+            transport_profile: None,
+            source_agent_id: None,
+            target_agent_id: None,
+            source_node_id: None,
+            target_node_id: None,
+            capability: None,
+            source_agent_card: Some(SwarmSourceAgentCard {
+                agent_id: "did:key:agent".to_owned(),
+                node_id: None,
+                card_hash: "sha256:test".to_owned(),
+                issued_at: 1,
+                card: json!({
+                    "name": "Wattetheria Agent Legacy",
+                    "metadata": {
+                        "display_name": "Wattetheria Labs"
+                    }
+                }),
+                signature: None,
+            }),
+            message: json!({}),
+            extensions: None,
+            signature: None,
+        };
+
+        assert_eq!(
+            envelope_author_display_name(Some(&envelope)).as_deref(),
+            Some("Wattetheria Labs")
+        );
+    }
 }

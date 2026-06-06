@@ -12,7 +12,8 @@ use crate::routes::identity::{
 };
 use crate::state::{
     BootstrapIdentityBody, CitizenProfileBody, ControlPlaneState, ControllerBindingBody,
-    ControllerBindingQuery, PublicIdentityBody, PublicIdentityQuery, StreamEvent,
+    ControllerBindingQuery, PublicIdentityBody, PublicIdentityDisplayNameBody, PublicIdentityQuery,
+    StreamEvent,
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::{
@@ -379,6 +380,45 @@ pub(crate) async fn public_identity_upsert(
         body.agent_did,
         body.active.unwrap_or(true),
     ) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": format!("{error:#}")})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(error) = state.local_db.save_domain(
+        wattetheria_kernel::local_db::domain::PUBLIC_IDENTITY_REGISTRY,
+        &*registry,
+    ) {
+        return internal_error(&error);
+    }
+    drop(registry);
+
+    public_identity_updated(&state, &auth, identity).await
+}
+
+pub(crate) async fn public_identity_display_name_patch(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<PublicIdentityDisplayNameBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let public_id = body.public_id.trim();
+    if public_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "public_id is required"})),
+        )
+            .into_response();
+    }
+    let mut registry = state.public_identity_registry.lock().await;
+    let identity = match registry.update_display_name(public_id, &body.display_name) {
         Ok(identity) => identity,
         Err(error) => {
             return (

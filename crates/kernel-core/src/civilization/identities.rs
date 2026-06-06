@@ -115,6 +115,23 @@ impl PublicIdentityRegistry {
         Ok(identity)
     }
 
+    pub fn update_display_name(
+        &mut self,
+        public_id: &str,
+        display_name: &str,
+    ) -> Result<PublicIdentity> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            bail!("display_name is required");
+        }
+        let Some(identity) = self.identities.get_mut(public_id) else {
+            bail!("public identity '{public_id}' not found");
+        };
+        display_name.clone_into(&mut identity.display_name);
+        identity.updated_at = Utc::now().timestamp();
+        Ok(identity.clone())
+    }
+
     pub fn ensure_local_default(&mut self, agent_did: &str) -> Result<PublicIdentity> {
         self.ensure_local_default_for_agent(agent_did, Some(agent_did))
     }
@@ -363,6 +380,30 @@ mod tests {
         let mut registry = PublicIdentityRegistry::default();
         let result = registry.upsert("any-slug", "Test".to_string(), None, true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn update_display_name_preserves_identity_binding() {
+        let identity = Identity::new_random();
+        let fp = public_key_fingerprint(&identity.public_key).unwrap();
+        let pid = build_scoped_public_id("my-agent", &fp);
+
+        let mut registry = PublicIdentityRegistry::default();
+        let original = registry
+            .upsert(
+                &pid,
+                "My Agent".to_string(),
+                Some(identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+        let updated = registry.update_display_name(&pid, "Renamed Agent").unwrap();
+
+        assert_eq!(updated.display_name, "Renamed Agent");
+        assert_eq!(updated.agent_did, original.agent_did);
+        assert_eq!(updated.active, original.active);
+        assert_eq!(updated.created_at, original.created_at);
+        assert!(updated.updated_at >= original.updated_at);
     }
 
     #[test]

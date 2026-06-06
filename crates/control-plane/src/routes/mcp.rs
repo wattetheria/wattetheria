@@ -17,7 +17,9 @@ use crate::routes::identity::resolve_identity_context;
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, record_contribution_event,
 };
-use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
+use crate::social_host::{
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, resolve_social_local_context,
+};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
@@ -719,10 +721,12 @@ async fn servicenet_invoke_agent_envelope(
     body: &Value,
 ) -> anyhow::Result<Value> {
     let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_display_name = resolve_social_local_context(state, None).await.display_name;
     let envelope = build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
+            source_display_name,
             target_agent_id: Some(agent_id.to_owned()),
             source_node_id,
             target_node_id: None,

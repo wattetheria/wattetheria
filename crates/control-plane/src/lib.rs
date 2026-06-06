@@ -367,6 +367,7 @@ fn civilization_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/civilization/public-identity",
             get(routes::civilization::public_identity)
+                .patch(routes::civilization::public_identity_display_name_patch)
                 .post(routes::civilization::public_identity_upsert),
         )
         .route(

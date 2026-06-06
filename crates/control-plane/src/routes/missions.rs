@@ -196,27 +196,48 @@ fn non_empty_string(value: Option<&String>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn task_agent_envelope(
-    state: &ControlPlaneState,
-    source_agent_id: &str,
+struct TaskAgentEnvelopeArgs {
+    source_agent_id: String,
+    source_display_name: Option<String>,
     target_agent_id: Option<String>,
     source_node_id: Option<String>,
     target_node_id: Option<String>,
-    capability: &str,
+    capability: String,
     message: Value,
+}
+
+fn task_agent_envelope(
+    state: &ControlPlaneState,
+    args: TaskAgentEnvelopeArgs,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
-            source_agent_id: source_agent_id.to_owned(),
-            target_agent_id,
-            source_node_id,
-            target_node_id,
-            capability: capability.to_string(),
-            message,
+            source_agent_id: args.source_agent_id,
+            source_display_name: args.source_display_name,
+            target_agent_id: args.target_agent_id,
+            source_node_id: args.source_node_id,
+            target_node_id: args.target_node_id,
+            capability: args.capability,
+            message: args.message,
             extensions: None,
         },
     )
+}
+
+async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {
+    let agent_did = agent_did.trim();
+    if agent_did.is_empty() {
+        return None;
+    }
+    state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .find(|identity| identity.active && identity.agent_did.as_deref() == Some(agent_did))
+        .map(|identity| identity.display_name)
 }
 
 fn publisher_agent_did_from_claim(body: &MissionClaimBody) -> Option<String> {
@@ -495,6 +516,7 @@ fn mission_task_scope_hint(task_id: &str) -> String {
 fn mission_task_inputs(
     mission: &CivilMission,
     publisher_agent_did: &str,
+    publisher_display_name: Option<&str>,
     publisher_wattswarm_node_id: &str,
 ) -> Value {
     let mission_scope_hint = mission_task_scope_hint(&mission.mission_id);
@@ -504,6 +526,7 @@ fn mission_task_inputs(
         "publisher": mission.publisher,
         "publisher_kind": mission.publisher_kind,
         "publisher_agent_did": publisher_agent_did,
+        "publisher_display_name": publisher_display_name,
         "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
         "swarm_scope": {
             "kind": "group",
@@ -525,12 +548,17 @@ pub(crate) fn mission_task_contract(
     mut contract: TaskContract,
     mission: &CivilMission,
     publisher_agent_did: &str,
+    publisher_display_name: Option<&str>,
     publisher_wattswarm_node_id: &str,
 ) -> TaskContract {
     contract.task_id.clone_from(&mission.mission_id);
     "wattetheria.mission".clone_into(&mut contract.task_type);
-    contract.inputs =
-        mission_task_inputs(mission, publisher_agent_did, publisher_wattswarm_node_id);
+    contract.inputs = mission_task_inputs(
+        mission,
+        publisher_agent_did,
+        publisher_display_name,
+        publisher_wattswarm_node_id,
+    );
     contract.output_schema = mission_task_output_schema();
     contract.expiry_ms = MISSION_TASK_NO_EXPIRY_MS;
     contract
@@ -539,6 +567,7 @@ pub(crate) fn mission_task_contract(
 fn mission_announce_command(
     mission: &CivilMission,
     publisher_agent_did: &str,
+    publisher_display_name: Option<&str>,
     publisher_wattswarm_node_id: &str,
     agent_envelope: Option<SwarmAgentEnvelope>,
 ) -> SwarmTaskAnnounceCommand {
@@ -557,6 +586,7 @@ fn mission_announce_command(
             "reward": mission.reward,
             "publisher": mission.publisher,
             "publisher_agent_did": publisher_agent_did,
+            "publisher_display_name": publisher_display_name,
             "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
             "mission_feed_key": MISSION_FEED_KEY,
             "mission_scope_hint": mission_scope_hint,
@@ -823,6 +853,7 @@ async fn mission_gateway_payload_with_current_contract(
     state: &ControlPlaneState,
     mission: &CivilMission,
 ) -> Value {
+    let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let task_contract = match state.swarm_bridge.local_node_id().await {
         Ok(publisher_wattswarm_node_id) => state
             .swarm_bridge
@@ -834,6 +865,7 @@ async fn mission_gateway_payload_with_current_contract(
                     contract,
                     mission,
                     &state.agent_did,
+                    publisher_display_name.as_deref(),
                     &publisher_wattswarm_node_id,
                 )
             }),
@@ -895,6 +927,7 @@ async fn publish_mission_task_to_swarm(
     state: &ControlPlaneState,
     mission: &CivilMission,
 ) -> Result<TaskContract, Response> {
+    let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let publisher_wattswarm_node_id = state
         .swarm_bridge
         .local_node_id()
@@ -909,6 +942,7 @@ async fn publish_mission_task_to_swarm(
                 contract,
                 mission,
                 &state.agent_did,
+                publisher_display_name.as_deref(),
                 &publisher_wattswarm_node_id,
             )
         })
@@ -920,17 +954,20 @@ async fn publish_mission_task_to_swarm(
         .map_err(|error| internal_error(&error))?;
     let agent_envelope = task_agent_envelope(
         state,
-        &state.agent_did,
-        None,
-        Some(publisher_wattswarm_node_id.clone()),
-        None,
-        "task.announce",
-        json!({
+        TaskAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            source_display_name: publisher_display_name.clone(),
+            target_agent_id: None,
+            source_node_id: Some(publisher_wattswarm_node_id.clone()),
+            target_node_id: None,
+            capability: "task.announce".to_owned(),
+            message: json!({
             "task_id": mission.mission_id,
             "mission_id": mission.mission_id,
             "publisher_agent_did": state.agent_did,
             "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
-        }),
+            }),
+        },
     )
     .map(Some)
     .map_err(|error| internal_error(&error))?;
@@ -939,6 +976,7 @@ async fn publish_mission_task_to_swarm(
         .announce_task(mission_announce_command(
             mission,
             &state.agent_did,
+            publisher_display_name.as_deref(),
             &publisher_wattswarm_node_id,
             agent_envelope,
         ))
@@ -952,22 +990,26 @@ fn network_claim_agent_envelope(
     route: &NetworkMissionClaimRoute,
     body: &MissionClaimBody,
     execution_id: &str,
+    source_display_name: Option<String>,
     source_node_id: Option<String>,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     task_agent_envelope(
         state,
-        &body.agent_did,
-        publisher_agent_did_from_claim(body),
-        source_node_id,
-        route.publisher_wattswarm_node_id.clone(),
-        "task.claim",
-        json!({
+        TaskAgentEnvelopeArgs {
+            source_agent_id: body.agent_did.clone(),
+            source_display_name,
+            target_agent_id: publisher_agent_did_from_claim(body),
+            source_node_id,
+            target_node_id: route.publisher_wattswarm_node_id.clone(),
+            capability: "task.claim".to_owned(),
+            message: json!({
             "task_id": route.task_id,
             "mission_id": body.mission_id,
             "agent_did": body.agent_did,
             "role": "propose",
             "execution_id": execution_id,
-        }),
+            }),
+        },
     )
 }
 
@@ -1025,20 +1067,24 @@ async fn finalize_mission_task_before_settle(
         .or(mission.completed_by.as_deref())
         .map(ToOwned::to_owned);
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let agent_envelope = match task_agent_envelope(
         state,
-        &state.agent_did,
-        target_agent_did.clone(),
-        local_node_id,
-        None,
-        "task.result.finalize",
-        json!({
+        TaskAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            source_display_name,
+            target_agent_id: target_agent_did.clone(),
+            source_node_id: local_node_id,
+            target_node_id: None,
+            capability: "task.result.finalize".to_owned(),
+            message: json!({
             "task_id": task_id,
             "mission_id": body.mission_id,
             "candidate_id": candidate_id,
             "publisher_agent_did": state.agent_did,
             "target_agent_did": target_agent_did,
-        }),
+            }),
+        },
     ) {
         Ok(envelope) => Some(envelope),
         Err(error) => return Err(internal_error(&error)),
@@ -1410,11 +1456,13 @@ async fn claim_network_mission(
             Ok(value) => value,
             Err(response) => return response,
         };
+    let source_display_name = agent_display_name_for_did(&state, &body.agent_did).await;
     let agent_envelope = match network_claim_agent_envelope(
         &state,
         &route,
         &body,
         &execution_id,
+        source_display_name,
         Some(subscriber_node_id.clone()),
     ) {
         Ok(envelope) => envelope,
@@ -1525,19 +1573,23 @@ async fn complete_network_mission(
             Ok(value) => value,
             Err(response) => return response,
         };
+    let source_display_name = agent_display_name_for_did(&state, &body.agent_did).await;
     let agent_envelope = match task_agent_envelope(
         &state,
-        &body.agent_did,
-        publisher_agent_did_from_claim(&body),
-        Some(subscriber_node_id.clone()),
-        route.publisher_wattswarm_node_id.clone(),
-        "task.result.propose",
-        json!({
+        TaskAgentEnvelopeArgs {
+            source_agent_id: body.agent_did.clone(),
+            source_display_name,
+            target_agent_id: publisher_agent_did_from_claim(&body),
+            source_node_id: Some(subscriber_node_id.clone()),
+            target_node_id: route.publisher_wattswarm_node_id.clone(),
+            capability: "task.result.propose".to_owned(),
+            message: json!({
             "task_id": route.task_id,
             "mission_id": body.mission_id,
             "agent_did": body.agent_did,
             "result": result,
-        }),
+            }),
+        },
     ) {
         Ok(envelope) => envelope,
         Err(error) => return internal_error(&error),
@@ -1586,21 +1638,25 @@ async fn dispatch_local_mission_transition_to_swarm(
     agent_did: &str,
 ) -> anyhow::Result<Value> {
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_display_name = agent_display_name_for_did(state, agent_did).await;
     match action {
         "claim" => {
             let agent_envelope = task_agent_envelope(
                 state,
-                agent_did,
-                Some(state.agent_did.clone()),
-                local_node_id.clone(),
-                None,
-                "task.claim",
-                json!({
+                TaskAgentEnvelopeArgs {
+                    source_agent_id: agent_did.to_owned(),
+                    source_display_name: source_display_name.clone(),
+                    target_agent_id: Some(state.agent_did.clone()),
+                    source_node_id: local_node_id.clone(),
+                    target_node_id: None,
+                    capability: "task.claim".to_owned(),
+                    message: json!({
                     "task_id": mission.mission_id,
                     "mission_id": mission.mission_id,
                     "agent_did": agent_did,
                     "role": "propose",
-                }),
+                    }),
+                },
             )?;
             state
                 .swarm_bridge
@@ -1620,17 +1676,20 @@ async fn dispatch_local_mission_transition_to_swarm(
                 .unwrap_or_else(|| mission.payload.clone());
             let agent_envelope = task_agent_envelope(
                 state,
-                agent_did,
-                Some(state.agent_did.clone()),
-                local_node_id,
-                None,
-                "task.result.propose",
-                json!({
+                TaskAgentEnvelopeArgs {
+                    source_agent_id: agent_did.to_owned(),
+                    source_display_name,
+                    target_agent_id: Some(state.agent_did.clone()),
+                    source_node_id: local_node_id,
+                    target_node_id: None,
+                    capability: "task.result.propose".to_owned(),
+                    message: json!({
                     "task_id": mission.mission_id,
                     "mission_id": mission.mission_id,
                     "agent_did": agent_did,
                     "result": result,
-                }),
+                    }),
+                },
             )?;
             state
                 .swarm_bridge
@@ -1891,7 +1950,12 @@ mod tests {
     #[test]
     fn mission_task_inputs_are_group_scoped_to_mission_task() {
         let mission = sample_mission();
-        let inputs = mission_task_inputs(&mission, "did:agent:publisher", "node-publisher");
+        let inputs = mission_task_inputs(
+            &mission,
+            "did:agent:publisher",
+            Some("Publisher Name"),
+            "node-publisher",
+        );
 
         assert_eq!(inputs["kind"].as_str(), Some("wattetheria_mission"));
         assert_eq!(
@@ -1902,6 +1966,10 @@ mod tests {
         assert_eq!(
             inputs["publisher_agent_did"].as_str(),
             Some("did:agent:publisher")
+        );
+        assert_eq!(
+            inputs["publisher_display_name"].as_str(),
+            Some("Publisher Name")
         );
         assert_eq!(
             inputs["publisher_wattswarm_node_id"].as_str(),
@@ -1921,14 +1989,23 @@ mod tests {
     #[test]
     fn mission_announce_uses_same_group_scope_as_contract_inputs() {
         let mission = sample_mission();
-        let command =
-            mission_announce_command(&mission, "did:agent:publisher", "node-publisher", None);
+        let command = mission_announce_command(
+            &mission,
+            "did:agent:publisher",
+            Some("Publisher Name"),
+            "node-publisher",
+            None,
+        );
 
         assert_eq!(command.feed_key, MISSION_FEED_KEY);
         assert_eq!(command.scope_hint, format!("group:{}", mission.mission_id));
         assert_eq!(
             command.summary["publisher_wattswarm_node_id"].as_str(),
             Some("node-publisher")
+        );
+        assert_eq!(
+            command.summary["publisher_display_name"].as_str(),
+            Some("Publisher Name")
         );
         assert_eq!(
             command.summary["mission_scope_hint"].as_str(),

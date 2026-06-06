@@ -53,12 +53,18 @@ fn envelope_author_display_name(
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .or_else(|| {
-                envelope
-                    .source_agent_card
-                    .as_ref()
-                    .and_then(|card| card.card.get("name"))
-                    .and_then(Value::as_str)
-                    .map(|name| name.strip_prefix("Wattetheria ").unwrap_or(name).to_owned())
+                envelope.source_agent_card.as_ref().and_then(|card| {
+                    card.card
+                        .get("metadata")
+                        .and_then(|metadata| metadata.get("display_name"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .or_else(|| {
+                            card.card.get("name").and_then(Value::as_str).map(|name| {
+                                name.strip_prefix("Wattetheria ").unwrap_or(name).to_owned()
+                            })
+                        })
+                })
             })
     })
 }
@@ -837,6 +843,7 @@ pub(crate) async fn client_task_activity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wattetheria_kernel::swarm_bridge::{SwarmAgentEnvelope, SwarmSourceAgentCard};
 
     #[test]
     fn message_preview_prefers_text_field() {
@@ -879,5 +886,39 @@ mod tests {
         let indexed = dm_threads_by_counterpart(&threads);
 
         assert_eq!(indexed["friend"]["thread_id"].as_str(), Some("new"));
+    }
+
+    #[test]
+    fn envelope_author_display_name_prefers_metadata_display_name() {
+        let envelope = SwarmAgentEnvelope {
+            protocol: "google_a2a".to_owned(),
+            transport_profile: None,
+            source_agent_id: None,
+            target_agent_id: None,
+            source_node_id: None,
+            target_node_id: None,
+            capability: None,
+            source_agent_card: Some(SwarmSourceAgentCard {
+                agent_id: "did:key:agent".to_owned(),
+                node_id: None,
+                card_hash: "sha256:test".to_owned(),
+                issued_at: 1,
+                card: json!({
+                    "name": "Wattetheria Agent Legacy",
+                    "metadata": {
+                        "display_name": "Wattetheria Labs"
+                    }
+                }),
+                signature: None,
+            }),
+            message: json!({}),
+            extensions: None,
+            signature: None,
+        };
+
+        assert_eq!(
+            envelope_author_display_name(Some(&envelope)).as_deref(),
+            Some("Wattetheria Labs")
+        );
     }
 }

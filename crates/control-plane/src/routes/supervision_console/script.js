@@ -25,6 +25,8 @@
     const missionPageSize = 10;
     let servicenetTemplate = null;
     let servicenetAgents = [];
+    let selectedIdentityRecord = null;
+    let identityDisplayEditing = false;
 
     const stablecoinContracts = {
       "0x1": [
@@ -484,6 +486,60 @@
       return publicIdentity?.display_name || identityRecordPublicId(record) || "Unnamed identity";
     }
 
+    function identityDisplayStatus(message, isError = false) {
+      const target = qs("identity-display-status");
+      if (!target) return;
+      target.textContent = message;
+      target.className = isError ? "status-text error" : "status-text";
+    }
+
+    function syncIdentityDisplayForm() {
+      selectedIdentityRecord = identitiesByPublicId.get(publicIdEl.value) || null;
+      if (!selectedIdentityRecord) identityDisplayEditing = false;
+      const view = qs("identity-display-view");
+      const form = qs("identity-display-form");
+      const value = qs("identity-display-value");
+      const input = qs("identity-display-name");
+      const editButton = qs("identity-display-edit");
+      const button = qs("identity-display-save");
+      const cancelButton = qs("identity-display-cancel");
+      if (!view || !form || !value || !input || !editButton || !button || !cancelButton) return;
+      const identity = identityRecordPublicIdentity(selectedIdentityRecord) || {};
+      const displayName = identity.display_name || "";
+      value.textContent = displayName || "-";
+      input.value = displayName;
+      view.hidden = identityDisplayEditing;
+      form.hidden = !identityDisplayEditing;
+      editButton.disabled = !selectedIdentityRecord;
+      input.disabled = !selectedIdentityRecord || !identityDisplayEditing;
+      button.disabled = !selectedIdentityRecord || !identityDisplayEditing;
+      cancelButton.disabled = !selectedIdentityRecord || !identityDisplayEditing;
+      identityDisplayStatus(selectedIdentityRecord ? "" : "Load an identity before editing the display name.");
+    }
+
+    function identityDisplayPayload(displayName) {
+      const identity = identityRecordPublicIdentity(selectedIdentityRecord) || {};
+      return {
+        public_id: identity.public_id || identityRecordPublicId(selectedIdentityRecord),
+        display_name: displayName,
+      };
+    }
+
+    function editIdentityDisplayName() {
+      if (!selectedIdentityRecord) {
+        identityDisplayStatus("Load an identity before editing.", true);
+        return;
+      }
+      identityDisplayEditing = true;
+      syncIdentityDisplayForm();
+      qs("identity-display-name")?.focus();
+    }
+
+    function cancelIdentityDisplayNameEdit() {
+      identityDisplayEditing = false;
+      syncIdentityDisplayForm();
+    }
+
     function isAgentIdentityRecord(record) {
       const publicIdentity = identityRecordPublicIdentity(record);
       const publicId = identityRecordPublicId(record);
@@ -665,14 +721,54 @@
           option.textContent = "No usable identities";
           publicIdEl.appendChild(option);
           setStatus("Identity records loaded, but no public_id was present.", true);
+          syncIdentityDisplayForm();
           renderIdentities([]);
           return;
         }
         selectPreferredIdentity();
+        syncIdentityDisplayForm();
         renderIdentities([...identitiesByPublicId.values()]);
         setStatus(`Loaded ${publicIdEl.options.length} local identities.`);
       } catch (error) {
         setStatus(error.message, true);
+      }
+    }
+
+    async function saveIdentityDisplayName(event) {
+      event.preventDefault();
+      const input = qs("identity-display-name");
+      const displayName = String(input?.value || "").trim();
+      if (!selectedIdentityRecord) {
+        identityDisplayStatus("Load an identity before saving.", true);
+        return;
+      }
+      if (!displayName) {
+        identityDisplayStatus("Display name is required.", true);
+        return;
+      }
+      const payload = identityDisplayPayload(displayName);
+      if (!payload.public_id) {
+        identityDisplayStatus("Selected identity is missing public_id.", true);
+        return;
+      }
+      identityDisplayStatus("Saving...");
+      try {
+        await fetchJson("/v1/civilization/public-identity", {
+          method: "PATCH",
+          auth: true,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        await loadIdentities();
+        publicIdEl.value = payload.public_id;
+        publicIdEl.dataset.savedPublicId = payload.public_id;
+        publicIdEl.dispatchEvent(new Event("change"));
+        identityDisplayEditing = false;
+        syncIdentityDisplayForm();
+        if (lastConsolePayload || publicIdEl.value) await refreshConsole();
+        identityDisplayStatus("Display name saved.");
+      } catch (error) {
+        identityDisplayStatus(error.message, true);
       }
     }
 
@@ -2257,6 +2353,7 @@
       const rows = servicenetAgents;
       renderList("servicenet-list", rows, "No locally published ServiceNet agents.", (row) => {
         const card = row.agent_card || {};
+        const skills = skillTags(card.skills);
         return `
           <div class="row">
             <div class="row-head">
@@ -2271,8 +2368,8 @@
               <span>v ${escapeHtml(valueOrDash(row.version))}</span>
               <span>${escapeHtml(valueOrDash(card.domain))}</span>
               <span>${escapeHtml(valueOrDash(card.currency))} ${escapeHtml(valueOrDash(card.cost))}</span>
+              ${skills}
             </div>
-            ${skillTags(card.skills) ? `<div class="row-tags">${skillTags(card.skills)}</div>` : ""}
             <div class="row-actions">
               <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Update</button>
             </div>
@@ -2570,6 +2667,13 @@
     document.getElementById("load-identities").addEventListener("click", loadIdentities);
     document.getElementById("refresh").addEventListener("click", refreshConsole);
     document.getElementById("save-settings").addEventListener("click", saveSettings);
+    qs("identity-display-edit")?.addEventListener("click", editIdentityDisplayName);
+    qs("identity-display-cancel")?.addEventListener("click", cancelIdentityDisplayNameEdit);
+    qs("identity-display-form")?.addEventListener("submit", saveIdentityDisplayName);
+    publicIdEl.addEventListener("change", () => {
+      identityDisplayEditing = false;
+      syncIdentityDisplayForm();
+    });
     document.getElementById("refresh-diagnostics").addEventListener("click", () => {
       refreshDiagnostics().catch((error) => setStatus(error.message, true));
     });

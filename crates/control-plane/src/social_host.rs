@@ -23,6 +23,7 @@ use wattetheria_kernel::swarm_bridge::{
 pub(crate) struct SocialLocalContext {
     pub(crate) public_id: String,
     pub(crate) agent_id: String,
+    pub(crate) display_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +66,7 @@ struct SignedSourceAgentCardPayload<'a> {
 
 pub(crate) struct SignedAgentEnvelopeArgs {
     pub source_agent_id: String,
+    pub source_display_name: Option<String>,
     pub target_agent_id: Option<String>,
     pub source_node_id: Option<String>,
     pub target_node_id: Option<String>,
@@ -159,6 +161,7 @@ impl WattetheriaTransportAdapter {
             &self.state,
             SignedAgentEnvelopeArgs {
                 source_agent_id: local.agent_id,
+                source_display_name: local.display_name,
                 target_agent_id: Some(target_agent),
                 source_node_id: local_node_id,
                 target_node_id: Some(target_node),
@@ -246,6 +249,7 @@ impl TransportPort for WattetheriaTransportAdapter {
             &self.state,
             SignedAgentEnvelopeArgs {
                 source_agent_id: local.agent_id,
+                source_display_name: local.display_name,
                 target_agent_id: Some(target_agent),
                 source_node_id: local_node_id,
                 target_node_id: Some(target_node),
@@ -282,9 +286,14 @@ pub(crate) async fn resolve_social_local_context(
         .as_ref()
         .and_then(|identity| identity.agent_did.clone())
         .unwrap_or_else(|| state.agent_did.clone());
+    let display_name = context
+        .public_identity
+        .as_ref()
+        .map(|identity| identity.display_name.clone());
     SocialLocalContext {
         public_id,
         agent_id,
+        display_name,
     }
 }
 
@@ -520,7 +529,14 @@ pub(crate) fn build_signed_agent_envelope_with_optional_target(
     let source_agent_id = Some(args.source_agent_id);
     let source_agent_card = source_agent_id
         .as_ref()
-        .map(|agent_id| build_source_agent_card(state, agent_id, args.source_node_id.as_ref()))
+        .map(|agent_id| {
+            build_source_agent_card(
+                state,
+                agent_id,
+                args.source_display_name.as_deref(),
+                args.source_node_id.as_ref(),
+            )
+        })
         .transpose()?;
     let unsigned = SignedAgentEnvelopePayload {
         protocol: &protocol,
@@ -560,6 +576,7 @@ pub(crate) fn build_signed_agent_envelope_for_nodes(
 fn build_source_agent_card(
     state: &ControlPlaneState,
     agent_id: &str,
+    display_name: Option<&str>,
     node_id: Option<&String>,
 ) -> anyhow::Result<SwarmSourceAgentCard> {
     let issued_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
@@ -574,9 +591,16 @@ fn build_source_agent_card(
         .chars()
         .rev()
         .collect::<String>();
-    let card = serde_json::json!({
+    let card_display_name = display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || format!("Wattetheria Agent {display_suffix}"),
+            ToOwned::to_owned,
+        );
+    let mut card = serde_json::json!({
         "protocolVersion": "0.3.0",
-        "name": format!("Wattetheria Agent {display_suffix}"),
+        "name": card_display_name,
         "description": "Wattetheria node agent participating through Wattswarm mesh.",
         "preferredTransport": "wattswarm_mesh",
         "defaultInputModes": ["application/json"],
@@ -613,6 +637,16 @@ fn build_source_agent_card(
             "public_key": state.identity.public_key
         }
     });
+    if let Some(display_name) = display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(metadata) = card.get_mut("metadata").and_then(Value::as_object_mut)
+    {
+        metadata.insert(
+            "display_name".to_string(),
+            Value::String(display_name.to_owned()),
+        );
+    }
     let card_hash = format!(
         "sha256:{}",
         hex::encode(Sha256::digest(serde_jcs::to_string(&card)?.as_bytes()))

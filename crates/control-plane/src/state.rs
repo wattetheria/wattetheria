@@ -726,6 +726,12 @@ pub struct PublicIdentityBody {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PublicIdentityDisplayNameBody {
+    pub public_id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ControllerBindingBody {
     pub public_id: String,
     pub controller_kind: ControllerKind,

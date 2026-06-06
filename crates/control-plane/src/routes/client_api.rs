@@ -473,10 +473,21 @@ async fn build_client_task_contract_payload(
         .sample_task_contract(&mission.mission_id)
         .await
         .ok()?;
+    let publisher_display_name = state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .find(|identity| {
+            identity.active && identity.agent_did.as_deref() == Some(state.agent_did.as_str())
+        })
+        .map(|identity| identity.display_name);
     let contract = mission_task_contract(
         contract,
         mission,
         &state.agent_did,
+        publisher_display_name.as_deref(),
         publisher_wattswarm_node_id,
     );
     serde_json::to_value(contract).ok()

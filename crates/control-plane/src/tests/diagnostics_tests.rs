@@ -131,6 +131,7 @@ async fn agent_event_callback_writes_diagnostics() {
         &state,
         crate::social_host::SignedAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
+            source_display_name: None,
             target_agent_id: Some(state.agent_did.clone()),
             source_node_id: Some("claimer-node".to_owned()),
             target_node_id: None,

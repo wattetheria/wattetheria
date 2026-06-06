@@ -376,6 +376,20 @@ async fn authed_post_json(app: Router, token: &str, uri: &str, body: Value) -> V
     .await
 }
 
+async fn authed_patch_json(app: Router, token: &str, uri: &str, body: Value) -> Value {
+    request_json(
+        app,
+        axum::http::Request::builder()
+            .method("PATCH")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+}
+
 async fn authed_post_json_with_headers(
     app: Router,
     token: &str,

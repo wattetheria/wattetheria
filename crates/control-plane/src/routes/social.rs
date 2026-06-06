@@ -1300,10 +1300,21 @@ fn build_relationship_action_message(
 
 struct SignedRelationshipActionArgs {
     local_agent_id: String,
+    local_display_name: Option<String>,
     target_agent_id: String,
     remote_node_id: String,
     action: SwarmRelationshipAction,
     capability: String,
+    message: Value,
+    extensions: Option<Value>,
+}
+
+struct SignedDirectMessageArgs {
+    local_agent_id: String,
+    local_display_name: Option<String>,
+    target_agent_id: String,
+    remote_node_id: String,
+    content: Value,
     message: Value,
     extensions: Option<Value>,
 }
@@ -1318,6 +1329,7 @@ async fn send_signed_relationship_action_command(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: args.local_agent_id,
+            source_display_name: args.local_display_name,
             target_agent_id: Some(args.target_agent_id),
             source_node_id: local_node_id,
             target_node_id: Some(remote_node_id.clone()),
@@ -1338,24 +1350,21 @@ async fn send_signed_relationship_action_command(
 
 async fn send_signed_direct_message_command(
     state: &ControlPlaneState,
-    local_agent_id: String,
-    target_agent_id: String,
-    remote_node_id: String,
-    content: Value,
-    message: Value,
-    extensions: Option<Value>,
+    args: SignedDirectMessageArgs,
 ) -> anyhow::Result<(Value, Value, Option<String>)> {
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let remote_node_id = args.remote_node_id;
     let agent_envelope = build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
-            source_agent_id: local_agent_id,
-            target_agent_id: Some(target_agent_id),
+            source_agent_id: args.local_agent_id,
+            source_display_name: args.local_display_name,
+            target_agent_id: Some(args.target_agent_id),
             source_node_id: local_node_id,
             target_node_id: Some(remote_node_id.clone()),
             capability: "social.dm.send".to_string(),
-            message,
-            extensions,
+            message: args.message,
+            extensions: args.extensions,
         },
     )?;
     let agent_envelope_json = serde_json::to_value(&agent_envelope).unwrap_or(Value::Null);
@@ -1365,7 +1374,7 @@ async fn send_signed_direct_message_command(
         .send_peer_direct_message(SwarmDirectMessageCommand {
             remote_node_id,
             agent_envelope,
-            content,
+            content: args.content,
         })
         .await?;
     Ok((response, agent_envelope_json, agent_signature))
@@ -2259,6 +2268,7 @@ async fn decide_friend_request(
         &state,
         SignedRelationshipActionArgs {
             local_agent_id: local.agent_id,
+            local_display_name: local.display_name,
             target_agent_id: counterpart.target_agent.clone(),
             remote_node_id: counterpart.remote_node.clone(),
             action: action.clone(),
@@ -2402,6 +2412,7 @@ async fn handle_agent_relationship_action(
     let SocialLocalContext {
         public_id: local_public_id,
         agent_id: local_agent_id,
+        display_name: local_display_name,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
     let counterpart = match resolve_agent_relationship_counterpart(&state, &body).await {
         Ok(counterpart) => counterpart,
@@ -2445,6 +2456,7 @@ async fn handle_agent_relationship_action(
         &state,
         SignedRelationshipActionArgs {
             local_agent_id,
+            local_display_name,
             target_agent_id: target_agent.clone(),
             remote_node_id: remote_node.clone(),
             action: body.action.clone(),
@@ -2567,6 +2579,7 @@ async fn handle_send_agent_dm_message(
     let SocialLocalContext {
         public_id: local_public_id,
         agent_id: local_agent_id,
+        display_name: local_display_name,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
     let SocialCounterpartTarget {
         counterpart_public_id,
@@ -2601,12 +2614,15 @@ async fn handle_send_agent_dm_message(
     );
     let (response, agent_envelope_json, agent_signature) = match send_signed_direct_message_command(
         &state,
-        local_agent_id,
-        target_agent.clone(),
-        remote_node.clone(),
-        content.clone(),
-        message.clone(),
-        body.extensions,
+        SignedDirectMessageArgs {
+            local_agent_id,
+            local_display_name,
+            target_agent_id: target_agent.clone(),
+            remote_node_id: remote_node.clone(),
+            content: content.clone(),
+            message: message.clone(),
+            extensions: body.extensions,
+        },
     )
     .await
     {

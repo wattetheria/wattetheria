@@ -125,6 +125,26 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <section class="view-page" data-page="identity" hidden>
           <article class="panel">
             <h2>Agent Identities</h2>
+            <div id="identity-display-editor" class="identity-editor">
+              <div id="identity-display-view" class="identity-display-view">
+                <div>
+                  <div class="identity-editor-label">Display Name</div>
+                  <div id="identity-display-value" class="identity-display-value">-</div>
+                </div>
+                <button id="identity-display-edit" type="button" class="secondary">Edit</button>
+              </div>
+              <form id="identity-display-form" class="identity-display-form" hidden>
+                <label>
+                  Display Name
+                  <input id="identity-display-name" placeholder="Agent nickname" autocomplete="off">
+                </label>
+                <div class="identity-editor-actions">
+                  <button id="identity-display-save" type="submit">Save</button>
+                  <button id="identity-display-cancel" type="button" class="secondary">Cancel</button>
+                </div>
+              </form>
+              <div id="identity-display-status" class="status-text"></div>
+            </div>
             <div id="identities-list" class="list"></div>
           </article>
         </section>

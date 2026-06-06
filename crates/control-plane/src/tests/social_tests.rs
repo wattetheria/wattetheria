@@ -137,6 +137,22 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     assert_eq!(
         relationship_command
             .agent_envelope
+            .source_agent_card
+            .as_ref()
+            .and_then(|card| card.card["metadata"]["display_name"].as_str()),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
+        relationship_command
+            .agent_envelope
+            .source_agent_card
+            .as_ref()
+            .and_then(|card| card.card["metadata"]["agent_id"].as_str()),
+        Some(identity.agent_did.as_str())
+    );
+    assert_eq!(
+        relationship_command
+            .agent_envelope
             .target_agent_id
             .as_deref(),
         Some(remote_identity.agent_did.as_str())
@@ -188,6 +204,18 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
     assert_eq!(
         dm_command.agent_envelope.capability.as_deref(),
         Some("social.dm.send")
+    );
+    assert_eq!(
+        dm_command
+            .agent_envelope
+            .source_agent_card
+            .as_ref()
+            .and_then(|card| card.card["metadata"]["display_name"].as_str()),
+        Some("Captain Aurora")
+    );
+    assert_eq!(
+        dm_command.agent_envelope.source_agent_id.as_deref(),
+        Some(identity.agent_did.as_str())
     );
     assert_envelope_signature_valid(&dm_command.agent_envelope, &state.identity.public_key);
 

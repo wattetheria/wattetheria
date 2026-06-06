@@ -12,7 +12,7 @@ pub(crate) use civilization_galaxy::{
 };
 pub(crate) use civilization_identity::{
     bootstrap_identity, citizen_profile_upsert, controller_binding, controller_binding_upsert,
-    public_identity, public_identity_upsert,
+    public_identity, public_identity_display_name_patch, public_identity_upsert,
 };
 pub(crate) use civilization_profile::{
     citizen_profile, civilization_briefing, civilization_emergencies, civilization_metrics,

@@ -1213,6 +1213,7 @@ async fn send_payment_message(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: local.agent_id,
+            source_display_name: local.display_name,
             target_agent_id: Some(counterpart.target_agent.clone()),
             source_node_id: local_node_id,
             target_node_id: Some(counterpart.remote_node.clone()),

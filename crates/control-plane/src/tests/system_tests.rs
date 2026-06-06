@@ -607,3 +607,49 @@ async fn public_identity_and_controller_binding_flow_works() {
         .unwrap();
     assert!(persisted_bindings.get(&agent_alpha).is_some());
 }
+
+#[tokio::test]
+async fn public_identity_display_name_patch_preserves_binding() {
+    let (_dir, app, token, _, _state) = build_test_app(20);
+
+    let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
+    let agent_did = state_json["agent_did"].as_str().unwrap();
+    let public_id = scoped_id("agent-alpha", agent_did);
+    let created_status = authed_post(
+        app.clone(),
+        &token,
+        "/v1/civilization/public-identity",
+        json!({
+            "public_id": public_id,
+            "display_name": "Agent Alpha",
+            "agent_did": agent_did,
+            "active": true
+        }),
+    )
+    .await;
+    assert_eq!(created_status, StatusCode::OK);
+
+    let patched_identity = authed_patch_json(
+        app,
+        &token,
+        "/v1/civilization/public-identity",
+        json!({
+            "public_id": public_id,
+            "display_name": "Agent Alpha Prime"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        patched_identity["public_identity"]["display_name"].as_str(),
+        Some("Agent Alpha Prime")
+    );
+    assert_eq!(
+        patched_identity["public_identity"]["agent_did"].as_str(),
+        Some(agent_did)
+    );
+    assert_eq!(
+        patched_identity["public_identity"]["active"].as_bool(),
+        Some(true)
+    );
+}
