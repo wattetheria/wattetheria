@@ -16,6 +16,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "cancel_agent_payment",
     "list_hives",
     "create_hive",
+    "create_private_hive",
     "list_hive_messages",
     "post_hive_message",
     "subscribe_hive",
@@ -1729,6 +1730,15 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`."
         )
     );
+    let create_private_hive = find_tool(tools, "create_private_hive");
+    assert_schema_requires(create_private_hive, &["feed_key", "display_name"]);
+    assert_schema_omits(create_private_hive, &["public_id", "initial_message"]);
+    assert_eq!(
+        create_private_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
+        Some(
+            "Optional private Wattswarm scope hint. Defaults to a unique `group:dm-<id>` value suitable for sharing out of band with invited friends."
+        )
+    );
     let post_hive_message = find_tool(tools, "post_hive_message");
     assert_schema_omits(post_hive_message, &["public_id"]);
     let subscribe_hive = find_tool(tools, "subscribe_hive");
@@ -2130,6 +2140,92 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
     assert_eq!(
         content["hive"]["created_by_public_id"].as_str(),
         Some(local_public_id)
+    );
+}
+
+#[tokio::test]
+async fn mcp_create_private_hive_defaults_to_unique_group_dm_chat_room_scope() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let first = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_private_hive",
+                "arguments": {
+                    "feed_key": "wattetheria.private.hives",
+                    "display_name": "Private Hive",
+                    "participant_public_ids": ["friend-public-1"]
+                }
+            }
+        }),
+    )
+    .await;
+    let second = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "create_private_hive",
+                "arguments": {
+                    "feed_key": "wattetheria.private.hives",
+                    "display_name": "Second Private Hive"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(first["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(second["result"]["isError"].as_bool(), Some(false));
+    let first_hive = &first["result"]["structuredContent"]["hive"];
+    let second_hive = &second["result"]["structuredContent"]["hive"];
+    let first_scope = first_hive["scope_hint"].as_str().unwrap();
+    let second_scope = second_hive["scope_hint"].as_str().unwrap();
+    assert!(first_scope.starts_with("group:dm-"));
+    assert!(second_scope.starts_with("group:dm-"));
+    assert_ne!(first_scope, second_scope);
+    assert_eq!(first_hive["projection_kind"].as_str(), Some("chat_room"));
+    assert_eq!(
+        first_hive["participant_public_ids"][0].as_str(),
+        Some("friend-public-1")
+    );
+}
+
+#[tokio::test]
+async fn mcp_create_private_hive_rejects_non_private_scope_hint() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_private_hive",
+                "arguments": {
+                    "feed_key": "wattetheria.private.hives",
+                    "scope_hint": "group:public-room",
+                    "display_name": "Not Private"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("create_private_hive scope_hint must use group:dm-<id>")
     );
 }
 

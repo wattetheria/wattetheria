@@ -394,6 +394,9 @@ fn plan_governance_event(kind: &str, payload: &Value) -> Option<GatewayDispatchP
 }
 
 fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
+    if topic_event_scope_hint(kind, payload).is_some_and(is_private_dm_scope_hint) {
+        return None;
+    }
     match kind {
         "topic.created" => Some(GatewayDispatchPlan {
             data_kind: GatewayDataKind::HiveMetadata,
@@ -447,6 +450,19 @@ fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> 
         }
         _ => None,
     }
+}
+
+fn topic_event_scope_hint<'a>(kind: &str, payload: &'a Value) -> Option<&'a str> {
+    match kind {
+        "topic.created" => payload.pointer("/topic/scope_hint"),
+        "topic.message.posted" => payload.get("scope_hint"),
+        _ => None,
+    }
+    .and_then(Value::as_str)
+}
+
+fn is_private_dm_scope_hint(scope_hint: &str) -> bool {
+    scope_hint.trim().starts_with("group:dm-")
 }
 
 fn plan_ranking_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
@@ -595,6 +611,34 @@ mod tests {
             decision.confirmation_requirement,
             GatewayConfirmationRequirement::Required
         );
+    }
+
+    #[test]
+    fn private_dm_hive_topic_events_are_not_gateway_pushed() {
+        let created = StreamEvent {
+            kind: "topic.created".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "topic": {
+                    "topic_id": "private-topic-1",
+                    "scope_hint": "group:dm-private-topic-1"
+                }
+            }),
+        };
+        assert!(plan_stream_event(&created).is_none());
+        assert!(describe_stream_event(&created).is_none());
+
+        let message = StreamEvent {
+            kind: "topic.message.posted".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "message_id": "msg-1",
+                "topic_id": "private-topic-1",
+                "scope_hint": "group:dm-private-topic-1"
+            }),
+        };
+        assert!(plan_stream_event(&message).is_none());
+        assert!(describe_stream_event(&message).is_none());
     }
 
     #[test]

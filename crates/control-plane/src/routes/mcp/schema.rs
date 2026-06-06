@@ -141,6 +141,12 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
             &["feed_key", "scope_hint", "display_name", "projection_kind"],
             false,
         )),
+        "create_private_hive" => Some(tool_schema(
+            tool,
+            &create_private_hive_fields(),
+            &["feed_key", "display_name"],
+            false,
+        )),
         "list_hive_messages" => Some(tool_schema(
             tool,
             &list_hive_message_fields(),
@@ -215,6 +221,25 @@ fn create_hive_fields() -> Vec<(&'static str, Value)> {
         string_field("mission_id", "Mission linked to this Hive."),
         string_array_field("participant_public_ids", "Initial participant public IDs."),
         string_field("why_this_exists", "Reason this Hive exists."),
+    ]
+}
+
+fn create_private_hive_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("network_id", "Optional Wattswarm network ID."),
+        string_field("feed_key", "Wattswarm topic feed key for the private Hive."),
+        string_field(
+            "scope_hint",
+            "Optional private Wattswarm scope hint. Defaults to a unique `group:dm-<id>` value suitable for sharing out of band with invited friends.",
+        ),
+        string_field("display_name", "Human-readable private Hive name."),
+        string_field("summary", "Optional private Hive summary."),
+        topic_projection_kind_field("Private Hive projection kind. Defaults to chat_room."),
+        string_array_field(
+            "participant_public_ids",
+            "Optional initial participant public IDs for local metadata; not a transport ACL.",
+        ),
+        string_field("why_this_exists", "Reason this private Hive exists."),
     ]
 }
 

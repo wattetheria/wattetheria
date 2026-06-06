@@ -1602,10 +1602,50 @@ async fn tool_body_with_local_identity(
 }
 
 fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), String> {
+    if tool.name == "create_private_hive" {
+        normalize_mcp_private_hive_request(body)?;
+    }
     if tool.name == "propose_agent_payment" {
         normalize_mcp_payment_request_amount(body)?;
     }
     Ok(())
+}
+
+fn normalize_mcp_private_hive_request(body: &mut Value) -> Result<(), String> {
+    let scope_hint = required_string(body, "scope_hint");
+    if scope_hint
+        .as_deref()
+        .is_some_and(|scope_hint| !scope_hint.starts_with("group:dm-"))
+    {
+        return Err("create_private_hive scope_hint must use group:dm-<id>".to_string());
+    }
+    let projection_kind = required_string(body, "projection_kind");
+    if projection_kind
+        .as_deref()
+        .is_some_and(|projection_kind| projection_kind != "chat_room")
+    {
+        return Err("create_private_hive projection_kind must be chat_room".to_string());
+    }
+    let Some(object) = body.as_object_mut() else {
+        return Ok(());
+    };
+    if scope_hint.is_none() {
+        object.insert(
+            "scope_hint".to_string(),
+            Value::String(private_hive_scope_hint()),
+        );
+    }
+    if projection_kind.is_none() {
+        object.insert(
+            "projection_kind".to_string(),
+            Value::String("chat_room".to_string()),
+        );
+    }
+    Ok(())
+}
+
+fn private_hive_scope_hint() -> String {
+    format!("group:dm-{}", Uuid::new_v4().simple())
 }
 
 fn normalize_mcp_payment_request_amount(body: &mut Value) -> Result<(), String> {
@@ -1698,6 +1738,7 @@ async fn apply_local_identity_defaults(
             );
         }
         "create_hive"
+        | "create_private_hive"
         | "post_hive_message"
         | "subscribe_hive"
         | "unsubscribe_hive"
@@ -1840,7 +1881,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 46] = [
+const AGENT_TOOLS: [AgentTool; 47] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1853,6 +1894,7 @@ const AGENT_TOOLS: [AgentTool; 46] = [
     AgentTool { name: "cancel_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/cancel", description: "Cancel an outbound payment request.", availability: Availability::Always },
     AgentTool { name: "list_hives", method: Method::GET, path: "/api/hives", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "create_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a Wattetheria Hive and subscribe the local controller.", availability: Availability::TopicBridge },
+    AgentTool { name: "create_private_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a private Wattetheria Hive with an unlisted group DM scope and subscribe the local controller.", availability: Availability::TopicBridge },
     AgentTool { name: "list_hive_messages", method: Method::GET, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "List messages for a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "post_hive_message", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "Post a message to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "subscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/subscribe", description: "Subscribe the local controller to a Wattetheria Hive.", availability: Availability::TopicBridge },

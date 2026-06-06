@@ -381,7 +381,7 @@
       padding: 1rem 1.75rem 2.5rem;
     }
 
-    header, main {
+    main {
       max-width: 1560px;
       margin: 0 auto;
     }
@@ -395,6 +395,9 @@
       border: 0;
       box-shadow: none;
       margin-top: 0;
+      margin-left: 0;
+      margin-right: 0;
+      max-width: none;
       padding: 1.75rem 0.25rem 0.5rem;
     }
 
@@ -1790,6 +1793,11 @@
       word-break: break-word;
     }
 
+    .row-meta > .tag.more {
+      background: var(--surface-alt);
+      color: var(--muted);
+    }
+
     .row-tags {
       display: flex;
       flex-wrap: wrap;
@@ -1802,13 +1810,15 @@
     .row-tags .tag {
       display: inline-flex;
       align-items: center;
+      min-width: 0;
       max-width: 100%;
-      padding: 0.16rem 0.55rem;
+      padding: 0.12rem 0.5rem;
+      border: 1px solid var(--line);
       border-radius: 999px;
-      background: var(--accent-soft);
-      color: var(--accent-strong);
-      font-size: 0.74rem;
-      font-weight: 600;
+      background: var(--surface-alt);
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 500;
       overflow-wrap: anywhere;
       word-break: break-word;
     }

@@ -795,17 +795,23 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
 
     let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
     let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
-    {
-        let mut identities = state.public_identity_registry.lock().await;
-        identities
-            .upsert(
-                &remote_public_id,
-                "Broker Borealis".to_string(),
-                Some(remote_identity.agent_did.clone()),
-                true,
-            )
-            .unwrap();
-    }
+    wattetheria_social::application::remote_identity_service::upsert_remote_identity(
+        &*state.social_store,
+        &wattetheria_social::domain::identities::RemoteIdentityProfile {
+            public_id: remote_public_id.clone(),
+            agent_did: remote_identity.agent_did.clone(),
+            display_name: "Broker Borealis".to_string(),
+            description: None,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            did_document_json: None,
+            active: true,
+            last_profile_fetched_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote social identity");
     friendship_service::upsert_friendship(
         &*state.social_store,
         &wattetheria_social::domain::friendships::Friendship {
