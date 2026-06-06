@@ -168,7 +168,7 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("agent card `preferredTransport` must be a string"))?;
     if transport != "JSONRPC" {
-        bail!("agent card `preferredTransport` must be `JSONRPC` (got `{transport}`)",);
+        bail!("agent card `preferredTransport` must be `JSONRPC` (got `{transport}`)");
     }
 
     validate_scope_origin_domain(object)?;
