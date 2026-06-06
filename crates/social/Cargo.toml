@@ -2,6 +2,7 @@
 name = "wattetheria-social"
 version.workspace = true
 edition.workspace = true
+license = "AGPL-3.0-only"
 
 [lib]
 name = "wattetheria_social"

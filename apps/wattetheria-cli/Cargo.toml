@@ -2,6 +2,7 @@
 name = "wattetheria-client-cli"
 version.workspace = true
 edition.workspace = true
+license = "AGPL-3.0-only"
 
 [lints]
 workspace = true

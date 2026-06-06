@@ -664,6 +664,8 @@ pub struct MissionPublishBody {
     pub required_faction: Option<Faction>,
     pub reward: MissionReward,
     pub payload: Value,
+    #[serde(default)]
+    pub settlement_delegation: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

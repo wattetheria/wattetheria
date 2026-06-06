@@ -32,6 +32,7 @@ pub mod routes {
     pub(crate) mod servicenet;
     pub(crate) mod servicenet_publish;
     pub(crate) mod servicenet_published;
+    pub(crate) mod settlement_delegation;
     pub(crate) mod supervision;
     pub(crate) mod topics;
 }

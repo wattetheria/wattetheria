@@ -206,7 +206,11 @@ Read the diagram in layers:
   page from the configured `wattetheria-gateway` `/api/missions` network mission market rather than the node-local
   mission board. Each returned network mission includes a `claim_route` with the task id, mission id,
   publisher Wattswarm node id, mission feed key, mission scope hint, normalized swarm scope,
-  `task_contract_available`, and a `claim_ready` flag for downstream claim orchestration.
+  `task_contract_available`, and a `claim_ready` flag for downstream claim orchestration. Missions
+  with funded settlement metadata also include `reward_type: "delegated"`,
+  `has_settlement_delegation: true`, and `settlement_*` summary fields for provider, layer, network,
+  chain id, status, amount, asset, receipt id, funding transaction, terms URL, and provider agent
+  identity.
 - `claim_mission` keeps the local mission-board transition for node-local missions. When a mission is
   not local, it can derive the `claim_route` from the configured gateway task market, loads the
   published `TaskContract`, submits that contract to the local Wattswarm task projection, announces
@@ -219,6 +223,12 @@ Read the diagram in layers:
 - `publish_mission` submits a `wattetheria.mission` task to Wattswarm with the local publisher
   Wattswarm node id, node-scoped `swarm_scope`, `mission_feed_key`, and matching `mission_scope_hint`
   in both the task contract and task announcement.
+- `publish_mission` remains the virtual-reward mission path and does not require real settlement
+  funding. `publish_delegated_mission` uses the same mission route but requires an external
+  `settlement_delegation` reference from a third-party ServiceNet settlement agent. Wattetheria
+  publishes the provider agent id/name, amount, asset, provider receipt, optional funding proof, and
+  optional terms into the mission response and task contract; the third-party agent owns the funding
+  rules and settlement execution.
 - `publish_collective_mission` is the MCP path for LAN/WAN group-intelligence work. It first
   publishes the Wattetheria mission through the normal local mission route, then submits a
   Wattswarm `/api/run/submit` run with `kickoff` enabled by default, and persists the local
@@ -474,6 +484,16 @@ This split is intentional:
 - `protocols` - protocol docs (including agent DNA)
 - `schemas` - protocol and product schemas (including `agent.json`)
 
+## Licensing
+
+Wattetheria uses per-package license declarations. See `LICENSE.md` for the package map and
+`LICENSE-AGPL` / `LICENSE-APACHE` for the full license texts.
+
+- `crates/gateway-contract` and `crates/conformance` are licensed under `Apache-2.0`.
+- `crates/social`, `crates/kernel-core`, `crates/control-plane`, `crates/node-core`,
+  `apps/wattetheria-kernel`, `apps/wattetheria-cli`, the root npm wrapper package, and native npm
+  CLI packages are licensed under `AGPL-3.0-only`.
+
 ## Quick Start
 
 ```bash
@@ -581,7 +601,7 @@ CLI prerequisites:
 
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
-Agent commands such as `identity`, `wallet`, and `servicenet` are forwarded to the
+Agent commands such as `doctor`, `identity`, `wallet`, and `servicenet` are forwarded to the
 native `wattetheria-client-cli`; installed release packages should not require Rust on the user's
 machine. The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional native
 package such as `@wattetheria/cli-win32-x64`, then `bin/native/<platform>-<arch>/`, then `PATH`.
@@ -590,6 +610,9 @@ binding before a local Wattetheria node is installed. If a local node deployment
 installed, the wrapper refuses `identity` and `wallet` commands so users do not create or modify a
 separate local identity or wallet outside the node. ServiceNet commands can still run through an
 installed node when no host native CLI is available.
+`doctor` runs the native node diagnostics, including identity, wallet, signing, event log,
+control-plane, MCP registry, and optional brain-provider checks. Use `--brain` for an active brain
+provider check and `--connect` to write `.agent-participation/status.json`.
 
 NPM publish flow:
 
@@ -644,6 +667,7 @@ Version commands:
 - `npx wattetheria update` refreshes the local deployment compose asset, resolves the latest shared published image tag across the configured release images, and upgrades to it
 - `npx wattetheria update --tag <tag>` pins the deployment to a specific published image tag
 - `npx wattetheria restart` stops and recreates the local release stack from the current deployment config
+- `npx wattetheria doctor --brain --connect` runs native node diagnostics and writes the latest attach status
 
 Release deployments bind-mount host-visible state by default:
 
@@ -941,8 +965,48 @@ authenticated MCP endpoint:
 
 - `POST <control_plane_endpoint>/mcp`
 
+Wattetheria does not provide a universal MCP installer for every attached agent runtime. Runtime
+hosts have different MCP configuration formats, launch models, permission prompts, and wakeup
+semantics, so Wattetheria provides stable local connection surfaces and keeps authorization inside
+the local control plane. Attached runtimes are callers, not the authority boundary.
+
+The MCP security model is:
+
+- the runtime configures either the local HTTP MCP endpoint or the local `mcp-proxy`
+- `tools/list` reports the live tools exposed by the local Wattetheria node
+- `tools/call` must pass local bearer-token authentication
+- state-changing and money-adjacent tools must still pass local identity, capability, policy, audit,
+  signed-event, and persistence checks in the control plane
+- delegated settlement parameters are provider references, not proof that Wattetheria has verified
+  funds or accepted the third-party provider's settlement rules
+
+For OpenClaw, HermesAgent, or custom runtimes that can call HTTP MCP endpoints directly, configure
+the local authenticated endpoint and read the token path from the agent participation manifest. Field
+names vary by host, but the shape is:
+
+```json
+{
+  "mcpServers": {
+    "wattetheria": {
+      "transport": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer <contents-of-control.token>"
+      }
+    }
+  }
+}
+```
+
+For OpenClaw, HermesAgent, Codex, Claude Code, or any runtime that supports stdio MCP servers,
+prefer the local proxy form below. The proxy keeps token handling local to the Wattetheria node and
+forwards JSON-RPC to the control plane. Codex and Claude Code should be treated as interactive local
+clients unless their host environment explicitly provides a separate wakeup or automation API:
+Wattetheria can expose tools to them while they are running, but it should not assume it can
+externally wake those runtimes or push work directly into them.
+
 The MCP `tools/list` response is the source of truth for live tool names such as `list_missions`,
-`publish_mission`, `list_agent_payments`, `send_agent_dm_message`, and
+`publish_mission`, `publish_delegated_mission`, `list_agent_payments`, `send_agent_dm_message`, and
 `invoke_servicenet_agent_sync`. Most MCP `tools/call`
 requests dispatch through the existing local control-plane routes, preserving bearer-token auth,
 rate limiting, audit logging, signed event writes, and persistence behavior. `tools/call`
@@ -973,7 +1037,15 @@ use that gateway copy to sync and announce the selected task into the claimer's 
 before claiming or proposing a completion candidate. The task announcement is used for Wattswarm
 lifecycle event subscription, not topic-message subscription. `settle_mission` is still run by the
 publisher node and finalizes the selected Wattswarm candidate before applying local mission
-settlement. `publish_collective_mission` is separate from `publish_mission`: it keeps the normal
+settlement. Delegated missions expose a normalized `settlement_delegation` object at the mission top
+level, under `payload.settlement_delegation`, and in `task_contract.inputs.settlement_delegation`.
+`list_missions` lifts that object into top-level discovery fields: `reward_type`,
+`has_settlement_delegation`, `settlement_layer`, `settlement_provider`,
+`settlement_provider_agent_id`, `settlement_provider_agent_name`, `settlement_network`,
+`settlement_chain_id`, `settlement_status`, `settlement_asset`, `settlement_amount`,
+`settlement_receipt_id`, `settlement_funding_tx`, and `settlement_terms_url`. The first supported real-funding reference
+provider is `servicenet-agent`; ordinary `publish_mission` calls without that field keep the
+existing virtual-reward behavior. `publish_collective_mission` is separate from `publish_mission`: it keeps the normal
 mission-publish side effects, then submits a Wattswarm run-queue spec with `agents`, `shared_inputs`,
 `aggregation`, `retry`, and `kickoff=true` by default. LAN/WAN participation is expressed through
 the Wattswarm agent `executor` values, such as a local executor name or `remote:<node_id>`. The local

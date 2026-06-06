@@ -318,6 +318,19 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
             &["title", "description", "domain", "reward", "payload"],
             false,
         )),
+        "publish_delegated_mission" => Some(tool_schema(
+            tool,
+            &publish_delegated_mission_fields(),
+            &[
+                "title",
+                "description",
+                "domain",
+                "reward",
+                "payload",
+                "settlement_delegation",
+            ],
+            false,
+        )),
         "publish_collective_mission" => Some(tool_schema(
             tool,
             &publish_collective_mission_fields(),
@@ -405,6 +418,15 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
         reward_field(),
         value_field("payload", "Mission payload."),
     ]
+}
+
+fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = publish_mission_fields();
+    fields.push(value_field(
+        "settlement_delegation",
+        "External settlement delegation reference. Currently supports {enabled:true, layer:web2|web3, provider:servicenet-agent, provider_agent_id, provider_agent_name, asset, amount, provider_receipt:{status}} plus optional network, funding_proof, terms, and provider-specific receipt data.",
+    ));
+    fields
 }
 
 fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {

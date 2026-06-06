@@ -13,6 +13,10 @@ use crate::routes::mcp::{
 };
 use crate::routes::reward_events::{ContributionEventArgs, record_contribution_event};
 use crate::routes::reward_view::refresh_known_wallet_balances;
+use crate::routes::settlement_delegation::{
+    normalize_publish_delegation, payload_with_settlement_delegation,
+    settlement_delegation_from_payload,
+};
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
@@ -520,7 +524,7 @@ fn mission_task_inputs(
     publisher_wattswarm_node_id: &str,
 ) -> Value {
     let mission_scope_hint = mission_task_scope_hint(&mission.mission_id);
-    json!({
+    let mut inputs = json!({
         "kind": "wattetheria_mission",
         "mission_id": mission.mission_id,
         "publisher": mission.publisher,
@@ -541,7 +545,13 @@ fn mission_task_inputs(
         "subnet_id": mission.subnet_id,
         "zone_id": mission.zone_id,
         "payload": mission.payload,
-    })
+    });
+    if let Some(delegation) = settlement_delegation_from_payload(&mission.payload)
+        && let Some(object) = inputs.as_object_mut()
+    {
+        object.insert("settlement_delegation".to_owned(), delegation.clone());
+    }
+    inputs
 }
 
 pub(crate) fn mission_task_contract(
@@ -572,25 +582,31 @@ fn mission_announce_command(
     agent_envelope: Option<SwarmAgentEnvelope>,
 ) -> SwarmTaskAnnounceCommand {
     let mission_scope_hint = mission_task_scope_hint(&mission.mission_id);
+    let mut summary = json!({
+        "kind": "wattetheria_mission",
+        "mission_id": mission.mission_id,
+        "title": mission.title,
+        "description": mission.description,
+        "domain": mission.domain,
+        "reward": mission.reward,
+        "publisher": mission.publisher,
+        "publisher_agent_did": publisher_agent_did,
+        "publisher_display_name": publisher_display_name,
+        "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
+        "mission_feed_key": MISSION_FEED_KEY,
+        "mission_scope_hint": mission_scope_hint,
+    });
+    if let Some(delegation) = settlement_delegation_from_payload(&mission.payload)
+        && let Some(object) = summary.as_object_mut()
+    {
+        object.insert("settlement_delegation".to_owned(), delegation.clone());
+    }
     SwarmTaskAnnounceCommand {
         task_id: mission.mission_id.clone(),
         announcement_id: None,
         feed_key: MISSION_FEED_KEY.to_owned(),
         scope_hint: mission_scope_hint.clone(),
-        summary: json!({
-            "kind": "wattetheria_mission",
-            "mission_id": mission.mission_id,
-            "title": mission.title,
-            "description": mission.description,
-            "domain": mission.domain,
-            "reward": mission.reward,
-            "publisher": mission.publisher,
-            "publisher_agent_did": publisher_agent_did,
-            "publisher_display_name": publisher_display_name,
-            "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
-            "mission_feed_key": MISSION_FEED_KEY,
-            "mission_scope_hint": mission_scope_hint,
-        }),
+        summary,
         detail_ref: None,
         agent_envelope,
     }
@@ -607,6 +623,9 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
     object
         .entry("task_type".to_string())
         .or_insert_with(|| Value::String("wattetheria.mission".to_string()));
+    if let Some(delegation) = settlement_delegation_from_payload(&mission.payload) {
+        object.insert("settlement_delegation".to_owned(), delegation.clone());
+    }
     let Some(contract) = task_contract else {
         return payload;
     };
@@ -626,6 +645,7 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
         "publisher_wattswarm_node_id",
         "mission_feed_key",
         "mission_scope_hint",
+        "settlement_delegation",
         "swarm_scope",
     ] {
         if let Some(value) = contract.inputs.get(key) {
@@ -1274,6 +1294,18 @@ pub(crate) async fn mission_publish(
         Ok(token) => token,
         Err(response) => return response,
     };
+    let settlement_delegation = match normalize_publish_delegation(body.settlement_delegation) {
+        Ok(delegation) => delegation,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": error.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let mission_payload =
+        payload_with_settlement_delegation(body.payload, settlement_delegation.as_ref());
     let mut board = state.mission_board.lock().await;
     let mission = board.publish(
         &body.title,
@@ -1286,7 +1318,7 @@ pub(crate) async fn mission_publish(
         body.required_role,
         body.required_faction,
         body.reward,
-        body.payload,
+        mission_payload,
     );
     if let Err(error) = state
         .local_db

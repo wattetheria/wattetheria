@@ -2,7 +2,7 @@
   "name": "wattetheria",
   "version": "0.3.7",
   "description": "Wattetheria deployment CLI",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "bin": {
     "wattetheria": "bin/wattetheria.js"
@@ -13,7 +13,9 @@
     ".env.release",
     "docker-compose.release.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE.md",
+    "LICENSE-AGPL",
+    "LICENSE-APACHE"
   ],
   "engines": {
     "node": ">=20"

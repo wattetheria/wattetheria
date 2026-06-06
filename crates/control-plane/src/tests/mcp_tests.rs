@@ -23,6 +23,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "unsubscribe_hive",
     "list_missions",
     "publish_mission",
+    "publish_delegated_mission",
     "publish_collective_mission",
     "get_collective_mission_result",
     "claim_mission",
@@ -1673,6 +1674,32 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .and_then(Value::as_object),
         None
     );
+    assert!(
+        !publish_mission["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("settlement_delegation")
+    );
+
+    let publish_delegated_mission = find_tool(tools, "publish_delegated_mission");
+    assert_schema_requires(
+        publish_delegated_mission,
+        &[
+            "title",
+            "description",
+            "domain",
+            "reward",
+            "payload",
+            "settlement_delegation",
+        ],
+    );
+    assert_schema_omits(publish_delegated_mission, &["publisher", "publisher_kind"]);
+    assert!(
+        publish_delegated_mission["inputSchema"]["properties"]["settlement_delegation"]
+            ["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("servicenet-agent"))
+    );
 
     let publish_collective_mission = find_tool(tools, "publish_collective_mission");
     assert_schema_requires(
@@ -1984,6 +2011,97 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
     assert_eq!(
         mission["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
         mission["mission_scope_hint"].as_str()
+    );
+}
+
+#[tokio::test]
+async fn mcp_publish_delegated_mission_surfaces_servicenet_settlement_details() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_delegated_mission",
+                "arguments": {
+                    "title": "Funded ServiceNet escrow task",
+                    "description": "Publish a real reward mission with third-party settlement metadata.",
+                    "domain": "trade",
+                    "reward": {
+                        "agent_watt": 0,
+                        "reputation": 0,
+                        "capacity": 0,
+                        "treasury_share_watt": 0
+                    },
+                    "payload": {"objective": "escrow-backed"},
+                    "settlement_delegation": {
+                        "enabled": true,
+                        "layer": "web3",
+                        "provider": "servicenet-agent",
+                        "provider_agent_id": "escrow-agent-123",
+                        "provider_agent_name": "Some Escrow Agent",
+                        "network": "base-sepolia",
+                        "asset": "USDC",
+                        "amount": "10000000",
+                        "funding_proof": {
+                            "type": "evm_tx",
+                            "tx_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                            "chain_id": 84532,
+                            "to": "0x1111111111111111111111111111111111111111"
+                        },
+                        "provider_receipt": {
+                            "receipt_id": "receipt-servicenet-1",
+                            "status": "funded",
+                            "task_id": "provider-task-1",
+                            "raw": {"provider_rule": "external"}
+                        },
+                        "terms": {
+                            "summary": "Provider-defined settlement rules.",
+                            "url": "https://escrow.example/terms",
+                            "raw": {"max_revision_count": 1}
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    let mission = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let mission_id = mission["mission_id"].as_str().expect("mission id");
+    let delegation = &mission["settlement_delegation"];
+    assert_eq!(delegation["provider"].as_str(), Some("servicenet-agent"));
+    assert_eq!(delegation["layer"].as_str(), Some("web3"));
+    assert_eq!(
+        delegation["provider_agent_id"].as_str(),
+        Some("escrow-agent-123")
+    );
+    assert_eq!(
+        delegation["provider_agent_name"].as_str(),
+        Some("Some Escrow Agent")
+    );
+    assert_eq!(delegation["network"].as_str(), Some("base-sepolia"));
+    assert_eq!(delegation["status"].as_str(), Some("funded"));
+    assert_eq!(delegation["asset"].as_str(), Some("USDC"));
+    assert_eq!(
+        delegation["provider_receipt"]["receipt_id"].as_str(),
+        Some("receipt-servicenet-1")
+    );
+    assert_eq!(
+        mission["payload"]["settlement_delegation"],
+        mission["settlement_delegation"]
+    );
+    assert_eq!(
+        mission["task_contract"]["inputs"]["settlement_delegation"],
+        mission["settlement_delegation"]
+    );
+    assert_eq!(
+        mission["task_contract"]["inputs"]["mission_id"].as_str(),
+        Some(mission_id)
     );
 }
 
@@ -2655,47 +2773,7 @@ fn assert_gateway_hive_topic(response: &Value) {
 async fn mcp_list_missions_reads_configured_gateway_tasks() {
     let gateway_app = axum::Router::new().route(
         "/api/missions",
-        axum::routing::get(|| async {
-            axum::Json(json!([
-                {
-                    "id": "mission-gateway-1",
-                    "title": "Gateway Mission One",
-                    "status": "published",
-                    "source_node_id": "node-alpha",
-                    "mission_scope_hint": "group:mission-gateway-1",
-                    "task_contract": {
-                        "task_id": "mission-gateway-1",
-                        "inputs": {
-                            "swarm_scope": {"kind": "group", "id": "mission-gateway-1"}
-                        }
-                    }
-                },
-                {
-                    "task_id": "not-a-mission",
-                    "task_type": "topic_consensus",
-                    "terminal_state": "open"
-                },
-                {
-                    "id": "mission-gateway-2",
-                    "title": "Gateway Mission Two",
-                    "status": "published",
-                    "source_node_id": "node-beta",
-                    "mission_scope_hint": "group:mission-gateway-2",
-                    "task_contract": {
-                        "task_id": "mission-gateway-2",
-                        "inputs": {
-                            "swarm_scope": {"kind": "group", "id": "mission-gateway-2"}
-                        }
-                    }
-                },
-                {
-                    "id": "mission-gateway-settled",
-                    "title": "Settled Gateway Mission",
-                    "status": "settled",
-                    "source_node_id": "node-gamma"
-                }
-            ]))
-        }),
+        axum::routing::get(|| async { axum::Json(gateway_missions_fixture()) }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let gateway_url = format!("http://{}", listener.local_addr().unwrap());
@@ -2754,7 +2832,119 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     assert_eq!(missions[0]["task_id"].as_str(), Some("mission-gateway-2"));
     assert_eq!(missions[0]["source_node_id"].as_str(), Some("node-beta"));
     assert_eq!(missions[0]["status"].as_str(), Some("published"));
+    assert_gateway_settlement_summary(&missions[0]);
     assert_gateway_claim_route(&missions[0], "mission-gateway-2", "node-beta");
+}
+
+fn gateway_missions_fixture() -> Value {
+    json!([
+        {
+            "id": "mission-gateway-1",
+            "title": "Gateway Mission One",
+            "status": "published",
+            "source_node_id": "node-alpha",
+            "mission_scope_hint": "group:mission-gateway-1",
+            "task_contract": {
+                "task_id": "mission-gateway-1",
+                "inputs": {
+                    "swarm_scope": {"kind": "group", "id": "mission-gateway-1"}
+                }
+            }
+        },
+        {
+            "task_id": "not-a-mission",
+            "task_type": "topic_consensus",
+            "terminal_state": "open"
+        },
+        {
+            "id": "mission-gateway-2",
+            "title": "Gateway Mission Two",
+            "status": "published",
+            "source_node_id": "node-beta",
+            "mission_scope_hint": "group:mission-gateway-2",
+            "task_contract": {
+                "task_id": "mission-gateway-2",
+                "inputs": {
+                    "swarm_scope": {"kind": "group", "id": "mission-gateway-2"},
+                    "settlement_delegation": gateway_servicenet_settlement_delegation()
+                }
+            }
+        },
+        {
+            "id": "mission-gateway-settled",
+            "title": "Settled Gateway Mission",
+            "status": "settled",
+            "source_node_id": "node-gamma"
+        }
+    ])
+}
+
+fn gateway_servicenet_settlement_delegation() -> Value {
+    json!({
+        "enabled": true,
+        "layer": "web3",
+        "provider": "servicenet-agent",
+        "provider_agent_id": "escrow-agent-123",
+        "provider_agent_name": "Some Escrow Agent",
+        "network": "base-sepolia",
+        "status": "funded",
+        "asset": "USDC",
+        "amount": "2500000",
+        "funding_proof": {
+            "type": "evm_tx",
+            "tx_hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+            "chain_id": 84532,
+            "to": "0x1111111111111111111111111111111111111111"
+        },
+        "provider_receipt": {
+            "receipt_id": "receipt-gateway-2",
+            "status": "funded",
+            "task_id": "provider-task-2"
+        },
+        "terms": {
+            "summary": "Provider-defined settlement rules.",
+            "url": "https://escrow.example/terms"
+        }
+    })
+}
+
+fn assert_gateway_settlement_summary(mission: &Value) {
+    assert_eq!(mission["reward_type"].as_str(), Some("delegated"));
+    assert_eq!(mission["has_settlement_delegation"].as_bool(), Some(true));
+    assert_eq!(mission["settlement_layer"].as_str(), Some("web3"));
+    assert_eq!(
+        mission["settlement_provider"].as_str(),
+        Some("servicenet-agent")
+    );
+    assert_eq!(
+        mission["settlement_provider_agent_id"].as_str(),
+        Some("escrow-agent-123")
+    );
+    assert_eq!(
+        mission["settlement_provider_agent_name"].as_str(),
+        Some("Some Escrow Agent")
+    );
+    assert_eq!(mission["settlement_network"].as_str(), Some("base-sepolia"));
+    assert_eq!(mission["settlement_chain_id"].as_u64(), Some(84532));
+    assert_eq!(mission["settlement_status"].as_str(), Some("funded"));
+    assert_eq!(
+        mission["settlement_receipt_id"].as_str(),
+        Some("receipt-gateway-2")
+    );
+    assert_eq!(mission["settlement_asset"].as_str(), Some("USDC"));
+    assert_eq!(mission["settlement_amount"].as_str(), Some("2500000"));
+    assert_eq!(
+        mission["settlement_funding_tx"].as_str(),
+        Some("0x3333333333333333333333333333333333333333333333333333333333333333")
+    );
+    assert_eq!(
+        mission["settlement_terms_url"].as_str(),
+        Some("https://escrow.example/terms")
+    );
+    assert_eq!(
+        mission["settlement_delegation"],
+        mission["task_contract"]["inputs"]["settlement_delegation"]
+    );
 }
 
 #[tokio::test]

@@ -522,6 +522,7 @@ async fn commit_publish_mission(
                 .get("payload")
                 .cloned()
                 .unwrap_or(Value::Null),
+            settlement_delegation: None,
         }),
     )
     .await

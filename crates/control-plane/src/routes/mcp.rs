@@ -1209,6 +1209,7 @@ fn normalize_mission_status_filter(status: String) -> String {
 
 fn normalize_gateway_mission(mut task: Value) -> Value {
     let claim_route = gateway_mission_claim_route(&task);
+    let settlement_delegation = gateway_mission_settlement_delegation(&task).cloned();
     let status = gateway_task_status(&task);
     let mission_id = task
         .get("mission_id")
@@ -1230,6 +1231,24 @@ fn normalize_gateway_mission(mut task: Value) -> Value {
     if let Some(status) = status {
         object.insert("status".to_string(), Value::String(status));
     }
+    let reward_type = if settlement_delegation.is_some() {
+        "delegated"
+    } else {
+        "virtual"
+    };
+    object
+        .entry("reward_type".to_string())
+        .or_insert_with(|| Value::String(reward_type.to_string()));
+    object.insert(
+        "has_settlement_delegation".to_string(),
+        Value::Bool(settlement_delegation.is_some()),
+    );
+    if let Some(delegation) = &settlement_delegation {
+        object
+            .entry("settlement_delegation".to_string())
+            .or_insert_with(|| delegation.clone());
+        insert_settlement_summary_fields(object, delegation);
+    }
     if let Some(route) = claim_route.as_object() {
         for key in [
             "publisher_wattswarm_node_id",
@@ -1246,6 +1265,93 @@ fn normalize_gateway_mission(mut task: Value) -> Value {
     }
     object.insert("claim_route".to_string(), claim_route);
     task
+}
+
+fn gateway_mission_settlement_delegation(task: &Value) -> Option<&Value> {
+    gateway_task_value(
+        task,
+        &[
+            &["settlement_delegation"],
+            &["payload", "settlement_delegation"],
+            &["task_contract", "inputs", "settlement_delegation"],
+            &["contract", "inputs", "settlement_delegation"],
+            &["summary", "settlement_delegation"],
+            &["inputs", "settlement_delegation"],
+        ],
+    )
+    .filter(|value| value.is_object())
+}
+
+fn insert_settlement_summary_fields(object: &mut Map<String, Value>, delegation: &Value) {
+    insert_settlement_summary_field(object, "settlement_layer", delegation, &[&["layer"]]);
+    insert_settlement_summary_field(object, "settlement_provider", delegation, &[&["provider"]]);
+    insert_settlement_summary_field(
+        object,
+        "settlement_provider_agent_id",
+        delegation,
+        &[&["provider_agent_id"]],
+    );
+    insert_settlement_summary_field(
+        object,
+        "settlement_provider_agent_name",
+        delegation,
+        &[&["provider_agent_name"], &["provider_name"]],
+    );
+    insert_settlement_summary_field(object, "settlement_network", delegation, &[&["network"]]);
+    insert_settlement_summary_field(
+        object,
+        "settlement_chain_id",
+        delegation,
+        &[&["chain_id"], &["funding_proof", "chain_id"]],
+    );
+    insert_settlement_summary_field(
+        object,
+        "settlement_status",
+        delegation,
+        &[&["status"], &["provider_receipt", "status"]],
+    );
+    insert_settlement_summary_field(
+        object,
+        "settlement_asset",
+        delegation,
+        &[&["asset"], &["asset_address"]],
+    );
+    insert_settlement_summary_field(object, "settlement_amount", delegation, &[&["amount"]]);
+    insert_settlement_summary_field(
+        object,
+        "settlement_receipt_id",
+        delegation,
+        &[&["provider_receipt", "receipt_id"], &["receipt_id"]],
+    );
+    insert_settlement_summary_field(
+        object,
+        "settlement_funding_tx",
+        delegation,
+        &[
+            &["funding_proof", "tx_hash"],
+            &["deposit_tx"],
+            &["funding_tx"],
+        ],
+    );
+    insert_settlement_summary_field(
+        object,
+        "settlement_terms_url",
+        delegation,
+        &[&["terms", "url"], &["terms_url"]],
+    );
+}
+
+fn insert_settlement_summary_field(
+    object: &mut Map<String, Value>,
+    key: &str,
+    delegation: &Value,
+    paths: &[&[&str]],
+) {
+    if let Some(value) = gateway_task_value(delegation, paths) {
+        object
+            .entry(key.to_string())
+            .or_insert_with(|| value.clone());
+    }
 }
 
 fn gateway_mission_claim_route(task: &Value) -> Value {
@@ -1733,7 +1839,7 @@ async fn apply_local_identity_defaults(
         return;
     };
     match tool.name {
-        "publish_mission" => {
+        "publish_mission" | "publish_delegated_mission" => {
             let public_id = local_public_id(state).await;
             object.insert("publisher".to_string(), Value::String(public_id));
             object.insert(
@@ -1885,7 +1991,7 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 47] = [
+const AGENT_TOOLS: [AgentTool; 48] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -1905,6 +2011,7 @@ const AGENT_TOOLS: [AgentTool; 47] = [
     AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "list_missions", method: Method::GET, path: "/api/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
+    AgentTool { name: "publish_delegated_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a mission backed by an external ServiceNet settlement delegation reference.", availability: Availability::Always },
     AgentTool { name: "publish_collective_mission", method: Method::POST, path: "/v1/wattetheria/collective-missions", description: "Publish a mission and submit a Wattswarm run-queue collective task with kickoff enabled by default.", availability: Availability::Always },
     AgentTool { name: "get_collective_mission_result", method: Method::GET, path: "/v1/wattetheria/collective-missions/result", description: "Read the Wattswarm run result linked to a collective Wattetheria mission.", availability: Availability::Always },
     AgentTool { name: "claim_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claim", description: "Claim a mission for an agent DID.", availability: Availability::Always },
