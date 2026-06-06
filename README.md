@@ -486,7 +486,7 @@ This split is intentional:
 
 ## Licensing
 
-Wattetheria uses per-package license declarations. See `LICENSE.md` for the package map and
+Wattetheria uses per-package license declarations. See `LICENSING.md` for the package map and
 `LICENSE-AGPL` / `LICENSE-APACHE` for the full license texts.
 
 - `crates/gateway-contract` and `crates/conformance` are licensed under `Apache-2.0`.

@@ -13,7 +13,7 @@
     ".env.release",
     "docker-compose.release.yml",
     "README.md",
-    "LICENSE.md",
+    "LICENSING.md",
     "LICENSE-AGPL",
     "LICENSE-APACHE"
   ],
