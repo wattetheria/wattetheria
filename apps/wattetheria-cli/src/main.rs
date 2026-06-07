@@ -9,7 +9,7 @@ mod publish;
 
 use crate::cli_args::{
     BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, IdentityCommand, McpCommand,
-    OracleCommand, PolicyCommand, ServicenetAgentCardCommand, ServicenetCommand, WalletCommand,
+    OracleCommand, PolicyCommand, ServicenetAgentCardCommand, ServicenetCommand,
 };
 use crate::config::{
     LocalConfig, ServicenetRegistrationConfig, read_config, read_control_token, run_init, run_up,
@@ -45,8 +45,8 @@ use wattetheria_kernel::policy_engine::{
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::{
-    WalletSigner, active_payment_account, load_or_create_wallet_backed_identity,
-    load_wallet_backed_identity, open_local_wallet,
+    WalletSigner, load_or_create_wallet_backed_identity, load_wallet_backed_identity,
+    open_local_wallet,
 };
 
 #[tokio::main]
@@ -78,7 +78,6 @@ async fn main() -> Result<()> {
         Commands::Mcp { data_dir, command } => run_mcp(&data_dir, command).await?,
         Commands::Brain { data_dir, command } => run_brain(&data_dir, command).await?,
         Commands::Data { data_dir, command } => run_data(&data_dir, command)?,
-        Commands::Wallet { data_dir, command } => run_wallet(&data_dir, command)?,
         Commands::Identity { data_dir, command } => run_identity(&data_dir, &command)?,
         Commands::Servicenet { data_dir, command } => run_servicenet(&data_dir, command).await?,
         Commands::Oracle { data_dir, command } => run_oracle(&data_dir, command)?,
@@ -549,80 +548,6 @@ fn run_data(data_dir: &Path, command: DataCommand) -> Result<()> {
                     "data_dir": data_dir,
                 }))?
             );
-        }
-    }
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-fn run_wallet(data_dir: &Path, command: WalletCommand) -> Result<()> {
-    run_init(data_dir)?;
-    let _ = load_or_create_wallet_backed_identity(data_dir)?;
-    let mut state = open_local_wallet(data_dir)?;
-
-    match command {
-        WalletCommand::CreatePaymentAccount {
-            label,
-            rail,
-            network,
-        } => {
-            let account = state.wallet.create_payment_account_web3_evm(
-                &mut state.profile,
-                label,
-                network,
-                Some(rail),
-                now_ms(),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&account)?);
-        }
-        WalletCommand::ImportPaymentAccount {
-            private_key_hex,
-            label,
-            rail,
-            network,
-        } => {
-            let secret = decode_hex_secret(&private_key_hex)?;
-            let account = state.wallet.import_payment_account_web3_evm_secret(
-                &mut state.profile,
-                secret,
-                label,
-                network,
-                Some(rail),
-                now_ms(),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&account)?);
-        }
-        WalletCommand::WatchPaymentAccount {
-            address,
-            label,
-            rail,
-            network,
-        } => {
-            let account = state.wallet.register_watch_payment_account_web3_evm(
-                &mut state.profile,
-                address,
-                label,
-                network,
-                Some(rail),
-                now_ms(),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&account)?);
-        }
-        WalletCommand::ListPaymentAccounts => {
-            let accounts = state.wallet.list_payment_accounts(&state.profile);
-            println!("{}", serde_json::to_string_pretty(&accounts)?);
-        }
-        WalletCommand::BindPaymentAccount { account_id } => {
-            state
-                .wallet
-                .set_active_payment_account(&mut state.profile, &account_id, now_ms())?;
-            let account = active_payment_account(data_dir)?;
-            println!("{}", serde_json::to_string_pretty(&account)?);
-        }
-        WalletCommand::ActivePaymentAccount => {
-            let account = active_payment_account(data_dir)?;
-            println!("{}", serde_json::to_string_pretty(&account)?);
         }
     }
 
@@ -1352,17 +1277,6 @@ fn now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
-}
-
-fn decode_hex_secret(input: &str) -> Result<[u8; 32]> {
-    let normalized = input.trim().trim_start_matches("0x");
-    let bytes = hex::decode(normalized).context("decode private key hex")?;
-    if bytes.len() != 32 {
-        bail!("expected 32-byte private key, got {} bytes", bytes.len());
-    }
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }
 
 fn schema_file_path(name: &str) -> PathBuf {

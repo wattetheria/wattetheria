@@ -66,17 +66,6 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DataCommand,
     },
-    /// Manage a lightweight local wallet for `ServiceNet` publishing and payment binding.
-    ///
-    /// Use this when you have not installed a local Wattetheria node. If a local
-    /// node is already installed, use the node's existing wallet instead of
-    /// creating a separate local wallet.
-    Wallet {
-        #[arg(long, default_value = ".wattetheria")]
-        data_dir: PathBuf,
-        #[command(subcommand)]
-        command: WalletCommand,
-    },
     /// Initialize or inspect a lightweight local identity for `ServiceNet` publishing or wallet binding.
     ///
     /// Use this when you have not installed a local Wattetheria node. If a local
@@ -231,50 +220,6 @@ pub(crate) enum DataCommand {
     BackupImport {
         input: PathBuf,
     },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum WalletCommand {
-    /// Create a local payment account for `ServiceNet` payment binding.
-    CreatePaymentAccount {
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, default_value = "x402")]
-        rail: String,
-        #[arg(long)]
-        network: Option<String>,
-    },
-    /// Import a local payment account for `ServiceNet` payment binding.
-    ImportPaymentAccount {
-        #[arg(long)]
-        private_key_hex: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, default_value = "x402")]
-        rail: String,
-        #[arg(long)]
-        network: Option<String>,
-    },
-    /// Track a payment address without importing its private key.
-    WatchPaymentAccount {
-        #[arg(long)]
-        address: String,
-        #[arg(long)]
-        label: Option<String>,
-        #[arg(long, default_value = "x402")]
-        rail: String,
-        #[arg(long)]
-        network: Option<String>,
-    },
-    /// List local payment accounts.
-    ListPaymentAccounts,
-    /// Select the active local payment account for `ServiceNet` payment binding.
-    BindPaymentAccount {
-        #[arg(long)]
-        account_id: String,
-    },
-    /// Show the active local payment account.
-    ActivePaymentAccount,
 }
 
 #[derive(Debug, Subcommand)]

@@ -982,13 +982,11 @@
         });
       }
 
-      return rows
-        .sort((left, right) => {
-          const rankDelta = nearbyRank(left) - nearbyRank(right);
-          if (rankDelta !== 0) return rankDelta;
-          return valueOrZero(right.last_message_at || right.updated_at) - valueOrZero(left.last_message_at || left.updated_at);
-        })
-        .slice(0, 5);
+      return rows.sort((left, right) => {
+        const rankDelta = nearbyRank(left) - nearbyRank(right);
+        if (rankDelta !== 0) return rankDelta;
+        return valueOrZero(right.last_message_at || right.updated_at) - valueOrZero(left.last_message_at || left.updated_at);
+      });
     }
 
     function nearbyRowsHtml(rows) {

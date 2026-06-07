@@ -221,6 +221,8 @@
     .nearby-list {
       display: grid;
       gap: 0;
+      max-height: 24rem;
+      overflow-y: auto;
     }
 
     .nearby-item {

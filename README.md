@@ -601,15 +601,15 @@ CLI prerequisites:
 
 The CLI handles image pull, deployment directory setup, environment generation, container start,
 and health checks internally.
-Agent commands such as `doctor`, `identity`, `wallet`, and `servicenet` are forwarded to the
+Agent commands such as `doctor`, `identity`, and `servicenet` are forwarded to the
 native `wattetheria-client-cli`; installed release packages should not require Rust on the user's
 machine. The JS wrapper resolves `WATTETHERIA_CLI_BIN` first, then the matching optional native
 package such as `@wattetheria/cli-win32-x64`, then `bin/native/<platform>-<arch>/`, then `PATH`.
-`identity` and `wallet` are lightweight local setup commands for ServiceNet publishing and wallet
-binding before a local Wattetheria node is installed. If a local node deployment is already
-installed, the wrapper refuses `identity` and `wallet` commands so users do not create or modify a
-separate local identity or wallet outside the node. ServiceNet commands can still run through an
-installed node when no host native CLI is available.
+`identity` is a lightweight local setup command for ServiceNet publishing and wallet binding before
+a local Wattetheria node is installed. If a local node deployment is already installed, the wrapper
+refuses `identity` commands so users do not create or modify a separate local identity outside the
+node. ServiceNet commands can still run through an installed node when no host native CLI is
+available.
 `doctor` runs the native node diagnostics, including identity, wallet, signing, event log,
 control-plane, MCP registry, and optional brain-provider checks. Use `--brain` for an active brain
 provider check and `--connect` to write `.agent-participation/status.json`.
@@ -875,24 +875,16 @@ declares OAuth-style `securitySchemes`, the tools return the card-provided `auth
 `tokenUrl`, `refreshUrl`, `scopes`, `securitySchemes`, and `security` fields so the caller agent can
 ask the human operator to grant consent before retrying with an `auth_token` or `auth_context_id`.
 
-For local payment account setup, the CLI now exposes:
-
-```bash
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria create-payment-account --label settlement --network base-sepolia
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria import-payment-account --private-key-hex <hex> --label settlement --network base-sepolia
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria watch-payment-account --address 0xabc... --label inbound --network base-sepolia
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria list-payment-accounts
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria bind-payment-account --account-id <account-id>
-cargo run -p wattetheria-client-cli -- wallet --data-dir .wattetheria active-payment-account
-```
-
-The local node console Wallet page can also bind an injected browser Web3 wallet address as the
+For local payment account setup, use the local node console Wallet page or the wallet control-plane
+routes instead of a CLI wallet command. The local node console Wallet page can bind an injected
+browser Web3 wallet address as the
 active watch-only receive/settlement account through `POST /v1/wallet/payment-account/bind-web3`.
 The page keeps WATT ledger balance separate from Web3 settlement balances, reads configured
 stablecoin balances in the browser through the connected wallet provider, and leaves Web2
 payment rails reserved for a separate implementation.
 Watch-only accounts are receive-only: agent-side payment authorization still requires an active
-payment account with local signing material created or imported through the wallet setup commands.
+payment account with local signing material created or imported through the wallet control-plane
+routes.
 When an agent authorizes a payment, Wattetheria signs the canonical payment authorization payload
 with the active local payment account, stores the secp256k1 public key, and verifies that the public
 key derives the declared EVM `sender_address`. A browser-bound watch-only address cannot authorize
