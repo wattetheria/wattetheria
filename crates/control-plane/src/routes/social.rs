@@ -538,6 +538,26 @@ fn relationship_remote_agent_card(view: &SwarmPeerRelationshipView) -> Option<&V
     envelope.source_agent_card.as_ref().map(|card| &card.card)
 }
 
+fn agent_card_display_name(card: &Value) -> Option<String> {
+    card.get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            card.get("metadata")
+                .and_then(|metadata| metadata.get("display_name"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn relationship_remote_agent_display_name(
+    view: Option<&SwarmPeerRelationshipView>,
+) -> Option<String> {
+    view.and_then(relationship_remote_agent_card)
+        .and_then(agent_card_display_name)
+}
+
 fn agent_card_skill_label(value: &Value) -> Option<String> {
     value
         .as_str()
@@ -743,10 +763,12 @@ fn friend_request_summary_payload(
     view: Option<&SwarmPeerRelationshipView>,
     counterpart_label: &str,
 ) -> Value {
-    let display_name = identities.get(&request.remote_public_id).map_or_else(
-        || request.remote_public_id.clone(),
-        |identity| identity.display_name.clone(),
-    );
+    let display_name = relationship_remote_agent_display_name(view).unwrap_or_else(|| {
+        identities.get(&request.remote_public_id).map_or_else(
+            || request.remote_public_id.clone(),
+            |identity| identity.display_name.clone(),
+        )
+    });
     let mut object = Map::new();
     object.insert(
         "request_id".to_string(),

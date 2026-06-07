@@ -1467,7 +1467,19 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
                     source_node_id: Some(remote_node_id.clone()),
                     target_node_id: None,
                     capability: Some("peer.relationship.request".to_string()),
-                    source_agent_card: None,
+                    source_agent_card: Some(SwarmSourceAgentCard {
+                        agent_id: remote_identity.agent_did.clone(),
+                        node_id: Some(remote_node_id.clone()),
+                        card_hash: "sha256:alice-display-card".to_string(),
+                        issued_at: 1_710_000_100,
+                        card: json!({
+                            "name": "Agent Alice Display",
+                            "metadata": {
+                                "display_name": "Agent Alice Display"
+                            }
+                        }),
+                        signature: Some("sig-alice-display-card".to_string()),
+                    }),
                     message: json!({
                         "kind": "friend_request",
                         "text": "hello, I am Alice from node X",
@@ -1568,7 +1580,7 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
     );
     assert_eq!(
         list_content["items"][0]["from"].as_str(),
-        Some("Agent Alice")
+        Some("Agent Alice Display")
     );
     assert_eq!(
         list_content["items"][0]["preview"].as_str(),
