@@ -913,6 +913,28 @@ fn no_decision_response(
     Json(response).into_response()
 }
 
+fn record_agent_brain_response_diagnostic(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    diagnostics: &Value,
+) {
+    if diagnostics
+        .as_object()
+        .is_none_or(serde_json::Map::is_empty)
+    {
+        return;
+    }
+    record_agent_event_diagnostic(
+        state,
+        event,
+        "info",
+        "decision.brain_response",
+        "observed",
+        format!("agent event brain response observed: {}", event.event_type),
+        diagnostics,
+    );
+}
+
 fn no_action_response(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
@@ -1125,14 +1147,14 @@ pub(crate) async fn callback(
             "brain_input": &input,
         }),
     );
-    let resolution = match state
+    let decision = match state
         .brain_engine
         .read()
         .await
-        .decide_agent_event(&input)
+        .decide_agent_event_with_diagnostics(&input)
         .await
     {
-        Ok(resolution) => resolution,
+        Ok(decision) => decision,
         Err(error) => {
             let detail = format!("agent event decision failed: {error:#}");
             let response = AgentEventCallbackResponse {
@@ -1158,11 +1180,12 @@ pub(crate) async fn callback(
             return Json(response).into_response();
         }
     };
+    record_agent_brain_response_diagnostic(&state, &event, &decision.diagnostics);
     response_from_resolution(
         &state,
         &event,
         verified_context.as_ref(),
-        resolution,
+        decision.resolution,
         acked_at,
     )
 }

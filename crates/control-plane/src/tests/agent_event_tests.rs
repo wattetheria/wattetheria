@@ -265,6 +265,7 @@ async fn agent_events_sync_signed_payment_event_to_ledger_before_decision() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_translates_openai_compatible_reply_into_structured_decision() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -319,6 +320,7 @@ async fn agent_events_route_translates_openai_compatible_reply_into_structured_d
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
         ..state
     };
+    let data_dir = state.data_dir.clone();
     let app = app(state);
 
     let response = request_json(
@@ -360,6 +362,33 @@ async fn agent_events_route_translates_openai_compatible_reply_into_structured_d
     assert_eq!(
         response["decision"]["payload"]["content"].as_str(),
         Some("hello back")
+    );
+
+    let entries = crate::diagnostics::list_diagnostics(
+        &data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            event_id: Some("evt-1".to_owned()),
+            phase: Some("decision.brain_response".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let brain_response = entries.first().expect("decision.brain_response diagnostic");
+    assert!(
+        brain_response.details["payload"]["response_body"]
+            .as_str()
+            .expect("response body")
+            .contains("\"choices\"")
+    );
+    assert!(
+        brain_response.details["payload"]["completion_content"]
+            .as_str()
+            .expect("completion content")
+            .contains("\"action\":\"reply\"")
+    );
+    assert_eq!(
+        brain_response.details["payload"]["parse"]["status"].as_str(),
+        Some("accepted")
     );
 
     server.abort();

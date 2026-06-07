@@ -40,6 +40,13 @@ pub struct AgentEventResolution {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEventDecision {
+    pub resolution: Option<AgentEventResolution>,
+    #[serde(default)]
+    pub diagnostics: Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum BrainProviderConfig {
@@ -65,6 +72,15 @@ pub trait BrainProvider: Send + Sync {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport>;
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>>;
     async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>>;
+    async fn decide_agent_event_with_diagnostics(
+        &self,
+        event: &Value,
+    ) -> Result<AgentEventDecision> {
+        Ok(AgentEventDecision {
+            resolution: self.decide_agent_event(event).await?,
+            diagnostics: json!({}),
+        })
+    }
     async fn health_check(&self) -> Result<String>;
 }
 
@@ -101,6 +117,15 @@ impl BrainEngine {
 
     pub async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
         self.provider.decide_agent_event(event).await
+    }
+
+    pub async fn decide_agent_event_with_diagnostics(
+        &self,
+        event: &Value,
+    ) -> Result<AgentEventDecision> {
+        self.provider
+            .decide_agent_event_with_diagnostics(event)
+            .await
     }
 
     pub async fn doctor(&self) -> Result<String> {
@@ -258,9 +283,16 @@ impl BrainProvider for OpenAiCompatibleBrain {
     }
 
     async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
-        let prompt = build_agent_event_prompt(event)?;
-        let output = openai_compatible_generate(self, &prompt).await?;
-        parse_agent_event_or_fallback(&output, event).await
+        Ok(decide_openai_compatible_agent_event(self, event)
+            .await?
+            .resolution)
+    }
+
+    async fn decide_agent_event_with_diagnostics(
+        &self,
+        event: &Value,
+    ) -> Result<AgentEventDecision> {
+        decide_openai_compatible_agent_event(self, event).await
     }
 
     async fn health_check(&self) -> Result<String> {
@@ -275,6 +307,39 @@ impl BrainProvider for OpenAiCompatibleBrain {
         }
         Ok("openai_compatible_ready".to_string())
     }
+}
+
+#[derive(Debug)]
+struct OpenAiCompatibleGeneration {
+    content: String,
+    response_body: String,
+    response_body_snippet: String,
+}
+
+async fn decide_openai_compatible_agent_event(
+    provider: &OpenAiCompatibleBrain,
+    event: &Value,
+) -> Result<AgentEventDecision> {
+    let prompt = build_agent_event_prompt(event)?;
+    let generation = openai_compatible_generate_response(provider, &prompt).await?;
+    let parse = parse_agent_event_with_diagnostics(&generation.content, event).await?;
+    let diagnostics = json!({
+        "provider": "openai-compatible",
+        "model": provider.model,
+        "base_url": provider.base_url,
+        "response_body": generation.response_body_snippet,
+        "completion_content": diagnostic_text_snippet(
+            &generation.content,
+            OPENAI_COMPATIBLE_TRACE_BODY_LIMIT
+        ),
+        "content_bytes": generation.content.len(),
+        "response_bytes": generation.response_body.len(),
+        "parse": parse.diagnostics,
+    });
+    Ok(AgentEventDecision {
+        resolution: parse.resolution,
+        diagnostics,
+    })
 }
 
 async fn ollama_generate(base_url: &str, model: &str, prompt: &str) -> Result<String> {
@@ -301,6 +366,15 @@ async fn openai_compatible_generate(
     provider: &OpenAiCompatibleBrain,
     prompt: &str,
 ) -> Result<String> {
+    Ok(openai_compatible_generate_response(provider, prompt)
+        .await?
+        .content)
+}
+
+async fn openai_compatible_generate_response(
+    provider: &OpenAiCompatibleBrain,
+    prompt: &str,
+) -> Result<OpenAiCompatibleGeneration> {
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
@@ -344,14 +418,19 @@ async fn openai_compatible_generate(
             "parse openai-compatible response url={url} status={status} request={request_body_text} response_body={response_body_text}"
         )
     })?;
-    payload["choices"][0]["message"]["content"]
+    let content = payload["choices"][0]["message"]["content"]
         .as_str()
         .map(ToString::to_string)
         .with_context(|| {
             format!(
                 "openai-compatible response missing content: url={url} status={status} request={request_body_text} response_body={response_body_text}"
             )
-        })
+        })?;
+    Ok(OpenAiCompatibleGeneration {
+        content,
+        response_body,
+        response_body_snippet: response_body_text,
+    })
 }
 
 fn diagnostic_json_snippet(value: &Value, limit: usize) -> String {
@@ -423,10 +502,36 @@ async fn parse_agent_event_or_fallback(
     raw: &str,
     event: &Value,
 ) -> Result<Option<AgentEventResolution>> {
-    if let Some(decision) = parse_normalized_agent_event_resolution(raw) {
-        return Ok(validate_agent_event_resolution(decision, event));
-    }
-    RulesBrain.decide_agent_event(event).await
+    Ok(parse_agent_event_with_diagnostics(raw, event)
+        .await?
+        .resolution)
+}
+
+async fn parse_agent_event_with_diagnostics(
+    raw: &str,
+    event: &Value,
+) -> Result<AgentEventDecision> {
+    let Some(decision) = parse_normalized_agent_event_resolution(raw) else {
+        return Ok(AgentEventDecision {
+            resolution: RulesBrain.decide_agent_event(event).await?,
+            diagnostics: json!({
+                "status": "parse_failed",
+                "raw_bytes": raw.len(),
+            }),
+        });
+    };
+    let parsed_action = decision.action.clone();
+    let (resolution, validation_status) =
+        validate_agent_event_resolution_with_status(decision, event);
+    Ok(AgentEventDecision {
+        diagnostics: json!({
+            "status": validation_status,
+            "parsed_action": parsed_action,
+            "accepted": resolution.is_some(),
+            "raw_bytes": raw.len(),
+        }),
+        resolution,
+    })
 }
 
 fn parse_normalized_agent_event_resolution(raw: &str) -> Option<AgentEventResolution> {
@@ -542,10 +647,10 @@ fn normalized_agent_event_payload(value: Value) -> Value {
     Value::Object(object)
 }
 
-fn validate_agent_event_resolution(
+fn validate_agent_event_resolution_with_status(
     mut decision: AgentEventResolution,
     event: &Value,
-) -> Option<AgentEventResolution> {
+) -> (Option<AgentEventResolution>, &'static str) {
     let allowed_actions = event
         .get("allowed_actions")
         .and_then(Value::as_array)
@@ -559,20 +664,23 @@ fn validate_agent_event_resolution(
         })
         .unwrap_or_default();
     if allowed_actions.is_empty() {
-        return None;
+        return (None, "rejected_empty_allowed_actions");
     }
-    let action = decision
+    let Some(action) = decision
         .action
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())?;
+        .filter(|value| !value.is_empty())
+    else {
+        return (None, "rejected_empty_action");
+    };
     if !allowed_actions.contains(&action) {
-        return None;
+        return (None, "rejected_action_not_allowed");
     }
     if !decision.payload.is_object() {
         decision.payload = json!({});
     }
-    Some(decision)
+    (Some(decision), "accepted")
 }
 
 #[cfg(test)]
