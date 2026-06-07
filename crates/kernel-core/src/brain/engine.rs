@@ -423,10 +423,73 @@ async fn parse_agent_event_or_fallback(
     raw: &str,
     event: &Value,
 ) -> Result<Option<AgentEventResolution>> {
-    match serde_json::from_str::<AgentEventResolution>(raw) {
-        Ok(decision) => Ok(validate_agent_event_resolution(decision, event)),
-        Err(_) => RulesBrain.decide_agent_event(event).await,
+    if let Ok(value) = serde_json::from_str::<Value>(raw)
+        && let Some(decision) = normalized_agent_event_resolution(&value)
+    {
+        return Ok(validate_agent_event_resolution(decision, event));
     }
+    RulesBrain.decide_agent_event(event).await
+}
+
+fn normalized_agent_event_resolution(value: &Value) -> Option<AgentEventResolution> {
+    let object = value.as_object()?;
+    let action = object
+        .get("action")
+        .or_else(|| case_insensitive_object_value(object, "action"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let reason = object
+        .get("reason")
+        .or_else(|| case_insensitive_object_value(object, "reason"))
+        .cloned();
+    let payload = object
+        .get("payload")
+        .or_else(|| case_insensitive_object_value(object, "payload"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+
+    let mut resolution = AgentEventResolution {
+        action: normalized_action_value(&action),
+        reason: reason.and_then(|value| value.as_str().map(ToOwned::to_owned)),
+        payload: normalized_agent_event_payload(payload),
+    };
+    if !resolution.payload.is_object() {
+        resolution.payload = json!({});
+    }
+    Some(resolution)
+}
+
+fn case_insensitive_object_value<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Option<&'a Value> {
+    object
+        .iter()
+        .find_map(|(candidate, value)| candidate.eq_ignore_ascii_case(key).then_some(value))
+}
+
+fn normalized_action_value(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn normalized_agent_event_payload(value: Value) -> Value {
+    let Value::Object(mut object) = value else {
+        return json!({});
+    };
+    for key in object.keys().cloned().collect::<Vec<_>>() {
+        let normalized = key.to_ascii_lowercase();
+        if normalized != key
+            && !object.contains_key(&normalized)
+            && let Some(value) = object.get(&key).cloned()
+        {
+            object.insert(normalized, value);
+        }
+    }
+    Value::Object(object)
 }
 
 fn validate_agent_event_resolution(

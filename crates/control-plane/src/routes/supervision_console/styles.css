@@ -2238,6 +2238,14 @@
       color: var(--line-strong);
     }
 
+    .dm-detail-description {
+      max-width: 52rem;
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+
     .dm-detail-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));

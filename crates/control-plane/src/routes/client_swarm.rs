@@ -111,6 +111,8 @@ struct ClientConversationView {
 struct ClientFriendView {
     public_id: String,
     display_name: Option<String>,
+    counterpart_description: Option<String>,
+    counterpart_skills: Vec<String>,
     relationship_kind: RelationshipKind,
     status: &'static str,
     active: bool,
@@ -273,6 +275,31 @@ fn dm_threads_by_counterpart(threads: &[Value]) -> std::collections::BTreeMap<St
         }
     }
     indexed
+}
+
+fn relationship_counterpart_skills(relationship: &Value) -> Vec<String> {
+    relationship
+        .get("counterpart_skills")
+        .and_then(Value::as_array)
+        .map(|skills| {
+            skills
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|skill| !skill.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn relationship_counterpart_description(relationship: &Value) -> Option<String> {
+    relationship
+        .get("counterpart_description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn active_friend_relationship(relationship: &Value) -> bool {
@@ -568,6 +595,8 @@ async fn build_friends_payload(
                 .or_else(|| relationship.get("counterpart_agent_name"))
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+            counterpart_description: relationship_counterpart_description(&relationship),
+            counterpart_skills: relationship_counterpart_skills(&relationship),
             relationship_kind: RelationshipKind::Friend,
             status: relationship_status(&relationship),
             active: true,
@@ -886,6 +915,42 @@ mod tests {
         let indexed = dm_threads_by_counterpart(&threads);
 
         assert_eq!(indexed["friend"]["thread_id"].as_str(), Some("new"));
+    }
+
+    #[test]
+    fn relationship_counterpart_skills_keeps_skill_labels() {
+        let relationship = json!({
+            "counterpart_skills": [
+                "Task participation",
+                " ",
+                "Social direct message",
+                {"name": "ignored object"}
+            ]
+        });
+
+        assert_eq!(
+            relationship_counterpart_skills(&relationship),
+            vec![
+                "Task participation".to_string(),
+                "Social direct message".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn relationship_counterpart_description_keeps_non_empty_value() {
+        assert_eq!(
+            relationship_counterpart_description(&json!({
+                "counterpart_description": "  Wattetheria node agent  "
+            })),
+            Some("Wattetheria node agent".to_string())
+        );
+        assert_eq!(
+            relationship_counterpart_description(&json!({
+                "counterpart_description": " "
+            })),
+            None
+        );
     }
 
     #[test]

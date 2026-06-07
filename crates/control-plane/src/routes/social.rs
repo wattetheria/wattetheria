@@ -427,6 +427,124 @@ fn transport_binding_remote_node_id(
         .map(|binding| binding.transport_node_id.clone())
 }
 
+fn envelope_dm_counterpart_public_id(
+    envelope: Option<&SwarmAgentEnvelope>,
+    local_public_id: &str,
+    direction: &str,
+) -> Option<String> {
+    let message = &envelope?.message;
+    let source_public_id = message
+        .get("source_public_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let target_public_id = message
+        .get("target_public_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let preferred = if direction == "inbound" {
+        source_public_id
+    } else if direction == "outbound" {
+        target_public_id
+    } else {
+        None
+    };
+    preferred
+        .filter(|public_id| *public_id != local_public_id)
+        .or_else(|| source_public_id.filter(|public_id| *public_id != local_public_id))
+        .or_else(|| target_public_id.filter(|public_id| *public_id != local_public_id))
+        .map(ToOwned::to_owned)
+}
+
+fn social_transport_counterpart_public_id_for_remote_node(
+    transport_bindings: &[RemoteTransportBinding],
+    friendships: &[Friendship],
+    remote_node_id: &str,
+) -> Option<String> {
+    let candidates = transport_bindings
+        .iter()
+        .filter(|binding| {
+            matches!(binding.transport_kind, TransportKind::Wattswarm)
+                && binding.transport_node_id == remote_node_id
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates
+        .iter()
+        .find(|binding| {
+            friendships.iter().any(|friendship| {
+                friendship.remote_public_id == binding.public_id
+                    && friendship.state == FriendshipState::Active
+            })
+        })
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|binding| binding.public_id != remote_node_id)
+        })
+        .or_else(|| candidates.first())
+        .map(|binding| binding.public_id.clone())
+}
+
+fn has_active_friendship(friendships: &[Friendship], public_id: &str) -> bool {
+    friendships.iter().any(|friendship| {
+        friendship.remote_public_id == public_id && friendship.state == FriendshipState::Active
+    })
+}
+
+fn has_matching_transport_binding(
+    transport_bindings: &[RemoteTransportBinding],
+    public_id: &str,
+    remote_node_id: &str,
+) -> bool {
+    transport_bindings.iter().any(|binding| {
+        binding.public_id == public_id
+            && matches!(binding.transport_kind, TransportKind::Wattswarm)
+            && binding.transport_node_id == remote_node_id
+    })
+}
+
+fn has_matching_controller_binding(
+    bindings: &BTreeMap<String, ControllerBinding>,
+    public_id: &str,
+    remote_node_id: &str,
+) -> bool {
+    bindings
+        .get(public_id)
+        .is_some_and(|binding| binding.controller_node_id.as_deref() == Some(remote_node_id))
+}
+
+fn dm_counterpart_public_id(
+    local_public_id: &str,
+    bindings: &BTreeMap<String, ControllerBinding>,
+    transport_bindings: &[RemoteTransportBinding],
+    friendships: &[Friendship],
+    remote_node_id: &str,
+    envelope: Option<&SwarmAgentEnvelope>,
+    direction: &str,
+) -> String {
+    envelope_dm_counterpart_public_id(envelope, local_public_id, direction)
+        .filter(|public_id| {
+            has_active_friendship(friendships, public_id)
+                && (has_matching_transport_binding(transport_bindings, public_id, remote_node_id)
+                    || has_matching_controller_binding(bindings, public_id, remote_node_id))
+        })
+        .or_else(|| {
+            social_transport_counterpart_public_id_for_remote_node(
+                transport_bindings,
+                friendships,
+                remote_node_id,
+            )
+        })
+        .or_else(|| counterpart_public_id_for_remote_node(bindings, remote_node_id))
+        .unwrap_or_else(|| remote_node_id.to_string())
+}
+
 fn insert_payload_if_present(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {
     let Some(value) = value else {
         return;
@@ -656,6 +774,17 @@ fn enrich_relationship_payload_from_bridge(
                 object.insert(
                     "counterpart_agent_name".to_string(),
                     Value::String(name.to_string()),
+                );
+            }
+            if let Some(description) = card
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                object.insert(
+                    "counterpart_description".to_string(),
+                    Value::String(description.to_string()),
                 );
             }
             let skills = agent_card_skills(card);
@@ -1121,11 +1250,22 @@ pub(crate) fn reconcile_swarm_dm_threads(
     bindings: &BTreeMap<String, ControllerBinding>,
     views: &[SwarmPeerDmThreadView],
 ) -> anyhow::Result<()> {
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .unwrap_or_default();
+    let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)
+        .unwrap_or_default();
     let mut synced = Vec::with_capacity(views.len());
     for view in views {
-        let counterpart_public_id =
-            counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
-                .unwrap_or_else(|| view.remote_node_id.clone());
+        let counterpart_public_id = dm_counterpart_public_id(
+            local_public_id,
+            bindings,
+            &transport_bindings,
+            &friendships,
+            &view.remote_node_id,
+            None,
+            "thread",
+        );
         let target_agent = identities
             .get(&counterpart_public_id)
             .and_then(|identity| identity.agent_did.clone())
@@ -1162,11 +1302,22 @@ pub(crate) fn reconcile_swarm_dm_messages(
     bindings: &BTreeMap<String, ControllerBinding>,
     views: &[SwarmPeerDmMessageView],
 ) -> anyhow::Result<()> {
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .unwrap_or_default();
+    let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)
+        .unwrap_or_default();
     let mut synced = Vec::with_capacity(views.len());
     for view in views {
-        let counterpart_public_id =
-            counterpart_public_id_for_remote_node(bindings, &view.remote_node_id)
-                .unwrap_or_else(|| view.remote_node_id.clone());
+        let counterpart_public_id = dm_counterpart_public_id(
+            local_public_id,
+            bindings,
+            &transport_bindings,
+            &friendships,
+            &view.remote_node_id,
+            view.agent_envelope.as_ref(),
+            &view.direction,
+        );
         let target_agent = identities
             .get(&counterpart_public_id)
             .and_then(|identity| identity.agent_did.clone())

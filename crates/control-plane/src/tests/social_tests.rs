@@ -1525,7 +1525,8 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                     source_agent_card: None,
                     message: json!({
                         "thread_id": transport_thread_id,
-                        "message_id": "dm-msg-1"
+                        "message_id": "dm-msg-1",
+                        "source_public_id": remote_public_id.clone()
                     }),
                     extensions: None,
                     signature: Some("sig-2".to_string()),
@@ -1556,17 +1557,23 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             )
             .unwrap();
     }
-    {
-        let mut bindings = state.controller_binding_registry.lock().await;
-        bindings.upsert(
-            &remote_public_id,
-            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
-            "remote-runtime".to_string(),
-            Some(remote_node_id.clone()),
-            wattetheria_kernel::civilization::identities::OwnershipScope::External,
-            true,
-        );
-    }
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: remote_node_id.clone(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1_710_000_150),
+            updated_at: 1_710_000_150,
+        },
+    )
+    .expect("seed social transport binding");
     friend_request_service::upsert_friend_request(
         &*state.social_store,
         &wattetheria_social::domain::friend_requests::FriendRequest {
@@ -1590,7 +1597,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             friendship_id: format!("friendship:{local_public_id}:{remote_node_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_node_id.clone(),
-            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            state: wattetheria_social::domain::friendships::FriendshipState::Removed,
             established_from_request_id: Some("req-inbound-1".to_string()),
             thread_id: Some("legacy-thread".to_string()),
             created_at: 1_710_000_100,
@@ -1621,6 +1628,10 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     assert_eq!(
         relationship_items[0]["counterpart_agent_public_id"].as_str(),
         Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        relationship_items[0]["counterpart_description"].as_str(),
+        Some("Remote agent profile from the accepted relationship action.")
     );
     assert_eq!(
         relationship_items[0]["counterpart_skills"][0].as_str(),

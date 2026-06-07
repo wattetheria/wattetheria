@@ -603,7 +603,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
             Json(json!({
                 "choices": [{
                     "message": {
-                        "content": "{\"action\":\"decide_claim\",\"reason\":\"claim is valid\",\"payload\":{\"approved\":true}}"
+                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"claim is valid\",\"PAYLOAD\":{\"APPROVED\":true}}"
                     }
                 }]
             }))

@@ -1395,6 +1395,7 @@
       const relationshipLabel = detail.relationship_state || detail.relationship_kind || "friend";
       const relationshipClass = detail.status || detail.relationship_state || detail.relationship_kind;
       const skills = dmSkillLabels(detail.counterpart_skills);
+      const description = String(detail.counterpart_description || "").trim();
       const detailCard = `
         <div class="dm-detail-card">
           <div class="dm-detail-hero">
@@ -1409,6 +1410,7 @@
                 <span>${escapeHtml(valueOrDash(status))}</span>
                 <span>${escapeHtml(valueOrDash(network))}</span>
               </div>
+              ${description ? `<p class="dm-detail-description">${escapeHtml(description)}</p>` : ""}
             </div>
             <button type="button" class="secondary dm-detail-close" data-dm-detail-close>Close</button>
           </div>
