@@ -740,6 +740,129 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "json\n{\n  \"action\": \"decide_claim\",\n  \"reason\": \"auto approved\",\n  \"payload\": {\n    \"approved\": true,\n    \"mission_id\": \"mission-prefixed\",\n    \"claimer_node_id\": \"claimer-node\",\n    \"agent_did\": \"did:key:claimer\"\n  }\n}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, _token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let remote_identity = Identity::new_random();
+    let task_claim_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "task.claim",
+        json!({
+            "task_id": "mission-prefixed",
+            "claimer_node_id": "claimer-node",
+            "task_inputs": {
+                "kind": "wattetheria_mission",
+                "mission_id": "mission-prefixed"
+            }
+        }),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let data_dir = state.data_dir.clone();
+    let app = app(state);
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-task-claim-prefixed",
+                        "event_type": "task_claim_received",
+                        "source_kind": "task_lifecycle",
+                        "source_node_id": "claimer-node",
+                        "target_agent_id": null,
+                        "target_executor": "core-agent",
+                        "agent_envelope": task_claim_envelope,
+                        "payload": {
+                            "task_id": "mission-prefixed",
+                            "claimer_node_id": "claimer-node",
+                            "task_inputs": {
+                                "kind": "wattetheria_mission",
+                                "mission_id": "mission-prefixed"
+                            }
+                        },
+                        "requires_commit": false,
+                        "allowed_actions": ["decide_claim"],
+                        "correlation_id": "mission-prefixed",
+                        "dedupe_key": "task_claim:mission-prefixed",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("claim_mission")
+    );
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+
+    let entries = crate::diagnostics::list_diagnostics(
+        &data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            event_id: Some("evt-task-claim-prefixed".to_owned()),
+            phase: Some("decision.brain_response".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        entries[0].details["payload"]["parse"]["status"].as_str(),
+        Some("accepted")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -535,10 +536,63 @@ async fn parse_agent_event_with_diagnostics(
 }
 
 fn parse_normalized_agent_event_resolution(raw: &str) -> Option<AgentEventResolution> {
+    agent_event_resolution_json_candidates(raw)
+        .into_iter()
+        .find_map(|candidate| parse_normalized_agent_event_resolution_candidate(&candidate))
+}
+
+fn parse_normalized_agent_event_resolution_candidate(raw: &str) -> Option<AgentEventResolution> {
     serde_json::from_str::<Value>(raw)
         .ok()
         .or_else(|| serde_json::from_str::<Value>(&normalize_json_literals(raw)).ok())
         .and_then(|value| normalized_agent_event_resolution(&value))
+}
+
+fn agent_event_resolution_json_candidates(raw: &str) -> Vec<Cow<'_, str>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = vec![Cow::Borrowed(trimmed)];
+    if let Some(json_object) = extract_first_json_object(trimmed)
+        && json_object != trimmed
+    {
+        candidates.push(Cow::Borrowed(json_object));
+    }
+    candidates
+}
+
+fn extract_first_json_object(raw: &str) -> Option<&str> {
+    let start = raw.find('{')?;
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in raw[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth = depth.saturating_add(1),
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let end = start + offset + ch.len_utf8();
+                    return Some(&raw[start..end]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn normalize_json_literals(raw: &str) -> String {
