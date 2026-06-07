@@ -3122,7 +3122,7 @@ fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) 
 }
 
 #[tokio::test]
-async fn mcp_requires_control_plane_auth() {
+async fn mcp_allows_tools_list_without_control_plane_auth_by_default() {
     let (_dir, app, _token, _policy, _state) = build_test_app(100);
 
     let response = app
@@ -3133,6 +3133,85 @@ async fn mcp_requires_control_plane_auth() {
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(
                     json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_allows_tools_call_without_control_plane_auth_by_default() {
+    let (_dir, app, _token, _policy, _state) = build_test_app(100);
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "unknown_tool", "arguments": {}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn mcp_requires_control_plane_auth_when_configured() {
+    let (_dir, _app, _token, _policy, mut state) = build_test_app(100);
+    state.mcp_token_auth_required = true;
+    let app = app(state);
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn mcp_tools_call_requires_control_plane_auth_when_configured() {
+    let (_dir, _app, _token, _policy, mut state) = build_test_app(100);
+    state.mcp_token_auth_required = true;
+    let app = app(state);
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "unknown_tool", "arguments": {}}
+                    })
+                    .to_string(),
                 ))
                 .unwrap(),
         )

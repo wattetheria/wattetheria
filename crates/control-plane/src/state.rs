@@ -112,6 +112,7 @@ pub struct ControlPlaneState {
     pub signer: Arc<dyn PayloadSigner>,
     pub started_at: i64,
     pub auth_token: String,
+    pub mcp_token_auth_required: bool,
     pub event_log: EventLog,
     pub swarm_bridge: Arc<dyn SwarmBridge>,
     pub governance_engine: Arc<Mutex<GovernanceEngine>>,

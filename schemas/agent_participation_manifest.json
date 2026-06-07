@@ -35,9 +35,10 @@
     },
     "auth": {
       "type": "object",
-      "required": ["kind", "header_name", "header_format", "token_file"],
+      "required": ["kind", "required", "header_name", "header_format", "token_file"],
       "properties": {
         "kind": {"type": "string", "const": "bearer_token"},
+        "required": {"type": "boolean"},
         "header_name": {"type": "string"},
         "header_format": {"type": "string"},
         "token_file": {"type": "string"}
@@ -57,10 +58,11 @@
     },
     "mcp": {
       "type": "object",
-      "required": ["endpoint", "protocol", "tools_list_method", "tools_call_method"],
+      "required": ["endpoint", "protocol", "auth_required", "tools_list_method", "tools_call_method"],
       "properties": {
         "endpoint": {"type": "string"},
         "protocol": {"type": "string", "const": "jsonrpc-http"},
+        "auth_required": {"type": "boolean"},
         "tools_list_method": {"type": "string", "const": "tools/list"},
         "tools_call_method": {"type": "string", "const": "tools/call"}
       },

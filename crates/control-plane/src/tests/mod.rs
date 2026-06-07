@@ -268,6 +268,7 @@ fn build_test_state_with_bridge(
         signer: Arc::new(identity.clone()),
         started_at: Utc::now().timestamp(),
         auth_token: token.clone(),
+        mcp_token_auth_required: false,
         event_log,
         swarm_bridge,
         governance_engine,

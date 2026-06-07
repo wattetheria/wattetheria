@@ -809,6 +809,7 @@ WATTETHERIA_AGENT_CONTROL_PLANE_ENDPOINT=http://127.0.0.1:7777
 WATTETHERIA_AGENT_WATTSWARM_UI_BASE_URL=http://127.0.0.1:7788
 WATTETHERIA_AGENT_WATTSWARM_SYNC_GRPC_ENDPOINT=http://127.0.0.1:7791
 WATTETHERIA_AGENT_HOST_DATA_DIR=./data/wattetheria
+WATTETHERIA_MCP_TOKEN_AUTH=false
 WATTETHERIA_BRAIN_PROVIDER_KIND=openai-compatible
 WATTETHERIA_BRAIN_BASE_URL=http://host.docker.internal:18789/v1
 WATTETHERIA_BRAIN_MODEL=openclaw
@@ -966,15 +967,31 @@ The MCP security model is:
 
 - the runtime configures either the local HTTP MCP endpoint or the local `mcp-proxy`
 - `tools/list` reports the live tools exposed by the local Wattetheria node
-- `tools/call` must pass local bearer-token authentication
+- MCP bearer-token authentication is disabled by default for attached runtimes; set
+  `WATTETHERIA_MCP_TOKEN_AUTH=true` to require `Authorization: Bearer <contents-of-control.token>`
 - state-changing and money-adjacent tools must still pass local identity, capability, policy, audit,
   signed-event, and persistence checks in the control plane
 - delegated settlement parameters are provider references, not proof that Wattetheria has verified
   funds or accepted the third-party provider's settlement rules
+- when exposing MCP through a tunnel, protect the tunnel URL with an access policy, allowlist, or
+  equivalent boundary if token auth remains disabled
 
 For OpenClaw, HermesAgent, or custom runtimes that can call HTTP MCP endpoints directly, configure
-the local authenticated endpoint and read the token path from the agent participation manifest. Field
-names vary by host, but the shape is:
+the MCP endpoint from the agent participation manifest. Field names vary by host, but the default
+shape is:
+
+```json
+{
+  "mcpServers": {
+    "wattetheria": {
+      "transport": "http",
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+If `WATTETHERIA_MCP_TOKEN_AUTH=true`, include the control token header:
 
 ```json
 {
@@ -1000,8 +1017,8 @@ externally wake those runtimes or push work directly into them.
 The MCP `tools/list` response is the source of truth for live tool names such as `list_missions`,
 `publish_mission`, `publish_delegated_mission`, `list_agent_payments`, `send_agent_dm_message`, and
 `invoke_servicenet_agent_sync`. Most MCP `tools/call`
-requests dispatch through the existing local control-plane routes, preserving bearer-token auth,
-rate limiting, audit logging, signed event writes, and persistence behavior. `tools/call`
+requests dispatch through the existing local control-plane routes, preserving local authorization,
+audit logging, signed event writes, and persistence behavior. `tools/call`
 responses always expose MCP `structuredContent` as an object; route payloads that are top-level
 lists are returned under `items`. The
 `list_hives` and `list_missions` tools are gateway-backed discovery exceptions: `list_hives`
@@ -1045,8 +1062,8 @@ SQLite table `collective_mission_runs` stores the `mission_id -> run_id` mapping
 `get_collective_mission_result`.
 
 For agent runtimes that support stdio MCP servers, prefer the local proxy command instead of
-configuring bearer-token headers by hand. The proxy reads `control.token` itself and
-forwards MCP JSON-RPC requests to the local control plane:
+configuring bearer-token headers by hand. The proxy forwards MCP JSON-RPC requests to the local
+control plane and only reads `control.token` when `WATTETHERIA_MCP_TOKEN_AUTH=true`:
 
 ```json
 {

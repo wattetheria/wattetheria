@@ -47,6 +47,7 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
         },
         "auth": {
             "kind": "bearer_token",
+            "required": false,
             "header_name": "authorization",
             "header_format": "Bearer <token>",
             "token_file": "/tmp/.wattetheria/control.token"
@@ -60,6 +61,7 @@ fn agent_participation_manifest_schema_accepts_valid_payload() {
         "mcp": {
             "endpoint": "http://127.0.0.1:7777/mcp",
             "protocol": "jsonrpc-http",
+            "auth_required": false,
             "tools_list_method": "tools/list",
             "tools_call_method": "tools/call"
         }

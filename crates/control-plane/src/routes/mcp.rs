@@ -86,16 +86,9 @@ pub(crate) async fn mcp(
     headers: HeaderMap,
     Json(request): Json<McpRequest>,
 ) -> Response {
-    let auth = if request.method == "tools/call" {
-        match validate_bearer(&state, &headers) {
-            Some(token) => token,
-            None => return unauthorized(),
-        }
-    } else {
-        match authorize(&state, &headers).await {
-            Ok(token) => token,
-            Err(response) => return response,
-        }
+    let auth = match resolve_mcp_auth(&state, &headers, &request.method).await {
+        Ok(token) => token,
+        Err(response) => return response,
     };
 
     if request
@@ -163,6 +156,22 @@ fn validate_bearer(state: &ControlPlaneState, headers: &HeaderMap) -> Option<Str
         Some(token) if token == state.auth_token => Some(token.to_string()),
         _ => None,
     }
+}
+
+async fn resolve_mcp_auth(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    method: &str,
+) -> Result<String, Response> {
+    if !state.mcp_token_auth_required {
+        return Ok(validate_bearer(state, headers).unwrap_or_else(|| state.auth_token.clone()));
+    }
+
+    if method == "tools/call" {
+        return validate_bearer(state, headers).ok_or_else(unauthorized);
+    }
+
+    authorize(state, headers).await
 }
 
 async fn call_tool(

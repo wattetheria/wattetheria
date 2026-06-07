@@ -59,6 +59,10 @@ if [ -n "${WATTETHERIA_AGENT_HOST_DATA_DIR:-}" ]; then
   set -- "$@" --agent-host-data-dir "${WATTETHERIA_AGENT_HOST_DATA_DIR}"
 fi
 
+if [ "${WATTETHERIA_MCP_TOKEN_AUTH:-false}" = "true" ]; then
+  set -- "$@" --mcp-token-auth-required
+fi
+
 if [ -n "${WATTETHERIA_GATEWAY_CONFIG_PATH:-}" ]; then
   set -- "$@" --gateway-config-path "${WATTETHERIA_GATEWAY_CONFIG_PATH}"
 fi
