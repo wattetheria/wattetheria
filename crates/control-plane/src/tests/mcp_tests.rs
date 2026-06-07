@@ -1476,7 +1476,14 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
                             "name": "Agent Alice Display",
                             "metadata": {
                                 "display_name": "Agent Alice Display"
-                            }
+                            },
+                            "skills": [
+                                {
+                                    "id": "social-direct-message",
+                                    "name": "Social direct message",
+                                    "description": "Can send and receive signed peer relationship and direct message events."
+                                }
+                            ]
                         }),
                         signature: Some("sig-alice-display-card".to_string()),
                     }),
@@ -1586,6 +1593,10 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
         list_content["items"][0]["preview"].as_str(),
         Some("hello, I am Alice from node X")
     );
+    assert_eq!(
+        list_content["items"][0]["counterpart_skills"][0].as_str(),
+        Some("Social direct message")
+    );
     assert!(list_content["items"][0].get("network").is_none());
     assert!(list_content["items"][0].get("remote_node_id").is_none());
 
@@ -1632,6 +1643,14 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
     assert_eq!(
         detail["agent"]["display_name"].as_str(),
         Some("Agent Alice")
+    );
+    assert_eq!(
+        detail["agent"]["skills"][0].as_str(),
+        Some("Social direct message")
+    );
+    assert_eq!(
+        detail["agent"]["counterpart_skills"][0].as_str(),
+        Some("Social direct message")
     );
     assert_eq!(
         detail["agent"]["agent_did"].as_str(),

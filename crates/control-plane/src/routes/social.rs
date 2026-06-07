@@ -558,6 +558,14 @@ fn relationship_remote_agent_display_name(
         .and_then(agent_card_display_name)
 }
 
+fn relationship_remote_agent_display_skills(
+    view: Option<&SwarmPeerRelationshipView>,
+) -> Vec<String> {
+    view.and_then(relationship_remote_agent_card)
+        .map(agent_card_skills)
+        .unwrap_or_default()
+}
+
 fn agent_card_skill_label(value: &Value) -> Option<String> {
     value
         .as_str()
@@ -781,6 +789,10 @@ fn friend_request_summary_payload(
         envelope_message_text(view.and_then(|view| view.agent_envelope.as_ref()))
             .map(|text| Value::String(truncate_preview(&text))),
     );
+    let skills = relationship_remote_agent_display_skills(view);
+    if !skills.is_empty() {
+        object.insert("counterpart_skills".to_string(), json!(skills));
+    }
     Value::Object(object)
 }
 
@@ -816,6 +828,11 @@ fn friend_request_agent_payload(
         "active",
         identity.map(|identity| Value::Bool(identity.active)),
     );
+    let skills = relationship_remote_agent_display_skills(view);
+    if !skills.is_empty() {
+        object.insert("skills".to_string(), json!(skills));
+        object.insert("counterpart_skills".to_string(), json!(skills));
+    }
     Value::Object(object)
 }
 
