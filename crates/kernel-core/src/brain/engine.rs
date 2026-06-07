@@ -423,12 +423,62 @@ async fn parse_agent_event_or_fallback(
     raw: &str,
     event: &Value,
 ) -> Result<Option<AgentEventResolution>> {
-    if let Ok(value) = serde_json::from_str::<Value>(raw)
-        && let Some(decision) = normalized_agent_event_resolution(&value)
-    {
+    if let Some(decision) = parse_normalized_agent_event_resolution(raw) {
         return Ok(validate_agent_event_resolution(decision, event));
     }
     RulesBrain.decide_agent_event(event).await
+}
+
+fn parse_normalized_agent_event_resolution(raw: &str) -> Option<AgentEventResolution> {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .or_else(|| serde_json::from_str::<Value>(&normalize_json_literals(raw)).ok())
+        .and_then(|value| normalized_agent_event_resolution(&value))
+}
+
+fn normalize_json_literals(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            output.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            output.push(ch);
+            continue;
+        }
+        if ch.is_ascii_alphabetic() {
+            let mut token = String::from(ch);
+            while let Some(next) = chars.peek().copied() {
+                if next.is_ascii_alphabetic() {
+                    token.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            match token.as_str() {
+                "TRUE" => output.push_str("true"),
+                "FALSE" => output.push_str("false"),
+                "NULL" => output.push_str("null"),
+                _ => output.push_str(&token),
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
 }
 
 fn normalized_agent_event_resolution(value: &Value) -> Option<AgentEventResolution> {

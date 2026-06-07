@@ -711,6 +711,184 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"auto approved\",\"PAYLOAD\":{\"APPROVED\": TRUE,\"AGENT_DID\":\"did:key:claimer\"}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state.clone());
+    let publisher_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    let mut events = state.stream_tx.subscribe();
+    let created = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Auto approve claim",
+            "description": "Publisher agent approves a remote Wattswarm claim.",
+            "publisher": publisher_public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 2,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "favorite local food"}
+        }),
+    )
+    .await;
+    let mission_id = created["mission_id"].as_str().expect("mission_id");
+    let published = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("publish event timeout")
+        .expect("publish event");
+    assert_eq!(published.kind, "mission.published");
+
+    let remote_identity = Identity::new_random();
+    let task_claim_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "task.claim",
+        json!({
+            "task_id": mission_id,
+            "claimer_node_id": "claimer-node",
+            "task_inputs": {
+                "kind": "wattetheria_mission",
+                "mission_id": mission_id
+            }
+        }),
+    );
+    let event = json!({
+        "event_id": "evt-task-claim-e2e",
+        "event_type": "task_claim_received",
+        "source_kind": "task_lifecycle",
+        "source_node_id": "claimer-node",
+        "target_agent_id": state.agent_did,
+        "target_executor": "core-agent",
+        "agent_envelope": task_claim_envelope,
+        "payload": {
+            "task_id": mission_id,
+            "claimer_node_id": "claimer-node",
+            "task_inputs": {
+                "kind": "wattetheria_mission",
+                "mission_id": mission_id
+            }
+        },
+        "requires_commit": true,
+        "allowed_actions": ["inspect_task", "decide_claim"],
+        "correlation_id": mission_id,
+        "dedupe_key": format!("task_claim:{mission_id}"),
+        "created_at": 1
+    });
+
+    let callback_response = request_json(
+        app.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"event": event.clone()}).to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(callback_response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        callback_response["decision"]["action"].as_str(),
+        Some("claim_mission")
+    );
+    assert_eq!(
+        callback_response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": event,
+            "decision": callback_response["decision"].clone(),
+        }),
+    )
+    .await;
+    assert_eq!(committed["status"].as_str(), Some("claimed"));
+    assert_eq!(committed["claimed_by"].as_str(), Some("did:key:claimer"));
+
+    let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+        .await
+        .expect("claim event timeout")
+        .expect("claim event");
+    assert_eq!(claimed.kind, "mission.claimed");
+    assert_eq!(claimed.payload["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(claimed.payload["status"].as_str(), Some("claimed"));
+    assert_eq!(
+        claimed.payload["claimed_by"].as_str(),
+        Some("did:key:claimer")
+    );
+    let gateway_plan =
+        crate::gateway_dispatch::plan_stream_event(&claimed).expect("gateway dispatch plan");
+    assert_eq!(
+        gateway_plan.data_kind,
+        crate::gateway_dispatch::GatewayDataKind::MissionLifecycle
+    );
+    assert_eq!(gateway_plan.scope.task_id.as_deref(), Some(mission_id));
+
+    let board = state.mission_board.lock().await;
+    let claimed_mission = board.get(mission_id).expect("claimed mission");
+    assert_eq!(
+        claimed_mission.status,
+        wattetheria_kernel::civilization::missions::MissionStatus::Claimed
+    );
+    assert_eq!(
+        claimed_mission.claimed_by.as_deref(),
+        Some("did:key:claimer")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_convert_accept_result_to_settle_mission_commit() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
