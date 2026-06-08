@@ -1,0 +1,110 @@
+    .workspace {
+      min-width: 0;
+      padding: 1rem 1.75rem 2.5rem;
+    }
+
+    main {
+      max-width: 1560px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      align-items: flex-end;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
+      margin-top: 0;
+      margin-left: 0;
+      margin-right: 0;
+      max-width: none;
+      padding: 1.75rem 0.25rem 0.5rem;
+    }
+
+    h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.6rem;
+      font-weight: 600;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+    }
+
+    .lead {
+      margin: 0;
+      color: var(--muted);
+      max-width: 68rem;
+      line-height: 1.5;
+      font-size: 0.92rem;
+    }
+
+    .timestamp {
+      color: var(--faint);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    main {
+      display: grid;
+      gap: 1rem;
+      padding-top: 0.75rem;
+      padding-bottom: 0;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .view-page {
+      display: grid;
+      gap: 1rem;
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm);
+      padding: 1.25rem;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.8rem;
+      margin-bottom: 1rem;
+    }
+
+    .section-head h2 {
+      margin: 0;
+    }
+
+    .section-title-stack {
+      display: grid;
+      gap: 0.55rem;
+      justify-items: start;
+      min-width: 0;
+    }
+
+    .section-actions,
+    .row-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .row-actions {
+      margin-top: 0.75rem;
+    }
+

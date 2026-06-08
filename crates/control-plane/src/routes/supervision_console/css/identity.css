@@ -1,0 +1,108 @@
+    .identity-row {
+      display: grid;
+      gap: 0.75rem;
+    }
+
+    .identity-public-id {
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      color: var(--ink);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .identity-protection {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+
+    .identity-protection-item {
+      display: grid;
+      gap: 0.25rem;
+      min-width: 0;
+      padding: 0.7rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-alt);
+    }
+
+    .identity-protection-item.ready {
+      border-color: transparent;
+      background: var(--green-soft);
+    }
+
+    .identity-protection-item.pending {
+      border-color: transparent;
+      background: var(--amber-soft);
+    }
+
+    .identity-protection-item.blocked {
+      border-color: transparent;
+      background: var(--red-soft);
+    }
+
+    .identity-protection-item span {
+      color: var(--faint);
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .identity-protection-item strong {
+      color: var(--ink);
+      font-size: 0.86rem;
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .identity-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.6rem;
+    }
+
+    .identity-detail-section {
+      display: grid;
+      gap: 0.55rem;
+      min-width: 0;
+      padding: 0.75rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-inset);
+    }
+
+    .identity-detail-title {
+      color: var(--accent-strong);
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .identity-field {
+      display: grid;
+      gap: 0.15rem;
+      min-width: 0;
+    }
+
+    .identity-field span {
+      color: var(--faint);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .identity-field strong {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 500;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .identity-orgs {
+      margin-top: 0;
+    }
+

@@ -1,0 +1,115 @@
+    .servicenet-panel {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .servicenet-form,
+    .form-section,
+    .skill-editor {
+      display: grid;
+      gap: 0.9rem;
+    }
+
+    .form-section {
+      padding-top: 1rem;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .form-section-title {
+      color: var(--accent-strong);
+      font-size: 0.74rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .form-section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.85rem;
+    }
+
+    .form-grid.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .form-grid .wide {
+      grid-column: 1 / -1;
+    }
+
+    .servicenet-x402-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .servicenet-form label,
+    .toggle-row {
+      display: grid;
+      gap: 0.4rem;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .toggle-row {
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+
+    .field-note {
+      color: var(--faint);
+      font-size: 0.72rem;
+      line-height: 1.35;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+
+    .skill-card {
+      display: grid;
+      gap: 0.8rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface-inset);
+    }
+
+    .skill-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.75rem;
+      align-items: center;
+      padding-bottom: 0.6rem;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .skill-card-title {
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .skill-card-fields {
+      display: grid;
+      gap: 0.8rem;
+    }
+
+    .servicenet-skill-description {
+      min-height: 8.5rem;
+      resize: vertical;
+      line-height: 1.4;
+    }

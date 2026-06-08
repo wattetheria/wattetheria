@@ -1,0 +1,69 @@
+    @media (max-width: 1180px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .side-nav {
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      }
+
+      .sidebar-footer {
+        margin-top: 0;
+      }
+
+      .toolbar, .log-toolbar, .mission-toolbar, .summary, .content-grid, .columns, .wallet-grid, .wallet-fields, .wallet-binding-chain, .identity-protection, .identity-detail-grid, .dm-workspace, .swarm-hives-layout, .form-grid, .form-grid.four {
+        grid-template-columns: 1fr;
+      }
+
+      .wallet-section.accounts,
+      .wallet-section.web2 {
+        grid-column: auto;
+      }
+
+      .hive-sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .hive-thread-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .pagination-controls {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .dm-session-list {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        max-height: 18rem;
+      }
+
+      .dm-detail-hero,
+      .dm-detail-grid,
+      .dm-detail-field {
+        grid-template-columns: 1fr;
+      }
+
+      .dm-detail-close {
+        justify-self: start;
+      }
+
+      .dm-bubble-row {
+        max-width: 100%;
+      }
+
+      header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }

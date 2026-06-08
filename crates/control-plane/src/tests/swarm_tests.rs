@@ -377,6 +377,13 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
         build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
     let mut events = state.stream_tx.subscribe();
 
+    assert_hive_messages_request_forbidden(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/hives/mainnet:test@crew.chat@group:crew-7/messages?network_id=mainnet:test&feed_key=crew.chat&scope_hint=group:crew-7",
+    )
+    .await;
+
     let created = authed_post_json(
         app.clone(),
         &token,
@@ -420,7 +427,7 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     assert_eq!(hives_json["hives"].as_array().unwrap().len(), 1);
 
     let messages_json = authed_get_json(
-        app,
+        app.clone(),
         &token,
         "/v1/wattetheria/hives/mainnet:test@crew.chat@group:crew-7/messages?network_id=mainnet:test",
     )
@@ -437,6 +444,52 @@ async fn topic_routes_persist_product_metadata_and_proxy_bridge_calls() {
     );
 
     assert_hive_proxy_bridge_calls(&bridge, created_by_agent_identity).await;
+
+    let unsubscribe_status = authed_post(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/hives/mainnet:test@crew.chat@group:crew-7/unsubscribe",
+        json!({
+            "network_id": "mainnet:test",
+            "feed_key": "crew.chat",
+            "scope_hint": "group:crew-7",
+            "display_name": "Crew Seven",
+            "projection_kind": "working_group"
+        }),
+    )
+    .await;
+    assert_eq!(unsubscribe_status, StatusCode::OK);
+
+    assert_hive_messages_request_hidden(
+        app,
+        &token,
+        "/v1/wattetheria/hives/mainnet:test@crew.chat@group:crew-7/messages?network_id=mainnet:test",
+    )
+    .await;
+}
+
+async fn assert_hive_messages_request_forbidden(app: Router, token: &str, uri: &str) {
+    let (status, body) = authed_get_text(app, token, uri).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("hive subscription required"));
+}
+
+async fn assert_hive_messages_request_hidden(app: Router, token: &str, uri: &str) {
+    let (status, body) = authed_get_text(app, token, uri).await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!body.contains("\"messages\""));
+}
+
+async fn authed_get_text(app: Router, token: &str, uri: &str) -> (StatusCode, String) {
+    request_text(
+        app,
+        axum::http::Request::builder()
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
 }
 
 fn topic_routes_mock_bridge(identity: &Identity) -> Arc<MockSwarmBridge> {

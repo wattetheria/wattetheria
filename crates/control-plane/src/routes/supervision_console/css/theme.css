@@ -1,0 +1,81 @@
+    :root {
+      --bg: #f4f6f8;
+      --surface: #ffffff;
+      --surface-alt: #f7f8fa;
+      --surface-inset: #fbfcfd;
+      --ink: #111827;
+      --muted: #6b7280;
+      --faint: #9aa1ac;
+      --line: #e9ebf0;
+      --line-soft: #eef0f4;
+      --line-strong: #d6dae1;
+      --green: #16a34a;
+      --green-soft: #e9f7ee;
+      --green-ink: #166534;
+      --red: #dc2626;
+      --red-soft: #fdecec;
+      --red-ink: #991b1b;
+      --blue: #2563eb;
+      --blue-soft: #eef4ff;
+      --blue-ink: #1e40af;
+      --amber: #b45309;
+      --amber-soft: #fef3e2;
+      --amber-ink: #92400e;
+      --copper: #b45309;
+      --teal-dark: #0f766e;
+      --teal: #0d9488;
+      --radius-sm: 6px;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+      --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+      --console-thread-workspace-height: min(44rem, calc(100vh - 18rem));
+      --console-social-stack-offset: 10.9rem;
+
+      /* Brand accent (theme color). Default = Forest. Overridden by [data-theme]. */
+      --accent: #16a34a;
+      --accent-strong: #14532d;
+      --accent-soft: #e9f7ee;
+      --accent-contrast: #ffffff;
+    }
+
+    /* ===== Selectable theme colors (green / blue) ===== */
+    :root[data-theme="teal"] {
+      --accent: #0d9488;
+      --accent-strong: #115e59;
+      --accent-soft: #e4f5f3;
+      --accent-contrast: #ffffff;
+    }
+    :root[data-theme="emerald"] {
+      --accent: #10b981;
+      --accent-strong: #065f46;
+      --accent-soft: #e7f8f1;
+      --accent-contrast: #ffffff;
+    }
+    :root[data-theme="forest"] {
+      --accent: #16a34a;
+      --accent-strong: #14532d;
+      --accent-soft: #e9f7ee;
+      --accent-contrast: #ffffff;
+    }
+    :root[data-theme="blue-royal"] {
+      --accent: #2563eb;
+      --accent-strong: #1e3a8a;
+      --accent-soft: #eff4ff;
+      --accent-contrast: #ffffff;
+    }
+    :root[data-theme="blue-sky"] {
+      --accent: #0284c7;
+      --accent-strong: #075985;
+      --accent-soft: #e8f7fe;
+      --accent-contrast: #ffffff;
+    }
+    :root[data-theme="indigo"] {
+      --accent: #4f46e5;
+      --accent-strong: #3730a3;
+      --accent-soft: #eef0fe;
+      --accent-contrast: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+

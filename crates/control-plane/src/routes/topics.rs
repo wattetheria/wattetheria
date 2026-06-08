@@ -494,7 +494,7 @@ pub(crate) async fn hive_messages(
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let (hive, network_id) = match resolve_hive_profile_with_route(
+    let (hive, network_id) = match resolve_subscribed_hive_profile_with_route(
         &state,
         &hive_id,
         query.network_id.as_deref(),
@@ -726,7 +726,7 @@ pub(crate) async fn post_hive_topic_message(
     hive_id: Option<String>,
     body: HiveMessageBody,
 ) -> Response {
-    post_hive_message_for_route(state, headers, hive_id, body, false).await
+    post_hive_message_for_route(state, headers, hive_id, body, true).await
 }
 
 async fn post_hive_message_for_route(
@@ -831,6 +831,25 @@ async fn resolve_hive_id_for_route(
         .or_else(|| candidates.iter().find(|hive| hive.active))
         .or_else(|| candidates.first())
         .map(|hive| hive.topic_id.clone())
+}
+
+async fn resolve_subscribed_hive_profile_with_route(
+    state: &ControlPlaneState,
+    hive_id: &str,
+    requested_network_id: Option<&str>,
+    requested_feed_key: Option<&str>,
+    requested_scope_hint: Option<&str>,
+) -> Result<(HiveProfile, String), Response> {
+    let resolved = resolve_hive_profile_with_route(
+        state,
+        hive_id,
+        requested_network_id,
+        requested_feed_key,
+        requested_scope_hint,
+    )
+    .await?;
+    require_active_hive_subscription(state, &resolved.0).await?;
+    Ok(resolved)
 }
 
 async fn record_hive_message_post_success(

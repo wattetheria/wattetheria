@@ -1,0 +1,11 @@
+    .notice {
+      margin-top: 0.75rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.5;
+    }
+
+    .error {
+      color: var(--red);
+      font-weight: 500;
+    }

@@ -1,0 +1,126 @@
+    .config-intro {
+      margin: 0 0 1rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+
+    .config-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(16rem, 0.36fr);
+      gap: 0.85rem;
+    }
+
+    .config-section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem;
+      background: var(--surface-inset);
+    }
+
+    .config-section-title {
+      margin: 0 0 0.25rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--accent-strong);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .config-section-copy {
+      margin: 0 0 0.85rem;
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.5;
+    }
+
+    .runtime-examples {
+      margin: 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.5;
+    }
+
+    .runtime-examples li + li {
+      margin-top: 0.5rem;
+    }
+
+    .runtime-example-code {
+      display: block;
+      margin-top: 0.2rem;
+      color: var(--ink);
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      overflow-wrap: anywhere;
+    }
+
+    .field-stack {
+      display: grid;
+      gap: 0.8rem;
+    }
+
+    .field-label {
+      display: block;
+      margin-bottom: 0.4rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+
+    .field-input {
+      width: 100%;
+      min-height: 2.4rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--line-strong);
+      background: var(--surface);
+      color: var(--ink);
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .field-input:hover {
+      border-color: var(--muted);
+    }
+
+    .field-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+
+    .config-meta {
+      display: grid;
+      gap: 0.4rem;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+
+    .config-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      align-items: center;
+      margin-top: 1rem;
+    }
+
+    .status-text {
+      font-size: 0.83rem;
+      color: var(--muted);
+    }
+
+    .status-text.ok {
+      color: var(--green);
+      font-weight: 500;
+    }
+
+    .status-text.error {
+      color: var(--red);
+      font-weight: 500;
+    }

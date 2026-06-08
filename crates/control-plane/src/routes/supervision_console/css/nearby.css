@@ -1,0 +1,104 @@
+    .nearby-panel {
+      display: grid;
+      gap: 0.75rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .nearby-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.5rem;
+      align-items: center;
+      padding-bottom: 0.6rem;
+      border-bottom: 1px solid var(--line);
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .nearby-count {
+      color: var(--faint);
+      font-size: 0.78rem;
+      font-weight: 500;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .nearby-list {
+      display: grid;
+      gap: 0;
+      max-height: 24rem;
+      overflow-y: auto;
+    }
+
+    .nearby-item {
+      display: grid;
+      gap: 0.32rem;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .nearby-line {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 0.6rem;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .nearby-dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 999px;
+      border: 2px solid var(--line-strong);
+      background: transparent;
+    }
+
+    .nearby-dot.online,
+    .nearby-dot.friend {
+      border-color: var(--green);
+      background: var(--green);
+    }
+
+    .nearby-dot.pending,
+    .nearby-dot.discovered {
+      border-color: var(--amber);
+      background: transparent;
+    }
+
+    .nearby-dot.blocked {
+      border-color: var(--red);
+      background: var(--red);
+    }
+
+    .nearby-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.92rem;
+      font-weight: 600;
+    }
+
+    .nearby-kind {
+      color: var(--accent-strong);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .nearby-meta {
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+

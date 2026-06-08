@@ -1006,14 +1006,14 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
 }
 
 #[tokio::test]
-async fn agent_action_commit_routes_topic_reply_through_swarm_bridge() {
+async fn agent_action_commit_requires_local_hive_subscription_for_topic_reply() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
-    let (_dir, app, token, _, state) =
-        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    let (_dir, app, token, _, _state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
 
     let committed = authed_post_json_with_headers(
         app.clone(),
@@ -1052,40 +1052,11 @@ async fn agent_action_commit_routes_topic_reply_through_swarm_bridge() {
     )
     .await;
 
-    assert_eq!(committed["ok"].as_bool(), Some(true));
-    let messages = bridge.messages.lock().await;
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].feed_key, "crew.chat");
     assert_eq!(
-        messages[0].reply_to_message_id.as_deref(),
-        Some("msg-remote-1")
+        committed["error"].as_str(),
+        Some("hive subscription required")
     );
-    assert_eq!(messages[0].content["text"].as_str(), Some("roger that"));
-    let agent_envelope = messages[0]
-        .agent_envelope
-        .as_ref()
-        .expect("topic reply should carry a signed agent envelope");
-    assert_eq!(
-        agent_envelope.capability.as_deref(),
-        Some("hive.message.post")
-    );
-    assert_eq!(
-        agent_envelope.message["action"].as_str(),
-        Some("message.post")
-    );
-    assert_eq!(
-        agent_envelope.message["feed_key"].as_str(),
-        Some("crew.chat")
-    );
-    assert_eq!(
-        agent_envelope.message["scope_hint"].as_str(),
-        Some("group:crew-7")
-    );
-    assert_eq!(
-        agent_envelope.message["payload"]["content"]["text"].as_str(),
-        Some("roger that")
-    );
-    assert_envelope_signature_valid(agent_envelope, &state.identity.public_key);
+    assert!(bridge.messages.lock().await.is_empty());
 }
 
 #[tokio::test]
