@@ -16,8 +16,8 @@ use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
     AgentPaymentRejectBody, AgentPaymentSettleBody, AgentPaymentSubmitBody,
     AgentRelationshipActionBody, AuditQuery, AuthQuery, AutonomyTickBody, ControlPlaneState,
-    EventsExportQuery, EventsQuery, MissionClaimBody, MissionPublishBody, MissionSettleBody,
-    NightShiftQuery, StreamEvent, TopicMessageBody, send_stream_text,
+    EventsExportQuery, EventsQuery, HiveMessageBody, MissionClaimBody, MissionPublishBody,
+    MissionSettleBody, NightShiftQuery, StreamEvent, send_stream_text,
 };
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
@@ -48,12 +48,50 @@ fn event_message_public_id(
 ) -> Option<String> {
     event
         .event
-        .payload
-        .pointer(&format!("/agent_envelope/message/{key}"))
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.message.get(key))
         .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer(&format!("/agent_envelope/message/{key}"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer(&format!("/topic_content/agent_envelope/message/{key}"))
+                .and_then(Value::as_str)
+        })
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn topic_reply_is_direct_message(event: &crate::state::AgentActionCommitEvent) -> bool {
+    event
+        .payload
+        .pointer("/topic_content/kind")
+        .and_then(Value::as_str)
+        == Some("direct_message")
+        || event.payload.pointer("/feed_key").and_then(Value::as_str) == Some("wattswarm.dm")
+        || event
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.capability.as_deref())
+            == Some("social.dm.send")
+}
+
+fn topic_reply_hive_id(body: &AgentActionCommitBody) -> Option<String> {
+    payload_string(&body.decision.payload, "/hive_id")
+        .or_else(|| payload_string(&body.decision.payload, "/topic_id"))
+        .or_else(|| payload_string(&body.event.payload, "/hive_id"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_id"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_content/hive_id"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_content/topic_id"))
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -407,40 +445,41 @@ async fn commit_topic_reply(
     commit_headers: HeaderMap,
     body: AgentActionCommitBody,
 ) -> Response {
+    let Some(content) = body.decision.payload.get("content").cloned() else {
+        return bad_request("topic reply requires content");
+    };
+    if topic_reply_is_direct_message(&body.event) {
+        let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
+            return bad_request("topic dm reply missing source_public_id");
+        };
+        return crate::routes::civilization::send_agent_dm_message(
+            State(state),
+            commit_headers,
+            Json(AgentDmSendBody {
+                public_id: event_message_public_id(&body, "target_public_id"),
+                counterpart_public_id,
+                content,
+                extensions: body.decision.payload.get("extensions").cloned(),
+            }),
+        )
+        .await;
+    }
     let Some(feed_key) = required_payload_string(&body.event.payload, "/feed_key") else {
         return bad_request("missing feed_key");
     };
     let Some(scope_hint) = required_payload_string(&body.event.payload, "/scope_hint") else {
         return bad_request("missing scope_hint");
     };
-    let Some(content) = body.decision.payload.get("content").cloned() else {
-        return bad_request("topic reply requires content");
-    };
-    crate::routes::topics::post_topic_message(
-        State(state),
+    crate::routes::topics::post_hive_topic_message(
+        state,
         commit_headers,
-        Json(TopicMessageBody {
-            public_id: body
-                .decision
-                .payload
-                .get("public_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            network_id: body
-                .decision
-                .payload
-                .get("network_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    body.event
-                        .payload
-                        .get("network_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                }),
-            feed_key,
-            scope_hint,
+        topic_reply_hive_id(&body),
+        HiveMessageBody {
+            public_id: payload_string(&body.decision.payload, "/public_id"),
+            network_id: payload_string(&body.decision.payload, "/network_id")
+                .or_else(|| payload_string(&body.event.payload, "/network_id")),
+            feed_key: Some(feed_key),
+            scope_hint: Some(scope_hint),
             content,
             reply_to_message_id: body
                 .decision
@@ -455,7 +494,7 @@ async fn commit_topic_reply(
                         .and_then(Value::as_str)
                         .map(ToOwned::to_owned)
                 }),
-        }),
+        },
     )
     .await
 }

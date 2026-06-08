@@ -19,7 +19,7 @@ use crate::routes::reward_events::{
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
     ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody, StreamEvent,
-    TopicCreateBody, TopicMessageBody, TopicsQuery,
+    TopicCreateBody, TopicsQuery,
 };
 
 const HIVE_SCOPE_HINT_ERROR: &str = "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>";
@@ -711,106 +711,54 @@ async fn update_hive_subscription(
     Json(json!({"ok": true})).into_response()
 }
 
-pub(crate) async fn post_topic_message(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Json(body): Json<TopicMessageBody>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
-    let network_id = match resolve_network_id(&state, body.network_id.as_deref()).await {
-        Ok(network_id) => network_id,
-        Err(error) => return internal_error(&error),
-    };
-    let created_at = Utc::now();
-    if let Err(error) = state
-        .swarm_bridge
-        .post_topic_message(
-            Some(&network_id),
-            &body.feed_key,
-            &body.scope_hint,
-            body.content.clone(),
-            body.reply_to_message_id.clone(),
-            None,
-        )
-        .await
-    {
-        return internal_error(&error);
-    }
-
-    let controller_id = context.public_memory_owner.controller.clone();
-    let payload = json!({
-        "controller_id": controller_id,
-        "network_id": network_id,
-        "feed_key": body.feed_key,
-        "scope_hint": body.scope_hint,
-        "reply_to_message_id": body.reply_to_message_id,
-    });
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "topic.message.posted".to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: payload.clone(),
-    });
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "topic".to_string(),
-        action: "topic.message.post".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: None,
-        capability: None,
-        reason: None,
-        duration_ms: None,
-        details: Some(payload),
-    });
-    let (actor_controller_id, actor_public_id, agent_identity) =
-        contribution_actor(&state, &context);
-    let source_id = format!(
-        "topic:{}:{}:{}:{}",
-        network_id,
-        body.feed_key,
-        controller_id,
-        created_at.timestamp_millis()
-    );
-    if let Err(error) = record_contribution_event(
-        &state,
-        ContributionEventArgs {
-            action_type: message_action_type(body.reply_to_message_id.as_deref(), "topic"),
-            source_id: &source_id,
-            controller_id: actor_controller_id,
-            public_id: actor_public_id,
-            agent_identity,
-            receipt: json!({
-                "network_id": network_id,
-                "feed_key": body.feed_key,
-                "scope_hint": body.scope_hint,
-                "reply_to_message_id": body.reply_to_message_id,
-            }),
-        },
-    )
-    .await
-    {
-        return internal_error(&error);
-    }
-
-    Json(json!({"ok": true})).into_response()
-}
-
 pub(crate) async fn post_hive_message(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(hive_id): Path<String>,
     Json(body): Json<HiveMessageBody>,
 ) -> Response {
+    post_hive_message_for_route(state, headers, Some(hive_id), body, true).await
+}
+
+pub(crate) async fn post_hive_topic_message(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    hive_id: Option<String>,
+    body: HiveMessageBody,
+) -> Response {
+    post_hive_message_for_route(state, headers, hive_id, body, false).await
+}
+
+async fn post_hive_message_for_route(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    requested_hive_id: Option<String>,
+    body: HiveMessageBody,
+    require_subscription: bool,
+) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
+    let hive_id = match requested_hive_id {
+        Some(hive_id) => hive_id,
+        None => resolve_hive_id_for_route(
+            &state,
+            body.network_id.as_deref(),
+            body.feed_key.as_deref(),
+            body.scope_hint.as_deref(),
+        )
+        .await
+        .unwrap_or_else(|| {
+            format!(
+                "{}@{}@{}",
+                body.network_id.as_deref().unwrap_or(""),
+                body.feed_key.as_deref().unwrap_or(""),
+                body.scope_hint.as_deref().unwrap_or("")
+            )
+        }),
+    };
     let (hive, network_id) = match resolve_hive_profile_with_route(
         &state,
         &hive_id,
@@ -823,7 +771,15 @@ pub(crate) async fn post_hive_message(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    if let Err(response) = require_active_hive_subscription(&state, &hive).await {
+    let known_hive = state
+        .hive_registry
+        .lock()
+        .await
+        .get(&hive.topic_id)
+        .is_some();
+    if (require_subscription || known_hive)
+        && let Err(response) = require_active_hive_subscription(&state, &hive).await
+    {
         return response;
     }
     if let Err(response) =
@@ -846,6 +802,35 @@ pub(crate) async fn post_hive_message(
     }
 
     Json(json!({"ok": true})).into_response()
+}
+
+async fn resolve_hive_id_for_route(
+    state: &ControlPlaneState,
+    requested_network_id: Option<&str>,
+    requested_feed_key: Option<&str>,
+    requested_scope_hint: Option<&str>,
+) -> Option<String> {
+    let feed_key = normalized_network_id(requested_feed_key)?;
+    let scope_hint = normalized_network_id(requested_scope_hint)?;
+    let network_id = normalized_network_id(requested_network_id);
+    let candidates = state
+        .hive_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .filter(|hive| hive.feed_key == feed_key && hive.scope_hint == scope_hint)
+        .collect::<Vec<_>>();
+    candidates
+        .iter()
+        .find(|hive| {
+            network_id.is_some_and(|network_id| {
+                normalized_network_id(hive.network_id.as_deref()) == Some(network_id)
+            })
+        })
+        .or_else(|| candidates.iter().find(|hive| hive.active))
+        .or_else(|| candidates.first())
+        .map(|hive| hive.topic_id.clone())
 }
 
 async fn record_hive_message_post_success(

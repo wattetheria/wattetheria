@@ -552,16 +552,6 @@ pub struct HiveSubscriptionBody {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TopicMessageBody {
-    pub public_id: Option<String>,
-    pub network_id: Option<String>,
-    pub feed_key: String,
-    pub scope_hint: String,
-    pub content: Value,
-    pub reply_to_message_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct HiveMessageBody {
     pub public_id: Option<String>,
     pub network_id: Option<String>,

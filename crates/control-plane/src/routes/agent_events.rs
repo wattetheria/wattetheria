@@ -111,7 +111,8 @@ fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
         | ("task_result_received", "complete_mission" | "settle_mission") => {
             Some("wattetheria_commit")
         }
-        ("topic_message_requires_reply", "reply" | "ignore")
+        ("topic_message_requires_reply", "reply") => Some("wattetheria_commit"),
+        ("topic_message_requires_reply", "ignore")
         | ("task_claim_received", "decide_claim" | "inspect_task")
         | (
             "task_result_received",

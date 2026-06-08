@@ -790,12 +790,21 @@
           rpc_log_limit: String(limit),
           leaderboard_limit: "20"
         });
-        const signed = await fetchJson(`/v1/client/export?${query.toString()}`);
+        const signedSnapshotRequest = fetchJson(`/v1/client/export?${query.toString()}`);
+        const localSocialRequest = loadLocalSocialPayload(publicId, limit);
+        const diagnosticsRequest = refreshDiagnostics().then(
+          () => null,
+          (error) => error,
+        );
+        const [signed, localSocial] = await Promise.all([
+          signedSnapshotRequest,
+          localSocialRequest,
+        ]);
         const payload = signed.payload || signed;
-        const localSocial = await loadLocalSocialPayload(publicId, limit);
         Object.assign(payload, localSocial);
         renderSnapshot(payload);
-        await refreshDiagnostics();
+        const diagnosticsError = await diagnosticsRequest;
+        if (diagnosticsError) throw diagnosticsError;
         lastRefreshEl.textContent = `Refreshed ${new Date().toLocaleString()}`;
         setStatus(`Node console refreshed for ${publicId}.`);
       } catch (error) {

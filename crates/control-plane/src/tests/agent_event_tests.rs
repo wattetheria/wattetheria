@@ -396,6 +396,118 @@ async fn agent_events_route_translates_openai_compatible_reply_into_structured_d
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"reply\",\"reason\":\"respond to dm\",\"payload\":{\"content\":\"signed reply\"}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, _token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let local_agent_did = state.agent_did.clone();
+    let remote_identity = Identity::new_random();
+    let dm_message = json!({
+        "source_public_id": "peer-alpha",
+        "target_public_id": "self-alpha",
+        "content": "hello",
+        "thread_id": "dm:self-alpha:peer-alpha"
+    });
+    let dm_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "social-node",
+        Some(&local_agent_did),
+        "social.dm.send",
+        dm_message.clone(),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state);
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-topic-dm-1",
+                        "event_type": "topic_message_requires_reply",
+                        "source_kind": "topic_message",
+                        "source_node_id": "social-node",
+                        "target_agent_id": local_agent_did,
+                        "target_executor": "core-agent",
+                        "agent_envelope": dm_envelope.clone(),
+                        "payload": {
+                            "network_id": "mainnet:watt-etheria",
+                            "feed_key": "wattswarm.dm",
+                            "scope_hint": "group:dm-self-peer",
+                            "message_id": "topic-msg-1",
+                            "topic_content": {
+                                "kind": "direct_message",
+                                "agent_envelope": dm_envelope,
+                                "content": "hello"
+                            }
+                        },
+                        "requires_commit": false,
+                        "allowed_actions": ["reply", "ignore"],
+                        "correlation_id": "wattswarm.dm",
+                        "dedupe_key": "topic_message:topic-msg-1",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(response["decision"]["action"].as_str(), Some("reply"));
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["content"].as_str(),
+        Some("signed reply")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_reports_openai_compatible_missing_content_body() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
