@@ -82,7 +82,7 @@ async fn apply_third_party_decision(
     }
     let headers =
         forwarded_agent_commit_headers(&state.auth_token, &event.event_id, &decision.decision_id);
-    let _ = crate::routes::core::agent_action_commit(
+    let _ = Box::pin(crate::routes::core::agent_action_commit(
         State(state.clone()),
         headers,
         Json(AgentActionCommitBody {
@@ -104,7 +104,7 @@ async fn apply_third_party_decision(
                 payload: decision.payload,
             },
         }),
-    )
+    ))
     .await;
 }
 
@@ -187,7 +187,7 @@ async fn notify_local_agent_of_third_party_result(
         None
     };
     if let Some(callback) = callback {
-        apply_third_party_decision(state, &event, callback).await;
+        Box::pin(apply_third_party_decision(state, &event, callback)).await;
     }
 }
 

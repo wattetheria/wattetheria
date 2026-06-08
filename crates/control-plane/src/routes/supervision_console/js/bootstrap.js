@@ -15,6 +15,7 @@
     qs("missions-search")?.addEventListener("input", (event) => {
       missionSearchQuery = event.target.value;
       missionPageByTab.published = 1;
+      missionPageByTab.claim_submitted = 1;
       missionPageByTab.claimed = 1;
       if (lastConsolePayload) renderMissions(lastConsolePayload);
     });

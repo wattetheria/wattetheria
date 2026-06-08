@@ -8,6 +8,7 @@ use uuid::Uuid;
 use watt_did::{Did, PaymentAccountBindingProof, VerifiedAgentContext};
 use watt_wallet::verify_payment_account_binding_proof;
 use wattetheria_kernel::brain::AgentEventResolution;
+use wattetheria_kernel::civilization::missions::NetworkMissionClaimRegistry;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
@@ -108,10 +109,10 @@ fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
             "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
         )
         | ("task_claim_received", "claim_mission")
-        | ("task_result_received", "complete_mission" | "settle_mission") => {
+        | ("task_result_received", "complete_mission" | "settle_mission")
+        | ("topic_message_requires_reply", "reply" | "complete_mission" | "settle_mission") => {
             Some("wattetheria_commit")
         }
-        ("topic_message_requires_reply", "reply") => Some("wattetheria_commit"),
         ("topic_message_requires_reply", "ignore")
         | ("task_claim_received", "decide_claim" | "inspect_task")
         | (
@@ -138,8 +139,30 @@ fn build_brain_event_input(state: &ControlPlaneState, event: &AgentEventEnvelope
         "dedupe_key": event.dedupe_key,
         "created_at": event.created_at,
         "agent_envelope": event.agent_envelope,
-        "payload": event.payload,
+        "payload": sanitize_agent_event_payload_for_brain(&event.payload),
     })
+}
+
+fn sanitize_agent_event_payload_for_brain(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut sanitized = serde_json::Map::with_capacity(object.len());
+            for (key, child) in object {
+                if key == "agent_envelope" {
+                    continue;
+                }
+                sanitized.insert(key.clone(), sanitize_agent_event_payload_for_brain(child));
+            }
+            Value::Object(sanitized)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(sanitize_agent_event_payload_for_brain)
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
 }
 
 fn is_mission_event(event: &AgentEventEnvelope) -> bool {
@@ -158,6 +181,24 @@ fn is_mission_event(event: &AgentEventEnvelope) -> bool {
             .pointer("/mission_id")
             .and_then(Value::as_str)
             .is_some()
+        || event
+            .payload
+            .pointer("/content/mission_id")
+            .and_then(Value::as_str)
+            .is_some()
+        || event
+            .payload
+            .pointer("/topic_content/mission_id")
+            .and_then(Value::as_str)
+            .is_some()
+        || matches!(
+            topic_lifecycle_kind(event),
+            Some("mission_claim_approved" | "mission_completed" | "mission_settled")
+        )
+}
+
+fn topic_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
+    mission_lifecycle_value_from_event(event, "kind").and_then(Value::as_str)
 }
 
 fn push_allowed_action(event: &mut AgentEventEnvelope, action: &str) {
@@ -184,6 +225,18 @@ fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
             push_allowed_action(event, "complete_mission");
             push_allowed_action(event, "settle_mission");
         }
+        "topic_message_requires_reply" => match topic_lifecycle_kind(event) {
+            Some("mission_claim_approved") => {
+                set_allowed_actions(event, &["complete_mission", "ignore"]);
+            }
+            Some("mission_completed") => {
+                set_allowed_actions(event, &["settle_mission", "ignore"]);
+            }
+            Some("mission_settled") => {
+                set_allowed_actions(event, &["ignore"]);
+            }
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -192,6 +245,10 @@ fn mission_id_from_event(event: &AgentEventEnvelope) -> Option<String> {
     [
         "/mission_id",
         "/task_id",
+        "/content/mission_id",
+        "/content/task_id",
+        "/topic_content/mission_id",
+        "/topic_content/task_id",
         "/task_inputs/mission_id",
         "/candidate_output/mission_id",
     ]
@@ -215,6 +272,12 @@ fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
             "/claimer_agent_did",
             "/claimer_node_id",
         ],
+        "topic_message_requires_reply" => &[
+            "/content/claimer_agent_did",
+            "/content/agent_did",
+            "/topic_content/claimer_agent_did",
+            "/topic_content/agent_did",
+        ],
         _ => &["/agent_did"],
     };
     paths
@@ -227,6 +290,7 @@ fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
                 .filter(|value| !value.trim().is_empty())
                 .map(ToOwned::to_owned)
         })
+        .or_else(|| event.target_agent_id.clone())
         .or_else(|| event.source_node_id.clone())
 }
 
@@ -235,6 +299,54 @@ fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
         .get(key)
         .and_then(Value::as_bool)
         .or_else(|| payload.pointer(&format!("/{key}")).and_then(Value::as_bool))
+}
+
+fn payload_value_from_event_paths(event: &AgentEventEnvelope, paths: &[&str]) -> Option<Value> {
+    paths
+        .iter()
+        .find_map(|path| event.payload.pointer(path).cloned())
+}
+
+fn payload_string_from_event_paths(event: &AgentEventEnvelope, paths: &[&str]) -> Option<String> {
+    paths.iter().find_map(|path| {
+        event
+            .payload
+            .pointer(path)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn mission_lifecycle_value_from_event<'a>(
+    event: &'a AgentEventEnvelope,
+    key: &str,
+) -> Option<&'a Value> {
+    event
+        .payload
+        .pointer(&format!("/content/{key}"))
+        .or_else(|| event.payload.pointer(&format!("/topic_content/{key}")))
+        .or_else(|| {
+            event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.message.get(key))
+        })
+        .or_else(|| {
+            event
+                .payload
+                .pointer(&format!("/agent_envelope/message/{key}"))
+        })
+        .or_else(|| event.payload.get(key))
+}
+
+fn mission_lifecycle_string_from_event(event: &AgentEventEnvelope, key: &str) -> Option<String> {
+    mission_lifecycle_value_from_event(event, key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn payment_event_bad_request(message: impl Into<String>) -> Response {
@@ -732,6 +844,145 @@ async fn sync_payment_event_to_ledger(
     Ok(())
 }
 
+fn mission_lifecycle_status(kind: &str) -> Option<&'static str> {
+    match kind {
+        "mission_claim_approved" => Some("approved"),
+        "mission_completed" => Some("completed"),
+        "mission_settled" => Some("settled"),
+        _ => None,
+    }
+}
+
+async fn sync_mission_lifecycle_event_to_state(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    verified_context: Option<&VerifiedAgentContext>,
+) -> Result<(), Response> {
+    if event.event_type != "topic_message_requires_reply" {
+        return Ok(());
+    }
+    let Some(kind) = topic_lifecycle_kind(event) else {
+        return Ok(());
+    };
+    let Some(status) = mission_lifecycle_status(kind) else {
+        return Ok(());
+    };
+    if let Some(target_agent_id) = event.target_agent_id.as_deref()
+        && target_agent_id != state.agent_did
+    {
+        return Err(payment_event_bad_request(
+            "mission lifecycle event target_agent_id does not match local agent",
+        ));
+    }
+    if verified_context.is_none() {
+        return Err(payment_event_bad_request(
+            "signed agent_envelope is required for mission lifecycle event",
+        ));
+    }
+    let Some(mission_id) = mission_lifecycle_string_from_event(event, "mission_id") else {
+        return Ok(());
+    };
+    let mut registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)
+        .map_err(|error| payment_event_bad_request(error.to_string()))?;
+    let claim_exists = registry.contains_mission(&mission_id);
+    let board_exists = {
+        let board = state.mission_board.lock().await;
+        board.get(&mission_id).is_some()
+    };
+    match (board_exists, claim_exists) {
+        (true, true) => {
+            record_agent_event_diagnostic(
+                state,
+                event,
+                "warn",
+                "mission_lifecycle.sync.skipped",
+                "ambiguous_state_owner",
+                "mission lifecycle sync skipped because mission exists in both local tables",
+                &json!({
+                    "mission_id": mission_id,
+                    "kind": kind,
+                    "status": status,
+                }),
+            );
+            Ok(())
+        }
+        (true, false) => sync_mission_lifecycle_to_board(state, event, &mission_id, kind).await,
+        (false, true) => {
+            let updated = registry.update_status_by_mission(&mission_id, status);
+            if updated.is_some() {
+                state
+                    .local_db
+                    .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
+                    .map_err(|error| payment_event_bad_request(error.to_string()))?;
+            }
+            Ok(())
+        }
+        (false, false) => {
+            record_agent_event_diagnostic(
+                state,
+                event,
+                "info",
+                "mission_lifecycle.sync.skipped",
+                "unknown_mission",
+                "mission lifecycle sync skipped because mission is not tracked locally",
+                &json!({
+                    "mission_id": mission_id,
+                    "kind": kind,
+                    "status": status,
+                }),
+            );
+            Ok(())
+        }
+    }
+}
+
+async fn sync_mission_lifecycle_to_board(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    mission_id: &str,
+    kind: &str,
+) -> Result<(), Response> {
+    let agent_did = mission_lifecycle_string_from_event(event, "claimer_agent_did")
+        .or_else(|| mission_lifecycle_string_from_event(event, "agent_did"))
+        .unwrap_or_default();
+    let result = mission_lifecycle_value_from_event(event, "result").cloned();
+    let updated = {
+        let mut board = state.mission_board.lock().await;
+        let updated = match kind {
+            "mission_claim_approved" => board.apply_remote_claim_approved(mission_id, &agent_did),
+            "mission_completed" => board.apply_remote_completed(mission_id, &agent_did, result),
+            "mission_settled" => {
+                board.apply_remote_settled(mission_id, Some(agent_did.as_str()), result)
+            }
+            _ => None,
+        };
+        if updated.is_some() {
+            state
+                .local_db
+                .save_domain(local_db::domain::MISSION_BOARD, &*board)
+                .map_err(|error| payment_event_bad_request(error.to_string()))?;
+        }
+        updated
+    };
+    if updated.is_none() {
+        record_agent_event_diagnostic(
+            state,
+            event,
+            "info",
+            "mission_lifecycle.sync.skipped",
+            "unknown_mission",
+            "mission lifecycle sync skipped because mission is not tracked in mission board",
+            &json!({
+                "mission_id": mission_id,
+                "kind": kind,
+            }),
+        );
+    }
+    Ok(())
+}
+
 fn ensure_mission_payload_fields(
     event: &AgentEventEnvelope,
     resolution: &mut AgentEventResolution,
@@ -751,6 +1002,55 @@ fn ensure_mission_payload_fields(
         && let Some(agent_did) = agent_did_from_event(event)
     {
         payload.insert("agent_did".to_string(), Value::String(agent_did));
+    }
+    for (field, paths) in [
+        (
+            "task_id",
+            &[
+                "/task_id",
+                "/content/task_id",
+                "/topic_content/task_id",
+                "/task_inputs/task_id",
+            ][..],
+        ),
+        (
+            "mission_feed_key",
+            &[
+                "/mission_feed_key",
+                "/content/mission_feed_key",
+                "/topic_content/mission_feed_key",
+            ][..],
+        ),
+        (
+            "mission_scope_hint",
+            &[
+                "/mission_scope_hint",
+                "/content/mission_scope_hint",
+                "/topic_content/mission_scope_hint",
+            ][..],
+        ),
+        (
+            "publisher_wattswarm_node_id",
+            &[
+                "/publisher_wattswarm_node_id",
+                "/content/publisher_wattswarm_node_id",
+                "/topic_content/publisher_wattswarm_node_id",
+            ][..],
+        ),
+    ] {
+        if !payload.contains_key(field)
+            && let Some(value) = payload_string_from_event_paths(event, paths)
+        {
+            payload.insert(field.to_string(), Value::String(value));
+        }
+    }
+    if !payload.contains_key("result")
+        && let Some(result) = payload_value_from_event_paths(
+            event,
+            &["/result", "/content/result", "/topic_content/result"],
+        )
+    {
+        payload.insert("result".to_string(), result);
     }
 }
 
@@ -776,6 +1076,16 @@ fn normalize_mission_resolution(
         | ("task_result_received", Some("complete_mission" | "settle_mission")) => {
             ensure_mission_payload_fields(event, &mut resolution);
         }
+        ("topic_message_requires_reply", Some("complete_mission"))
+            if topic_lifecycle_kind(event) == Some("mission_claim_approved") =>
+        {
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
+        ("topic_message_requires_reply", Some("settle_mission"))
+            if topic_lifecycle_kind(event) == Some("mission_completed") =>
+        {
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
         _ => {}
     }
     resolution
@@ -786,20 +1096,24 @@ fn internal_mission_action_allowed(
     original_action: Option<&str>,
     normalized_action: &str,
 ) -> bool {
-    is_mission_event(event)
-        && matches!(
-            (
-                event.event_type.as_str(),
-                original_action,
-                normalized_action
-            ),
-            ("task_claim_received", Some("decide_claim"), "claim_mission")
-                | (
-                    "task_result_received",
-                    Some("accept_result"),
-                    "settle_mission"
-                )
-        )
+    if !is_mission_event(event) {
+        return false;
+    }
+    match (
+        event.event_type.as_str(),
+        original_action,
+        normalized_action,
+    ) {
+        ("task_claim_received", Some("decide_claim"), "claim_mission")
+        | ("task_result_received", Some("accept_result"), "settle_mission") => true,
+        ("topic_message_requires_reply", Some("complete_mission"), "complete_mission") => {
+            topic_lifecycle_kind(event) == Some("mission_claim_approved")
+        }
+        ("topic_message_requires_reply", Some("settle_mission"), "settle_mission") => {
+            topic_lifecycle_kind(event) == Some("mission_completed")
+        }
+        _ => false,
+    }
 }
 
 fn agent_event_object_id(event: &AgentEventEnvelope) -> Option<String> {
@@ -1129,6 +1443,11 @@ pub(crate) async fn callback(
     }
     if let Err(response) =
         sync_payment_event_to_ledger(&state, &event, verified_context.as_ref()).await
+    {
+        return response;
+    }
+    if let Err(response) =
+        sync_mission_lifecycle_event_to_state(&state, &event, verified_context.as_ref()).await
     {
         return response;
     }

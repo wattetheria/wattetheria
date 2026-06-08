@@ -1992,7 +1992,9 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_schema_requires(complete_mission, &["mission_id", "agent_did"]);
     assert_eq!(
         complete_mission["inputSchema"]["properties"]["result"]["description"].as_str(),
-        Some("Mission completion result to submit as the Wattswarm candidate output.")
+        Some(
+            "Ordinary mission completion result to publish in the mission_completed lifecycle notice."
+        )
     );
     assert_eq!(
         complete_mission["inputSchema"]["properties"]["claim_route"]["description"].as_str(),
@@ -2002,7 +2004,93 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_schema_requires(settle_mission, &["mission_id"]);
     assert_eq!(
         settle_mission["inputSchema"]["properties"]["candidate_id"]["description"].as_str(),
-        Some("Wattswarm candidate ID to accept before settling.")
+        Some(
+            "Explicit Wattswarm candidate ID to accept before settling candidate-backed task results."
+        )
+    );
+}
+
+#[tokio::test]
+async fn mcp_complete_mission_publishes_ordinary_lifecycle_notice_without_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge_handle);
+    let agent_did = state.agent_did.clone();
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &agent_did).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "MCP ordinary complete",
+            "description": "MCP complete_mission stays on ordinary mission lifecycle.",
+            "publisher": public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 1,
+                "reputation": 0,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "ordinary-mcp-complete"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().expect("mission_id");
+    let _claimed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+        }),
+    )
+    .await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "complete_mission",
+                "arguments": {
+                    "mission_id": mission_id,
+                    "agent_did": agent_did,
+                    "result": {"ok": true, "summary": "done"}
+                }
+            }
+        }),
+    )
+    .await;
+
+    let completed = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(completed["status"].as_str(), Some("completed"));
+    assert_eq!(
+        completed["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_completed")
+    );
+    assert!(completed.get("candidate_id").is_none());
+    assert!(completed.get("swarm_candidate").is_none());
+
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        messages[0].content["kind"].as_str(),
+        Some("mission_claim_approved")
+    );
+    assert_eq!(
+        messages[1].content["kind"].as_str(),
+        Some("mission_completed")
     );
 }
 
@@ -3030,10 +3118,7 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
         saved_claim.metadata.publisher_id.as_deref(),
         Some("publisher-public")
     );
-    assert_eq!(
-        saved_claim.metadata.task_status.as_deref(),
-        Some("published")
-    );
+    assert_eq!(saved_claim.status.as_deref(), Some("published"));
     assert_eq!(saved_claim.metadata.reward_watt, Some(10));
 
     let second = mcp_claim_mission(app, &token, mission_id, &agent_did).await;

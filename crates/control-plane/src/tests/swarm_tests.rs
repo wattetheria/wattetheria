@@ -244,7 +244,7 @@ async fn seed_gateway_remote_mission(
 }
 
 #[tokio::test]
-async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
+async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice() {
     let (dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
     seed_gateway_remote_mission(dir.path(), &state, "mission-remote-2").await;
@@ -269,12 +269,20 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
     assert_eq!(response["ok"].as_bool(), Some(true));
     assert_eq!(
         response["status"].as_str(),
-        Some("network_complete_submitted")
+        Some("network_complete_published")
     );
     assert_eq!(response["task_id"].as_str(), Some("mission-remote-2"));
     assert_eq!(
-        response["candidate_id"].as_str(),
-        Some(format!("wattetheria-candidate-mission-remote-2-{agent_did}").as_str())
+        response["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_completed")
+    );
+    assert_eq!(
+        response["mission_lifecycle_notice"]["source_agent_id"].as_str(),
+        Some(agent_did.as_str())
+    );
+    assert_eq!(
+        response["mission_lifecycle_notice"]["target_node_id"].as_str(),
+        Some("publisher-node")
     );
     assert_eq!(
         response["mission_scope_hint"].as_str(),
@@ -284,10 +292,8 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
         response["publisher_wattswarm_node_id"].as_str(),
         Some("publisher-node")
     );
-    assert_eq!(
-        response["swarm_candidate"]["task_id"].as_str(),
-        Some("mission-remote-2")
-    );
+    assert!(response.get("candidate_id").is_none());
+    assert!(response.get("swarm_candidate").is_none());
     assert_eq!(
         response["task_contract_sync"]["task_id"].as_str(),
         Some("mission-remote-2")
@@ -300,8 +306,14 @@ async fn complete_network_mission_syncs_contract_and_proposes_candidate() {
 }
 
 #[tokio::test]
-async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
-    let (_dir, app, token, _, state) = build_test_app(20);
+async fn settle_local_publisher_mission_publishes_lifecycle_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
     let agent_did = state.agent_did.clone();
     let mission = authed_post_json(
         app.clone(),
@@ -356,13 +368,65 @@ async fn settle_local_publisher_mission_finalizes_wattswarm_candidate() {
     .await;
 
     assert_eq!(settled["status"].as_str(), Some("settled"));
+    assert!(settled.get("swarm_finalize").is_none());
     assert_eq!(
-        settled["swarm_finalize"]["task_id"].as_str(),
-        Some(mission_id)
+        settled["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_settled")
     );
     assert_eq!(
-        settled["swarm_finalize"]["candidate_id"].as_str(),
-        Some(format!("wattetheria-candidate-{mission_id}-{agent_did}").as_str())
+        settled["mission_lifecycle_notice"]["target_agent_id"].as_str(),
+        Some(agent_did.as_str())
+    );
+    assert_eq!(
+        settled["mission_lifecycle_notice"]["has_source_agent_card"].as_bool(),
+        Some(true)
+    );
+    assert_settlement_lifecycle_messages(&bridge, mission_id, &agent_did).await;
+}
+
+async fn assert_settlement_lifecycle_messages(
+    bridge: &Arc<MockSwarmBridge>,
+    mission_id: &str,
+    agent_did: &str,
+) {
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].content["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(
+        messages[0].content["kind"].as_str(),
+        Some("mission_claim_approved")
+    );
+    assert_eq!(
+        messages[1].content["kind"].as_str(),
+        Some("mission_completed")
+    );
+    assert_eq!(
+        messages[2].content["kind"].as_str(),
+        Some("mission_settled")
+    );
+    let completion_envelope = messages[1]
+        .agent_envelope
+        .as_ref()
+        .expect("completion lifecycle topic carries agent envelope");
+    assert_eq!(
+        completion_envelope.capability.as_deref(),
+        Some("mission.complete")
+    );
+    let settlement_envelope = messages[2]
+        .agent_envelope
+        .as_ref()
+        .expect("settlement lifecycle topic carries agent envelope");
+    assert_eq!(
+        settlement_envelope.capability.as_deref(),
+        Some("mission.settle")
+    );
+    assert_eq!(
+        settlement_envelope.target_agent_id.as_deref(),
+        Some(agent_did)
+    );
+    assert!(
+        settlement_envelope.source_agent_card.is_some(),
+        "settlement lifecycle topic includes source agent card"
     );
 }
 

@@ -515,7 +515,7 @@ fn complete_mission_fields() -> Vec<(&'static str, Value)> {
     );
     fields.push(value_field(
         "result",
-        "Mission completion result to submit as the Wattswarm candidate output.",
+        "Ordinary mission completion result to publish in the mission_completed lifecycle notice.",
     ));
     fields
 }
@@ -525,15 +525,15 @@ fn settle_mission_fields() -> Vec<(&'static str, Value)> {
         string_field("mission_id", "Mission ID to settle."),
         string_field(
             "task_id",
-            "Wattswarm task ID to finalize before settling a local publisher mission.",
+            "Optional Wattswarm task ID when explicitly settling a candidate-backed task.",
         ),
         string_field(
             "agent_did",
-            "Completing agent DID used to derive the Wattswarm candidate ID.",
+            "Completing agent DID for the ordinary mission settlement notice.",
         ),
         string_field(
             "candidate_id",
-            "Wattswarm candidate ID to accept before settling.",
+            "Explicit Wattswarm candidate ID to accept before settling candidate-backed task results.",
         ),
     ]
 }

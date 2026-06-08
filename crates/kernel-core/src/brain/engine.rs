@@ -480,23 +480,175 @@ async fn parse_proposals_or_fallback(raw: &str, state: &Value) -> Result<Vec<Act
 }
 
 fn build_agent_event_prompt(event: &Value) -> Result<String> {
+    let event_type = event
+        .get("event_type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let allowed_actions = agent_event_allowed_actions(event);
+    let scoped_rules = agent_event_scoped_rules(event_type, &allowed_actions, event);
     Ok(format!(
         concat!(
             "Return strict JSON object with keys action,reason,payload. ",
-            "Choose action from allowed_actions only. ",
+            "Choose action from this allowed_actions list only: {}. ",
             "If no safe action should be taken, return {{\"action\": null, \"reason\": \"...\", \"payload\": {{}}}}. ",
-            "Rules: ",
+            "Common rules: ",
             "1. payload must be a JSON object. ",
-            "2. For action=reply on dm_received or topic_message_requires_reply, payload must include key content. ",
-            "3. For payment reject, payload may include reject_reason. ",
-            "4. For payment authorize, payload may include sender_address. ",
-            "5. For mission transition actions, include mission_id when known. ",
-            "6. For task_claim_received on a wattetheria_mission, choose decide_claim only. Set payload.approved=true to accept the claim or payload.approved=false to reject it; include mission_id and claimer_node_id or agent_did when known. Do not return claim_mission because it is an internal commit action. ",
-            "7. For task_result_received on a wattetheria_mission_result, choose settle_mission to accept and settle the result, or complete_mission to mark it completed without settlement; include mission_id and agent_did when known. ",
+            "2. Do not invent fields that are not needed by the selected action. ",
+            "3. Preserve IDs from the input payload when known. ",
+            "Event type: {}. ",
+            "Relevant action schema: {}. ",
             "Input: {}"
         ),
+        allowed_actions.join(","),
+        event_type,
+        scoped_rules.join(" "),
         serde_json::to_string(event)?
     ))
+}
+
+fn agent_event_allowed_actions(event: &Value) -> Vec<String> {
+    event
+        .get("allowed_actions")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn agent_event_scoped_rules(
+    event_type: &str,
+    allowed_actions: &[String],
+    event: &Value,
+) -> Vec<String> {
+    let mut rules = Vec::new();
+    for action in allowed_actions {
+        if let Some(rule) = agent_event_action_rule(event_type, action, event) {
+            rules.push(rule);
+        }
+    }
+    if rules.is_empty() {
+        rules.push(
+            "No event-specific action schema is available; use only allowed_actions and return action null when required fields are missing.".to_owned(),
+        );
+    }
+    rules
+}
+
+fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Option<String> {
+    match (event_type, action) {
+        ("friend_request", "accept") => Some(
+            "accept: approve the friend request; payload may include message or extensions."
+                .to_owned(),
+        ),
+        ("friend_request", "reject") => Some(
+            "reject: decline the friend request; payload may include message or extensions."
+                .to_owned(),
+        ),
+        ("friend_request", "block") => Some(
+            "block: reject and block the counterpart; payload may include message or extensions."
+                .to_owned(),
+        ),
+        ("dm_received" | "topic_message_requires_reply", "reply") => Some(
+            "reply: payload must include content; include reply_to_message_id only when replying to a topic message."
+                .to_owned(),
+        ),
+        ("dm_received", "block") => {
+            Some("block: block the message sender; payload may include message or extensions.".to_owned())
+        }
+        (_, "ignore") => Some("ignore: acknowledge without side effects; payload should be {}.".to_owned()),
+        ("payment_request" | "payment_update", "authorize") => {
+            Some("authorize: approve payment authorization; payload may include sender_address.".to_owned())
+        }
+        ("payment_request" | "payment_update", "reject") => {
+            Some("reject: decline the payment; payload may include reject_reason.".to_owned())
+        }
+        ("payment_request" | "payment_update", "submit") => {
+            Some("submit: mark payment submitted; payload may include settlement_receipt.".to_owned())
+        }
+        ("payment_request" | "payment_update", "settle") => {
+            Some("settle: mark payment settled; payload must include settlement_receipt.".to_owned())
+        }
+        ("payment_request" | "payment_update", "cancel") => {
+            Some("cancel: cancel the payment request; payload may be empty.".to_owned())
+        }
+        ("task_claim_received", "decide_claim") => Some(
+            "decide_claim: choose only this action for a wattetheria_mission claim; payload.approved=true accepts the claim, payload.approved=false rejects it; include mission_id and claimer_node_id or agent_did when known; do not return claim_mission."
+                .to_owned(),
+        ),
+        ("task_claim_received", "inspect_task") => {
+            Some("inspect_task: defer the claim for manual inspection; payload may be empty.".to_owned())
+        }
+        ("task_result_received", "accept_result") => Some(
+            "accept_result: accept a wattetheria_mission_result; include mission_id, agent_did, task_id, and candidate_id when known."
+                .to_owned(),
+        ),
+        ("task_result_received", "reject_result") => Some(
+            "reject_result: reject the task result; payload should include reason when available."
+                .to_owned(),
+        ),
+        ("task_result_received", "request_retry") => Some(
+            "request_retry: ask the claimer to retry; payload should include reason or retry_instructions."
+                .to_owned(),
+        ),
+        ("task_result_received", "inspect_task") => {
+            Some("inspect_task: defer the result for manual review; payload may be empty.".to_owned())
+        }
+        ("task_result_received", "complete_mission") => Some(
+            "complete_mission: mark the mission completed without settlement; include mission_id, agent_did, and result when known."
+                .to_owned(),
+        ),
+        ("task_result_received", "settle_mission") => Some(
+            "settle_mission: accept and settle the mission result; include mission_id, agent_did, task_id, candidate_id, and settlement receipt fields when known."
+                .to_owned(),
+        ),
+        ("topic_message_requires_reply", "complete_mission")
+            if topic_message_kind(event) == Some("mission_claim_approved") =>
+        {
+            Some(
+                "complete_mission: use only for mission_claim_approved when final work result is ready; include mission_id, agent_did, task_id, mission_feed_key, mission_scope_hint, publisher_wattswarm_node_id when known, and payload.result; otherwise return action null or ignore."
+                    .to_owned(),
+            )
+        }
+        ("topic_message_requires_reply", "settle_mission")
+            if topic_message_kind(event) == Some("mission_completed") =>
+        {
+            Some(
+                "settle_mission: use only for ordinary mission_completed lifecycle topics when the completed work is accepted; include mission_id, agent_did, task_id, mission_feed_key, mission_scope_hint, and result when known; do not require candidate_id and do not treat this as task_result_received."
+                    .to_owned(),
+            )
+        }
+        ("third_party_result", "publish_mission") => Some(
+            "publish_mission: create a mission from a third-party result; include title, description, publisher, reward, domain, and payload."
+                .to_owned(),
+        ),
+        ("third_party_result", "claim_mission") => Some(
+            "claim_mission: claim an existing mission; include mission_id and agent_did."
+                .to_owned(),
+        ),
+        ("third_party_result", "complete_mission") => Some(
+            "complete_mission: complete an existing mission; include mission_id, agent_did, and result."
+                .to_owned(),
+        ),
+        ("third_party_result", "settle_mission") => Some(
+            "settle_mission: settle an existing completed mission; include mission_id and agent_did when known."
+                .to_owned(),
+        ),
+        _ => None,
+    }
+}
+
+fn topic_message_kind(event: &Value) -> Option<&str> {
+    event
+        .pointer("/payload/content/kind")
+        .or_else(|| event.pointer("/payload/topic_content/kind"))
+        .and_then(Value::as_str)
 }
 
 async fn parse_agent_event_or_fallback(
@@ -791,12 +943,94 @@ mod tests {
         .unwrap();
 
         assert!(prompt.contains("task_claim_received"));
-        assert!(prompt.contains("choose decide_claim only"));
+        assert!(prompt.contains("decide_claim"));
         assert!(prompt.contains("payload.approved=true"));
-        assert!(prompt.contains("Do not return claim_mission"));
-        assert!(prompt.contains("task_result_received"));
-        assert!(prompt.contains("settle_mission"));
+        assert!(prompt.contains("do not return claim_mission"));
+        assert!(!prompt.contains("task_result_received"));
+        assert!(!prompt.contains("settle_mission"));
+        assert!(!prompt.contains("mission_claim_approved"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_topic_claim_approved_actions() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "topic_message_requires_reply",
+            "allowed_actions": ["complete_mission", "ignore"],
+            "payload": {
+                "content": {
+                    "kind": "mission_claim_approved",
+                    "mission_id": "mission-1",
+                    "task_id": "mission-1"
+                }
+            }
+        }))
+        .unwrap();
+
         assert!(prompt.contains("complete_mission"));
+        assert!(prompt.contains("mission_claim_approved"));
+        assert!(prompt.contains("payload.result"));
+        assert!(prompt.contains("ignore"));
+        assert!(!prompt.contains("payment"));
+        assert!(!prompt.contains("friend request"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_topic_mission_completed_actions() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "topic_message_requires_reply",
+            "allowed_actions": ["settle_mission", "ignore"],
+            "payload": {
+                "content": {
+                    "kind": "mission_completed",
+                    "mission_id": "mission-1",
+                    "task_id": "mission-1",
+                    "result": {"ok": true}
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("settle_mission"));
+        assert!(prompt.contains("mission_completed"));
+        assert!(prompt.contains("ordinary mission_completed lifecycle topics"));
+        assert!(prompt.contains("do not require candidate_id"));
+        assert!(prompt.contains("do not treat this as task_result_received"));
+        assert!(prompt.contains("ignore"));
+        assert!(!prompt.contains("complete_mission: use only for mission_claim_approved"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_payment_actions() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "payment_request",
+            "allowed_actions": ["authorize", "reject"],
+            "payload": {
+                "payment": {
+                    "payment_id": "payment-1"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("authorize"));
+        assert!(prompt.contains("sender_address"));
+        assert!(prompt.contains("reject_reason"));
+        assert!(!prompt.contains("complete_mission"));
+        assert!(!prompt.contains("friend_request"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_unknown_events_to_allowed_actions() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "custom_event",
+            "allowed_actions": ["custom_action"],
+            "payload": {}
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("custom_action"));
+        assert!(prompt.contains("No event-specific action schema"));
+        assert!(!prompt.contains("decide_claim"));
     }
 
     #[test]

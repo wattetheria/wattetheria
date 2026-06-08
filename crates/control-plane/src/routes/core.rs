@@ -136,17 +136,43 @@ fn payload_string(payload: &Value, pointer: &str) -> Option<String> {
 fn mission_id_for_commit(body: &AgentActionCommitBody) -> Option<String> {
     required_payload_string(&body.decision.payload, "/mission_id")
         .or_else(|| payload_string(&body.event.payload, "/mission_id"))
+        .or_else(|| payload_string(&body.event.payload, "/content/mission_id"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_content/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/candidate_output/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/mission_id"))
 }
 
 fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did: &str) -> String {
     payload_string(&body.decision.payload, "/agent_did")
+        .or_else(|| payload_string(&body.decision.payload, "/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/claimer_agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/content/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/content/claimer_agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_content/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/topic_content/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/candidate_output/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
         .unwrap_or_else(|| default_agent_did.to_owned())
+}
+
+fn mission_commit_string(body: &AgentActionCommitBody, field: &str) -> Option<String> {
+    let pointer = format!("/{field}");
+    required_payload_string(&body.decision.payload, &pointer)
+        .or_else(|| payload_string(&body.event.payload, &pointer))
+        .or_else(|| payload_string(&body.event.payload, &format!("/content/{field}")))
+        .or_else(|| payload_string(&body.event.payload, &format!("/topic_content/{field}")))
+        .or_else(|| payload_string(&body.event.payload, &format!("/task_inputs/{field}")))
+}
+
+fn mission_commit_result(body: &AgentActionCommitBody) -> Option<Value> {
+    body.decision
+        .payload
+        .get("result")
+        .cloned()
+        .or_else(|| body.event.payload.pointer("/content/result").cloned())
+        .or_else(|| body.event.payload.pointer("/topic_content/result").cloned())
 }
 
 fn mission_claim_body_for_commit(
@@ -155,12 +181,43 @@ fn mission_claim_body_for_commit(
     agent_did: String,
 ) -> MissionClaimBody {
     let mut claim_body = MissionClaimBody::local(mission_id, agent_did);
+    claim_body.task_id = mission_commit_string(body, "task_id");
+    claim_body.mission_feed_key = mission_commit_string(body, "mission_feed_key");
+    claim_body.mission_scope_hint = mission_commit_string(body, "mission_scope_hint");
+    claim_body.publisher_wattswarm_node_id =
+        mission_commit_string(body, "publisher_wattswarm_node_id");
+    claim_body.result = mission_commit_result(body);
     claim_body.claim_route = Some(json!({
         "agent_envelope": body.event.agent_envelope.clone(),
         "agent_event_payload": body.event.payload.clone(),
         "decision_payload": body.decision.payload.clone(),
+        "task_id": claim_body.task_id,
+        "mission_feed_key": claim_body.mission_feed_key,
+        "mission_scope_hint": claim_body.mission_scope_hint,
+        "publisher_wattswarm_node_id": claim_body.publisher_wattswarm_node_id,
     }));
     claim_body
+}
+
+fn topic_lifecycle_kind(body: &AgentActionCommitBody) -> Option<&str> {
+    body.event
+        .payload
+        .pointer("/content/kind")
+        .or_else(|| body.event.payload.pointer("/topic_content/kind"))
+        .and_then(Value::as_str)
+}
+
+fn topic_mission_action_allowed(
+    body: &AgentActionCommitBody,
+    event_type: &str,
+    action: &str,
+) -> bool {
+    event_type == "topic_message_requires_reply"
+        && matches!(
+            (topic_lifecycle_kind(body), action),
+            (Some("mission_claim_approved"), "complete_mission")
+                | (Some("mission_completed"), "settle_mission")
+        )
 }
 
 fn agent_action_commit_object(body: &AgentActionCommitBody) -> (&'static str, Option<String>) {
@@ -261,7 +318,11 @@ fn record_agent_action_commit_diagnostic(
     );
 }
 
-fn agent_action_commit_route_label(event_type: &str, action: &str) -> &'static str {
+fn agent_action_commit_route_label(
+    body: &AgentActionCommitBody,
+    event_type: &str,
+    action: &str,
+) -> &'static str {
     match (event_type, action) {
         ("friend_request", "accept" | "reject" | "block") => "friend_request",
         ("dm_received", "reply" | "block" | "ignore") => "dm_received",
@@ -270,6 +331,10 @@ fn agent_action_commit_route_label(event_type: &str, action: &str) -> &'static s
             "authorize" | "reject" | "submit" | "settle" | "cancel",
         ) => "payment_action",
         ("topic_message_requires_reply", "reply") => "topic_reply",
+        (
+            "topic_message_requires_reply",
+            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+        ) if topic_mission_action_allowed(body, event_type, action) => "mission_lifecycle_topic",
         (
             "topic_message_requires_reply",
             "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
@@ -760,6 +825,12 @@ async fn dispatch_agent_action_commit(
         (
             "topic_message_requires_reply",
             "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+        ) if topic_mission_action_allowed(&body, event_type, action) => {
+            commit_transition_mission(state, commit_headers, body).await
+        }
+        (
+            "topic_message_requires_reply",
+            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
         ) => bad_request("mission actions are not supported for topic messages"),
         (_, "publish_mission") => commit_publish_mission(state, commit_headers, body).await,
         (_, "claim_mission" | "complete_mission" | "settle_mission") => {
@@ -809,7 +880,7 @@ pub(crate) async fn agent_action_commit(
 
     let event_type = body.event.event_type.clone();
     let action = body.decision.action.clone();
-    let route_label = agent_action_commit_route_label(&event_type, &action);
+    let route_label = agent_action_commit_route_label(&body, &event_type, &action);
     record_agent_action_commit_diagnostic(
         &state,
         &diagnostic_context,

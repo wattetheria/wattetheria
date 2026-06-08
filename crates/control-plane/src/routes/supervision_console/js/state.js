@@ -22,7 +22,7 @@
     const hiveMessageErrors = new Map();
     let missionSearchQuery = "";
     let activeMissionTab = "published";
-    const missionPageByTab = { published: 1, claimed: 1 };
+    const missionPageByTab = { published: 1, claim_submitted: 1, claimed: 1 };
     const missionPageSize = 10;
     let servicenetTemplate = null;
     let servicenetAgents = [];

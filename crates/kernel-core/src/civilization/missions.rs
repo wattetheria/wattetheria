@@ -82,6 +82,8 @@ pub struct NetworkMissionClaimRecord {
     pub agent_did: String,
     pub execution_id: String,
     pub claimed_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     #[serde(default)]
     pub metadata: NetworkMissionClaimMetadata,
 }
@@ -100,7 +102,7 @@ pub struct NetworkMissionClaimMetadata {
     pub publisher_wattswarm_node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing)]
     pub task_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_feed_key: Option<String>,
@@ -139,6 +141,7 @@ impl NetworkMissionClaimRegistry {
         task_id: &str,
         agent_did: &str,
         execution_id: &str,
+        status: Option<String>,
         metadata: NetworkMissionClaimMetadata,
     ) -> NetworkMissionClaimRecord {
         let record = NetworkMissionClaimRecord {
@@ -147,6 +150,7 @@ impl NetworkMissionClaimRegistry {
             agent_did: agent_did.to_string(),
             execution_id: execution_id.to_string(),
             claimed_at: Utc::now().timestamp(),
+            status,
             metadata,
         };
         self.claims.insert(
@@ -154,6 +158,34 @@ impl NetworkMissionClaimRegistry {
             record.clone(),
         );
         record
+    }
+
+    #[must_use]
+    pub fn contains_mission(&self, mission_id: &str) -> bool {
+        let mission_id = mission_id.trim();
+        self.claims
+            .values()
+            .any(|record| record.mission_id == mission_id)
+    }
+
+    pub fn update_status_by_mission(
+        &mut self,
+        mission_id: &str,
+        status: &str,
+    ) -> Option<NetworkMissionClaimRecord> {
+        let mission_id = mission_id.trim();
+        let status = status.trim();
+        if mission_id.is_empty() || status.is_empty() {
+            return None;
+        }
+        let key = self
+            .claims
+            .iter()
+            .find_map(|(key, record)| (record.mission_id == mission_id).then(|| key.clone()))?;
+        let record = self.claims.get_mut(&key)?;
+        record.status = Some(status.to_owned());
+        record.metadata.task_status = Some(status.to_owned());
+        Some(record.clone())
     }
 }
 
@@ -282,6 +314,86 @@ impl MissionBoard {
         Ok(mission.clone())
     }
 
+    pub fn apply_remote_claim_approved(
+        &mut self,
+        mission_id: &str,
+        agent_did: &str,
+    ) -> Option<CivilMission> {
+        let mission = self.missions.get_mut(mission_id)?;
+        if matches!(
+            mission.status,
+            MissionStatus::Completed | MissionStatus::Settled | MissionStatus::Cancelled
+        ) {
+            if mission.claimed_by.is_none() && !agent_did.trim().is_empty() {
+                mission.claimed_by = Some(agent_did.to_owned());
+            }
+            return Some(mission.clone());
+        }
+        if !agent_did.trim().is_empty() {
+            mission.claimed_by = Some(agent_did.to_owned());
+        }
+        mission.status = MissionStatus::Claimed;
+        mission.updated_at = Utc::now().timestamp();
+        Some(mission.clone())
+    }
+
+    pub fn apply_remote_completed(
+        &mut self,
+        mission_id: &str,
+        agent_did: &str,
+        result: Option<Value>,
+    ) -> Option<CivilMission> {
+        let mission = self.missions.get_mut(mission_id)?;
+        if mission.status == MissionStatus::Cancelled {
+            return Some(mission.clone());
+        }
+        if !agent_did.trim().is_empty() {
+            mission
+                .claimed_by
+                .get_or_insert_with(|| agent_did.to_owned());
+            mission.completed_by = Some(agent_did.to_owned());
+        }
+        if result.is_some() || mission.completion_result.is_none() {
+            mission.completion_result = result;
+        }
+        if mission.status != MissionStatus::Settled {
+            mission.status = MissionStatus::Completed;
+            mission.updated_at = Utc::now().timestamp();
+        }
+        Some(mission.clone())
+    }
+
+    pub fn apply_remote_settled(
+        &mut self,
+        mission_id: &str,
+        agent_did: Option<&str>,
+        result: Option<Value>,
+    ) -> Option<CivilMission> {
+        let mission = self.missions.get_mut(mission_id)?;
+        if mission.status == MissionStatus::Cancelled {
+            return Some(mission.clone());
+        }
+        if let Some(agent_did) = agent_did
+            .map(str::trim)
+            .filter(|agent_did| !agent_did.is_empty())
+        {
+            mission
+                .claimed_by
+                .get_or_insert_with(|| agent_did.to_owned());
+            mission
+                .completed_by
+                .get_or_insert_with(|| agent_did.to_owned());
+        }
+        if result.is_some() || mission.completion_result.is_none() {
+            mission.completion_result = result;
+        }
+        mission.status = MissionStatus::Settled;
+        let now = Utc::now().timestamp();
+        mission.settled_at.get_or_insert(now);
+        mission.updated_at = now;
+        Some(mission.clone())
+    }
+
     #[must_use]
     pub fn list(&self, status: Option<&MissionStatus>) -> Vec<CivilMission> {
         self.missions
@@ -342,6 +454,64 @@ mod tests {
     }
 
     #[test]
+    fn mission_board_applies_remote_lifecycle_updates_idempotently() {
+        let mut board = MissionBoard::default();
+        let mission = board.publish(
+            "Remote lifecycle",
+            "Publisher receives lifecycle topics.",
+            "publisher-public",
+            MissionPublisherKind::Player,
+            MissionDomain::Trade,
+            None,
+            None,
+            None,
+            None,
+            MissionReward {
+                agent_watt: 10,
+                reputation: 1,
+                capacity: 0,
+                treasury_share_watt: 0,
+            },
+            serde_json::json!({"objective": "sync"}),
+        );
+
+        let claimed = board
+            .apply_remote_claim_approved(&mission.mission_id, "agent-worker")
+            .unwrap();
+        assert_eq!(claimed.status, MissionStatus::Claimed);
+        assert_eq!(claimed.claimed_by.as_deref(), Some("agent-worker"));
+
+        let completed = board
+            .apply_remote_completed(
+                &mission.mission_id,
+                "agent-worker",
+                Some(serde_json::json!({"ok": true})),
+            )
+            .unwrap();
+        assert_eq!(completed.status, MissionStatus::Completed);
+        assert_eq!(completed.completed_by.as_deref(), Some("agent-worker"));
+
+        let settled = board
+            .apply_remote_settled(&mission.mission_id, Some("agent-worker"), None)
+            .unwrap();
+        assert_eq!(settled.status, MissionStatus::Settled);
+        assert_eq!(settled.completed_by.as_deref(), Some("agent-worker"));
+        assert_eq!(
+            settled.completion_result,
+            Some(serde_json::json!({"ok": true}))
+        );
+
+        let replayed = board
+            .apply_remote_completed(
+                &mission.mission_id,
+                "agent-worker",
+                Some(serde_json::json!({"ok": true})),
+            )
+            .unwrap();
+        assert_eq!(replayed.status, MissionStatus::Settled);
+    }
+
+    #[test]
     fn network_mission_claim_registry_records_claims_by_mission_task_and_agent() {
         let mut registry = NetworkMissionClaimRegistry::default();
         assert!(!registry.contains("mission-1", "task-1", "agent-a"));
@@ -351,6 +521,7 @@ mod tests {
             "task-1",
             "agent-a",
             "exec-1",
+            Some("published".to_string()),
             NetworkMissionClaimMetadata {
                 domain: Some("trade".to_string()),
                 publisher_id: Some("publisher-public".to_string()),
@@ -360,9 +531,16 @@ mod tests {
         );
 
         assert_eq!(record.execution_id, "exec-1");
+        assert_eq!(record.status.as_deref(), Some("published"));
         assert_eq!(record.metadata.domain.as_deref(), Some("trade"));
         assert_eq!(record.metadata.reward_watt, Some(10));
         assert!(registry.contains("mission-1", "task-1", "agent-a"));
+        assert!(registry.contains_mission("mission-1"));
+        let updated = registry
+            .update_status_by_mission("mission-1", "approved")
+            .unwrap();
+        assert_eq!(updated.status.as_deref(), Some("approved"));
+        assert_eq!(updated.metadata.task_status.as_deref(), Some("approved"));
         assert!(!registry.contains("mission-1", "task-1", "agent-b"));
     }
 }

@@ -1,6 +1,9 @@
     function missionSearchText(row) {
       return [
         row.status,
+        row.claim_status,
+        row.local_claim_status,
+        row.node_claim_status,
         row.title,
         row.id,
         row.domain,
@@ -25,8 +28,40 @@
       return compactId(row[idKey], 20);
     }
 
+    function normalizedMissionValue(value) {
+      return String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    }
+
+    function displayMissionStatus(value) {
+      const raw = String(value ?? "").trim();
+      const normalized = normalizedMissionValue(raw);
+      if (!raw || normalized === "unknown" || normalized === "claim_submitted" || normalized === "network_claim_submitted") return "";
+      return raw;
+    }
+
+    function missionClaimStatus(row) {
+      for (const key of ["claim_status", "local_claim_status", "node_claim_status"]) {
+        const status = normalizedMissionValue(row[key]);
+        if (status) return status;
+      }
+      return normalizedMissionValue(row.status);
+    }
+
+    function isClaimSubmittedStatus(status) {
+      return ["claim_submitted", "network_claim_submitted", "pending_claim", "pending", "submitted", "claiming"].includes(status);
+    }
+
+    function isRejectedClaimStatus(status) {
+      return ["reject", "rejected", "claim_rejected", "rejected_claim"].includes(status);
+    }
+
     function missionOrigin(row) {
-      return row.task_origin === "claimed" ? "claimed" : "published";
+      if (row.task_origin !== "claimed") return "published";
+      const claimStatus = missionClaimStatus(row);
+      const taskStatus = normalizedMissionValue(row.status);
+      if (isClaimSubmittedStatus(claimStatus) || isClaimSubmittedStatus(taskStatus)) return "claim_submitted";
+      if (isRejectedClaimStatus(claimStatus) || isRejectedClaimStatus(taskStatus)) return "claim_submitted";
+      return "claimed";
     }
 
     function missionRowsForActiveTab(rows) {
@@ -34,9 +69,16 @@
     }
 
     function missionStatusPills(row) {
-      if (missionOrigin(row) !== "claimed") return pill(row.status, row.status);
-      const taskStatus = row.status || "unknown";
-      return `${pill("node claimed", row.node_claim_status || "claimed")} ${pill(`task ${taskStatus}`, taskStatus)}`;
+      if (missionOrigin(row) === "claim_submitted") {
+        const claimStatus = missionClaimStatus(row);
+        const taskStatus = normalizedMissionValue(row.status);
+        if (isRejectedClaimStatus(claimStatus) || isRejectedClaimStatus(taskStatus)) {
+          return pill("rejected", "rejected");
+        }
+        return valueOrDash("");
+      }
+      const status = displayMissionStatus(row.status);
+      return status ? pill(status, status) : valueOrDash("");
     }
 
     function filteredMissionRows(rows) {

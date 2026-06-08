@@ -461,6 +461,11 @@ fn build_claimed_client_task_payload(
     let mission_id = claim.mission_id.clone();
     let task_id = claim.task_id.clone();
     let agent_did = claim.agent_did.clone();
+    let status = claim
+        .status
+        .clone()
+        .or_else(|| metadata.task_status.clone())
+        .unwrap_or_else(|| "unknown".to_string());
     let mut task = json!({
         "id": mission_id,
         "task_id": task_id,
@@ -473,7 +478,7 @@ fn build_claimed_client_task_payload(
         "network_publish_reward_watt": 0,
         "network_settle_publisher_reward_watt": 0,
         "publisher_network_reward_watt": metadata.publisher_network_reward_watt,
-        "status": metadata.task_status.clone().unwrap_or_else(|| "unknown".to_string()),
+        "status": status,
         "node_claim_status": "claimed",
         "local_claim_status": "claimed",
         "publisher_id": metadata.publisher_id.clone(),

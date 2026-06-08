@@ -266,6 +266,243 @@ async fn agent_events_sync_signed_payment_event_to_ledger_before_decision() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_events_sync_mission_lifecycle_to_network_claims_before_decision() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let local_agent_did = state.agent_did.clone();
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "mission-claim-sync-1",
+        "mission-claim-sync-1",
+        &local_agent_did,
+        "exec-claim-sync-1",
+        Some("claimed".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-claim-sync-1".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let publisher_identity = Identity::new_random();
+    let approved = json!({
+        "kind": "mission_claim_approved",
+        "mission_id": "mission-claim-sync-1",
+        "task_id": "mission-claim-sync-1",
+        "claimer_agent_did": local_agent_did,
+        "status": "approved"
+    });
+    let approved_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&local_agent_did),
+        "mission.claim.approve",
+        approved.clone(),
+    );
+    let approved_event = json!({
+        "event": {
+            "event_id": "evt-mission-claim-approved-sync",
+            "event_type": "topic_message_requires_reply",
+            "source_kind": "topic_message",
+            "source_node_id": "publisher-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": approved_envelope,
+            "payload": {
+                "feed_key": "wattetheria.missions",
+                "scope_hint": "group:mission-claim-sync-1",
+                "message_id": "msg-approved-sync",
+                "content": approved
+            },
+            "requires_commit": true,
+            "allowed_actions": ["complete_mission", "ignore"],
+            "created_at": 10
+        }
+    });
+
+    let response = request_json(
+        router.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(approved_event.to_string()))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let record = registry
+        .records()
+        .into_iter()
+        .find(|record| record.mission_id == "mission-claim-sync-1")
+        .expect("claim record");
+    assert_eq!(record.status.as_deref(), Some("approved"));
+
+    let settled = json!({
+        "kind": "mission_settled",
+        "mission_id": "mission-claim-sync-1",
+        "task_id": "mission-claim-sync-1",
+        "claimer_agent_did": local_agent_did,
+        "status": "settled"
+    });
+    let settled_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&local_agent_did),
+        "mission.settle",
+        settled.clone(),
+    );
+    let settled_event = json!({
+        "event": {
+            "event_id": "evt-mission-settled-sync",
+            "event_type": "topic_message_requires_reply",
+            "source_kind": "topic_message",
+            "source_node_id": "publisher-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": settled_envelope,
+            "payload": {
+                "feed_key": "wattetheria.missions",
+                "scope_hint": "group:mission-claim-sync-1",
+                "message_id": "msg-settled-sync",
+                "content": settled
+            },
+            "requires_commit": false,
+            "allowed_actions": ["ignore"],
+            "created_at": 11
+        }
+    });
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(settled_event.to_string()))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let record = registry
+        .records()
+        .into_iter()
+        .find(|record| record.mission_id == "mission-claim-sync-1")
+        .expect("claim record");
+    assert_eq!(record.status.as_deref(), Some("settled"));
+}
+
+#[tokio::test]
+async fn agent_events_sync_mission_completed_to_publisher_board_before_decision() {
+    let (_dir, router, token, _policy_engine, state) = build_test_app(20);
+    let local_agent_did = state.agent_did.clone();
+    let public_id = bootstrap_broker_identity(router.clone(), &token, &local_agent_did).await;
+    let mission = authed_post_json(
+        router.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Publisher sync complete",
+            "description": "Publisher receives completed lifecycle topic.",
+            "publisher": public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 2,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "sync"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().expect("mission_id");
+    let worker_identity = Identity::new_random();
+    let _claimed = authed_post_json(
+        router.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": worker_identity.agent_did,
+        }),
+    )
+    .await;
+
+    let completed = json!({
+        "kind": "mission_completed",
+        "mission_id": mission_id,
+        "task_id": mission_id,
+        "publisher_agent_did": local_agent_did,
+        "claimer_agent_did": worker_identity.agent_did,
+        "result": {"ok": true, "summary": "done"},
+        "status": "completed"
+    });
+    let completed_envelope = signed_agent_event_envelope(
+        &worker_identity,
+        "worker-node",
+        Some(&local_agent_did),
+        "mission.complete",
+        completed.clone(),
+    );
+    let event = json!({
+        "event": {
+            "event_id": "evt-mission-completed-board-sync",
+            "event_type": "topic_message_requires_reply",
+            "source_kind": "topic_message",
+            "source_node_id": "worker-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": completed_envelope,
+            "payload": {
+                "feed_key": "wattetheria.missions",
+                "scope_hint": format!("group:{mission_id}"),
+                "message_id": "msg-completed-sync",
+                "content": completed
+            },
+            "requires_commit": true,
+            "allowed_actions": ["settle_mission", "ignore"],
+            "created_at": 12
+        }
+    });
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(event.to_string()))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let board = state.mission_board.lock().await;
+    let synced = board.get(mission_id).expect("mission synced");
+    assert_eq!(
+        synced.status,
+        wattetheria_kernel::civilization::missions::MissionStatus::Completed
+    );
+    assert_eq!(
+        synced.completed_by.as_deref(),
+        Some(worker_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        synced.completion_result,
+        Some(json!({"ok": true, "summary": "done"}))
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_translates_openai_compatible_reply_into_structured_decision() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -434,6 +671,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
         "social.dm.send",
         dm_message.clone(),
     );
+    let expected_source_agent_id = dm_envelope.source_agent_id.clone();
     let state = ControlPlaneState {
         brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
             &BrainProviderConfig::OpenaiCompatible {
@@ -452,6 +690,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
         ..state
     };
+    let data_dir = state.data_dir.clone();
     let app = app(state);
 
     let response = request_json(
@@ -473,6 +712,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
                             "feed_key": "wattswarm.dm",
                             "scope_hint": "group:dm-self-peer",
                             "message_id": "topic-msg-1",
+                            "content": "hello",
                             "topic_content": {
                                 "kind": "direct_message",
                                 "agent_envelope": dm_envelope,
@@ -502,6 +742,28 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
         response["decision"]["payload"]["content"].as_str(),
         Some("signed reply")
     );
+    let entries = crate::diagnostics::list_diagnostics(
+        &data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            event_id: Some("evt-topic-dm-1".to_owned()),
+            phase: Some("callback.received".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let received = entries.first().expect("callback.received diagnostic");
+    let brain_input = &received.details["payload"]["brain_input"];
+    assert_eq!(
+        brain_input["agent_envelope"]["source_agent_id"].as_str(),
+        expected_source_agent_id.as_deref()
+    );
+    assert!(brain_input["payload"]["agent_envelope"].is_null());
+    assert!(brain_input["payload"]["topic_content"]["agent_envelope"].is_null());
+    assert_eq!(
+        brain_input["payload"]["topic_content"]["content"].as_str(),
+        Some("hello")
+    );
+    assert_eq!(brain_input["payload"]["content"].as_str(), Some("hello"));
 
     server.abort();
 }
@@ -996,7 +1258,13 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
         axum::serve(listener, app_mock).await.expect("serve mock");
     });
 
-    let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, _router, token, _policy_engine, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
     let base_url = format!("http://{addr}/v1");
     let state = ControlPlaneState {
         brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
@@ -1133,10 +1401,50 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
         committed["claimer_public_id"].as_str(),
         Some("agent-MX1111.public")
     );
+    assert_eq!(
+        committed["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_claim_approved")
+    );
+    assert_eq!(
+        committed["mission_lifecycle_notice"]["target_agent_id"].as_str(),
+        Some("did:key:claimer")
+    );
+    assert_eq!(
+        committed["mission_lifecycle_notice"]["target_node_id"].as_str(),
+        Some("claimer-node")
+    );
+    assert_eq!(
+        committed["mission_lifecycle_notice"]["has_source_agent_card"].as_bool(),
+        Some(true)
+    );
     assert!(
         committed["updated_at"].as_i64().unwrap_or_default()
             >= committed["created_at"].as_i64().unwrap_or_default()
     );
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].content["kind"].as_str(),
+        Some("mission_claim_approved")
+    );
+    assert_eq!(messages[0].content["mission_id"].as_str(), Some(mission_id));
+    let lifecycle_envelope = messages[0]
+        .agent_envelope
+        .as_ref()
+        .expect("claim approval lifecycle topic carries agent envelope");
+    assert_eq!(
+        lifecycle_envelope.capability.as_deref(),
+        Some("mission.claim.approve")
+    );
+    assert_eq!(
+        lifecycle_envelope.target_agent_id.as_deref(),
+        Some("did:key:claimer")
+    );
+    assert!(
+        lifecycle_envelope.source_agent_card.is_some(),
+        "claim approval lifecycle topic includes source agent card"
+    );
+    drop(messages);
 
     let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
@@ -1174,6 +1482,398 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     assert_eq!(
         claimed_mission.claimed_by.as_deref(),
         Some("did:key:claimer")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_action_commit_settles_mission_completed_topic_without_candidate_finalize() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy_engine, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+    let publisher_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    let worker_identity = Identity::new_random();
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Ordinary mission completed topic",
+            "description": "Publisher settles an ordinary mission lifecycle topic.",
+            "publisher": publisher_public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 2,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "ordinary mission"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().expect("mission_id");
+    let _claimed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": worker_identity.agent_did,
+        }),
+    )
+    .await;
+    let _completed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": worker_identity.agent_did,
+            "result": {"ok": true, "summary": "done"}
+        }),
+    )
+    .await;
+
+    let content = json!({
+        "kind": "mission_completed",
+        "mission_id": mission_id,
+        "task_id": mission_id,
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": format!("group:{mission_id}"),
+        "publisher_agent_did": state.agent_did,
+        "claimer_agent_did": worker_identity.agent_did,
+        "agent_did": worker_identity.agent_did,
+        "result": {"ok": true, "summary": "done"},
+        "status": "completed",
+        "next_action": "settle_mission"
+    });
+    let agent_envelope = signed_agent_event_envelope(
+        &worker_identity,
+        "worker-node",
+        Some(&state.agent_did),
+        "mission.complete",
+        content.clone(),
+    );
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-topic-mission-completed-commit",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "worker-node",
+                "target_agent_id": state.agent_did,
+                "agent_envelope": agent_envelope,
+                "payload": {
+                    "feed_key": "wattetheria.missions",
+                    "scope_hint": format!("group:{mission_id}"),
+                    "message_id": "msg-completed-commit",
+                    "content": content
+                },
+                "allowed_actions": ["settle_mission", "ignore"],
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-topic-mission-completed-settle",
+                "action": "settle_mission",
+                "route": "wattetheria_commit",
+                "payload": {}
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(committed["status"].as_str(), Some("settled"));
+    assert_eq!(
+        committed["completed_by"].as_str(),
+        Some(worker_identity.agent_did.as_str())
+    );
+    assert!(committed.get("swarm_finalize").is_none());
+    assert!(committed.get("candidate_id").is_none());
+    assert_eq!(
+        committed["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_settled")
+    );
+
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[1].content["kind"].as_str(),
+        Some("mission_completed")
+    );
+    assert_eq!(
+        messages[2].content["kind"].as_str(),
+        Some("mission_settled")
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_events_route_claim_approved_topic_to_complete_mission_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"complete_mission\",\"reason\":\"work is ready\",\"payload\":{\"result\":{\"ok\":true,\"summary\":\"done\"}}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, _token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let publisher_identity = Identity::new_random();
+    let content = json!({
+        "kind": "mission_claim_approved",
+        "mission_id": "mission-approved-1",
+        "task_id": "mission-approved-1",
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "group:mission-approved-1",
+        "publisher_agent_did": publisher_identity.agent_did,
+        "publisher_wattswarm_node_id": "publisher-node",
+        "claimer_agent_did": state.agent_did,
+        "status": "approved",
+        "next_action": "complete_mission"
+    });
+    let agent_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&state.agent_did),
+        "mission.claim.approve",
+        content.clone(),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-topic-claim-approved",
+                        "event_type": "topic_message_requires_reply",
+                        "source_kind": "topic_message",
+                        "source_node_id": "publisher-node",
+                        "target_agent_id": state.agent_did,
+                        "target_executor": "core-agent",
+                        "agent_envelope": agent_envelope,
+                        "payload": {
+                            "feed_key": "wattetheria.missions",
+                            "scope_hint": "group:mission-approved-1",
+                            "message_id": "msg-approved-1",
+                            "content": content
+                        },
+                        "requires_commit": true,
+                        "allowed_actions": ["reply"],
+                        "correlation_id": "mission-approved-1",
+                        "dedupe_key": "topic:mission-approved-1:approved",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("complete_mission")
+    );
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["mission_id"].as_str(),
+        Some("mission-approved-1")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["agent_did"].as_str(),
+        Some(state.agent_did.as_str())
+    );
+    assert_eq!(
+        response["decision"]["payload"]["task_id"].as_str(),
+        Some("mission-approved-1")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["mission_scope_hint"].as_str(),
+        Some("group:mission-approved-1")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["result"]["summary"].as_str(),
+        Some("done")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_events_route_mission_completed_topic_to_settle_mission_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"settle_mission\",\"reason\":\"ordinary mission result accepted\",\"payload\":{}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, _token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let claimer_identity = Identity::new_random();
+    let content = json!({
+        "kind": "mission_completed",
+        "mission_id": "mission-completed-1",
+        "task_id": "mission-completed-1",
+        "mission_feed_key": "wattetheria.missions",
+        "mission_scope_hint": "group:mission-completed-1",
+        "publisher_agent_did": state.agent_did,
+        "publisher_wattswarm_node_id": "publisher-node",
+        "claimer_agent_did": claimer_identity.agent_did,
+        "agent_did": claimer_identity.agent_did,
+        "result": {"ok": true, "summary": "done"},
+        "status": "completed",
+        "next_action": "settle_mission"
+    });
+    let agent_envelope = signed_agent_event_envelope(
+        &claimer_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "mission.complete",
+        content.clone(),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-topic-mission-completed",
+                        "event_type": "topic_message_requires_reply",
+                        "source_kind": "topic_message",
+                        "source_node_id": "claimer-node",
+                        "target_agent_id": state.agent_did,
+                        "target_executor": "core-agent",
+                        "agent_envelope": agent_envelope,
+                        "payload": {
+                            "feed_key": "wattetheria.missions",
+                            "scope_hint": "group:mission-completed-1",
+                            "message_id": "msg-completed-1",
+                            "content": content
+                        },
+                        "requires_commit": true,
+                        "allowed_actions": ["reply"],
+                        "correlation_id": "mission-completed-1",
+                        "dedupe_key": "topic:mission-completed-1:completed",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("settle_mission")
+    );
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["mission_id"].as_str(),
+        Some("mission-completed-1")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["agent_did"].as_str(),
+        Some(claimer_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        response["decision"]["payload"]["task_id"].as_str(),
+        Some("mission-completed-1")
+    );
+    assert!(
+        response["decision"]["payload"]
+            .get("candidate_id")
+            .is_none()
     );
 
     server.abort();

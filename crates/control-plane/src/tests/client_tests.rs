@@ -1344,6 +1344,7 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
         "remote-task-1",
         &state.agent_did,
         "mission-remote-mission-1-agent",
+        Some("published".to_string()),
         NetworkMissionClaimMetadata {
             title: Some("Remote cargo".to_string()),
             publisher_id: Some("publisher-public".to_string()),
@@ -1351,7 +1352,7 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
             publisher_display_name: Some("Remote Publisher".to_string()),
             publisher_wattswarm_node_id: Some("publisher-node".to_string()),
             domain: Some("trade".to_string()),
-            task_status: Some("published".to_string()),
+            task_status: None,
             mission_feed_key: Some("wattetheria.missions".to_string()),
             mission_scope_hint: Some("group:remote-mission-1".to_string()),
             reward: Some(json!({"agent_watt": 10})),
