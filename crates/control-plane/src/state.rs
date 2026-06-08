@@ -38,6 +38,7 @@ use wattetheria_kernel::payments::PaymentLedger;
 use wattetheria_kernel::policy_engine::{GrantScope, PolicyEngine};
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
+use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
 use wattetheria_kernel::swarm_bridge::{SwarmBridge, SwarmRelationshipAction};
 use wattetheria_social::SocialStore;
 
@@ -586,6 +587,8 @@ pub struct AgentActionCommitEvent {
     pub source_node_id: Option<String>,
     #[serde(default)]
     pub target_agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_envelope: Option<SwarmAgentEnvelope>,
     pub payload: Value,
     #[serde(default)]
     pub requires_commit: bool,
@@ -702,6 +705,8 @@ pub struct MissionSettleBody {
     pub task_id: Option<String>,
     pub agent_did: Option<String>,
     pub candidate_id: Option<String>,
+    #[serde(default)]
+    pub claim_route: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]

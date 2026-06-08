@@ -874,7 +874,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
             Json(json!({
                 "choices": [{
                     "message": {
-                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"auto approved\",\"PAYLOAD\":{\"APPROVED\": TRUE,\"AGENT_DID\":\"did:key:claimer\"}}"
+                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"auto approved\",\"PAYLOAD\":{\"APPROVED\": TRUE,\"AGENT_DID\":\"did:key:claimer\",\"DISPLAY_NAME\":\"Agent-MX1111\",\"PUBLIC_ID\":\"agent-MX1111.public\"}}"
                     }
                 }]
             }))
@@ -1005,6 +1005,26 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     .await;
     assert_eq!(committed["status"].as_str(), Some("claimed"));
     assert_eq!(committed["claimed_by"].as_str(), Some("did:key:claimer"));
+    assert_eq!(
+        committed["claimer_agent_did"].as_str(),
+        Some("did:key:claimer")
+    );
+    assert_eq!(
+        committed["claimer_agent_identity"].as_str(),
+        Some("Agent-MX1111")
+    );
+    assert_eq!(
+        committed["claimer_display_name"].as_str(),
+        Some("Agent-MX1111")
+    );
+    assert_eq!(
+        committed["claimer_public_id"].as_str(),
+        Some("agent-MX1111.public")
+    );
+    assert!(
+        committed["updated_at"].as_i64().unwrap_or_default()
+            >= committed["created_at"].as_i64().unwrap_or_default()
+    );
 
     let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
@@ -1016,6 +1036,14 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     assert_eq!(
         claimed.payload["claimed_by"].as_str(),
         Some("did:key:claimer")
+    );
+    assert_eq!(
+        claimed.payload["claimer_display_name"].as_str(),
+        Some("Agent-MX1111")
+    );
+    assert!(
+        claimed.payload["updated_at"].as_i64().unwrap_or_default()
+            >= claimed.payload["created_at"].as_i64().unwrap_or_default()
     );
     let gateway_plan =
         crate::gateway_dispatch::plan_stream_event(&claimed).expect("gateway dispatch plan");

@@ -111,6 +111,20 @@ fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did:
         .unwrap_or_else(|| default_agent_did.to_owned())
 }
 
+fn mission_claim_body_for_commit(
+    body: &AgentActionCommitBody,
+    mission_id: String,
+    agent_did: String,
+) -> MissionClaimBody {
+    let mut claim_body = MissionClaimBody::local(mission_id, agent_did);
+    claim_body.claim_route = Some(json!({
+        "agent_envelope": body.event.agent_envelope.clone(),
+        "agent_event_payload": body.event.payload.clone(),
+        "decision_payload": body.decision.payload.clone(),
+    }));
+    claim_body
+}
+
 fn agent_action_commit_object(body: &AgentActionCommitBody) -> (&'static str, Option<String>) {
     if let Some(mission_id) = mission_id_for_commit(body) {
         return ("mission", Some(mission_id));
@@ -539,51 +553,56 @@ async fn commit_transition_mission(
     match body.decision.action.as_str() {
         "claim_mission" => {
             let default_agent_did = state.agent_did.clone();
-            crate::routes::missions::mission_claim(
-                State(state),
-                commit_headers,
-                Json(MissionClaimBody::local(
-                    mission_id,
-                    mission_agent_did_for_commit(&body, &default_agent_did),
-                )),
-            )
-            .await
+            let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+            let claim_body = mission_claim_body_for_commit(&body, mission_id, agent_did);
+            crate::routes::missions::mission_claim(State(state), commit_headers, Json(claim_body))
+                .await
         }
         "complete_mission" => {
             let default_agent_did = state.agent_did.clone();
+            let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+            let claim_body = mission_claim_body_for_commit(&body, mission_id, agent_did);
             crate::routes::missions::mission_complete(
                 State(state),
                 commit_headers,
-                Json(MissionClaimBody::local(
-                    mission_id,
-                    mission_agent_did_for_commit(&body, &default_agent_did),
-                )),
+                Json(claim_body),
             )
             .await
         }
         "settle_mission" => {
             if body.event.event_type == "task_result_received" {
                 let default_agent_did = state.agent_did.clone();
+                let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+                let claim_route =
+                    mission_claim_body_for_commit(&body, mission_id.clone(), agent_did.clone())
+                        .claim_route;
                 let task_id = payload_string(&body.event.payload, "/task_id");
                 let candidate_id = payload_string(&body.event.payload, "/candidate_id");
                 return commit_task_result_settle_mission(
                     state,
                     commit_headers,
                     mission_id,
-                    mission_agent_did_for_commit(&body, &default_agent_did),
+                    agent_did,
                     task_id,
                     candidate_id,
+                    claim_route,
                 )
                 .await;
             }
+            let default_agent_did = state.agent_did.clone();
+            let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+            let claim_route =
+                mission_claim_body_for_commit(&body, mission_id.clone(), agent_did.clone())
+                    .claim_route;
             crate::routes::missions::mission_settle(
                 State(state),
                 commit_headers,
                 Json(MissionSettleBody {
                     mission_id,
                     task_id: None,
-                    agent_did: None,
+                    agent_did: Some(agent_did),
                     candidate_id: None,
+                    claim_route,
                 }),
             )
             .await
@@ -599,6 +618,7 @@ async fn commit_task_result_settle_mission(
     agent_did: String,
     task_id: Option<String>,
     candidate_id: Option<String>,
+    claim_route: Option<Value>,
 ) -> Response {
     let status = {
         let board = state.mission_board.lock().await;
@@ -629,13 +649,12 @@ async fn commit_task_result_settle_mission(
     // Mission transitions are idempotent via replay guards (commit_headers dedup).
     // If any step fails, a retry will skip already-completed steps.
     if status == MissionStatus::Open {
+        let mut claim_body = MissionClaimBody::local(mission_id.clone(), agent_did.clone());
+        claim_body.claim_route = claim_route.clone();
         let response = crate::routes::missions::mission_claim(
             State(state.clone()),
             commit_headers.clone(),
-            Json(MissionClaimBody::local(
-                mission_id.clone(),
-                agent_did.clone(),
-            )),
+            Json(claim_body),
         )
         .await;
         if !response.status().is_success() {
@@ -643,10 +662,12 @@ async fn commit_task_result_settle_mission(
         }
     }
     if matches!(status, MissionStatus::Open | MissionStatus::Claimed) {
+        let mut complete_body = MissionClaimBody::local(mission_id.clone(), agent_did.clone());
+        complete_body.claim_route = claim_route.clone();
         let response = crate::routes::missions::mission_complete(
             State(state.clone()),
             commit_headers.clone(),
-            Json(MissionClaimBody::local(mission_id.clone(), agent_did)),
+            Json(complete_body),
         )
         .await;
         if !response.status().is_success() {
@@ -659,8 +680,9 @@ async fn commit_task_result_settle_mission(
         Json(MissionSettleBody {
             mission_id,
             task_id: None,
-            agent_did: None,
+            agent_did: Some(agent_did),
             candidate_id: None,
+            claim_route,
         }),
     )
     .await

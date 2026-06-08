@@ -60,6 +60,8 @@ pub struct CivilMission {
     pub reward: MissionReward,
     pub payload: Value,
     pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
     pub claimed_by: Option<String>,
     pub completed_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -162,6 +164,7 @@ impl MissionBoard {
         reward: MissionReward,
         payload: Value,
     ) -> CivilMission {
+        let now = Utc::now().timestamp();
         let mission = CivilMission {
             mission_id: uuid::Uuid::new_v4().to_string(),
             title: title.to_string(),
@@ -175,7 +178,8 @@ impl MissionBoard {
             required_faction,
             reward,
             payload,
-            created_at: Utc::now().timestamp(),
+            created_at: now,
+            updated_at: now,
             claimed_by: None,
             completed_by: None,
             completion_result: None,
@@ -197,6 +201,7 @@ impl MissionBoard {
         }
         mission.claimed_by = Some(agent_did.to_string());
         mission.status = MissionStatus::Claimed;
+        mission.updated_at = Utc::now().timestamp();
         Ok(mission.clone())
     }
 
@@ -219,6 +224,7 @@ impl MissionBoard {
         mission.completed_by = Some(agent_did.to_string());
         mission.completion_result = result;
         mission.status = MissionStatus::Completed;
+        mission.updated_at = Utc::now().timestamp();
         Ok(mission.clone())
     }
 
@@ -231,7 +237,9 @@ impl MissionBoard {
             bail!("mission is not completed");
         }
         mission.status = MissionStatus::Settled;
-        mission.settled_at = Some(Utc::now().timestamp());
+        let now = Utc::now().timestamp();
+        mission.settled_at = Some(now);
+        mission.updated_at = now;
         Ok(mission.clone())
     }
 

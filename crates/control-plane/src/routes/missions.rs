@@ -720,6 +720,115 @@ fn insert_mission_identity_projection(
     }
 }
 
+fn insert_mission_actor_projection_fallback(
+    object: &mut serde_json::Map<String, Value>,
+    prefix: &str,
+    agent_did: &str,
+    body: &MissionClaimBody,
+) {
+    if !agent_did.trim().is_empty() {
+        object
+            .entry(format!("{prefix}_agent_did"))
+            .or_insert_with(|| Value::String(agent_did.to_string()));
+    }
+    if let Some(display_name) = mission_claim_actor_display_name(body) {
+        object
+            .entry(format!("{prefix}_agent_identity"))
+            .or_insert_with(|| Value::String(display_name.clone()));
+        object
+            .entry(format!("{prefix}_display_name"))
+            .or_insert_with(|| Value::String(display_name));
+    }
+    if let Some(public_id) = mission_claim_actor_public_id(body) {
+        object
+            .entry(format!("{prefix}_public_id"))
+            .or_insert_with(|| Value::String(public_id));
+    }
+}
+
+fn insert_mission_transition_actor_projection(
+    payload: &mut Value,
+    action: &str,
+    agent_did: &str,
+    body: &MissionClaimBody,
+) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    match action {
+        "claim" => insert_mission_actor_projection_fallback(object, "claimer", agent_did, body),
+        "complete" => {
+            insert_mission_actor_projection_fallback(object, "completer", agent_did, body);
+        }
+        _ => {}
+    }
+}
+
+fn mission_claim_actor_display_name(body: &MissionClaimBody) -> Option<String> {
+    [
+        &["decision_payload", "display_name"][..],
+        &["decision_payload", "agent_identity"][..],
+        &[
+            "agent_envelope",
+            "source_agent_card",
+            "card",
+            "metadata",
+            "display_name",
+        ][..],
+        &["agent_envelope", "source_agent_card", "card", "name"][..],
+        &[
+            "agent_event_payload",
+            "agent_envelope",
+            "source_agent_card",
+            "card",
+            "metadata",
+            "display_name",
+        ][..],
+        &[
+            "agent_event_payload",
+            "agent_envelope",
+            "source_agent_card",
+            "card",
+            "name",
+        ][..],
+    ]
+    .into_iter()
+    .find_map(|path| claim_route_path_string(body, path))
+}
+
+fn mission_claim_actor_public_id(body: &MissionClaimBody) -> Option<String> {
+    [
+        &["decision_payload", "public_id"][..],
+        &["decision_payload", "agent_public_id"][..],
+        &[
+            "agent_envelope",
+            "source_agent_card",
+            "card",
+            "metadata",
+            "public_id",
+        ][..],
+        &[
+            "agent_event_payload",
+            "agent_envelope",
+            "source_agent_card",
+            "card",
+            "metadata",
+            "public_id",
+        ][..],
+    ]
+    .into_iter()
+    .find_map(|path| claim_route_path_string(body, path))
+}
+
+fn claim_route_path_string(body: &MissionClaimBody, path: &[&str]) -> Option<String> {
+    path.iter()
+        .try_fold(body.claim_route.as_ref()?, |value, key| value.get(*key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 struct MissionRewardActor {
     controller_id: String,
     public_id: Option<String>,
@@ -1797,7 +1906,8 @@ async fn transition_mission(
         return internal_error(&error);
     }
 
-    let payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    insert_mission_transition_actor_projection(&mut payload, action, &request_agent_did, &body);
     let _ = state.stream_tx.send(StreamEvent {
         kind: mission_stream_kind(action).to_string(),
         timestamp: Utc::now().timestamp(),
@@ -1880,7 +1990,12 @@ pub(crate) async fn mission_settle(
         return internal_error(&error);
     }
 
-    let payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    if let (Some(agent_did), Some(object)) = (body.agent_did.as_deref(), payload.as_object_mut()) {
+        let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
+        actor_body.claim_route.clone_from(&body.claim_route);
+        insert_mission_actor_projection_fallback(object, "completer", agent_did, &actor_body);
+    }
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.settled".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -1902,7 +2017,7 @@ pub(crate) async fn mission_settle(
         details: Some(payload.clone()),
     });
 
-    let mut response_json = serde_json::to_value(&mission).unwrap_or(Value::Null);
+    let mut response_json = payload.clone();
     if let Some(swarm_finalize) = swarm_finalize
         && let Some(object) = response_json.as_object_mut()
     {
@@ -1914,8 +2029,8 @@ pub(crate) async fn mission_settle(
         CommitResponseArgs {
             action_type: "missions.settle",
             target_id: Some(mission.mission_id.clone()),
-            actor_agent_did: None,
-            request_json: &json!({"mission_id": request_mission_id}),
+            actor_agent_did: body.agent_did.clone(),
+            request_json: &json!({"mission_id": request_mission_id, "agent_did": body.agent_did}),
             response_json: &response_json,
         },
     ) {

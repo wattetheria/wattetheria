@@ -1098,6 +1098,7 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -1162,6 +1163,20 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
         },
     )
     .expect("seed active friendship");
+    wattetheria_social::application::thread_service::upsert_thread(
+        &*state.social_store,
+        &wattetheria_social::domain::threads::DirectThread {
+            thread_id: "dm:existing-ms-thread".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            transport_thread_id: "dm:existing-ms-thread".to_string(),
+            state: wattetheria_social::domain::threads::ThreadState::Ready,
+            last_message_at: Some(1_780_801_347_838),
+            created_at: 1_780_801_347_838,
+            updated_at: 1_780_801_347_838,
+        },
+    )
+    .expect("seed existing millisecond dm thread");
 
     let response = mcp_request(
         app,
@@ -1197,6 +1212,15 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
         command.content["text"].as_str(),
         Some("hello over private group dm")
     );
+    let thread = wattetheria_social::application::thread_service::find_thread(
+        &*state.social_store,
+        &local_public_id,
+        &remote_public_id,
+    )
+    .expect("find dm thread")
+    .expect("dm thread exists");
+    assert!(thread.updated_at >= thread.created_at);
+    assert!(thread.updated_at >= 1_000_000_000_000);
 }
 
 #[tokio::test]

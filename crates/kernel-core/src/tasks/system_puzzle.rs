@@ -387,6 +387,7 @@ mod tests {
             })
             .unwrap(),
             created_at: 1,
+            updated_at: 1,
             claimed_by: None,
             completed_by: None,
             completion_result: None,

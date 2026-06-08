@@ -92,6 +92,7 @@ async fn apply_third_party_decision(
                 source_kind: event.source_kind.clone(),
                 source_node_id: None,
                 target_agent_id: None,
+                agent_envelope: None,
                 payload: event.payload.clone(),
                 requires_commit: event.requires_commit,
             },

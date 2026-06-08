@@ -1423,7 +1423,7 @@ async fn persist_social_dm_message(
     state: &ControlPlaneState,
     args: PersistSocialDmMessageArgs,
 ) -> anyhow::Result<()> {
-    let now = Utc::now().timestamp();
+    let now = Utc::now().timestamp_millis();
     let (identities, bindings) = load_social_identity_maps(state).await;
     orchestration_service::persist_dm_message(
         &*state.social_store,

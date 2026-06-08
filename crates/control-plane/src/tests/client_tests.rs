@@ -1,5 +1,38 @@
 use super::*;
 
+fn assert_actor_projection(
+    value: &serde_json::Value,
+    prefix: &str,
+    agent_did: &str,
+    display_name: &str,
+    public_id: &str,
+) {
+    assert_eq!(
+        value
+            .get(format!("{prefix}_agent_did"))
+            .and_then(serde_json::Value::as_str),
+        Some(agent_did)
+    );
+    assert_eq!(
+        value
+            .get(format!("{prefix}_agent_identity"))
+            .and_then(serde_json::Value::as_str),
+        Some(display_name)
+    );
+    assert_eq!(
+        value
+            .get(format!("{prefix}_display_name"))
+            .and_then(serde_json::Value::as_str),
+        Some(display_name)
+    );
+    assert_eq!(
+        value
+            .get(format!("{prefix}_public_id"))
+            .and_then(serde_json::Value::as_str),
+        Some(public_id)
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn client_api_routes_align_with_client_dtos() {
@@ -643,6 +676,7 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
     )
     .await;
     let mission_id = mission["mission_id"].as_str().unwrap();
+    let created_at = mission["created_at"].as_i64().unwrap();
     let worker = "did:key:worker";
 
     let committed = authed_post_json(
@@ -683,13 +717,24 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
                 "route": "wattetheria_commit",
                 "payload": {
                     "mission_id": mission_id,
-                    "agent_did": worker
+                    "agent_did": worker,
+                    "display_name": "Agent-MX1111",
+                    "public_id": "agent-MX1111.public"
                 }
             }
         }),
     )
     .await;
     assert_eq!(committed["status"].as_str(), Some("settled"));
+    assert_eq!(committed["completed_by"].as_str(), Some(worker));
+    assert_actor_projection(
+        &committed,
+        "completer",
+        worker,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
+    assert!(committed["updated_at"].as_i64().unwrap() >= created_at);
 
     let board = state.mission_board.lock().await;
     let settled = board.get(mission_id).unwrap();
@@ -698,6 +743,7 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
         wattetheria_kernel::civilization::missions::MissionStatus::Settled
     );
     assert_eq!(settled.completed_by.as_deref(), Some(worker));
+    assert!(settled.updated_at >= created_at);
 }
 
 #[tokio::test]

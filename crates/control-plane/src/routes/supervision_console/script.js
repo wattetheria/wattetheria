@@ -795,7 +795,7 @@
         const localSocial = await loadLocalSocialPayload(publicId, limit);
         Object.assign(payload, localSocial);
         renderSnapshot(payload);
-        await refreshDiagnostics(limit);
+        await refreshDiagnostics();
         lastRefreshEl.textContent = `Refreshed ${new Date().toLocaleString()}`;
         setStatus(`Node console refreshed for ${publicId}.`);
       } catch (error) {
@@ -864,7 +864,7 @@
       const category = qs("diagnostic-category").value.trim();
       const objectId = qs("diagnostic-object-id").value.trim();
       const sourceNodeId = qs("diagnostic-source-node-id").value.trim();
-      const limit = limitOverride || qs("diagnostic-limit").value || limitEl.value || "100";
+      const limit = limitOverride || qs("diagnostic-limit").value || limitEl.value || "1000";
       params.set("limit", String(limit));
       if (search) params.set("search", search);
       if (level) params.set("level", level);
@@ -1080,7 +1080,6 @@
         { label: "Network Reward", render: (row) => escapeHtml(signedWatt(row.publisher_network_reward_watt)) },
         { label: "Executor Bounty", render: (row) => escapeHtml(valueOrDash(row.executor_bounty_watt ?? row.task_bounty_watt ?? row.reward_watt)) },
         { label: "Created", render: (row) => escapeHtml(formatTime(row.created_at)) },
-        { label: "Expires", render: (row) => escapeHtml(formatTime(row.expires_at ?? row.expiry_ms ?? row.task_contract?.expires_at ?? row.task_contract?.expiry_ms)) },
       ], pageRows, missionSearchQuery.trim() ? "No missions match this search." : "No missions recorded.");
     }
 
