@@ -23,7 +23,9 @@ use wattetheria_kernel::civilization::galaxy::GalaxyState;
 use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, PublicIdentityRegistry,
 };
-use wattetheria_kernel::civilization::missions::MissionBoard;
+use wattetheria_kernel::civilization::missions::{
+    MissionBoard, NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
+};
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::topics::HiveRegistry;

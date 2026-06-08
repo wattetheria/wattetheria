@@ -21,7 +21,8 @@
     const hiveMessageCache = new Map();
     const hiveMessageErrors = new Map();
     let missionSearchQuery = "";
-    let missionPage = 1;
+    let activeMissionTab = "published";
+    const missionPageByTab = { published: 1, claimed: 1 };
     const missionPageSize = 10;
     let servicenetTemplate = null;
     let servicenetAgents = [];
@@ -64,4 +65,3 @@
       { value: "base", label: "Base" },
       { value: "base-sepolia", label: "Base Sepolia" },
     ];
-

@@ -1315,6 +1315,93 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
 }
 
 #[tokio::test]
+async fn client_export_separates_published_and_claimed_mission_tasks() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let created = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Published cargo",
+            "description": "Local publisher mission",
+            "publisher": "publisher-public",
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 10,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"cargo": "ore"}
+        }),
+    )
+    .await;
+    let published_id = created["mission_id"].as_str().unwrap();
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "remote-mission-1",
+        "remote-task-1",
+        &state.agent_did,
+        "mission-remote-mission-1-agent",
+        NetworkMissionClaimMetadata {
+            title: Some("Remote cargo".to_string()),
+            publisher_id: Some("publisher-public".to_string()),
+            publisher_agent_did: Some("did:agent:publisher".to_string()),
+            publisher_display_name: Some("Remote Publisher".to_string()),
+            publisher_wattswarm_node_id: Some("publisher-node".to_string()),
+            domain: Some("trade".to_string()),
+            task_status: Some("published".to_string()),
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:remote-mission-1".to_string()),
+            reward: Some(json!({"agent_watt": 10})),
+            reward_watt: Some(10),
+            executor_bounty_watt: Some(10),
+            publisher_network_reward_watt: Some(1),
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let export_json = public_get_json(app, "/v1/wattetheria/client/export?task_limit=10").await;
+    let tasks = export_json["payload"]["tasks"].as_array().unwrap();
+    let published = tasks
+        .iter()
+        .find(|task| task["id"].as_str() == Some(published_id))
+        .unwrap();
+    let claimed = tasks
+        .iter()
+        .find(|task| task["id"].as_str() == Some("remote-mission-1"))
+        .unwrap();
+
+    assert_eq!(published["task_origin"].as_str(), Some("published"));
+    assert_eq!(published["status"].as_str(), Some("published"));
+    assert_eq!(claimed["task_origin"].as_str(), Some("claimed"));
+    assert_eq!(claimed["status"].as_str(), Some("published"));
+    assert_eq!(claimed["node_claim_status"].as_str(), Some("claimed"));
+    assert_eq!(claimed["task_id"].as_str(), Some("remote-task-1"));
+    assert_eq!(claimed["title"].as_str(), Some("Remote cargo"));
+    assert_eq!(claimed["domain"].as_str(), Some("trade"));
+    assert_eq!(claimed["publisher_id"].as_str(), Some("publisher-public"));
+    assert_eq!(
+        claimed["created_by_agent_identity"].as_str(),
+        Some("Remote Publisher")
+    );
+    assert_eq!(claimed["reward_watt"].as_i64(), Some(10));
+    assert_eq!(claimed["publisher_network_reward_watt"].as_i64(), Some(1));
+    assert_eq!(
+        claimed["claimer_id"].as_str(),
+        Some(state.agent_did.as_str())
+    );
+    assert!(claimed["claimed_at"].as_str().is_some());
+}
+
+#[tokio::test]
 async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let (_dir, app, token, _, state) = build_test_app(20);
     let publisher_public_id =

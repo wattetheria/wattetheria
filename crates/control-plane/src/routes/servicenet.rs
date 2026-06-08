@@ -275,7 +275,10 @@ pub(crate) async fn invoke_agent(
         Err(error) => return servicenet_error_response(&error),
     };
     let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
-    notify_local_agent_of_third_party_result(&state, "invoke", &agent_id, None, &payload).await;
+    Box::pin(notify_local_agent_of_third_party_result(
+        &state, "invoke", &agent_id, None, &payload,
+    ))
+    .await;
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -351,13 +354,13 @@ pub(crate) async fn get_agent_task(
         Err(error) => return servicenet_error_response(&error),
     };
     let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
-    notify_local_agent_of_third_party_result(
+    Box::pin(notify_local_agent_of_third_party_result(
         &state,
         "task_get",
         &agent_id,
         Some(&task_id),
         &payload,
-    )
+    ))
     .await;
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),

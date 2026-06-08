@@ -24,7 +24,7 @@ use crate::state::{
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::{
-    CivilMission, MissionStatus, NetworkMissionClaimRegistry,
+    CivilMission, MissionStatus, NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
 };
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
@@ -160,14 +160,104 @@ fn record_network_claim_submission(
     task_id: &str,
     agent_did: &str,
     execution_id: &str,
+    metadata: NetworkMissionClaimMetadata,
 ) -> anyhow::Result<()> {
     let mut registry: NetworkMissionClaimRegistry = state
         .local_db
         .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
-    registry.record(mission_id, task_id, agent_did, execution_id);
+    registry.record(mission_id, task_id, agent_did, execution_id, metadata);
     state
         .local_db
         .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
+}
+
+fn network_claim_metadata(
+    body: &MissionClaimBody,
+    route: &NetworkMissionClaimRoute,
+    contract: &TaskContract,
+) -> NetworkMissionClaimMetadata {
+    let reward = network_claim_value(body, contract, "reward").cloned();
+    let reward_watt = reward
+        .as_ref()
+        .and_then(reward_agent_watt)
+        .or_else(|| network_claim_i64(body, contract, "reward_watt"));
+    NetworkMissionClaimMetadata {
+        title: network_claim_string(body, contract, "title"),
+        publisher_id: network_claim_string(body, contract, "publisher"),
+        publisher_agent_did: network_claim_string(body, contract, "publisher_agent_did"),
+        publisher_display_name: network_claim_string(body, contract, "publisher_display_name"),
+        publisher_wattswarm_node_id: route
+            .publisher_wattswarm_node_id
+            .clone()
+            .or_else(|| network_claim_string(body, contract, "publisher_wattswarm_node_id")),
+        domain: network_claim_string(body, contract, "domain"),
+        task_status: route
+            .status
+            .clone()
+            .or_else(|| network_claim_string(body, contract, "status")),
+        mission_feed_key: Some(route.mission_feed_key.clone()),
+        mission_scope_hint: Some(route.mission_scope_hint.clone()),
+        reward,
+        reward_watt,
+        executor_bounty_watt: network_claim_i64(body, contract, "executor_bounty_watt")
+            .or(reward_watt),
+        publisher_network_reward_watt: network_claim_i64(
+            body,
+            contract,
+            "publisher_network_reward_watt",
+        )
+        .or_else(|| network_claim_i64(body, contract, "network_publish_reward_watt")),
+    }
+}
+
+fn network_claim_string(
+    body: &MissionClaimBody,
+    contract: &TaskContract,
+    field: &str,
+) -> Option<String> {
+    claim_route_string(body, field)
+        .or_else(|| {
+            claim_route_value(body, "task_inputs").and_then(|inputs| value_string(inputs, field))
+        })
+        .or_else(|| value_string(&contract.inputs, field))
+}
+
+fn network_claim_value<'a>(
+    body: &'a MissionClaimBody,
+    contract: &'a TaskContract,
+    field: &str,
+) -> Option<&'a Value> {
+    claim_route_value(body, field)
+        .or_else(|| claim_route_value(body, "task_inputs").and_then(|inputs| inputs.get(field)))
+        .or_else(|| contract.inputs.get(field))
+}
+
+fn network_claim_i64(body: &MissionClaimBody, contract: &TaskContract, field: &str) -> Option<i64> {
+    network_claim_value(body, contract, field).and_then(value_i64)
+}
+
+fn value_string(value: &Value, field: &str) -> Option<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn value_i64(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+        .or_else(|| value.as_str()?.trim().parse().ok())
+}
+
+fn reward_agent_watt(reward: &Value) -> Option<i64> {
+    reward
+        .get("agent_watt")
+        .or_else(|| reward.get("executor_bounty_watt"))
+        .or_else(|| reward.get("reward_watt"))
+        .and_then(value_i64)
 }
 
 fn network_claim_error_response(
@@ -1592,6 +1682,7 @@ async fn claim_network_mission(
         Ok(contract) => contract,
         Err(response) => return response,
     };
+    let claim_metadata = network_claim_metadata(&body, &route, &contract);
     let (subscriber_node_id, task_contract_sync) =
         match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
@@ -1637,7 +1728,9 @@ async fn claim_network_mission(
         "swarm_claim": swarm_claim,
     });
 
-    if let Err(error) = record_network_claim_success(&state, auth, &execution_id, &response_json) {
+    if let Err(error) =
+        record_network_claim_success(&state, auth, &execution_id, &response_json, claim_metadata)
+    {
         return internal_error(&error);
     }
     Json(response_json).into_response()
@@ -1648,6 +1741,7 @@ fn record_network_claim_success(
     auth: String,
     execution_id: &str,
     response_json: &Value,
+    metadata: NetworkMissionClaimMetadata,
 ) -> anyhow::Result<()> {
     record_network_claim_submission(
         state,
@@ -1655,6 +1749,7 @@ fn record_network_claim_success(
         response_json["task_id"].as_str().unwrap_or_default(),
         response_json["agent_did"].as_str().unwrap_or_default(),
         execution_id,
+        metadata,
     )?;
 
     let _ = state.audit_log.append(AuditEntry {

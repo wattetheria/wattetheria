@@ -1421,7 +1421,7 @@ fn gateway_mission_claim_route(task: &Value) -> Value {
         && swarm_scope.is_some()
         && task_contract_available;
 
-    json!({
+    let mut claim_route = json!({
         "task_id": task_id,
         "mission_id": mission_id,
         "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
@@ -1430,7 +1430,101 @@ fn gateway_mission_claim_route(task: &Value) -> Value {
         "swarm_scope": swarm_scope,
         "task_contract_available": task_contract_available,
         "claim_ready": claim_ready,
-    })
+    });
+    if let Some(object) = claim_route.as_object_mut() {
+        insert_gateway_claim_snapshot_fields(object, task);
+    }
+    claim_route
+}
+
+fn insert_gateway_claim_snapshot_fields(object: &mut Map<String, Value>, task: &Value) {
+    insert_gateway_claim_string(object, "title", task, &[&["title"], &["summary", "title"]]);
+    insert_gateway_claim_string(object, "status", task, &[&["status"], &["terminal_state"]]);
+    insert_gateway_claim_input_string(object, "domain", task);
+    insert_gateway_claim_input_string(object, "publisher", task);
+    insert_gateway_claim_input_string(object, "publisher_agent_did", task);
+    insert_gateway_claim_input_string(object, "publisher_display_name", task);
+    insert_gateway_claim_input_value(object, "reward", task);
+    insert_gateway_claim_value(
+        object,
+        "task_inputs",
+        task,
+        &[
+            &["task_contract", "inputs"],
+            &["contract", "inputs"],
+            &["inputs"],
+        ],
+    );
+}
+
+fn insert_gateway_claim_input_string(object: &mut Map<String, Value>, key: &str, task: &Value) {
+    let paths = [
+        vec![key],
+        vec!["summary", key],
+        vec!["inputs", key],
+        vec!["task_contract", "inputs", key],
+        vec!["contract", "inputs", key],
+    ];
+    if let Some(value) = gateway_task_string_from_vec_paths(task, &paths) {
+        object.insert(key.to_string(), Value::String(value));
+    }
+}
+
+fn insert_gateway_claim_input_value(object: &mut Map<String, Value>, key: &str, task: &Value) {
+    let paths = [
+        vec![key],
+        vec!["summary", key],
+        vec!["inputs", key],
+        vec!["task_contract", "inputs", key],
+        vec!["contract", "inputs", key],
+    ];
+    if let Some(value) = gateway_task_value_from_vec_paths(task, &paths) {
+        object.insert(key.to_string(), value.clone());
+    }
+}
+
+fn insert_gateway_claim_string(
+    object: &mut Map<String, Value>,
+    key: &str,
+    task: &Value,
+    paths: &[&[&str]],
+) {
+    if let Some(value) = gateway_task_string(task, paths) {
+        object.insert(key.to_string(), Value::String(value));
+    }
+}
+
+fn insert_gateway_claim_value(
+    object: &mut Map<String, Value>,
+    key: &str,
+    task: &Value,
+    paths: &[&[&str]],
+) {
+    if let Some(value) = gateway_task_value(task, paths) {
+        object.insert(key.to_string(), value.clone());
+    }
+}
+
+fn gateway_task_string_from_vec_paths(task: &Value, paths: &[Vec<&str>]) -> Option<String> {
+    paths
+        .iter()
+        .filter_map(|path| path.iter().try_fold(task, |value, key| value.get(*key)))
+        .find_map(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+}
+
+fn gateway_task_value_from_vec_paths<'a>(
+    task: &'a Value,
+    paths: &[Vec<&str>],
+) -> Option<&'a Value> {
+    paths
+        .iter()
+        .find_map(|path| path.iter().try_fold(task, |value, key| value.get(*key)))
 }
 
 fn gateway_task_string(task: &Value, paths: &[&[&str]]) -> Option<String> {

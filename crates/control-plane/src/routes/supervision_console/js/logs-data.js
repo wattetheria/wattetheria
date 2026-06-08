@@ -6,7 +6,7 @@
       const category = qs("diagnostic-category").value.trim();
       const objectId = qs("diagnostic-object-id").value.trim();
       const sourceNodeId = qs("diagnostic-source-node-id").value.trim();
-      const limit = limitOverride || qs("diagnostic-limit").value || limitEl.value || "1000";
+      const limit = limitOverride || qs("diagnostic-limit").value || limitEl.value || "200";
       params.set("limit", String(limit));
       if (search) params.set("search", search);
       if (level) params.set("level", level);

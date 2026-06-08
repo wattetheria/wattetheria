@@ -82,6 +82,38 @@ pub struct NetworkMissionClaimRecord {
     pub agent_did: String,
     pub execution_id: String,
     pub claimed_at: i64,
+    #[serde(default)]
+    pub metadata: NetworkMissionClaimMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkMissionClaimMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_agent_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_wattswarm_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_feed_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_scope_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_watt: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_bounty_watt: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher_network_reward_watt: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -90,6 +122,11 @@ pub struct NetworkMissionClaimRegistry {
 }
 
 impl NetworkMissionClaimRegistry {
+    #[must_use]
+    pub fn records(&self) -> Vec<NetworkMissionClaimRecord> {
+        self.claims.values().cloned().collect()
+    }
+
     #[must_use]
     pub fn contains(&self, mission_id: &str, task_id: &str, agent_did: &str) -> bool {
         self.claims
@@ -102,6 +139,7 @@ impl NetworkMissionClaimRegistry {
         task_id: &str,
         agent_did: &str,
         execution_id: &str,
+        metadata: NetworkMissionClaimMetadata,
     ) -> NetworkMissionClaimRecord {
         let record = NetworkMissionClaimRecord {
             mission_id: mission_id.to_string(),
@@ -109,6 +147,7 @@ impl NetworkMissionClaimRegistry {
             agent_did: agent_did.to_string(),
             execution_id: execution_id.to_string(),
             claimed_at: Utc::now().timestamp(),
+            metadata,
         };
         self.claims.insert(
             network_claim_key(mission_id, task_id, agent_did),
@@ -307,9 +346,22 @@ mod tests {
         let mut registry = NetworkMissionClaimRegistry::default();
         assert!(!registry.contains("mission-1", "task-1", "agent-a"));
 
-        let record = registry.record("mission-1", "task-1", "agent-a", "exec-1");
+        let record = registry.record(
+            "mission-1",
+            "task-1",
+            "agent-a",
+            "exec-1",
+            NetworkMissionClaimMetadata {
+                domain: Some("trade".to_string()),
+                publisher_id: Some("publisher-public".to_string()),
+                reward_watt: Some(10),
+                ..NetworkMissionClaimMetadata::default()
+            },
+        );
 
         assert_eq!(record.execution_id, "exec-1");
+        assert_eq!(record.metadata.domain.as_deref(), Some("trade"));
+        assert_eq!(record.metadata.reward_watt, Some(10));
         assert!(registry.contains("mission-1", "task-1", "agent-a"));
         assert!(!registry.contains("mission-1", "task-1", "agent-b"));
     }

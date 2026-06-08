@@ -159,6 +159,14 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <section class="view-page" data-page="missions" hidden>
           <article class="panel">
             <h2>Missions</h2>
+            <div class="log-tabs mission-tabs" role="tablist" aria-label="Mission source filters">
+              <button class="log-tab active" type="button" data-mission-tab="published" role="tab" aria-selected="true">
+                Published
+              </button>
+              <button class="log-tab" type="button" data-mission-tab="claimed" role="tab" aria-selected="false">
+                Claimed
+              </button>
+            </div>
             <div class="mission-toolbar">
               <label>
                 Search
@@ -518,7 +526,7 @@ __SUPERVISION_CONSOLE_CSS__  </style>
               </label>
               <label>
                 Lines
-                <input id="diagnostic-limit" type="number" min="10" max="1000" value="1000">
+                <input id="diagnostic-limit" type="number" min="10" max="1000" value="200">
               </label>
               <button id="refresh-diagnostics" type="button">Refresh</button>
               <button id="export-diagnostics" class="secondary" type="button">Export</button>

@@ -14,16 +14,23 @@
     document.getElementById("export-diagnostics").addEventListener("click", exportDiagnostics);
     qs("missions-search")?.addEventListener("input", (event) => {
       missionSearchQuery = event.target.value;
-      missionPage = 1;
+      missionPageByTab.published = 1;
+      missionPageByTab.claimed = 1;
       if (lastConsolePayload) renderMissions(lastConsolePayload);
     });
     qs("missions-prev")?.addEventListener("click", () => {
-      missionPage = Math.max(1, missionPage - 1);
+      missionPageByTab[activeMissionTab] = Math.max(1, missionPageByTab[activeMissionTab] - 1);
       if (lastConsolePayload) renderMissions(lastConsolePayload);
     });
     qs("missions-next")?.addEventListener("click", () => {
-      missionPage += 1;
+      missionPageByTab[activeMissionTab] += 1;
       if (lastConsolePayload) renderMissions(lastConsolePayload);
+    });
+    document.querySelectorAll("[data-mission-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeMissionTab = button.dataset.missionTab || "published";
+        if (lastConsolePayload) renderMissions(lastConsolePayload);
+      });
     });
     document.querySelectorAll("[data-log-mode]").forEach((button) => {
       button.addEventListener("click", () => {

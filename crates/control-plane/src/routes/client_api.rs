@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scores};
 use wattetheria_kernel::civilization::missions::{
-    CivilMission, MissionDomain, MissionPublisherKind, MissionStatus,
+    CivilMission, MissionDomain, MissionPublisherKind, MissionStatus, NetworkMissionClaimRecord,
+    NetworkMissionClaimRegistry,
 };
 use wattetheria_kernel::economy::{
     EconomicPolicy, WalletBoundBalance, ranking_compute, ranking_prestige, ranking_score,
@@ -365,67 +366,176 @@ async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> 
         .filter(|mission| mission.status != MissionStatus::Cancelled)
         .take(limit)
     {
-        let publisher_network_reward_watt = publisher_network_reward_watt(&mission, &policy);
-        let base_status = client_task_status(&mission.status);
-        let mut task = json!({
-            "id": mission.mission_id,
-            "task_id": mission.mission_id,
-            "task_type": "wattetheria.mission",
-            "title": mission.title,
-            "domain": mission_domain_label(&mission.domain),
-            "reward_watt": mission.reward.agent_watt,
-            "task_bounty_watt": mission.reward.agent_watt,
-            "executor_bounty_watt": mission.reward.agent_watt,
-            "network_publish_reward_watt": policy.rewards.mission_publish_watt,
-            "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
-            "publisher_network_reward_watt": publisher_network_reward_watt,
-            "status": base_status,
-            "publisher_id": mission.publisher,
-            "claimer_id": mission.claimed_by,
-            "created_at": timestamp_to_rfc3339(mission.created_at),
-        });
-        if let Some(object) = task.as_object_mut() {
-            if let Some(identity) =
-                identity_for_participant(&public_identities, Some(&mission.publisher))
-            {
-                insert_identity_projection(object, "created_by", identity);
-            }
-            if let Some(identity) =
-                identity_for_participant(&public_identities, mission.claimed_by.as_deref())
-            {
-                insert_identity_projection(object, "claimer", identity);
-            }
-            if let Some(identity) =
-                identity_for_participant(&public_identities, mission.completed_by.as_deref())
-            {
-                insert_identity_projection(object, "completer", identity);
-            }
-        }
-        if let Some(node_id) = publisher_wattswarm_node_id.as_deref()
-            && let Some(contract) =
-                build_client_task_contract_payload(state, &mission, node_id).await
-            && let Some(object) = task.as_object_mut()
-        {
-            if let Some(inputs) = contract.get("inputs") {
-                for key in [
-                    "publisher_agent_did",
-                    "publisher_wattswarm_node_id",
-                    "swarm_scope",
-                    "mission_feed_key",
-                    "mission_scope_hint",
-                    "reward",
-                    "payload",
-                ] {
-                    if let Some(value) = inputs.get(key) {
-                        object.insert(key.to_string(), value.clone());
-                    }
-                }
-            }
-            object.insert("task_contract".to_string(), contract);
-        }
-        tasks.push(task);
+        tasks.push(
+            build_published_client_task_payload(
+                state,
+                mission,
+                &policy,
+                &public_identities,
+                publisher_wattswarm_node_id.as_deref(),
+            )
+            .await,
+        );
+    }
+    let mut claims = state
+        .local_db
+        .load_domain_or_default::<NetworkMissionClaimRegistry>(
+            local_db::domain::NETWORK_MISSION_CLAIMS,
+        )
+        .map(|registry| registry.records())
+        .unwrap_or_default();
+    claims.sort_by(|left, right| {
+        right
+            .claimed_at
+            .cmp(&left.claimed_at)
+            .then_with(|| left.mission_id.cmp(&right.mission_id))
+            .then_with(|| left.task_id.cmp(&right.task_id))
+    });
+    for claim in claims.into_iter().take(limit) {
+        tasks.push(build_claimed_client_task_payload(
+            &claim,
+            &public_identities,
+        ));
     }
     tasks
+}
+
+async fn build_published_client_task_payload(
+    state: &ControlPlaneState,
+    mission: CivilMission,
+    policy: &EconomicPolicy,
+    public_identities: &[PublicIdentity],
+    publisher_wattswarm_node_id: Option<&str>,
+) -> Value {
+    let publisher_network_reward_watt = publisher_network_reward_watt(&mission, policy);
+    let base_status = client_task_status(&mission.status);
+    let mut task = json!({
+        "id": mission.mission_id,
+        "task_id": mission.mission_id,
+        "task_type": "wattetheria.mission",
+        "title": mission.title,
+        "domain": mission_domain_label(&mission.domain),
+        "reward_watt": mission.reward.agent_watt,
+        "task_bounty_watt": mission.reward.agent_watt,
+        "executor_bounty_watt": mission.reward.agent_watt,
+        "network_publish_reward_watt": policy.rewards.mission_publish_watt,
+        "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
+        "publisher_network_reward_watt": publisher_network_reward_watt,
+        "status": base_status,
+        "publisher_id": mission.publisher,
+        "claimer_id": mission.claimed_by,
+        "created_at": timestamp_to_rfc3339(mission.created_at),
+        "task_origin": "published",
+    });
+    if let Some(object) = task.as_object_mut() {
+        if let Some(identity) =
+            identity_for_participant(public_identities, Some(&mission.publisher))
+        {
+            insert_identity_projection(object, "created_by", identity);
+        }
+        if let Some(identity) =
+            identity_for_participant(public_identities, mission.claimed_by.as_deref())
+        {
+            insert_identity_projection(object, "claimer", identity);
+        }
+        if let Some(identity) =
+            identity_for_participant(public_identities, mission.completed_by.as_deref())
+        {
+            insert_identity_projection(object, "completer", identity);
+        }
+    }
+    if let Some(node_id) = publisher_wattswarm_node_id
+        && let Some(contract) = build_client_task_contract_payload(state, &mission, node_id).await
+        && let Some(object) = task.as_object_mut()
+    {
+        insert_client_task_contract_fields(object, contract);
+    }
+    task
+}
+
+fn build_claimed_client_task_payload(
+    claim: &NetworkMissionClaimRecord,
+    public_identities: &[PublicIdentity],
+) -> Value {
+    let metadata = &claim.metadata;
+    let mission_id = claim.mission_id.clone();
+    let task_id = claim.task_id.clone();
+    let agent_did = claim.agent_did.clone();
+    let mut task = json!({
+        "id": mission_id,
+        "task_id": task_id,
+        "task_type": "wattetheria.mission",
+        "title": metadata.title.clone().unwrap_or_else(|| claim.mission_id.clone()),
+        "domain": metadata.domain.clone(),
+        "reward_watt": metadata.reward_watt,
+        "task_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),
+        "executor_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),
+        "network_publish_reward_watt": 0,
+        "network_settle_publisher_reward_watt": 0,
+        "publisher_network_reward_watt": metadata.publisher_network_reward_watt,
+        "status": metadata.task_status.clone().unwrap_or_else(|| "unknown".to_string()),
+        "node_claim_status": "claimed",
+        "local_claim_status": "claimed",
+        "publisher_id": metadata.publisher_id.clone(),
+        "claimer_id": agent_did,
+        "created_at": timestamp_to_rfc3339(claim.claimed_at),
+        "claimed_at": timestamp_to_rfc3339(claim.claimed_at),
+        "execution_id": claim.execution_id,
+        "publisher_agent_did": metadata.publisher_agent_did.clone(),
+        "publisher_wattswarm_node_id": metadata.publisher_wattswarm_node_id.clone(),
+        "mission_feed_key": metadata.mission_feed_key.clone(),
+        "mission_scope_hint": metadata.mission_scope_hint.clone(),
+        "reward": metadata.reward.clone(),
+        "task_origin": "claimed",
+    });
+    if let Some(object) = task.as_object_mut() {
+        if let Some(display_name) = metadata.publisher_display_name.as_deref() {
+            object.insert(
+                "created_by_agent_identity".to_string(),
+                Value::String(display_name.to_string()),
+            );
+            object.insert(
+                "created_by_display_name".to_string(),
+                Value::String(display_name.to_string()),
+            );
+        }
+        if let Some(agent_did) = metadata.publisher_agent_did.as_deref() {
+            object.insert(
+                "created_by_agent_did".to_string(),
+                Value::String(agent_did.to_string()),
+            );
+        }
+        if let Some(identity) =
+            identity_for_participant(public_identities, metadata.publisher_id.as_deref())
+        {
+            insert_identity_projection(object, "created_by", identity);
+        }
+        if let Some(identity) =
+            identity_for_participant(public_identities, Some(agent_did.as_str()))
+        {
+            insert_identity_projection(object, "claimer", identity);
+        }
+    }
+    task
+}
+
+fn insert_client_task_contract_fields(object: &mut Map<String, Value>, contract: Value) {
+    if let Some(inputs) = contract.get("inputs") {
+        for key in [
+            "publisher_agent_did",
+            "publisher_wattswarm_node_id",
+            "swarm_scope",
+            "mission_feed_key",
+            "mission_scope_hint",
+            "reward",
+            "payload",
+        ] {
+            if let Some(value) = inputs.get(key) {
+                object.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    object.insert("task_contract".to_string(), contract);
 }
 
 fn identity_for_participant<'a>(

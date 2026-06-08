@@ -3016,6 +3016,25 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
         first["result"]["structuredContent"]["status"].as_str(),
         Some("network_claim_submitted")
     );
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let saved_claim = registry
+        .records()
+        .into_iter()
+        .find(|claim| claim.mission_id == mission_id)
+        .expect("network claim saved");
+    assert_eq!(saved_claim.metadata.domain.as_deref(), Some("trade"));
+    assert_eq!(
+        saved_claim.metadata.publisher_id.as_deref(),
+        Some("publisher-public")
+    );
+    assert_eq!(
+        saved_claim.metadata.task_status.as_deref(),
+        Some("published")
+    );
+    assert_eq!(saved_claim.metadata.reward_watt, Some(10));
 
     let second = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
     assert_eq!(second["result"]["isError"].as_bool(), Some(true));
@@ -3100,7 +3119,9 @@ async fn seed_mcp_gateway_remote_mission_with_status(
         "mission_id": mission_id,
         "publisher": "publisher-public",
         "publisher_agent_did": "did:agent:publisher",
+        "publisher_display_name": "Remote Publisher",
         "publisher_wattswarm_node_id": "publisher-node",
+        "domain": "trade",
         "swarm_scope": {"kind": "group", "id": mission_id},
         "mission_feed_key": "wattetheria.missions",
         "mission_scope_hint": format!("group:{mission_id}"),
