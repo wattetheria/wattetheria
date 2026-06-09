@@ -600,6 +600,10 @@ fn mission_agent_event_action_rule(
             "human_review: defer a Wattetheria mission claim for human review when reward, risk, identity, or evidence prevents automatic approval or rejection; include mission_id and claimer_node_id or agent_did when known; do not call external messaging tools."
                 .to_owned(),
         ),
+        ("task_claim_decision_received", "complete_mission") => Some(
+            "complete_mission: use only when an approved Wattetheria mission claim decision is received and the final work result is ready; include mission_id, agent_did, task_id, execution_id, mission_feed_key, mission_scope_hint, publisher_wattswarm_node_id when known, and payload.result."
+                .to_owned(),
+        ),
         ("task_result_received", "accept_result") => Some(
             "accept_result: accept a wattetheria_mission_result; include mission_id, agent_did, task_id, and candidate_id when known."
                 .to_owned(),

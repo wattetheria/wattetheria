@@ -283,6 +283,46 @@ pub struct SwarmTaskClaimCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskClaimDecisionCommand {
+    pub task_id: String,
+    pub execution_id: String,
+    pub claimer_node_id: String,
+    pub approved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskCompleteCommand {
+    pub task_id: String,
+    pub execution_id: String,
+    pub output: Value,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskCompletionDecisionCommand {
+    pub task_id: String,
+    pub execution_id: String,
+    pub approved: bool,
+    #[serde(default)]
+    pub retry_requested: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmTaskSettleCommand {
+    pub task_id: String,
+    pub execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<Value>,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmTaskProposeCandidateCommand {
     pub task_id: String,
     pub execution_id: String,
@@ -418,6 +458,27 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn claim_task(&self, _command: SwarmTaskClaimCommand) -> Result<Value> {
         Err(anyhow!("wattswarm task claim is not configured"))
+    }
+
+    async fn decide_task_claim(&self, _command: SwarmTaskClaimDecisionCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm task claim decision is not configured"))
+    }
+
+    async fn complete_task(&self, _command: SwarmTaskCompleteCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm task complete is not configured"))
+    }
+
+    async fn decide_task_completion(
+        &self,
+        _command: SwarmTaskCompletionDecisionCommand,
+    ) -> Result<Value> {
+        Err(anyhow!(
+            "wattswarm task completion decision is not configured"
+        ))
+    }
+
+    async fn settle_task(&self, _command: SwarmTaskSettleCommand) -> Result<Value> {
+        Err(anyhow!("wattswarm task settle is not configured"))
     }
 
     async fn propose_task_candidate(
@@ -666,6 +727,25 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn claim_task(&self, command: SwarmTaskClaimCommand) -> Result<Value> {
         self.topic_api()?.claim_task(command).await
+    }
+
+    async fn decide_task_claim(&self, command: SwarmTaskClaimDecisionCommand) -> Result<Value> {
+        self.topic_api()?.decide_task_claim(command).await
+    }
+
+    async fn complete_task(&self, command: SwarmTaskCompleteCommand) -> Result<Value> {
+        self.topic_api()?.complete_task(command).await
+    }
+
+    async fn decide_task_completion(
+        &self,
+        command: SwarmTaskCompletionDecisionCommand,
+    ) -> Result<Value> {
+        self.topic_api()?.decide_task_completion(command).await
+    }
+
+    async fn settle_task(&self, command: SwarmTaskSettleCommand) -> Result<Value> {
+        self.topic_api()?.settle_task(command).await
     }
 
     async fn propose_task_candidate(
@@ -1113,6 +1193,57 @@ impl HttpWattswarmApi {
         Err(anyhow!(
             "wattswarm task claim failed with status {status}: {body}"
         ))
+    }
+
+    async fn decide_task_claim(&self, command: SwarmTaskClaimDecisionCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/claim-decision", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task claim decision response")
+    }
+
+    async fn complete_task(&self, command: SwarmTaskCompleteCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/complete", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task complete response")
+    }
+
+    async fn decide_task_completion(
+        &self,
+        command: SwarmTaskCompletionDecisionCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/completion-decision", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task completion decision response")
+    }
+
+    async fn settle_task(&self, command: SwarmTaskSettleCommand) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/task/settle", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm task settle response")
     }
 
     async fn propose_task_candidate(

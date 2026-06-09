@@ -30,6 +30,7 @@ use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
+    SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskSettleCommand,
 };
 use wattetheria_kernel::tasks::system_puzzle::{
     SystemPuzzleSettlement, system_puzzle_settlement_from_mission,
@@ -319,7 +320,7 @@ struct TaskAgentEnvelopeArgs {
     message: Value,
 }
 
-struct MissionLifecycleNoticeArgs {
+struct MissionLifecycleEnvelopeArgs {
     kind: &'static str,
     task_id: String,
     mission_id: String,
@@ -331,6 +332,13 @@ struct MissionLifecycleNoticeArgs {
     target_node_id: Option<String>,
     capability: &'static str,
     content: Value,
+}
+
+struct MissionLifecycleEnvelope {
+    content: Value,
+    agent_envelope: SwarmAgentEnvelope,
+    source_node_id: String,
+    has_source_agent_card: bool,
 }
 
 fn task_agent_envelope(
@@ -352,10 +360,10 @@ fn task_agent_envelope(
     )
 }
 
-async fn publish_mission_lifecycle_topic(
+async fn build_mission_lifecycle_envelope(
     state: &ControlPlaneState,
-    args: MissionLifecycleNoticeArgs,
-) -> anyhow::Result<Value> {
+    args: MissionLifecycleEnvelopeArgs,
+) -> anyhow::Result<MissionLifecycleEnvelope> {
     let source_node_id = state.swarm_bridge.local_node_id().await?;
     let mut content = args.content;
     if let Some(object) = content.as_object_mut() {
@@ -388,30 +396,12 @@ async fn publish_mission_lifecycle_topic(
         },
     )?;
     let has_source_agent_card = agent_envelope.source_agent_card.is_some();
-    state
-        .swarm_bridge
-        .post_topic_message(
-            None,
-            &args.mission_feed_key,
-            &args.mission_scope_hint,
-            content,
-            None,
-            Some(agent_envelope),
-        )
-        .await?;
-    Ok(json!({
-        "kind": args.kind,
-        "mission_id": args.mission_id,
-        "task_id": args.task_id,
-        "mission_feed_key": args.mission_feed_key,
-        "mission_scope_hint": args.mission_scope_hint,
-        "source_agent_id": args.source_agent_id,
-        "source_node_id": source_node_id,
-        "target_agent_id": args.target_agent_id,
-        "target_node_id": args.target_node_id,
-        "has_agent_envelope": true,
-        "has_source_agent_card": has_source_agent_card,
-    }))
+    Ok(MissionLifecycleEnvelope {
+        content,
+        agent_envelope,
+        source_node_id,
+        has_source_agent_card,
+    })
 }
 
 async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {
@@ -1056,6 +1046,34 @@ fn claim_route_candidate_id(body: &MissionSettleBody) -> Option<String> {
         .and_then(|route| value_path_string(route, &["candidate_id"]))
 }
 
+fn claim_route_execution_id(body: &MissionClaimBody) -> Option<String> {
+    claim_route_string(body, "execution_id").or_else(|| {
+        [
+            &["decision_payload", "execution_id"][..],
+            &["agent_event_payload", "execution_id"][..],
+            &["agent_event_payload", "output", "execution_id"][..],
+            &["agent_event_payload", "content", "execution_id"][..],
+            &["agent_event_payload", "topic_content", "execution_id"][..],
+        ]
+        .into_iter()
+        .find_map(|path| claim_route_path_string(body, path))
+    })
+}
+
+fn settle_route_execution_id(body: &MissionSettleBody) -> Option<String> {
+    let route = body.claim_route.as_ref()?;
+    [
+        &["execution_id"][..],
+        &["decision_payload", "execution_id"][..],
+        &["agent_event_payload", "execution_id"][..],
+        &["agent_event_payload", "output", "execution_id"][..],
+        &["agent_event_payload", "content", "execution_id"][..],
+        &["agent_event_payload", "topic_content", "execution_id"][..],
+    ]
+    .into_iter()
+    .find_map(|path| value_path_string(route, path))
+}
+
 fn mission_lifecycle_target_node_id_from_claim(body: &MissionClaimBody) -> Option<String> {
     [
         &["agent_envelope", "source_node_id"][..],
@@ -1367,10 +1385,15 @@ async fn publish_claim_approved_lifecycle_notice(
         .or_else(|| claim_route_string(body, "mission_scope_hint"))
         .unwrap_or_else(|| mission_task_scope_hint(&task_id));
     let target_node_id = mission_lifecycle_target_node_id_from_claim(body);
+    let Some(claimer_node_id) = target_node_id.clone() else {
+        bail!("mission claim approval requires claimer_node_id");
+    };
+    let execution_id = claim_route_execution_id(body)
+        .unwrap_or_else(|| mission_execution_id(&mission.mission_id, agent_did));
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
-    publish_mission_lifecycle_topic(
+    let envelope = build_mission_lifecycle_envelope(
         state,
-        MissionLifecycleNoticeArgs {
+        MissionLifecycleEnvelopeArgs {
             kind: "mission_claim_approved",
             task_id: task_id.clone(),
             mission_id: mission.mission_id.clone(),
@@ -1389,14 +1412,42 @@ async fn publish_claim_approved_lifecycle_notice(
                 "mission_scope_hint": mission_scope_hint,
                 "publisher_agent_did": state.agent_did,
                 "claimer_agent_did": agent_did,
-                "claimer_node_id": target_node_id,
+                "claimer_node_id": claimer_node_id,
+                "execution_id": execution_id.clone(),
                 "status": "approved",
                 "mission_status": "claimed",
                 "next_action": "complete_mission",
             }),
         },
     )
-    .await
+    .await?;
+    state
+        .swarm_bridge
+        .decide_task_claim(SwarmTaskClaimDecisionCommand {
+            task_id: task_id.clone(),
+            execution_id: execution_id.clone(),
+            claimer_node_id: claimer_node_id.clone(),
+            approved: true,
+            reason: None,
+            agent_envelope: envelope.agent_envelope,
+        })
+        .await?;
+    Ok(json!({
+        "kind": "mission_claim_approved",
+        "event_kind": "task_claim_decided",
+        "mission_id": mission.mission_id,
+        "task_id": task_id,
+        "mission_feed_key": mission_feed_key,
+        "mission_scope_hint": mission_scope_hint,
+        "source_agent_id": state.agent_did,
+        "source_node_id": envelope.source_node_id,
+        "target_agent_id": agent_did,
+        "target_node_id": target_node_id,
+        "execution_id": execution_id,
+        "approved": true,
+        "has_agent_envelope": true,
+        "has_source_agent_card": envelope.has_source_agent_card,
+    }))
 }
 
 struct MissionCompletedLifecycleArgs {
@@ -1408,6 +1459,7 @@ struct MissionCompletedLifecycleArgs {
     result: Value,
     publisher_agent_did: Option<String>,
     publisher_wattswarm_node_id: Option<String>,
+    execution_id: Option<String>,
 }
 
 async fn publish_mission_completed_lifecycle_notice(
@@ -1415,9 +1467,13 @@ async fn publish_mission_completed_lifecycle_notice(
     args: MissionCompletedLifecycleArgs,
 ) -> anyhow::Result<Value> {
     let source_display_name = agent_display_name_for_did(state, &args.agent_did).await;
-    publish_mission_lifecycle_topic(
+    let execution_id = args
+        .execution_id
+        .clone()
+        .unwrap_or_else(|| mission_execution_id(&args.mission_id, &args.agent_did));
+    let envelope = build_mission_lifecycle_envelope(
         state,
-        MissionLifecycleNoticeArgs {
+        MissionLifecycleEnvelopeArgs {
             kind: "mission_completed",
             task_id: args.task_id.clone(),
             mission_id: args.mission_id.clone(),
@@ -1438,6 +1494,7 @@ async fn publish_mission_completed_lifecycle_notice(
                 "publisher_wattswarm_node_id": args.publisher_wattswarm_node_id,
                 "claimer_agent_did": args.agent_did,
                 "agent_did": args.agent_did,
+                "execution_id": execution_id,
                 "result": args.result,
                 "status": "completed",
                 "mission_status": "completed",
@@ -1445,7 +1502,31 @@ async fn publish_mission_completed_lifecycle_notice(
             }),
         },
     )
-    .await
+    .await?;
+    state
+        .swarm_bridge
+        .complete_task(SwarmTaskCompleteCommand {
+            task_id: args.task_id.clone(),
+            execution_id: execution_id.clone(),
+            output: envelope.content.clone(),
+            agent_envelope: envelope.agent_envelope,
+        })
+        .await?;
+    Ok(json!({
+        "kind": "mission_completed",
+        "event_kind": "task_completed",
+        "mission_id": args.mission_id,
+        "task_id": args.task_id,
+        "mission_feed_key": args.mission_feed_key,
+        "mission_scope_hint": args.mission_scope_hint,
+        "source_agent_id": args.agent_did,
+        "source_node_id": envelope.source_node_id,
+        "target_agent_id": args.publisher_agent_did,
+        "target_node_id": args.publisher_wattswarm_node_id,
+        "execution_id": execution_id,
+        "has_agent_envelope": true,
+        "has_source_agent_card": envelope.has_source_agent_card,
+    }))
 }
 
 async fn publish_settled_lifecycle_notice(
@@ -1471,11 +1552,18 @@ async fn publish_settled_lifecycle_notice(
         .agent_did
         .clone()
         .or_else(|| mission.completed_by.clone());
+    let execution_id = settle_route_execution_id(body)
+        .or_else(|| {
+            target_agent_id
+                .as_ref()
+                .map(|agent_did| mission_execution_id(&mission.mission_id, agent_did))
+        })
+        .unwrap_or_else(|| mission_execution_id(&mission.mission_id, "unknown"));
     let target_node_id = mission_lifecycle_target_node_id_from_settle(body);
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
-    publish_mission_lifecycle_topic(
+    let envelope = build_mission_lifecycle_envelope(
         state,
-        MissionLifecycleNoticeArgs {
+        MissionLifecycleEnvelopeArgs {
             kind: "mission_settled",
             task_id: task_id.clone(),
             mission_id: mission.mission_id.clone(),
@@ -1495,13 +1583,38 @@ async fn publish_settled_lifecycle_notice(
                 "publisher_agent_did": state.agent_did,
                 "claimer_agent_did": target_agent_id,
                 "claimer_node_id": target_node_id,
+                "execution_id": execution_id,
                 "status": "settled",
                 "mission_status": "settled",
                 "result": mission.completion_result,
             }),
         },
     )
-    .await
+    .await?;
+    state
+        .swarm_bridge
+        .settle_task(SwarmTaskSettleCommand {
+            task_id: task_id.clone(),
+            execution_id: execution_id.clone(),
+            receipt: Some(envelope.content.clone()),
+            agent_envelope: envelope.agent_envelope,
+        })
+        .await?;
+    Ok(json!({
+        "kind": "mission_settled",
+        "event_kind": "task_settled",
+        "mission_id": mission.mission_id,
+        "task_id": task_id,
+        "mission_feed_key": mission_feed_key,
+        "mission_scope_hint": mission_scope_hint,
+        "source_agent_id": state.agent_did,
+        "source_node_id": envelope.source_node_id,
+        "target_agent_id": target_agent_id,
+        "target_node_id": target_node_id,
+        "execution_id": execution_id,
+        "has_agent_envelope": true,
+        "has_source_agent_card": envelope.has_source_agent_card,
+    }))
 }
 
 fn mission_settle_candidate(
@@ -2088,6 +2201,7 @@ async fn complete_network_mission(
             result: result.clone(),
             publisher_agent_did: publisher_agent_did_from_claim(&body),
             publisher_wattswarm_node_id: route.publisher_wattswarm_node_id.clone(),
+            execution_id: claim_route_string(&body, "execution_id"),
         },
     )
     .await
@@ -2209,6 +2323,7 @@ async fn publish_transition_lifecycle_notice(
                         .publisher_wattswarm_node_id
                         .clone()
                         .or_else(|| claim_route_string(body, "publisher_wattswarm_node_id")),
+                    execution_id: claim_route_string(body, "execution_id"),
                 },
             )
             .await

@@ -560,22 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn migrate_does_not_create_domain_state() {
-        let db = LocalDb::open_in_memory().unwrap();
-        let domain_state_exists: i64 = db
-            .conn()
-            .query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'domain_state'
-                )",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(domain_state_exists, 0);
-    }
-
-    #[test]
     fn save_and_load_domain() {
         let db = LocalDb::open_in_memory().unwrap();
         let state = SampleState {

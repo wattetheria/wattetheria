@@ -47,7 +47,9 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
     SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
     SwarmRunSubmitCommand, SwarmSourceAgentCard, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
-    SwarmTaskProposeCandidateCommand, SwarmTopicCursorView, SwarmTopicMessageView,
+    SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskCompletionDecisionCommand,
+    SwarmTaskProposeCandidateCommand, SwarmTaskSettleCommand, SwarmTopicCursorView,
+    SwarmTopicMessageView,
 };
 use wattetheria_kernel::swarm_sync::{
     SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTopicActivitySnapshot,
@@ -1229,6 +1231,47 @@ impl SwarmBridge for MockSwarmBridge {
     }
 
     async fn claim_task(&self, command: SwarmTaskClaimCommand) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+        }))
+    }
+
+    async fn decide_task_claim(
+        &self,
+        command: SwarmTaskClaimDecisionCommand,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+            "approved": command.approved,
+        }))
+    }
+
+    async fn complete_task(&self, command: SwarmTaskCompleteCommand) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+        }))
+    }
+
+    async fn decide_task_completion(
+        &self,
+        command: SwarmTaskCompletionDecisionCommand,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "task_id": command.task_id,
+            "execution_id": command.execution_id,
+            "approved": command.approved,
+            "retry_requested": command.retry_requested,
+        }))
+    }
+
+    async fn settle_task(&self, command: SwarmTaskSettleCommand) -> anyhow::Result<Value> {
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,

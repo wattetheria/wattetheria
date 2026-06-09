@@ -1,0 +1,68 @@
+name: publish-ghcr-wattetheria
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Wattetheria image tag to publish.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish Wattetheria GHCR image
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      RELEASE: ${{ inputs.release }}
+      GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+
+    steps:
+      - name: Validate release inputs
+        env:
+          CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+        run: |
+          if [ -z "${RELEASE}" ]; then
+            echo "release input is required" >&2
+            exit 1
+          fi
+          if [ "${RELEASE}" = "latest" ]; then
+            echo "release input must be a version tag, not latest" >&2
+            exit 1
+          fi
+          if [ -z "${CROSS_REPO_TOKEN}" ]; then
+            echo "CROSS_REPO_TOKEN is required for GHCR push and private dependency fetches" >&2
+            exit 1
+          fi
+
+      - name: Checkout Wattetheria
+        uses: actions/checkout@v4
+        with:
+          path: wattetheria
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          builder: watt-builder
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.CROSS_REPO_TOKEN }}
+
+      - name: Publish Wattetheria image
+        working-directory: wattetheria
+        run: scripts/publish-ghcr.sh
+
+      - name: Update latest image tag
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "ghcr.io/wattetheria/wattetheria-kernel:latest" \
+            "ghcr.io/wattetheria/wattetheria-kernel:${RELEASE}"

@@ -12,6 +12,7 @@ use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::identity_context_value;
+use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
     AgentPaymentRejectBody, AgentPaymentSettleBody, AgentPaymentSubmitBody,
@@ -22,7 +23,10 @@ use crate::state::{
 use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::MissionStatus;
-use wattetheria_kernel::swarm_bridge::SwarmRelationshipAction;
+use wattetheria_kernel::swarm_bridge::{
+    SwarmAgentEnvelope, SwarmRelationshipAction, SwarmTaskClaimDecisionCommand,
+    SwarmTaskCompletionDecisionCommand,
+};
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -40,6 +44,35 @@ fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str)
         HeaderValue::from_str(decision_id).expect("valid agent decision id"),
     );
     headers
+}
+
+async fn task_lifecycle_envelope_for_commit(
+    state: &ControlPlaneState,
+    body: &AgentActionCommitBody,
+    capability: &str,
+    message: Value,
+    target_agent_id: Option<String>,
+    target_node_id: Option<String>,
+) -> anyhow::Result<SwarmAgentEnvelope> {
+    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    build_signed_agent_envelope_for_nodes(
+        state,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            source_display_name: None,
+            target_agent_id: target_agent_id.or_else(|| {
+                body.event
+                    .agent_envelope
+                    .as_ref()
+                    .and_then(|envelope| envelope.source_agent_id.clone())
+            }),
+            source_node_id,
+            target_node_id: target_node_id.or_else(|| body.event.source_node_id.clone()),
+            capability: capability.to_owned(),
+            message,
+            extensions: None,
+        },
+    )
 }
 
 fn event_message_public_id(
@@ -138,6 +171,7 @@ fn mission_id_for_commit(body: &AgentActionCommitBody) -> Option<String> {
         .or_else(|| payload_string(&body.event.payload, "/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/content/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/topic_content/mission_id"))
+        .or_else(|| payload_string(&body.event.payload, "/output/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/candidate_output/mission_id"))
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/mission_id"))
 }
@@ -151,6 +185,8 @@ fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did:
         .or_else(|| payload_string(&body.event.payload, "/content/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/topic_content/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/topic_content/claimer_agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/output/agent_did"))
+        .or_else(|| payload_string(&body.event.payload, "/output/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/candidate_output/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
@@ -163,6 +199,7 @@ fn mission_commit_string(body: &AgentActionCommitBody, field: &str) -> Option<St
         .or_else(|| payload_string(&body.event.payload, &pointer))
         .or_else(|| payload_string(&body.event.payload, &format!("/content/{field}")))
         .or_else(|| payload_string(&body.event.payload, &format!("/topic_content/{field}")))
+        .or_else(|| payload_string(&body.event.payload, &format!("/output/{field}")))
         .or_else(|| payload_string(&body.event.payload, &format!("/task_inputs/{field}")))
 }
 
@@ -173,6 +210,7 @@ fn mission_commit_result(body: &AgentActionCommitBody) -> Option<Value> {
         .cloned()
         .or_else(|| body.event.payload.pointer("/content/result").cloned())
         .or_else(|| body.event.payload.pointer("/topic_content/result").cloned())
+        .or_else(|| body.event.payload.pointer("/output/result").cloned())
 }
 
 fn mission_claim_body_for_commit(
@@ -721,6 +759,7 @@ async fn commit_transition_mission(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn commit_mission_claim_review(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
@@ -751,20 +790,65 @@ async fn commit_mission_claim_review(
         ),
         _ => unreachable!("mission claim review action already matched"),
     };
+    let task_id = body
+        .decision
+        .payload
+        .get("task_id")
+        .and_then(Value::as_str)
+        .or_else(|| body.event.payload.get("task_id").and_then(Value::as_str))
+        .unwrap_or(mission_id.as_str())
+        .to_owned();
+    let claimer_node_id = payload_string(&body.decision.payload, "/claimer_node_id")
+        .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
+        .or_else(|| body.event.source_node_id.clone());
+    let Some(claimer_node_id) = claimer_node_id.clone() else {
+        return bad_request("missing claimer_node_id");
+    };
+    let execution_id = payload_string(&body.decision.payload, "/execution_id")
+        .or_else(|| payload_string(&body.event.payload, "/execution_id"))
+        .unwrap_or_else(|| format!("wattetheria:{mission_id}:{agent_did}"));
     let payload = json!({
         "mission_id": mission_id,
-        "task_id": body.decision.payload.get("task_id").and_then(Value::as_str)
-            .or_else(|| body.event.payload.get("task_id").and_then(Value::as_str))
-            .unwrap_or(mission_id.as_str()),
+        "task_id": task_id,
         "agent_did": agent_did,
-        "claimer_node_id": payload_string(&body.decision.payload, "/claimer_node_id")
-            .or_else(|| payload_string(&body.event.payload, "/claimer_node_id")),
+        "claimer_node_id": claimer_node_id,
+        "execution_id": execution_id,
         "status": status,
         "reason": body.decision.reason.clone(),
         "decision_payload": body.decision.payload.clone(),
         "event_id": body.event.event_id.clone(),
         "decision_id": body.decision.decision_id.clone(),
     });
+    let agent_envelope = match task_lifecycle_envelope_for_commit(
+        &state,
+        &body,
+        "mission.claim.review",
+        payload.clone(),
+        body.event
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.source_agent_id.clone()),
+        Some(claimer_node_id.clone()),
+    )
+    .await
+    {
+        Ok(envelope) => envelope,
+        Err(error) => return internal_error(&error),
+    };
+    if let Err(error) = state
+        .swarm_bridge
+        .decide_task_claim(SwarmTaskClaimDecisionCommand {
+            task_id: task_id.clone(),
+            execution_id,
+            claimer_node_id,
+            approved: false,
+            reason: body.decision.reason.clone(),
+            agent_envelope,
+        })
+        .await
+    {
+        return internal_error(&error);
+    }
     let _ = state.stream_tx.send(StreamEvent {
         kind: stream_kind.to_string(),
         timestamp: Utc::now().timestamp(),
@@ -790,6 +874,7 @@ async fn commit_mission_claim_review(
     Json(payload).into_response()
 }
 
+#[allow(clippy::too_many_lines)]
 async fn commit_mission_result_review(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
@@ -826,20 +911,57 @@ async fn commit_mission_result_review(
         ),
         _ => unreachable!("mission result review action already matched"),
     };
+    let task_id = payload_string(&body.decision.payload, "/task_id")
+        .or_else(|| payload_string(&body.event.payload, "/task_id"))
+        .unwrap_or_else(|| mission_id.clone());
+    let execution_id = payload_string(&body.decision.payload, "/execution_id")
+        .or_else(|| payload_string(&body.event.payload, "/execution_id"))
+        .unwrap_or_else(|| format!("wattetheria:{mission_id}:{agent_did}"));
     let payload = json!({
         "mission_id": mission_id,
-        "task_id": payload_string(&body.decision.payload, "/task_id")
-            .or_else(|| payload_string(&body.event.payload, "/task_id"))
-            .unwrap_or_else(|| mission_id.clone()),
+        "task_id": task_id,
         "candidate_id": payload_string(&body.decision.payload, "/candidate_id")
             .or_else(|| payload_string(&body.event.payload, "/candidate_id")),
         "agent_did": agent_did,
+        "execution_id": execution_id,
         "status": status,
         "reason": body.decision.reason.clone(),
         "decision_payload": body.decision.payload.clone(),
         "event_id": body.event.event_id.clone(),
         "decision_id": body.decision.decision_id.clone(),
     });
+    let target_node_id = payload_string(&body.event.payload, "/completed_by_node_id")
+        .or_else(|| body.event.source_node_id.clone());
+    let agent_envelope = match task_lifecycle_envelope_for_commit(
+        &state,
+        &body,
+        "mission.result.review",
+        payload.clone(),
+        body.event
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.source_agent_id.clone()),
+        target_node_id,
+    )
+    .await
+    {
+        Ok(envelope) => envelope,
+        Err(error) => return internal_error(&error),
+    };
+    if let Err(error) = state
+        .swarm_bridge
+        .decide_task_completion(SwarmTaskCompletionDecisionCommand {
+            task_id: task_id.clone(),
+            execution_id,
+            approved: false,
+            retry_requested: action == "request_retry",
+            reason: body.decision.reason.clone(),
+            agent_envelope,
+        })
+        .await
+    {
+        return internal_error(&error);
+    }
     let _ = state.stream_tx.send(StreamEvent {
         kind: stream_kind.to_string(),
         timestamp: Utc::now().timestamp(),

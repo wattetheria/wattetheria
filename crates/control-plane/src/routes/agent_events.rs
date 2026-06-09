@@ -125,6 +125,7 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
         "task_claim_received" => {
             matches!(action, "claim_mission" | "reject_claim" | "human_review")
         }
+        "task_claim_decision_received" => matches!(action, "complete_mission"),
         "task_result_received" => matches!(
             action,
             "complete_mission"
@@ -133,6 +134,9 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
                 | "request_retry"
                 | "human_review"
         ),
+        "task_completion_decision_received" | "task_settled_received" => {
+            matches!(action, "ignore" | "human_review")
+        }
         "topic_message_requires_reply" => {
             matches!(action, "reply" | "complete_mission" | "settle_mission")
         }
@@ -142,7 +146,10 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
 
 fn routes_to_noop(event_type: &str, action: &str) -> bool {
     match event_type {
-        "topic_message_requires_reply" => action == "ignore",
+        "topic_message_requires_reply"
+        | "task_claim_decision_received"
+        | "task_completion_decision_received"
+        | "task_settled_received" => action == "ignore",
         "third_party_result" => matches!(action, "human_review" | "continue"),
         _ => false,
     }
@@ -202,6 +209,11 @@ fn is_mission_event(event: &AgentEventEnvelope) -> bool {
             == Some("wattetheria_mission_result")
         || event
             .payload
+            .pointer("/output/kind")
+            .and_then(Value::as_str)
+            == Some("mission_completed")
+        || event
+            .payload
             .pointer("/mission_id")
             .and_then(Value::as_str)
             .is_some()
@@ -247,9 +259,24 @@ fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
         "task_claim_received" => {
             set_allowed_actions(event, &["decide_claim", "reject_claim", "human_review"]);
         }
+        "task_claim_decision_received" => {
+            if event
+                .payload
+                .get("approved")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                set_allowed_actions(event, &["complete_mission", "ignore"]);
+            } else {
+                set_allowed_actions(event, &["ignore", "human_review"]);
+            }
+        }
         "task_result_received" => {
             push_allowed_action(event, "complete_mission");
             push_allowed_action(event, "settle_mission");
+        }
+        "task_completion_decision_received" | "task_settled_received" => {
+            set_allowed_actions(event, &["ignore"]);
         }
         "topic_message_requires_reply" => match topic_lifecycle_kind(event) {
             Some("mission_claim_approved") => {
@@ -277,6 +304,7 @@ fn mission_id_from_event(event: &AgentEventEnvelope) -> Option<String> {
         "/topic_content/task_id",
         "/task_inputs/mission_id",
         "/candidate_output/mission_id",
+        "/output/mission_id",
     ]
     .into_iter()
     .find_map(|path| {
@@ -292,11 +320,25 @@ fn mission_id_from_event(event: &AgentEventEnvelope) -> Option<String> {
 fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
     let paths: &[&str] = match event.event_type.as_str() {
         "task_claim_received" => &["/claimer_agent_did", "/claimer_node_id", "/agent_did"],
+        "task_claim_decision_received" => &[
+            "/task_inputs/agent_did",
+            "/task_inputs/claimer_agent_did",
+            "/claimer_agent_did",
+            "/claimer_node_id",
+            "/agent_did",
+        ],
         "task_result_received" => &[
+            "/output/agent_did",
+            "/output/claimer_agent_did",
             "/candidate_output/agent_did",
             "/agent_did",
             "/claimer_agent_did",
             "/claimer_node_id",
+        ],
+        "task_completion_decision_received" | "task_settled_received" => &[
+            "/task_inputs/agent_did",
+            "/task_inputs/claimer_agent_did",
+            "/agent_did",
         ],
         "topic_message_requires_reply" => &[
             "/content/claimer_agent_did",
@@ -353,6 +395,8 @@ fn mission_lifecycle_value_from_event<'a>(
         .payload
         .pointer(&format!("/content/{key}"))
         .or_else(|| event.payload.pointer(&format!("/topic_content/{key}")))
+        .or_else(|| event.payload.pointer(&format!("/output/{key}")))
+        .or_else(|| event.payload.pointer(&format!("/task_inputs/{key}")))
         .or_else(|| {
             event
                 .agent_envelope
@@ -521,7 +565,10 @@ fn remote_event_requires_signed_agent_envelope(event: &AgentEventEnvelope) -> bo
             | "friend_request"
             | "dm_received"
             | "task_claim_received"
+            | "task_claim_decision_received"
             | "task_result_received"
+            | "task_completion_decision_received"
+            | "task_settled_received"
             | "topic_message_requires_reply"
     )
 }
@@ -1037,6 +1084,7 @@ fn ensure_mission_payload_fields(
                 "/content/task_id",
                 "/topic_content/task_id",
                 "/task_inputs/task_id",
+                "/output/task_id",
             ][..],
         ),
         (
@@ -1045,6 +1093,8 @@ fn ensure_mission_payload_fields(
                 "/mission_feed_key",
                 "/content/mission_feed_key",
                 "/topic_content/mission_feed_key",
+                "/output/mission_feed_key",
+                "/task_inputs/mission_feed_key",
             ][..],
         ),
         (
@@ -1053,6 +1103,8 @@ fn ensure_mission_payload_fields(
                 "/mission_scope_hint",
                 "/content/mission_scope_hint",
                 "/topic_content/mission_scope_hint",
+                "/output/mission_scope_hint",
+                "/task_inputs/mission_scope_hint",
             ][..],
         ),
         (
@@ -1061,6 +1113,26 @@ fn ensure_mission_payload_fields(
                 "/publisher_wattswarm_node_id",
                 "/content/publisher_wattswarm_node_id",
                 "/topic_content/publisher_wattswarm_node_id",
+                "/output/publisher_wattswarm_node_id",
+                "/task_inputs/publisher_wattswarm_node_id",
+            ][..],
+        ),
+        (
+            "execution_id",
+            &[
+                "/execution_id",
+                "/content/execution_id",
+                "/topic_content/execution_id",
+                "/output/execution_id",
+            ][..],
+        ),
+        (
+            "claimer_node_id",
+            &[
+                "/claimer_node_id",
+                "/content/claimer_node_id",
+                "/topic_content/claimer_node_id",
+                "/output/claimer_node_id",
             ][..],
         ),
     ] {
@@ -1073,7 +1145,12 @@ fn ensure_mission_payload_fields(
     if !payload.contains_key("result")
         && let Some(result) = payload_value_from_event_paths(
             event,
-            &["/result", "/content/result", "/topic_content/result"],
+            &[
+                "/result",
+                "/content/result",
+                "/topic_content/result",
+                "/output/result",
+            ],
         )
     {
         payload.insert("result".to_string(), result);
@@ -1104,7 +1181,8 @@ fn normalize_mission_resolution(
             resolution.action = Some("settle_mission".to_string());
             ensure_mission_payload_fields(event, &mut resolution);
         }
-        ("task_claim_received", Some("claim_mission"))
+        ("task_claim_decision_received", Some("complete_mission"))
+        | ("task_claim_received", Some("claim_mission"))
         | ("task_result_received", Some("complete_mission" | "settle_mission")) => {
             ensure_mission_payload_fields(event, &mut resolution);
         }
@@ -1137,7 +1215,8 @@ fn internal_mission_action_allowed(
         normalized_action,
     ) {
         ("task_claim_received", Some("decide_claim"), "claim_mission")
-        | ("task_result_received", Some("accept_result"), "settle_mission") => true,
+        | ("task_result_received", Some("accept_result"), "settle_mission")
+        | ("task_claim_decision_received", Some("complete_mission"), "complete_mission") => true,
         ("topic_message_requires_reply", Some("complete_mission"), "complete_mission") => {
             topic_lifecycle_kind(event) == Some("mission_claim_approved")
         }
@@ -1540,4 +1619,105 @@ pub(crate) async fn callback(
         decision.resolution,
         acked_at,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_event(event_type: &str, payload: Value) -> AgentEventEnvelope {
+        AgentEventEnvelope {
+            event_id: "evt-test".to_owned(),
+            event_type: event_type.to_owned(),
+            source_kind: "task_lifecycle".to_owned(),
+            source_node_id: Some("node-a".to_owned()),
+            target_agent_id: Some("agent-target".to_owned()),
+            target_executor: None,
+            agent_envelope: None,
+            payload,
+            requires_commit: false,
+            allowed_actions: Vec::new(),
+            correlation_id: None,
+            dedupe_key: None,
+            created_at: 1,
+        }
+    }
+
+    #[test]
+    fn claim_decision_complete_mission_resolution_gets_mission_fields() {
+        let event = test_event(
+            "task_claim_decision_received",
+            json!({
+                "task_id": "mission-1",
+                "execution_id": "exec-1",
+                "approved": true,
+                "task_inputs": {
+                    "kind": "wattetheria_mission",
+                    "mission_id": "mission-1",
+                    "agent_did": "claimer-agent",
+                    "mission_feed_key": "wattetheria.missions",
+                    "mission_scope_hint": "group:mission-1",
+                    "publisher_wattswarm_node_id": "publisher-node"
+                }
+            }),
+        );
+        let resolution = normalize_mission_resolution(
+            &event,
+            AgentEventResolution {
+                action: Some("complete_mission".to_owned()),
+                reason: None,
+                payload: json!({"result": {"ok": true}}),
+            },
+        );
+
+        assert_eq!(resolution.action.as_deref(), Some("complete_mission"));
+        assert_eq!(resolution.payload["mission_id"].as_str(), Some("mission-1"));
+        assert_eq!(
+            resolution.payload["agent_did"].as_str(),
+            Some("claimer-agent")
+        );
+        assert_eq!(resolution.payload["execution_id"].as_str(), Some("exec-1"));
+        assert_eq!(
+            resolution.payload["publisher_wattswarm_node_id"].as_str(),
+            Some("publisher-node")
+        );
+    }
+
+    #[test]
+    fn task_completed_output_is_mission_result_source() {
+        let event = test_event(
+            "task_result_received",
+            json!({
+                "task_id": "mission-2",
+                "execution_id": "exec-2",
+                "event_kind": "task_completed",
+                "output": {
+                    "kind": "mission_completed",
+                    "mission_id": "mission-2",
+                    "agent_did": "claimer-agent",
+                    "result": {"score": 1},
+                    "mission_feed_key": "wattetheria.missions",
+                    "mission_scope_hint": "group:mission-2"
+                }
+            }),
+        );
+        assert!(is_mission_event(&event));
+        let resolution = normalize_mission_resolution(
+            &event,
+            AgentEventResolution {
+                action: Some("accept_result".to_owned()),
+                reason: None,
+                payload: json!({}),
+            },
+        );
+
+        assert_eq!(resolution.action.as_deref(), Some("settle_mission"));
+        assert_eq!(resolution.payload["mission_id"].as_str(), Some("mission-2"));
+        assert_eq!(
+            resolution.payload["agent_did"].as_str(),
+            Some("claimer-agent")
+        );
+        assert_eq!(resolution.payload["execution_id"].as_str(), Some("exec-2"));
+        assert_eq!(resolution.payload["result"]["score"].as_i64(), Some(1));
+    }
 }
