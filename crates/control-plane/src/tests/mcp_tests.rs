@@ -3113,6 +3113,10 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
         .into_iter()
         .find(|claim| claim.mission_id == mission_id)
         .expect("network claim saved");
+    assert_eq!(
+        saved_claim.metadata.title.as_deref(),
+        Some("Remote mission")
+    );
     assert_eq!(saved_claim.metadata.domain.as_deref(), Some("trade"));
     assert_eq!(
         saved_claim.metadata.publisher_id.as_deref(),

@@ -466,6 +466,7 @@ fn build_claimed_client_task_payload(
         .clone()
         .or_else(|| metadata.task_status.clone())
         .unwrap_or_else(|| "unknown".to_string());
+    let mission_tab = client_claim_mission_tab(&status);
     let mut task = json!({
         "id": mission_id,
         "task_id": task_id,
@@ -492,6 +493,7 @@ fn build_claimed_client_task_payload(
         "mission_scope_hint": metadata.mission_scope_hint.clone(),
         "reward": metadata.reward.clone(),
         "task_origin": "claimed",
+        "mission_tab": mission_tab,
     });
     if let Some(object) = task.as_object_mut() {
         if let Some(display_name) = metadata.publisher_display_name.as_deref() {
@@ -522,6 +524,21 @@ fn build_claimed_client_task_payload(
         }
     }
     task
+}
+
+fn client_claim_mission_tab(status: &str) -> &'static str {
+    let normalized = status.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+    if normalized.is_empty()
+        || normalized == "unknown"
+        || normalized.contains("submitted")
+        || normalized.contains("pending")
+        || normalized.contains("claiming")
+        || normalized.contains("reject")
+    {
+        "claim_submitted"
+    } else {
+        "claimed"
+    }
 }
 
 fn insert_client_task_contract_fields(object: &mut Map<String, Value>, contract: Value) {

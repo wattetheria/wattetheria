@@ -39,29 +39,10 @@
       return raw;
     }
 
-    function missionClaimStatus(row) {
-      for (const key of ["claim_status", "local_claim_status", "node_claim_status"]) {
-        const status = normalizedMissionValue(row[key]);
-        if (status) return status;
-      }
-      return normalizedMissionValue(row.status);
-    }
-
-    function isClaimSubmittedStatus(status) {
-      return ["claim_submitted", "network_claim_submitted", "pending_claim", "pending", "submitted", "claiming"].includes(status);
-    }
-
-    function isRejectedClaimStatus(status) {
-      return ["reject", "rejected", "claim_rejected", "rejected_claim"].includes(status);
-    }
-
     function missionOrigin(row) {
-      if (row.task_origin !== "claimed") return "published";
-      const claimStatus = missionClaimStatus(row);
-      const taskStatus = normalizedMissionValue(row.status);
-      if (isClaimSubmittedStatus(claimStatus) || isClaimSubmittedStatus(taskStatus)) return "claim_submitted";
-      if (isRejectedClaimStatus(claimStatus) || isRejectedClaimStatus(taskStatus)) return "claim_submitted";
-      return "claimed";
+      const tab = normalizedMissionValue(row.mission_tab);
+      if (tab === "published" || tab === "claim_submitted" || tab === "claimed") return tab;
+      return row.task_origin === "claimed" ? "claim_submitted" : "published";
     }
 
     function missionRowsForActiveTab(rows) {
@@ -70,12 +51,8 @@
 
     function missionStatusPills(row) {
       if (missionOrigin(row) === "claim_submitted") {
-        const claimStatus = missionClaimStatus(row);
-        const taskStatus = normalizedMissionValue(row.status);
-        if (isRejectedClaimStatus(claimStatus) || isRejectedClaimStatus(taskStatus)) {
-          return pill("rejected", "rejected");
-        }
-        return valueOrDash("");
+        const status = displayMissionStatus(row.status);
+        return status ? pill(status, status) : valueOrDash("");
       }
       const status = displayMissionStatus(row.status);
       return status ? pill(status, status) : valueOrDash("");

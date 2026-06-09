@@ -33,6 +33,24 @@ fn assert_actor_projection(
     );
 }
 
+fn network_claim_test_metadata(title: &str, mission_id: &str) -> NetworkMissionClaimMetadata {
+    NetworkMissionClaimMetadata {
+        title: Some(title.to_string()),
+        publisher_id: Some("publisher-public".to_string()),
+        publisher_agent_did: Some("did:agent:publisher".to_string()),
+        publisher_display_name: Some("Remote Publisher".to_string()),
+        publisher_wattswarm_node_id: Some("publisher-node".to_string()),
+        domain: Some("trade".to_string()),
+        task_status: None,
+        mission_feed_key: Some("wattetheria.missions".to_string()),
+        mission_scope_hint: Some(format!("group:{mission_id}")),
+        reward: Some(json!({"agent_watt": 10})),
+        reward_watt: Some(10),
+        executor_bounty_watt: Some(10),
+        publisher_network_reward_watt: Some(1),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn client_api_routes_align_with_client_dtos() {
@@ -1344,22 +1362,16 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
         "remote-task-1",
         &state.agent_did,
         "mission-remote-mission-1-agent",
-        Some("published".to_string()),
-        NetworkMissionClaimMetadata {
-            title: Some("Remote cargo".to_string()),
-            publisher_id: Some("publisher-public".to_string()),
-            publisher_agent_did: Some("did:agent:publisher".to_string()),
-            publisher_display_name: Some("Remote Publisher".to_string()),
-            publisher_wattswarm_node_id: Some("publisher-node".to_string()),
-            domain: Some("trade".to_string()),
-            task_status: None,
-            mission_feed_key: Some("wattetheria.missions".to_string()),
-            mission_scope_hint: Some("group:remote-mission-1".to_string()),
-            reward: Some(json!({"agent_watt": 10})),
-            reward_watt: Some(10),
-            executor_bounty_watt: Some(10),
-            publisher_network_reward_watt: Some(1),
-        },
+        Some("network_claim_submitted".to_string()),
+        network_claim_test_metadata("Remote cargo", "remote-mission-1"),
+    );
+    claims.record(
+        "remote-mission-2",
+        "remote-task-2",
+        &state.agent_did,
+        "mission-remote-mission-2-agent",
+        Some("claimed".to_string()),
+        network_claim_test_metadata("Approved remote cargo", "remote-mission-2"),
     );
     state
         .local_db
@@ -1379,11 +1391,17 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
         .iter()
         .find(|task| task["id"].as_str() == Some("remote-mission-1"))
         .unwrap();
+    let approved_claim = tasks
+        .iter()
+        .find(|task| task["id"].as_str() == Some("remote-mission-2"))
+        .unwrap();
 
     assert_eq!(published["task_origin"].as_str(), Some("published"));
     assert_eq!(published["status"].as_str(), Some("published"));
+    assert_eq!(published.get("mission_tab"), None);
     assert_eq!(claimed["task_origin"].as_str(), Some("claimed"));
-    assert_eq!(claimed["status"].as_str(), Some("published"));
+    assert_eq!(claimed["mission_tab"].as_str(), Some("claim_submitted"));
+    assert_eq!(claimed["status"].as_str(), Some("network_claim_submitted"));
     assert_eq!(claimed["node_claim_status"].as_str(), Some("claimed"));
     assert_eq!(claimed["task_id"].as_str(), Some("remote-task-1"));
     assert_eq!(claimed["title"].as_str(), Some("Remote cargo"));
@@ -1400,6 +1418,9 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
         Some(state.agent_did.as_str())
     );
     assert!(claimed["claimed_at"].as_str().is_some());
+    assert_eq!(approved_claim["task_origin"].as_str(), Some("claimed"));
+    assert_eq!(approved_claim["mission_tab"].as_str(), Some("claimed"));
+    assert_eq!(approved_claim["status"].as_str(), Some("claimed"));
 }
 
 #[tokio::test]

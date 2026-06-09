@@ -493,14 +493,18 @@ fn task_id_from_gateway_task(task: &Value) -> Option<&str> {
 }
 
 fn gateway_task_string(task: &Value, field: &str) -> Option<String> {
-    task.get(field)
-        .or_else(|| task.get("claim_route").and_then(|value| value.get(field)))
-        .or_else(|| task.get("summary").and_then(|value| value.get(field)))
-        .or_else(|| task.get("inputs").and_then(|value| value.get(field)))
+    gateway_task_value(task, field)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn gateway_task_value<'a>(task: &'a Value, field: &str) -> Option<&'a Value> {
+    task.get(field)
+        .or_else(|| task.get("claim_route").and_then(|value| value.get(field)))
+        .or_else(|| task.get("summary").and_then(|value| value.get(field)))
+        .or_else(|| task.get("inputs").and_then(|value| value.get(field)))
 }
 
 fn network_claim_route_from_gateway_task(
@@ -540,6 +544,32 @@ fn contract_value_from_gateway_task(task: &Value) -> Option<&Value> {
 fn parse_network_task_contract(value: &Value) -> Result<TaskContract, String> {
     serde_json::from_value::<TaskContract>(value.clone())
         .map_err(|error| format!("gateway task_contract is invalid: {error}"))
+}
+
+fn enrich_gateway_task_contract_inputs(mut contract: TaskContract, task: &Value) -> TaskContract {
+    let Some(inputs) = contract.inputs.as_object_mut() else {
+        return contract;
+    };
+    for field in [
+        "title",
+        "description",
+        "domain",
+        "publisher",
+        "publisher_agent_did",
+        "publisher_display_name",
+        "publisher_wattswarm_node_id",
+        "reward",
+        "reward_watt",
+        "executor_bounty_watt",
+        "publisher_network_reward_watt",
+    ] {
+        if !inputs.contains_key(field)
+            && let Some(value) = gateway_task_value(task, field)
+        {
+            inputs.insert(field.to_owned(), value.clone());
+        }
+    }
+    contract
 }
 
 fn validate_network_task_contract(
@@ -584,7 +614,7 @@ async fn gateway_network_task_contract(
         return Ok(None);
     };
     parse_network_task_contract(contract_value)
-        .map(Some)
+        .map(|contract| Some(enrich_gateway_task_contract_inputs(contract, &task)))
         .map_err(anyhow::Error::msg)
 }
 
@@ -712,6 +742,8 @@ fn mission_task_inputs(
     let mut inputs = json!({
         "kind": "wattetheria_mission",
         "mission_id": mission.mission_id,
+        "title": mission.title,
+        "description": mission.description,
         "publisher": mission.publisher,
         "publisher_kind": mission.publisher_kind,
         "publisher_agent_did": publisher_agent_did,
@@ -2488,6 +2520,11 @@ mod tests {
         assert_eq!(
             inputs["mission_id"].as_str(),
             Some(mission.mission_id.as_str())
+        );
+        assert_eq!(inputs["title"].as_str(), Some("Route cargo"));
+        assert_eq!(
+            inputs["description"].as_str(),
+            Some("Move supplies to the outpost")
         );
         assert_eq!(inputs["publisher"].as_str(), Some("captain-alpha"));
         assert_eq!(
