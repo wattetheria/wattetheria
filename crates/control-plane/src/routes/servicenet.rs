@@ -146,7 +146,7 @@ async fn notify_local_agent_of_third_party_result(
         }),
         requires_commit: false,
         allowed_actions: vec![
-            "inspect_result".to_string(),
+            "human_review".to_string(),
             "continue".to_string(),
             "publish_mission".to_string(),
             "claim_mission".to_string(),

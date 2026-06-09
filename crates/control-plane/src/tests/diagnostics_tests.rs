@@ -161,7 +161,7 @@ async fn agent_event_callback_writes_diagnostics() {
                             },
                             "agent_envelope": agent_envelope,
                             "requires_commit": false,
-                            "allowed_actions": ["inspect_task", "decide_claim"],
+                            "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
                             "correlation_id": "task-claim-1",
                             "dedupe_key": "task_claim:task-claim-1:exec-1",
                             "created_at": 123

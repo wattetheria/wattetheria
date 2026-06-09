@@ -722,7 +722,7 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
                     "created_at": 1
                 },
                 "allowed_actions": [
-                    "inspect_task",
+                    "human_review",
                     "accept_result",
                     "reject_result",
                     "request_retry"
@@ -816,7 +816,7 @@ async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() 
                     },
                     "created_at": 1
                 },
-                "allowed_actions": ["inspect_task", "accept_result", "reject_result", "request_retry"],
+                "allowed_actions": ["human_review", "accept_result", "reject_result", "request_retry"],
                 "requires_commit": true
             },
             "decision": {

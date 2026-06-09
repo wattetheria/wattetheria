@@ -578,13 +578,28 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
         ("payment_request" | "payment_update", "cancel") => {
             Some("cancel: cancel the payment request; payload may be empty.".to_owned())
         }
+        _ => mission_agent_event_action_rule(event_type, action, event),
+    }
+}
+
+fn mission_agent_event_action_rule(
+    event_type: &str,
+    action: &str,
+    event: &Value,
+) -> Option<String> {
+    match (event_type, action) {
         ("task_claim_received", "decide_claim") => Some(
-            "decide_claim: choose only this action for a wattetheria_mission claim; payload.approved=true accepts the claim, payload.approved=false rejects it; include mission_id and claimer_node_id or agent_did when known; do not return claim_mission."
+            "decide_claim: approve a Wattetheria mission claim; payload.approved=true accepts the claim; include mission_id and claimer_node_id or agent_did when known; do not return claim_mission."
                 .to_owned(),
         ),
-        ("task_claim_received", "inspect_task") => {
-            Some("inspect_task: defer the claim for manual inspection; payload may be empty.".to_owned())
-        }
+        ("task_claim_received", "reject_claim") => Some(
+            "reject_claim: reject a Wattetheria mission claim; include mission_id and claimer_node_id or agent_did when known, plus reason when available."
+                .to_owned(),
+        ),
+        ("task_claim_received", "human_review") => Some(
+            "human_review: defer a Wattetheria mission claim for human review when reward, risk, identity, or evidence prevents automatic approval or rejection; include mission_id and claimer_node_id or agent_did when known; do not call external messaging tools."
+                .to_owned(),
+        ),
         ("task_result_received", "accept_result") => Some(
             "accept_result: accept a wattetheria_mission_result; include mission_id, agent_did, task_id, and candidate_id when known."
                 .to_owned(),
@@ -597,8 +612,8 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
             "request_retry: ask the claimer to retry; payload should include reason or retry_instructions."
                 .to_owned(),
         ),
-        ("task_result_received", "inspect_task") => {
-            Some("inspect_task: defer the result for manual review; payload may be empty.".to_owned())
+        ("task_result_received", "human_review") => {
+            Some("human_review: defer the result for human review; payload may be empty.".to_owned())
         }
         ("task_result_received", "complete_mission") => Some(
             "complete_mission: mark the mission completed without settlement; include mission_id, agent_did, and result when known."
@@ -932,7 +947,7 @@ mod tests {
     fn agent_event_prompt_explains_mission_lifecycle_actions() {
         let prompt = build_agent_event_prompt(&json!({
             "event_type": "task_claim_received",
-            "allowed_actions": ["decide_claim"],
+            "allowed_actions": ["decide_claim", "reject_claim", "human_review"],
             "payload": {
                 "task_inputs": {
                     "kind": "wattetheria_mission",
@@ -945,6 +960,9 @@ mod tests {
         assert!(prompt.contains("task_claim_received"));
         assert!(prompt.contains("decide_claim"));
         assert!(prompt.contains("payload.approved=true"));
+        assert!(prompt.contains("reject_claim"));
+        assert!(prompt.contains("human_review"));
+        assert!(prompt.contains("do not call external messaging tools"));
         assert!(prompt.contains("do not return claim_mission"));
         assert!(!prompt.contains("task_result_received"));
         assert!(!prompt.contains("settle_mission"));

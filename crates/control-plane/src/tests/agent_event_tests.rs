@@ -836,13 +836,13 @@ async fn agent_events_route_reports_openai_compatible_missing_content_body() {
                         "source_node_id": "claimer-node",
                         "target_agent_id": null,
                         "target_executor": "core-agent",
-                        "agent_envelope": task_claim_envelope,
+                        "agent_envelope": task_claim_envelope.clone(),
                         "payload": {
                             "task_id": "task-1",
                             "event_kind": "task_claimed"
                         },
                         "requires_commit": false,
-                        "allowed_actions": ["inspect_task", "decide_claim"],
+                        "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
                         "correlation_id": "task-1",
                         "dedupe_key": "task_claim:task-1",
                         "created_at": 1
@@ -968,7 +968,7 @@ async fn agent_events_route_allows_task_result_to_settle_mission_via_commit_plan
                             }
                         },
                         "requires_commit": true,
-                        "allowed_actions": ["inspect_task", "settle_mission"],
+                        "allowed_actions": ["human_review", "settle_mission"],
                         "correlation_id": "mission-1",
                         "dedupe_key": "task_result:mission-1:cand-1",
                         "created_at": 1
@@ -1067,7 +1067,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
                         "source_node_id": "claimer-node",
                         "target_agent_id": null,
                         "target_executor": "core-agent",
-                        "agent_envelope": task_claim_envelope,
+                        "agent_envelope": task_claim_envelope.clone(),
                         "payload": {
                             "task_id": "mission-1",
                             "claimer_node_id": "claimer-node",
@@ -1077,7 +1077,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
                             }
                         },
                         "requires_commit": true,
-                        "allowed_actions": ["inspect_task", "decide_claim"],
+                        "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
                         "correlation_id": "mission-1",
                         "dedupe_key": "task_claim:mission-1",
                         "created_at": 1
@@ -1107,7 +1107,11 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
         Some("claimer-node")
     );
 
-    assert_claim_brain_actions(&data_dir, "evt-task-claim", &["decide_claim"]);
+    assert_claim_brain_actions(
+        &data_dir,
+        "evt-task-claim",
+        &["decide_claim", "reject_claim", "human_review"],
+    );
 
     server.abort();
 }
@@ -1186,7 +1190,7 @@ async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
                         "source_node_id": "claimer-node",
                         "target_agent_id": null,
                         "target_executor": "core-agent",
-                        "agent_envelope": task_claim_envelope,
+                        "agent_envelope": task_claim_envelope.clone(),
                         "payload": {
                             "task_id": "mission-prefixed",
                             "claimer_node_id": "claimer-node",
@@ -1231,6 +1235,156 @@ async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
         entries[0].details["payload"]["parse"]["status"].as_str(),
         Some("accepted")
     );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_events_route_reject_claim_decision_to_wattetheria_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"reject_claim\",\"reason\":\"reward requires more proof\",\"payload\":{\"mission_id\":\"mission-reject\",\"claimer_node_id\":\"claimer-node\"}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let remote_identity = Identity::new_random();
+    let task_claim_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "task.claim",
+        json!({
+            "task_id": "mission-reject",
+            "claimer_node_id": "claimer-node",
+            "task_inputs": {
+                "kind": "wattetheria_mission",
+                "mission_id": "mission-reject"
+            }
+        }),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state);
+
+    let response = request_json(
+        app.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-task-claim-reject",
+                        "event_type": "task_claim_received",
+                        "source_kind": "task_lifecycle",
+                        "source_node_id": "claimer-node",
+                        "target_agent_id": null,
+                        "target_executor": "core-agent",
+                        "agent_envelope": task_claim_envelope.clone(),
+                        "payload": {
+                            "task_id": "mission-reject",
+                            "claimer_node_id": "claimer-node",
+                            "task_inputs": {
+                                "kind": "wattetheria_mission",
+                                "mission_id": "mission-reject"
+                            }
+                        },
+                        "requires_commit": true,
+                        "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
+                        "correlation_id": "mission-reject",
+                        "dedupe_key": "task_claim:mission-reject",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("reject_claim")
+    );
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["mission_id"].as_str(),
+        Some("mission-reject")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["claimer_node_id"].as_str(),
+        Some("claimer-node")
+    );
+
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-task-claim-reject",
+                "event_type": "task_claim_received",
+                "source_kind": "task_lifecycle",
+                "source_node_id": "claimer-node",
+                "target_agent_id": null,
+                "target_executor": "core-agent",
+                "agent_envelope": task_claim_envelope,
+                "payload": {
+                    "task_id": "mission-reject",
+                    "claimer_node_id": "claimer-node",
+                    "task_inputs": {
+                        "kind": "wattetheria_mission",
+                        "mission_id": "mission-reject"
+                    }
+                },
+                "requires_commit": true,
+                "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
+                "correlation_id": "mission-reject",
+                "dedupe_key": "task_claim:mission-reject",
+                "created_at": 1
+            },
+            "decision": response["decision"].clone(),
+        }),
+    )
+    .await;
+    assert_eq!(committed["status"].as_str(), Some("rejected"));
+    assert_eq!(committed["mission_id"].as_str(), Some("mission-reject"));
 
     server.abort();
 }
@@ -1347,7 +1501,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
             }
         },
         "requires_commit": true,
-        "allowed_actions": ["inspect_task", "decide_claim"],
+        "allowed_actions": ["human_review", "decide_claim", "reject_claim"],
         "correlation_id": mission_id,
         "dedupe_key": format!("task_claim:{mission_id}"),
         "created_at": 1
@@ -1962,7 +2116,7 @@ async fn agent_events_convert_accept_result_to_settle_mission_commit() {
                             }
                         },
                         "requires_commit": true,
-                        "allowed_actions": ["inspect_task", "accept_result"],
+                        "allowed_actions": ["human_review", "accept_result"],
                         "correlation_id": "mission-1",
                         "dedupe_key": "task_result:mission-1:cand-1",
                         "created_at": 1
@@ -1991,6 +2145,131 @@ async fn agent_events_convert_accept_result_to_settle_mission_commit() {
         response["decision"]["payload"]["agent_did"].as_str(),
         Some("agent-worker")
     );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_events_route_reject_result_decision_to_wattetheria_commit() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"reject_result\",\"reason\":\"result needs proof\",\"payload\":{\"candidate_id\":\"cand-reject\"}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
+    let base_url = format!("http://{addr}/v1");
+    let remote_identity = Identity::new_random();
+    let task_result_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "task.result",
+        json!({
+            "task_id": "mission-result-reject",
+            "candidate_id": "cand-reject",
+            "candidate_output": {
+                "kind": "wattetheria_mission_result",
+                "mission_id": "mission-result-reject",
+                "agent_did": "agent-worker"
+            }
+        }),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state);
+    let event = json!({
+        "event_id": "evt-task-result-reject",
+        "event_type": "task_result_received",
+        "source_kind": "task_lifecycle",
+        "source_node_id": "claimer-node",
+        "target_agent_id": null,
+        "target_executor": "core-agent",
+        "agent_envelope": task_result_envelope,
+        "payload": {
+            "task_id": "mission-result-reject",
+            "candidate_id": "cand-reject",
+            "candidate_output": {
+                "kind": "wattetheria_mission_result",
+                "mission_id": "mission-result-reject",
+                "agent_did": "agent-worker"
+            }
+        },
+        "requires_commit": true,
+        "allowed_actions": ["human_review", "accept_result", "reject_result", "request_retry"],
+        "correlation_id": "mission-result-reject",
+        "dedupe_key": "task_result:mission-result-reject:cand-reject",
+        "created_at": 1
+    });
+
+    let response = request_json(
+        app.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"event": event.clone()}).to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("reject_result")
+    );
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+
+    let committed = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": event,
+            "decision": response["decision"].clone(),
+        }),
+    )
+    .await;
+    assert_eq!(committed["status"].as_str(), Some("rejected"));
+    assert_eq!(
+        committed["mission_id"].as_str(),
+        Some("mission-result-reject")
+    );
+    assert_eq!(committed["candidate_id"].as_str(), Some("cand-reject"));
 
     server.abort();
 }

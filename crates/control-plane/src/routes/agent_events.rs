@@ -97,30 +97,54 @@ pub(crate) struct AgentDecisionEnvelope {
 }
 
 fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
-    match (event_type, action) {
-        ("friend_request", "accept" | "reject" | "block")
-        | ("dm_received", "reply" | "block" | "ignore")
-        | (
-            "payment_request" | "payment_update",
-            "authorize" | "reject" | "submit" | "settle" | "cancel",
-        )
-        | (
-            "third_party_result",
-            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
-        )
-        | ("task_claim_received", "claim_mission")
-        | ("task_result_received", "complete_mission" | "settle_mission")
-        | ("topic_message_requires_reply", "reply" | "complete_mission" | "settle_mission") => {
-            Some("wattetheria_commit")
+    if routes_to_wattetheria_commit(event_type, action) {
+        return Some("wattetheria_commit");
+    }
+
+    if routes_to_noop(event_type, action) {
+        return Some("noop");
+    }
+
+    None
+}
+
+fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
+    match event_type {
+        "friend_request" => matches!(action, "accept" | "reject" | "block"),
+        "dm_received" => matches!(action, "reply" | "block" | "ignore"),
+        "payment_request" | "payment_update" => {
+            matches!(
+                action,
+                "authorize" | "reject" | "submit" | "settle" | "cancel"
+            )
         }
-        ("topic_message_requires_reply", "ignore")
-        | ("task_claim_received", "decide_claim" | "inspect_task")
-        | (
-            "task_result_received",
-            "accept_result" | "reject_result" | "request_retry" | "inspect_task",
-        ) => Some("wattswarm_direct"),
-        ("third_party_result", "inspect_result" | "continue") => Some("noop"),
-        _ => None,
+        "third_party_result" => matches!(
+            action,
+            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission"
+        ),
+        "task_claim_received" => {
+            matches!(action, "claim_mission" | "reject_claim" | "human_review")
+        }
+        "task_result_received" => matches!(
+            action,
+            "complete_mission"
+                | "settle_mission"
+                | "reject_result"
+                | "request_retry"
+                | "human_review"
+        ),
+        "topic_message_requires_reply" => {
+            matches!(action, "reply" | "complete_mission" | "settle_mission")
+        }
+        _ => false,
+    }
+}
+
+fn routes_to_noop(event_type: &str, action: &str) -> bool {
+    match event_type {
+        "topic_message_requires_reply" => action == "ignore",
+        "third_party_result" => matches!(action, "human_review" | "continue"),
+        _ => false,
     }
 }
 
@@ -220,7 +244,9 @@ fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
         return;
     }
     match event.event_type.as_str() {
-        "task_claim_received" => set_allowed_actions(event, &["decide_claim"]),
+        "task_claim_received" => {
+            set_allowed_actions(event, &["decide_claim", "reject_claim", "human_review"]);
+        }
         "task_result_received" => {
             push_allowed_action(event, "complete_mission");
             push_allowed_action(event, "settle_mission");
@@ -1066,6 +1092,12 @@ fn normalize_mission_resolution(
             if payload_bool(&resolution.payload, "approved") == Some(true) =>
         {
             resolution.action = Some("claim_mission".to_string());
+            ensure_mission_payload_fields(event, &mut resolution);
+        }
+        ("task_claim_received", Some("decide_claim"))
+            if payload_bool(&resolution.payload, "approved") == Some(false) =>
+        {
+            resolution.action = Some("reject_claim".to_string());
             ensure_mission_payload_fields(event, &mut resolution);
         }
         ("task_result_received", Some("accept_result")) => {

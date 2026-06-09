@@ -333,14 +333,20 @@ fn agent_action_commit_route_label(
         ("topic_message_requires_reply", "reply") => "topic_reply",
         (
             "topic_message_requires_reply",
-            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+            "publish_mission" | "claim_mission" | "reject_claim" | "human_review"
+            | "complete_mission" | "settle_mission",
         ) if topic_mission_action_allowed(body, event_type, action) => "mission_lifecycle_topic",
         (
             "topic_message_requires_reply",
-            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+            "publish_mission" | "claim_mission" | "reject_claim" | "human_review"
+            | "complete_mission" | "settle_mission",
         ) => "unsupported_topic_mission",
         (_, "publish_mission") => "mission_publish",
         (_, "claim_mission" | "complete_mission" | "settle_mission") => "mission_transition",
+        ("task_claim_received", "reject_claim" | "human_review") => "mission_claim_review",
+        ("task_result_received", "reject_result" | "request_retry" | "human_review") => {
+            "mission_result_review"
+        }
         _ => "unsupported",
     }
 }
@@ -715,6 +721,150 @@ async fn commit_transition_mission(
     }
 }
 
+async fn commit_mission_claim_review(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let auth = match authorize(&state, &commit_headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(mission_id) = mission_id_for_commit(&body) else {
+        return bad_request("missing mission_id");
+    };
+    let default_agent_did = state.agent_did.clone();
+    let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+    let action = body.decision.action.as_str();
+    let (status, stream_kind, signed_kind, audit_action) = match action {
+        "reject_claim" => (
+            "rejected",
+            "mission.claim_rejected",
+            "MISSION_CLAIM_REJECTED",
+            "mission.reject_claim",
+        ),
+        "human_review" => (
+            "human_review",
+            "mission.claim_human_review",
+            "MISSION_CLAIM_HUMAN_REVIEW",
+            "mission.human_review",
+        ),
+        _ => unreachable!("mission claim review action already matched"),
+    };
+    let payload = json!({
+        "mission_id": mission_id,
+        "task_id": body.decision.payload.get("task_id").and_then(Value::as_str)
+            .or_else(|| body.event.payload.get("task_id").and_then(Value::as_str))
+            .unwrap_or(mission_id.as_str()),
+        "agent_did": agent_did,
+        "claimer_node_id": payload_string(&body.decision.payload, "/claimer_node_id")
+            .or_else(|| payload_string(&body.event.payload, "/claimer_node_id")),
+        "status": status,
+        "reason": body.decision.reason.clone(),
+        "decision_payload": body.decision.payload.clone(),
+        "event_id": body.event.event_id.clone(),
+        "decision_id": body.decision.decision_id.clone(),
+    });
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: stream_kind.to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+    let _ = state.append_signed_event(signed_kind, payload.clone());
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: audit_action.to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(mission_id),
+        capability: Some(audit_action.to_string()),
+        reason: payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        duration_ms: None,
+        details: Some(payload.clone()),
+    });
+    Json(payload).into_response()
+}
+
+async fn commit_mission_result_review(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    let auth = match authorize(&state, &commit_headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let Some(mission_id) = mission_id_for_commit(&body) else {
+        return bad_request("missing mission_id");
+    };
+    let default_agent_did = state.agent_did.clone();
+    let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
+    let action = body.decision.action.as_str();
+    let (status, stream_kind, signed_kind, audit_action) = match action {
+        "reject_result" => (
+            "rejected",
+            "mission.result_rejected",
+            "MISSION_RESULT_REJECTED",
+            "mission.reject_result",
+        ),
+        "request_retry" => (
+            "retry_requested",
+            "mission.result_retry_requested",
+            "MISSION_RESULT_RETRY_REQUESTED",
+            "mission.request_retry",
+        ),
+        "human_review" => (
+            "human_review",
+            "mission.result_human_review",
+            "MISSION_RESULT_HUMAN_REVIEW",
+            "mission.result_human_review",
+        ),
+        _ => unreachable!("mission result review action already matched"),
+    };
+    let payload = json!({
+        "mission_id": mission_id,
+        "task_id": payload_string(&body.decision.payload, "/task_id")
+            .or_else(|| payload_string(&body.event.payload, "/task_id"))
+            .unwrap_or_else(|| mission_id.clone()),
+        "candidate_id": payload_string(&body.decision.payload, "/candidate_id")
+            .or_else(|| payload_string(&body.event.payload, "/candidate_id")),
+        "agent_did": agent_did,
+        "status": status,
+        "reason": body.decision.reason.clone(),
+        "decision_payload": body.decision.payload.clone(),
+        "event_id": body.event.event_id.clone(),
+        "decision_id": body.decision.decision_id.clone(),
+    });
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: stream_kind.to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+    let _ = state.append_signed_event(signed_kind, payload.clone());
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: audit_action.to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(mission_id),
+        capability: Some(audit_action.to_string()),
+        reason: payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        duration_ms: None,
+        details: Some(payload.clone()),
+    });
+    Json(payload).into_response()
+}
+
 async fn commit_task_result_settle_mission(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
@@ -824,15 +974,23 @@ async fn dispatch_agent_action_commit(
         }
         (
             "topic_message_requires_reply",
-            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+            "publish_mission" | "claim_mission" | "reject_claim" | "human_review"
+            | "complete_mission" | "settle_mission",
         ) if topic_mission_action_allowed(&body, event_type, action) => {
             commit_transition_mission(state, commit_headers, body).await
         }
         (
             "topic_message_requires_reply",
-            "publish_mission" | "claim_mission" | "complete_mission" | "settle_mission",
+            "publish_mission" | "claim_mission" | "reject_claim" | "human_review"
+            | "complete_mission" | "settle_mission",
         ) => bad_request("mission actions are not supported for topic messages"),
         (_, "publish_mission") => commit_publish_mission(state, commit_headers, body).await,
+        ("task_claim_received", "reject_claim" | "human_review") => {
+            commit_mission_claim_review(state, commit_headers, body).await
+        }
+        ("task_result_received", "reject_result" | "request_retry" | "human_review") => {
+            commit_mission_result_review(state, commit_headers, body).await
+        }
         (_, "claim_mission" | "complete_mission" | "settle_mission") => {
             commit_transition_mission(state, commit_headers, body).await
         }
