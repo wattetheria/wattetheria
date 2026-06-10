@@ -111,8 +111,13 @@ struct ClientConversationView {
 struct ClientFriendView {
     public_id: String,
     display_name: Option<String>,
+    counterpart_agent_public_id: Option<String>,
+    counterpart_agent_did: Option<String>,
+    counterpart_agent_name: Option<String>,
     counterpart_description: Option<String>,
     counterpart_skills: Vec<String>,
+    remote_node_id: Option<String>,
+    network_id: Option<String>,
     relationship_kind: RelationshipKind,
     status: &'static str,
     active: bool,
@@ -595,8 +600,33 @@ async fn build_friends_payload(
                 .or_else(|| relationship.get("counterpart_agent_name"))
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+            counterpart_agent_public_id: relationship
+                .get("counterpart_agent_public_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            counterpart_agent_did: relationship
+                .get("counterpart_agent_did")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            counterpart_agent_name: relationship
+                .get("counterpart_agent_name")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
             counterpart_description: relationship_counterpart_description(&relationship),
             counterpart_skills: relationship_counterpart_skills(&relationship),
+            remote_node_id: relationship
+                .get("remote_node_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    dm_thread
+                        .and_then(|thread| thread.get("remote_node_id").and_then(Value::as_str))
+                        .map(ToOwned::to_owned)
+                }),
+            network_id: relationship
+                .get("network_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
             relationship_kind: RelationshipKind::Friend,
             status: relationship_status(&relationship),
             active: true,

@@ -404,6 +404,25 @@ async fn build_mission_lifecycle_envelope(
     })
 }
 
+async fn post_mission_lifecycle_topic_notice(
+    state: &ControlPlaneState,
+    mission_feed_key: &str,
+    mission_scope_hint: &str,
+    envelope: &MissionLifecycleEnvelope,
+) -> anyhow::Result<()> {
+    state
+        .swarm_bridge
+        .post_topic_message(
+            None,
+            mission_feed_key,
+            mission_scope_hint,
+            envelope.content.clone(),
+            None,
+            Some(envelope.agent_envelope.clone()),
+        )
+        .await
+}
+
 async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {
     let agent_did = agent_did.trim();
     if agent_did.is_empty() {
@@ -965,9 +984,31 @@ fn insert_mission_transition_actor_projection(
     match action {
         "claim" => insert_mission_actor_projection_fallback(object, "claimer", agent_did, body),
         "complete" => {
+            insert_mission_actor_projection_fallback(object, "claimer", agent_did, body);
             insert_mission_actor_projection_fallback(object, "completer", agent_did, body);
         }
         _ => {}
+    }
+}
+
+fn insert_mission_settle_actor_projection_fallbacks(
+    payload: &mut Value,
+    mission: &CivilMission,
+    body: &MissionSettleBody,
+) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    let claimer_agent_did = mission.claimed_by.as_deref().or(body.agent_did.as_deref());
+    if let Some(agent_did) = claimer_agent_did {
+        let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
+        actor_body.claim_route.clone_from(&body.claim_route);
+        insert_mission_actor_projection_fallback(object, "claimer", agent_did, &actor_body);
+    }
+    if let Some(agent_did) = body.agent_did.as_deref() {
+        let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
+        actor_body.claim_route.clone_from(&body.claim_route);
+        insert_mission_actor_projection_fallback(object, "completer", agent_did, &actor_body);
     }
 }
 
@@ -1368,6 +1409,7 @@ async fn publish_claim_approved_lifecycle_notice(
     mission: &CivilMission,
     body: &MissionClaimBody,
     agent_did: &str,
+    publish_topic_notice: bool,
 ) -> anyhow::Result<Value> {
     let task_id = body
         .task_id
@@ -1384,7 +1426,10 @@ async fn publish_claim_approved_lifecycle_notice(
         .clone()
         .or_else(|| claim_route_string(body, "mission_scope_hint"))
         .unwrap_or_else(|| mission_task_scope_hint(&task_id));
-    let target_node_id = mission_lifecycle_target_node_id_from_claim(body);
+    let target_node_id = match mission_lifecycle_target_node_id_from_claim(body) {
+        Some(node_id) => Some(node_id),
+        None => state.swarm_bridge.local_node_id().await.ok(),
+    };
     let Some(claimer_node_id) = target_node_id.clone() else {
         bail!("mission claim approval requires claimer_node_id");
     };
@@ -1429,9 +1474,18 @@ async fn publish_claim_approved_lifecycle_notice(
             claimer_node_id: claimer_node_id.clone(),
             approved: true,
             reason: None,
-            agent_envelope: envelope.agent_envelope,
+            agent_envelope: envelope.agent_envelope.clone(),
         })
         .await?;
+    if publish_topic_notice {
+        post_mission_lifecycle_topic_notice(
+            state,
+            &mission_feed_key,
+            &mission_scope_hint,
+            &envelope,
+        )
+        .await?;
+    }
     Ok(json!({
         "kind": "mission_claim_approved",
         "event_kind": "task_claim_decided",
@@ -1460,6 +1514,7 @@ struct MissionCompletedLifecycleArgs {
     publisher_agent_did: Option<String>,
     publisher_wattswarm_node_id: Option<String>,
     execution_id: Option<String>,
+    publish_topic_notice: bool,
 }
 
 async fn publish_mission_completed_lifecycle_notice(
@@ -1509,9 +1564,18 @@ async fn publish_mission_completed_lifecycle_notice(
             task_id: args.task_id.clone(),
             execution_id: execution_id.clone(),
             output: envelope.content.clone(),
-            agent_envelope: envelope.agent_envelope,
+            agent_envelope: envelope.agent_envelope.clone(),
         })
         .await?;
+    if args.publish_topic_notice {
+        post_mission_lifecycle_topic_notice(
+            state,
+            &args.mission_feed_key,
+            &args.mission_scope_hint,
+            &envelope,
+        )
+        .await?;
+    }
     Ok(json!({
         "kind": "mission_completed",
         "event_kind": "task_completed",
@@ -1533,6 +1597,7 @@ async fn publish_settled_lifecycle_notice(
     state: &ControlPlaneState,
     mission: &CivilMission,
     body: &MissionSettleBody,
+    publish_topic_notice: bool,
 ) -> anyhow::Result<Value> {
     let task_id = body
         .task_id
@@ -1597,9 +1662,18 @@ async fn publish_settled_lifecycle_notice(
             task_id: task_id.clone(),
             execution_id: execution_id.clone(),
             receipt: Some(envelope.content.clone()),
-            agent_envelope: envelope.agent_envelope,
+            agent_envelope: envelope.agent_envelope.clone(),
         })
         .await?;
+    if publish_topic_notice {
+        post_mission_lifecycle_topic_notice(
+            state,
+            &mission_feed_key,
+            &mission_scope_hint,
+            &envelope,
+        )
+        .await?;
+    }
     Ok(json!({
         "kind": "mission_settled",
         "event_kind": "task_settled",
@@ -2202,6 +2276,7 @@ async fn complete_network_mission(
             publisher_agent_did: publisher_agent_did_from_claim(&body),
             publisher_wattswarm_node_id: route.publisher_wattswarm_node_id.clone(),
             execution_id: claim_route_string(&body, "execution_id"),
+            publish_topic_notice: true,
         },
     )
     .await
@@ -2287,11 +2362,18 @@ async fn publish_transition_lifecycle_notice(
     mission: &CivilMission,
     body: &MissionClaimBody,
     request_agent_did: &str,
+    publish_topic_notice: bool,
 ) -> anyhow::Result<Option<Value>> {
     match action {
-        "claim" => publish_claim_approved_lifecycle_notice(state, mission, body, request_agent_did)
-            .await
-            .map(Some),
+        "claim" => publish_claim_approved_lifecycle_notice(
+            state,
+            mission,
+            body,
+            request_agent_did,
+            publish_topic_notice,
+        )
+        .await
+        .map(Some),
         "complete" => {
             let result = mission
                 .completion_result
@@ -2324,6 +2406,7 @@ async fn publish_transition_lifecycle_notice(
                         .clone()
                         .or_else(|| claim_route_string(body, "publisher_wattswarm_node_id")),
                     execution_id: claim_route_string(body, "execution_id"),
+                    publish_topic_notice,
                 },
             )
             .await
@@ -2433,6 +2516,7 @@ async fn transition_mission(
         &mission,
         &body,
         &request_agent_did,
+        agent_commit_context_from_headers(&headers).is_none(),
     )
     .await
     {
@@ -2507,11 +2591,7 @@ pub(crate) async fn mission_settle(
     }
 
     let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
-    if let (Some(agent_did), Some(object)) = (body.agent_did.as_deref(), payload.as_object_mut()) {
-        let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
-        actor_body.claim_route.clone_from(&body.claim_route);
-        insert_mission_actor_projection_fallback(object, "completer", agent_did, &actor_body);
-    }
+    insert_mission_settle_actor_projection_fallbacks(&mut payload, &mission, &body);
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.settled".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -2533,11 +2613,17 @@ pub(crate) async fn mission_settle(
         details: Some(payload.clone()),
     });
 
-    let mission_lifecycle_notice =
-        match publish_settled_lifecycle_notice(&state, &mission, &body).await {
-            Ok(notice) => notice,
-            Err(error) => return internal_error(&error),
-        };
+    let mission_lifecycle_notice = match publish_settled_lifecycle_notice(
+        &state,
+        &mission,
+        &body,
+        agent_commit_context_from_headers(&headers).is_none(),
+    )
+    .await
+    {
+        Ok(notice) => notice,
+        Err(error) => return internal_error(&error),
+    };
     let mut response_json = payload.clone();
     if let Some(swarm_finalize) = swarm_finalize
         && let Some(object) = response_json.as_object_mut()

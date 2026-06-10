@@ -1,7 +1,7 @@
 use crate::types::{SocialError, SocialResult};
 use rusqlite::{Connection, OptionalExtension};
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 const SCHEMA_VERSION_TABLE: &str = "social_schema_version";
 
 pub fn migrate(conn: &Connection) -> SocialResult<()> {
@@ -51,6 +51,39 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
             updated_at INTEGER NOT NULL,
             expires_at INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS reliability_tasks (
+            object_kind TEXT NOT NULL,
+            object_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at INTEGER,
+            next_attempt_at INTEGER NOT NULL,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(object_kind, object_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reliability_tasks_status_next
+            ON reliability_tasks(status, next_attempt_at ASC, object_kind, object_id);
+
+        CREATE TABLE IF NOT EXISTS deferred_agent_events (
+            event_id TEXT PRIMARY KEY,
+            local_public_id TEXT NOT NULL,
+            remote_public_id TEXT NOT NULL,
+            remote_node_id TEXT,
+            source_agent_id TEXT,
+            status TEXT NOT NULL,
+            event_json TEXT NOT NULL,
+            reason TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            replayed_at INTEGER
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_deferred_agent_events_waiting_pair
+            ON deferred_agent_events(status, local_public_id, remote_public_id, created_at);
 
         CREATE TABLE IF NOT EXISTS friendships (
             friendship_id TEXT PRIMARY KEY,

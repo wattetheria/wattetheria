@@ -3,6 +3,7 @@ mod auth;
 mod autonomy;
 mod diagnostics;
 mod gateway_dispatch;
+mod reliability_maintenance;
 pub mod social_host;
 mod swarm_sync;
 pub mod routes {
@@ -46,6 +47,10 @@ use std::net::SocketAddr;
 pub use autonomy::run_autonomy_tick_once;
 pub use gateway_dispatch::{
     SignedGatewayNodeEvent, build_signed_node_event, push_signed_node_event, push_signed_snapshot,
+};
+pub use reliability_maintenance::{
+    RELIABILITY_MAINTENANCE_BATCH_LIMIT, RELIABILITY_MAINTENANCE_INTERVAL_SEC,
+    run_reliability_maintenance_tick_once, spawn_reliability_maintenance_task,
 };
 pub use routes::client_api::{
     SignedPublicClientSnapshot, build_signed_public_client_snapshot,

@@ -241,7 +241,10 @@ where
             FriendRequestDirection::Outbound
         };
         let requested_at = view.requested_at.unwrap_or(view.updated_at);
-        let updated_at = view.responded_at.unwrap_or(view.updated_at);
+        let updated_at = view
+            .responded_at
+            .unwrap_or(view.updated_at)
+            .max(requested_at);
         let thread_id = thread_service::find_thread(
             repository,
             local_public_id,
@@ -416,8 +419,24 @@ where
             .unwrap_or_else(|| view.transport_thread_id.clone());
         let created_at = existing_thread
             .as_ref()
-            .map(|thread| thread.created_at)
+            .map(|thread| thread.created_at.min(view.created_at))
             .unwrap_or(view.created_at);
+        let last_message_at = max_optional_i64(
+            existing_thread
+                .as_ref()
+                .and_then(|thread| thread.last_message_at),
+            view.last_message_at,
+        );
+        let updated_at = last_message_at
+            .unwrap_or(view.updated_at)
+            .max(
+                existing_thread
+                    .as_ref()
+                    .map(|thread| thread.updated_at)
+                    .unwrap_or(view.updated_at),
+            )
+            .max(view.updated_at)
+            .max(created_at);
         ignore_conflict(thread_service::upsert_thread(
             repository,
             &DirectThread {
@@ -426,9 +445,9 @@ where
                 remote_public_id: view.counterpart.counterpart_public_id.clone(),
                 transport_thread_id: view.transport_thread_id.clone(),
                 state: thread_state_from_swarm(&view.session_state),
-                last_message_at: view.last_message_at,
+                last_message_at,
                 created_at,
-                updated_at: view.updated_at,
+                updated_at,
             },
         ))?;
         if view.relationship_established_at.is_some() {
@@ -446,7 +465,7 @@ where
                     established_from_request_id: None,
                     thread_id: Some(social_thread_id),
                     created_at,
-                    updated_at: view.updated_at,
+                    updated_at,
                 },
             ))?;
         }
@@ -481,12 +500,27 @@ where
             .unwrap_or_else(|| view.transport_thread_id.clone());
         let created_at = existing_thread
             .as_ref()
-            .map(|thread| thread.created_at)
+            .map(|thread| thread.created_at.min(view.created_at))
             .unwrap_or(view.created_at);
-        let updated_at = view
+        let message_updated_at = view
             .acknowledged_at
             .unwrap_or(view.created_at)
             .max(view.created_at);
+        let last_message_at_value = existing_thread
+            .as_ref()
+            .and_then(|thread| thread.last_message_at)
+            .unwrap_or(view.created_at)
+            .max(view.created_at);
+        let last_message_at = Some(last_message_at_value);
+        let thread_updated_at = message_updated_at
+            .max(
+                existing_thread
+                    .as_ref()
+                    .map(|thread| thread.updated_at)
+                    .unwrap_or(message_updated_at),
+            )
+            .max(last_message_at_value)
+            .max(created_at);
         ignore_conflict(thread_service::upsert_thread(
             repository,
             &DirectThread {
@@ -495,9 +529,9 @@ where
                 remote_public_id: view.counterpart.counterpart_public_id.clone(),
                 transport_thread_id: view.transport_thread_id.clone(),
                 state: ThreadState::Ready,
-                last_message_at: Some(view.created_at),
+                last_message_at,
                 created_at,
-                updated_at,
+                updated_at: thread_updated_at,
             },
         ))?;
         let delivery_state = delivery_state_from_swarm(&view.delivery_state);
@@ -519,7 +553,7 @@ where
                 delivery_state,
                 read_state: ReadState::Unread,
                 created_at: view.created_at,
-                updated_at,
+                updated_at: message_updated_at,
             },
         ))?;
         if matches!(
@@ -599,8 +633,13 @@ where
             friend_request_service::list_friend_requests(repository, &input.local_public_id)
                 .ok()
                 .and_then(|items| {
-                    latest_request_for_counterpart(&items, &input.counterpart.counterpart_public_id)
-                        .map(|item| item.request_id.clone())
+                    let counterpart_public_id = &input.counterpart.counterpart_public_id;
+                    let request = if input.action == RelationshipAction::Request {
+                        latest_pending_request_for_counterpart(&items, counterpart_public_id)
+                    } else {
+                        latest_request_for_counterpart(&items, counterpart_public_id)
+                    };
+                    request.map(|item| item.request_id.clone())
                 })
         })
         .unwrap_or_else(|| format!("request-{}", input.occurred_at));
@@ -878,6 +917,14 @@ fn stable_pair_id(prefix: &str, left: &str, right: &str) -> String {
     }
 }
 
+fn max_optional_i64(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 fn retire_alias_friendships<R>(
     repository: &R,
     local_public_id: &str,
@@ -921,6 +968,19 @@ fn latest_request_for_counterpart<'a>(
     items
         .iter()
         .filter(|item| item.remote_public_id == counterpart_public_id)
+        .max_by_key(|item| (item.updated_at, item.created_at))
+}
+
+fn latest_pending_request_for_counterpart<'a>(
+    items: &'a [FriendRequest],
+    counterpart_public_id: &str,
+) -> Option<&'a FriendRequest> {
+    items
+        .iter()
+        .filter(|item| {
+            item.remote_public_id == counterpart_public_id
+                && item.state == FriendRequestState::Pending
+        })
         .max_by_key(|item| (item.updated_at, item.created_at))
 }
 
@@ -1023,6 +1083,33 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_relationship_accept_clamps_out_of_order_response_time() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                counterpart: counterpart(30),
+                relationship_state: "accepted".to_string(),
+                initiated_by: "remote".to_string(),
+                request_id: Some("req-1".to_string()),
+                correlation_id: Some("corr-1".to_string()),
+                requested_at: Some(30),
+                responded_at: Some(20),
+                updated_at: 20,
+            }],
+        )
+        .expect("reconcile accepted relationship");
+
+        let friendships =
+            friendship_service::list_friendships(&store, "did:key:alice").expect("friendships");
+        assert_eq!(friendships.len(), 1);
+        assert_eq!(friendships[0].state, FriendshipState::Active);
+        assert_eq!(friendships[0].created_at, 30);
+        assert_eq!(friendships[0].updated_at, 30);
+    }
+
+    #[test]
     fn reconcile_dm_message_creates_thread_message_and_receipt() {
         let store = SocialStore::open_in_memory().expect("social store");
         seed_friendship(&store, FriendshipState::Active);
@@ -1088,6 +1175,58 @@ mod tests {
         let messages =
             message_service::list_thread_messages(&store, &threads[0].thread_id).expect("messages");
         assert_eq!(threads[0].updated_at, 20);
+        assert_eq!(messages[0].updated_at, 20);
+    }
+
+    #[test]
+    fn reconcile_dm_message_keeps_thread_valid_when_message_predates_thread() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        seed_friendship(&store, FriendshipState::Active);
+        thread_service::upsert_thread(
+            &store,
+            &DirectThread {
+                thread_id: "dm:alice:bob".to_string(),
+                local_public_id: "did:key:alice".to_string(),
+                remote_public_id: "did:key:bob".to_string(),
+                transport_thread_id: "dm:alice:bob".to_string(),
+                state: ThreadState::Ready,
+                last_message_at: Some(30),
+                created_at: 30,
+                updated_at: 30,
+            },
+        )
+        .expect("seed thread");
+
+        reconcile_dm_messages(
+            &store,
+            "did:key:alice",
+            &[DmMessageSyncView {
+                counterpart: counterpart(20),
+                transport_thread_id: "dm:alice:bob".to_string(),
+                message_id: "msg-before-thread".to_string(),
+                message_kind: "message".to_string(),
+                direction: "inbound".to_string(),
+                delivery_state: "delivered".to_string(),
+                a2a_protocol: "google_a2a".to_string(),
+                content: serde_json::json!({"text":"early hello"}),
+                encrypted_body: None,
+                content_encoding: None,
+                agent_envelope_json: None,
+                agent_signature: None,
+                created_at: 20,
+                acknowledged_at: Some(20),
+            }],
+        )
+        .expect("reconcile early dm message");
+
+        let threads = thread_service::list_threads(&store, "did:key:alice").expect("threads");
+        let messages =
+            message_service::list_thread_messages(&store, "dm:alice:bob").expect("messages");
+        assert_eq!(threads[0].created_at, 30);
+        assert_eq!(threads[0].last_message_at, Some(30));
+        assert_eq!(threads[0].updated_at, 30);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].created_at, 20);
         assert_eq!(messages[0].updated_at, 20);
     }
 

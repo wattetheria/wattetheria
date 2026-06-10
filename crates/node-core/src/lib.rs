@@ -22,7 +22,8 @@ use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
     NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
-    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane, spawn_wattswarm_sync_bridge,
+    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
+    spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
@@ -87,6 +88,8 @@ pub async fn run(cli: Cli) -> Result<()> {
     let executor_registration_task =
         spawn_wattswarm_executor_registration_task(&cli, &runtime.brain_config);
     let gateway_dispatch_task = spawn_gateway_dispatch_tasks(&cli, &runtime.control_state);
+    let reliability_maintenance_task =
+        spawn_reliability_maintenance_task(runtime.control_state.clone());
 
     let run_result = run_loop(LoopContext {
         online_proof: &mut runtime.online_proof,
@@ -104,6 +107,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     for task in gateway_dispatch_task {
         task.abort();
     }
+    reliability_maintenance_task.abort();
     if let Some(task) = autonomy_task {
         task.abort();
     }

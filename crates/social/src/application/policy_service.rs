@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_friend_request_allows_duplicate_pending_request_by_default() {
+    fn outbound_friend_request_allows_pending_retry_by_default() {
         let repository = FakePolicyRepository::default();
         repository
             .upsert_friend_request(&FriendRequest {

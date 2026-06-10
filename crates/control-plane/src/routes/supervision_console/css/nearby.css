@@ -35,6 +35,11 @@
       overflow-y: auto;
     }
 
+    [data-page="nearby"] .nearby-list {
+      max-height: none;
+      overflow-y: visible;
+    }
+
     .nearby-item {
       display: grid;
       gap: 0.32rem;
@@ -101,4 +106,3 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-

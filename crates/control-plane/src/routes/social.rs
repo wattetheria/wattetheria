@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
@@ -1036,17 +1037,24 @@ fn relationship_payload_from_friendship(
     bindings: &BTreeMap<String, ControllerBinding>,
     transport_bindings: &[RemoteTransportBinding],
 ) -> Value {
-    let display_name = identities
-        .get(&friendship.remote_public_id)
-        .map(|identity| identity.display_name.clone());
+    let identity = identities.get(&friendship.remote_public_id);
+    let display_name = identity.map(|identity| identity.display_name.clone());
+    let transport_binding = transport_bindings
+        .iter()
+        .find(|binding| binding.public_id == friendship.remote_public_id);
+    let remote_node_id =
+        transport_binding_remote_node_id(transport_bindings, &friendship.remote_public_id)
+            .or_else(|| binding_remote_node_id(bindings, &friendship.remote_public_id));
+    let counterpart_agent_did = identity
+        .and_then(|identity| identity.agent_did.clone())
+        .or_else(|| transport_binding.and_then(|binding| binding.agent_did.clone()));
     json!({
         "counterpart_public_id": friendship.remote_public_id.clone(),
+        "counterpart_agent_public_id": friendship.remote_public_id.clone(),
+        "counterpart_agent_did": counterpart_agent_did,
+        "counterpart_agent_name": display_name.clone(),
         "counterpart_display_name": display_name,
-        "remote_node_id": transport_binding_remote_node_id(
-            transport_bindings,
-            &friendship.remote_public_id,
-        )
-        .or_else(|| binding_remote_node_id(bindings, &friendship.remote_public_id)),
+        "remote_node_id": remote_node_id,
         "relationship_state": friendship_state_label(friendship.state),
         "last_action": friendship_state_label(friendship.state),
         "initiated_by": "local",
@@ -1240,7 +1248,34 @@ pub(crate) fn reconcile_swarm_relationship_views(
         local_public_id,
         &synced,
     )
-    .map_err(anyhow::Error::msg)
+    .map_err(anyhow::Error::msg)?;
+    for view in views
+        .iter()
+        .filter(|view| view.relationship_state == "accepted" || view.relationship_state == "active")
+    {
+        let counterpart_public_id = relationship_remote_public_id(view)
+            .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
+            .unwrap_or_else(|| view.remote_node_id.clone());
+        let state = state.clone();
+        let local_public_id = local_public_id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = replay_deferred_dm_agent_events_for_friendship(
+                &state,
+                &local_public_id,
+                &counterpart_public_id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    local_public_id = %local_public_id,
+                    remote_public_id = %counterpart_public_id,
+                    "failed to replay deferred DM agent events after relationship sync"
+                );
+            }
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn reconcile_swarm_dm_threads(
@@ -1358,6 +1393,18 @@ pub(crate) fn reconcile_swarm_dm_messages(
         .map_err(anyhow::Error::msg)
 }
 
+async fn reconcile_bridge_relationships_for_local(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    identities: &BTreeMap<String, PublicIdentity>,
+    bindings: &BTreeMap<String, ControllerBinding>,
+) -> anyhow::Result<()> {
+    if let Ok(views) = state.swarm_bridge.list_peer_relationships().await {
+        reconcile_swarm_relationship_views(state, local_public_id, identities, bindings, &views)?;
+    }
+    Ok(())
+}
+
 async fn persist_social_relationship_action(
     state: &ControlPlaneState,
     local_public_id: &str,
@@ -1386,6 +1433,7 @@ async fn persist_social_relationship_action(
         SwarmRelationshipAction::Block => orchestration_service::RelationshipAction::Block,
         SwarmRelationshipAction::Unblock => orchestration_service::RelationshipAction::Unblock,
     };
+    let accepted = matches!(action, orchestration_service::RelationshipAction::Accept);
     orchestration_service::persist_relationship_action(
         &*state.social_store,
         &orchestration_service::PersistRelationshipActionInput {
@@ -1404,7 +1452,16 @@ async fn persist_social_relationship_action(
             occurred_at: now,
         },
     )
-    .map_err(anyhow::Error::msg)
+    .map_err(anyhow::Error::msg)?;
+    if accepted {
+        replay_deferred_dm_agent_events_for_friendship(
+            state,
+            local_public_id,
+            counterpart_public_id,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 struct PersistSocialDmMessageArgs {
@@ -1457,6 +1514,24 @@ fn policy_denied_response(reason: &str) -> Response {
         })),
     )
         .into_response()
+}
+
+struct OutboundFriendRequestGate {
+    denied_response: Option<Response>,
+    pending_request_id: Option<String>,
+}
+
+fn message_with_request_id(
+    base_message: Option<Value>,
+    request_id: Option<String>,
+) -> Option<Value> {
+    let Some(request_id) = request_id else {
+        return base_message;
+    };
+    Some(with_social_defaults(
+        base_message.unwrap_or_else(|| json!({})),
+        [("request_id", Value::String(request_id))],
+    ))
 }
 
 fn build_relationship_action_message(
@@ -1576,11 +1651,21 @@ async fn ensure_outbound_friend_request_allowed(
     counterpart_public_id: &str,
     remote_node_id: &str,
     now: i64,
-) -> anyhow::Result<Option<Response>> {
+) -> anyhow::Result<OutboundFriendRequestGate> {
     let (identities, bindings) = load_social_identity_maps(state).await;
     if let Ok(views) = state.swarm_bridge.list_peer_relationships().await {
         reconcile_swarm_relationship_views(state, local_public_id, &identities, &bindings, &views)?;
     }
+    let pending_request_id =
+        friend_request_service::list_friend_requests(&*state.social_store, local_public_id)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|request| {
+                request.remote_public_id == counterpart_public_id
+                    && request.direction == FriendRequestDirection::Outbound
+                    && request.state == FriendRequestState::Pending
+            })
+            .map(|request| request.request_id);
     let evaluation = policy_service::evaluate_outbound_friend_request_policy(
         &*state.social_store,
         local_public_id,
@@ -1589,8 +1674,11 @@ async fn ensure_outbound_friend_request_allowed(
         now,
     )
     .map_err(anyhow::Error::msg)?;
-    Ok((evaluation.decision == PolicyDecision::Deny)
-        .then(|| policy_denied_response(&evaluation.reason)))
+    Ok(OutboundFriendRequestGate {
+        denied_response: (evaluation.decision == PolicyDecision::Deny)
+            .then(|| policy_denied_response(&evaluation.reason)),
+        pending_request_id,
+    })
 }
 
 fn ensure_outbound_dm_allowed(
@@ -1817,6 +1905,8 @@ pub(crate) async fn build_agent_dm_threads_payload(
 ) -> anyhow::Result<Vec<Value>> {
     let local = resolve_social_local_context(state, public_id).await;
     let (identities, bindings) = load_social_identity_maps(state).await;
+    reconcile_bridge_relationships_for_local(state, &local.public_id, &identities, &bindings)
+        .await?;
     let bridge_threads = state.swarm_bridge.list_peer_dm_threads().await;
     if let Ok(views) = &bridge_threads {
         reconcile_swarm_dm_threads(state, &local.public_id, &identities, &bindings, views)?;
@@ -2048,6 +2138,8 @@ pub(crate) async fn build_agent_dm_messages_payload(
 ) -> anyhow::Result<Vec<Value>> {
     let local = resolve_social_local_context(state, public_id).await;
     let (identities, bindings) = load_social_identity_maps(state).await;
+    reconcile_bridge_relationships_for_local(state, &local.public_id, &identities, &bindings)
+        .await?;
     let bridge_threads = state.swarm_bridge.list_peer_dm_threads().await;
     if let Ok(views) = &bridge_threads {
         reconcile_swarm_dm_threads(state, &local.public_id, &identities, &bindings, views)?;
@@ -2620,6 +2712,7 @@ async fn handle_agent_relationship_action(
         .unwrap_or_else(|| counterpart_public_id.clone());
     let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
+    let mut base_message = body.message;
     if body.action == SwarmRelationshipAction::Request {
         match ensure_outbound_friend_request_allowed(
             &state,
@@ -2630,8 +2723,12 @@ async fn handle_agent_relationship_action(
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(gate) => {
+                if let Some(response) = gate.denied_response {
+                    return response;
+                }
+                base_message = message_with_request_id(base_message, gate.pending_request_id);
+            }
             Err(error) => return internal_error(&error),
         }
     }
@@ -2639,7 +2736,7 @@ async fn handle_agent_relationship_action(
         &local_public_id,
         &counterpart_public_id,
         &body.action,
-        body.message,
+        base_message,
         now,
     );
     let response_json = match send_signed_relationship_action_command(

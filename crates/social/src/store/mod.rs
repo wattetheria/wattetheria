@@ -1,3 +1,5 @@
+mod deferred_agent_events;
+mod reliability_tasks;
 mod schema;
 
 use crate::domain::blocks::SocialBlock;
@@ -1296,6 +1298,7 @@ fn receipt_kind_from_str(value: &str) -> SocialResult<ReceiptKind> {
 mod tests {
     use super::*;
     use crate::application::policy_service::ensure_default_policy_rules;
+    use crate::domain::deferred_agent_events::DeferredAgentEvent;
     use crate::domain::messages::{
         DeliveryState, DirectMessage, MessageDirection, MessageKind, ReadState,
     };
@@ -1330,6 +1333,50 @@ mod tests {
 
         assert_eq!(first.len(), 5);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn store_tracks_deferred_agent_events_until_replayed() {
+        let store = SocialStore::open_in_memory().expect("open store");
+        let event = DeferredAgentEvent {
+            event_id: "evt-dm-1".to_owned(),
+            local_public_id: "agent-local".to_owned(),
+            remote_public_id: "agent-remote".to_owned(),
+            remote_node_id: Some("node-remote".to_owned()),
+            source_agent_id: Some("did:key:remote".to_owned()),
+            status: "waiting_for_friendship".to_owned(),
+            event_json: serde_json::json!({"event_id":"evt-dm-1"}),
+            reason: Some("waiting_for_friendship".to_owned()),
+            created_at: 10,
+            updated_at: 10,
+            replayed_at: None,
+        };
+
+        store.defer_agent_event(&event).expect("defer event");
+        store
+            .defer_agent_event(&event)
+            .expect("defer event idempotently");
+
+        let waiting = store
+            .list_waiting_deferred_agent_events("agent-local", "agent-remote", 10)
+            .expect("list waiting events");
+        assert_eq!(waiting, vec![event.clone()]);
+
+        store
+            .mark_deferred_agent_event_replayed("evt-dm-1", 20)
+            .expect("mark replayed");
+        let stored = store
+            .get_deferred_agent_event("evt-dm-1")
+            .expect("get deferred event")
+            .expect("deferred event exists");
+        assert_eq!(stored.status, "replayed");
+        assert_eq!(stored.replayed_at, Some(20));
+        assert!(
+            store
+                .list_waiting_deferred_agent_events("agent-local", "agent-remote", 10)
+                .expect("list waiting after replay")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1464,6 +1511,100 @@ mod tests {
         assert_eq!(
             store.list_blocks("did:key:alice").expect("list blocks"),
             vec![block]
+        );
+    }
+
+    #[test]
+    fn store_tracks_due_outbound_friend_request_reliability_tasks() {
+        let store = SocialStore::open_in_memory().expect("open store");
+        let request = FriendRequest {
+            request_id: "request-1".to_owned(),
+            local_public_id: "did:key:alice".to_owned(),
+            remote_public_id: "did:key:bob".to_owned(),
+            remote_node_id: Some("node-bob".to_owned()),
+            direction: FriendRequestDirection::Outbound,
+            state: FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: Some("correlation-1".to_owned()),
+            created_at: 100,
+            updated_at: 100,
+            expires_at: None,
+        };
+        store
+            .upsert_friend_request(&request)
+            .expect("save friend request");
+        let mut duplicate = request.clone();
+        duplicate.request_id = "request-older-duplicate".to_owned();
+        duplicate.updated_at = 99;
+        store
+            .upsert_friend_request(&duplicate)
+            .expect("save duplicate friend request");
+
+        assert!(
+            store
+                .due_outbound_pending_friend_requests(399, 300, 10)
+                .expect("query not due")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .due_outbound_pending_friend_requests(400, 300, 10)
+                .expect("query due")
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .due_outbound_pending_friend_requests(400, 300, 10)
+                .expect("query due")[0]
+                .request_id,
+            "request-1"
+        );
+
+        store
+            .defer_reliability_task("friend_request", "request-1", 400, 700, Some("offline"))
+            .expect("defer task");
+        assert!(
+            store
+                .due_outbound_pending_friend_requests(699, 300, 10)
+                .expect("query deferred")
+                .is_empty()
+        );
+        let deferred = store
+            .get_reliability_task("friend_request", "request-1")
+            .expect("get deferred task")
+            .expect("deferred task");
+        assert_eq!(deferred.attempt_count, 0);
+        assert_eq!(deferred.next_attempt_at, 700);
+
+        store
+            .record_reliability_attempt("friend_request", "request-1", 700, 1600, None)
+            .expect("record attempt");
+        let attempted = store
+            .get_reliability_task("friend_request", "request-1")
+            .expect("get attempted task")
+            .expect("attempted task");
+        assert_eq!(attempted.attempt_count, 1);
+        assert_eq!(attempted.last_attempt_at, Some(700));
+        assert_eq!(attempted.next_attempt_at, 1600);
+
+        store
+            .upsert_friendship(&Friendship {
+                friendship_id: "friendship-1".to_owned(),
+                local_public_id: "did:key:alice".to_owned(),
+                remote_public_id: "did:key:bob".to_owned(),
+                state: FriendshipState::Active,
+                established_from_request_id: Some("request-1".to_owned()),
+                thread_id: None,
+                created_at: 800,
+                updated_at: 800,
+            })
+            .expect("save active friendship");
+        assert!(
+            store
+                .due_outbound_pending_friend_requests(2000, 300, 10)
+                .expect("query active friendship")
+                .is_empty()
         );
     }
 

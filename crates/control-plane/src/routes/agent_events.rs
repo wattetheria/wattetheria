@@ -16,6 +16,9 @@ use wattetheria_kernel::payments::{
 };
 use wattetheria_kernel::signing::verify_payload;
 use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
+use wattetheria_social::application::friendship_service;
+use wattetheria_social::domain::deferred_agent_events::DeferredAgentEvent;
+use wattetheria_social::domain::friendships::FriendshipState;
 
 pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
 
@@ -235,6 +238,29 @@ fn is_mission_event(event: &AgentEventEnvelope) -> bool {
 
 fn topic_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
     mission_lifecycle_value_from_event(event, "kind").and_then(Value::as_str)
+}
+
+fn mission_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
+    match event.event_type.as_str() {
+        "topic_message_requires_reply" => topic_lifecycle_kind(event),
+        "task_claim_decision_received"
+            if mission_lifecycle_value_from_event(event, "approved").and_then(Value::as_bool)
+                == Some(true) =>
+        {
+            Some("mission_claim_approved")
+        }
+        "task_completion_decision_received"
+            if mission_lifecycle_value_from_event(event, "approved").and_then(Value::as_bool)
+                == Some(true)
+                && mission_lifecycle_value_from_event(event, "retry_requested")
+                    .and_then(Value::as_bool)
+                    != Some(true) =>
+        {
+            Some("mission_completed")
+        }
+        "task_settled_received" => Some("mission_settled"),
+        _ => None,
+    }
 }
 
 fn push_allowed_action(event: &mut AgentEventEnvelope, action: &str) {
@@ -919,7 +945,7 @@ async fn sync_payment_event_to_ledger(
 
 fn mission_lifecycle_status(kind: &str) -> Option<&'static str> {
     match kind {
-        "mission_claim_approved" => Some("approved"),
+        "mission_claim_approved" => Some("claimed"),
         "mission_completed" => Some("completed"),
         "mission_settled" => Some("settled"),
         _ => None,
@@ -931,10 +957,7 @@ async fn sync_mission_lifecycle_event_to_state(
     event: &AgentEventEnvelope,
     verified_context: Option<&VerifiedAgentContext>,
 ) -> Result<(), Response> {
-    if event.event_type != "topic_message_requires_reply" {
-        return Ok(());
-    }
-    let Some(kind) = topic_lifecycle_kind(event) else {
+    let Some(kind) = mission_lifecycle_kind(event) else {
         return Ok(());
     };
     let Some(status) = mission_lifecycle_status(kind) else {
@@ -1361,6 +1384,136 @@ fn record_agent_brain_response_diagnostic(
     );
 }
 
+#[derive(Debug, Clone)]
+struct DeferredDmAgentEventContext {
+    local_public: String,
+    remote_public: String,
+    remote_node: Option<String>,
+    source_agent: Option<String>,
+}
+
+fn trimmed_string(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn topic_dm_agent_event_context(event: &AgentEventEnvelope) -> Option<DeferredDmAgentEventContext> {
+    if event.event_type != "topic_message_requires_reply" {
+        return None;
+    }
+    let envelope = event.agent_envelope.as_ref()?;
+    let capability_is_dm = envelope.capability.as_deref() == Some("social.dm.send");
+    let feed_is_dm = event.payload.get("feed_key").and_then(Value::as_str) == Some("wattswarm.dm");
+    let content_is_dm = event
+        .payload
+        .pointer("/topic_content/kind")
+        .and_then(Value::as_str)
+        == Some("direct_message");
+    if !capability_is_dm && !feed_is_dm && !content_is_dm {
+        return None;
+    }
+    let local_public_id = trimmed_string(envelope.message.get("target_public_id"))?;
+    let remote_public_id = trimmed_string(envelope.message.get("source_public_id"))?;
+    if local_public_id == remote_public_id {
+        return None;
+    }
+    Some(DeferredDmAgentEventContext {
+        local_public: local_public_id,
+        remote_public: remote_public_id,
+        remote_node: envelope
+            .source_node_id
+            .clone()
+            .or_else(|| event.source_node_id.clone()),
+        source_agent: envelope.source_agent_id.clone(),
+    })
+}
+
+fn has_active_friendship(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    remote_public_id: &str,
+) -> bool {
+    friendship_service::list_friendships(&*state.social_store, local_public_id)
+        .unwrap_or_default()
+        .into_iter()
+        .any(|friendship| {
+            friendship.remote_public_id == remote_public_id
+                && friendship.state == FriendshipState::Active
+        })
+}
+
+fn deferred_dm_response(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    context: &DeferredDmAgentEventContext,
+    acked_at: u64,
+) -> Response {
+    let now = Utc::now().timestamp_millis();
+    let deferred = DeferredAgentEvent {
+        event_id: event.event_id.clone(),
+        local_public_id: context.local_public.clone(),
+        remote_public_id: context.remote_public.clone(),
+        remote_node_id: context.remote_node.clone(),
+        source_agent_id: context.source_agent.clone(),
+        status: "waiting_for_friendship".to_owned(),
+        event_json: serde_json::to_value(event).unwrap_or(Value::Null),
+        reason: Some("waiting_for_friendship".to_owned()),
+        created_at: now,
+        updated_at: now,
+        replayed_at: None,
+    };
+    let response = match state.social_store.defer_agent_event(&deferred) {
+        Ok(()) => AgentEventCallbackResponse {
+            ok: true,
+            acked_at: Some(acked_at),
+            detail: Some("deferred until friendship is active".to_owned()),
+            decision: None,
+        },
+        Err(error) => AgentEventCallbackResponse {
+            ok: false,
+            acked_at: Some(acked_at),
+            detail: Some(format!("defer agent event failed: {error}")),
+            decision: None,
+        },
+    };
+    record_agent_event_diagnostic(
+        state,
+        event,
+        if response.ok { "info" } else { "error" },
+        "callback.deferred",
+        if response.ok {
+            "waiting_for_friendship"
+        } else {
+            "error"
+        },
+        format!("deferred DM agent event: {}", event.event_id),
+        &json!({
+            "local_public_id": context.local_public,
+            "remote_public_id": context.remote_public,
+            "remote_node_id": context.remote_node,
+            "source_agent_id": context.source_agent,
+            "callback_response": response,
+        }),
+    );
+    record_agent_callback_responded(state, event, &response);
+    Json(response).into_response()
+}
+
+fn defer_unfriended_dm_agent_event(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    acked_at: u64,
+) -> Option<Response> {
+    let context = topic_dm_agent_event_context(event)?;
+    if has_active_friendship(state, &context.local_public, &context.remote_public) {
+        return None;
+    }
+    Some(deferred_dm_response(state, event, &context, acked_at))
+}
+
 fn no_action_response(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
@@ -1537,36 +1690,17 @@ fn response_from_resolution(
     selected_action_response(state, event, &action, route, &resolution, acked_at)
 }
 
-pub(crate) async fn callback(
-    State(state): State<ControlPlaneState>,
-    Json(body): Json<AgentEventCallbackRequest>,
+async fn process_agent_event_decision(
+    state: &ControlPlaneState,
+    mut event: AgentEventEnvelope,
+    verified_context: Option<&VerifiedAgentContext>,
+    acked_at: u64,
 ) -> Response {
-    let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
-    let mut event = body.event;
-    let verified_context = match verified_context_for_event(&event) {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    if remote_event_requires_signed_agent_envelope(&event) && verified_context.is_none() {
-        return payment_event_bad_request(
-            "signed agent_envelope is required for remote agent event",
-        );
-    }
-    if let Err(response) =
-        sync_payment_event_to_ledger(&state, &event, verified_context.as_ref()).await
-    {
-        return response;
-    }
-    if let Err(response) =
-        sync_mission_lifecycle_event_to_state(&state, &event, verified_context.as_ref()).await
-    {
-        return response;
-    }
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(&mut event);
-    let input = build_brain_event_input(&state, &event);
+    let input = build_brain_event_input(state, &event);
     record_agent_event_diagnostic(
-        &state,
+        state,
         &event,
         "info",
         "callback.received",
@@ -1595,7 +1729,7 @@ pub(crate) async fn callback(
                 decision: None,
             };
             record_agent_event_diagnostic(
-                &state,
+                state,
                 &event,
                 "error",
                 "decision.failed",
@@ -1607,18 +1741,93 @@ pub(crate) async fn callback(
                     "callback_response": response,
                 }),
             );
-            record_agent_callback_responded(&state, &event, &response);
+            record_agent_callback_responded(state, &event, &response);
             return Json(response).into_response();
         }
     };
-    record_agent_brain_response_diagnostic(&state, &event, &decision.diagnostics);
+    record_agent_brain_response_diagnostic(state, &event, &decision.diagnostics);
     response_from_resolution(
-        &state,
+        state,
         &event,
-        verified_context.as_ref(),
+        verified_context,
         decision.resolution,
         acked_at,
     )
+}
+
+pub(crate) async fn replay_deferred_dm_agent_events_for_friendship(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    remote_public_id: &str,
+) -> anyhow::Result<usize> {
+    if !has_active_friendship(state, local_public_id, remote_public_id) {
+        return Ok(0);
+    }
+    let deferred_events = state
+        .social_store
+        .list_waiting_deferred_agent_events(local_public_id, remote_public_id, 50)
+        .map_err(anyhow::Error::msg)?;
+    let mut replayed = 0usize;
+    for deferred in deferred_events {
+        let event: AgentEventEnvelope =
+            serde_json::from_value(deferred.event_json).map_err(anyhow::Error::msg)?;
+        let Ok(verified_context) = verified_context_for_event(&event) else {
+            continue;
+        };
+        if remote_event_requires_signed_agent_envelope(&event) && verified_context.is_none() {
+            continue;
+        }
+        if let Err(_response) =
+            sync_payment_event_to_ledger(state, &event, verified_context.as_ref()).await
+        {
+            continue;
+        }
+        if let Err(_response) =
+            sync_mission_lifecycle_event_to_state(state, &event, verified_context.as_ref()).await
+        {
+            continue;
+        }
+        let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
+        let _ =
+            process_agent_event_decision(state, event, verified_context.as_ref(), acked_at).await;
+        state
+            .social_store
+            .mark_deferred_agent_event_replayed(&deferred.event_id, Utc::now().timestamp_millis())
+            .map_err(anyhow::Error::msg)?;
+        replayed += 1;
+    }
+    Ok(replayed)
+}
+
+pub(crate) async fn callback(
+    State(state): State<ControlPlaneState>,
+    Json(body): Json<AgentEventCallbackRequest>,
+) -> Response {
+    let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
+    let event = body.event;
+    let verified_context = match verified_context_for_event(&event) {
+        Ok(context) => context,
+        Err(response) => return response,
+    };
+    if remote_event_requires_signed_agent_envelope(&event) && verified_context.is_none() {
+        return payment_event_bad_request(
+            "signed agent_envelope is required for remote agent event",
+        );
+    }
+    if let Err(response) =
+        sync_payment_event_to_ledger(&state, &event, verified_context.as_ref()).await
+    {
+        return response;
+    }
+    if let Err(response) =
+        sync_mission_lifecycle_event_to_state(&state, &event, verified_context.as_ref()).await
+    {
+        return response;
+    }
+    if let Some(response) = defer_unfriended_dm_agent_event(&state, &event, acked_at) {
+        return response;
+    }
+    process_agent_event_decision(&state, event, verified_context.as_ref(), acked_at).await
 }
 
 #[cfg(test)]

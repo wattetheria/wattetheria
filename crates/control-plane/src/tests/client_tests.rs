@@ -847,13 +847,38 @@ async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() 
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn client_friends_uses_social_friendships_as_canonical_source() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
-    let bridge: Arc<dyn SwarmBridge> =
-        Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let remote_node_id = "12D3KooRemotePeer".to_string();
+    let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
+        local_node_id: identity.agent_did.clone(),
+        agent_stats: BTreeMap::new(),
+        network_status: SwarmNetworkStatusView {
+            running: true,
+            mode: "network".to_string(),
+            peer_protocol_distribution: BTreeMap::new(),
+        },
+        peers: vec![SwarmPeerView {
+            node_id: remote_node_id.clone(),
+            connected: Some(false),
+            discovery: Some(json!({"source_kind": "known"})),
+            metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
+            relationship: None,
+        }],
+        subscriptions: Mutex::new(Vec::new()),
+        messages: Mutex::new(Vec::new()),
+        relationship_views: Mutex::new(Vec::new()),
+        relationship_commands: Mutex::new(Vec::new()),
+        dm_threads: Mutex::new(Vec::new()),
+        dm_messages: Mutex::new(BTreeMap::new()),
+        dm_commands: Mutex::new(Vec::new()),
+        payment_commands: Mutex::new(Vec::new()),
+    });
     let (_dir, app, token, _, state) =
         build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
 
@@ -876,6 +901,23 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
         },
     )
     .expect("seed remote social identity");
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: remote_node_id.clone(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote transport binding");
     friendship_service::upsert_friendship(
         &*state.social_store,
         &wattetheria_social::domain::friendships::Friendship {
@@ -914,6 +956,26 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
         Some(remote_public_id.as_str())
     );
     assert_eq!(items[0]["display_name"].as_str(), Some("Broker Borealis"));
+    assert_eq!(
+        items[0]["counterpart_agent_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        items[0]["counterpart_agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        items[0]["counterpart_agent_name"].as_str(),
+        Some("Broker Borealis")
+    );
+    assert_eq!(
+        items[0]["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(
+        items[0]["network_id"].as_str(),
+        Some("mainnet:watt-etheria")
+    );
     assert_eq!(items[0]["relationship_kind"].as_str(), Some("friend"));
 }
 
@@ -1424,6 +1486,7 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     let (_dir, app, token, _, state) = build_test_app(20);
     let publisher_public_id =
@@ -1451,6 +1514,12 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     .await;
     let mission_id = created["mission_id"].as_str().unwrap();
     let agent_did = "agent-worker";
+    let actor_claim_route = json!({
+        "decision_payload": {
+            "display_name": "Agent-MX1111",
+            "public_id": "agent-MX1111.public"
+        }
+    });
 
     let published = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
@@ -1471,7 +1540,11 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
         app.clone(),
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/claim"),
-        json!({"mission_id": mission_id, "agent_did": agent_did}),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+            "claim_route": actor_claim_route
+        }),
     )
     .await;
     let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
@@ -1480,12 +1553,23 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
         .expect("claim event");
     assert_eq!(claimed.kind, "mission.claimed");
     assert_mission_gateway_projection_payload(&claimed.payload, mission_id, "claimed", agent_did);
+    assert_actor_projection(
+        &claimed.payload,
+        "claimer",
+        agent_did,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
 
     let _ = authed_post_json(
         app.clone(),
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/complete"),
-        json!({"mission_id": mission_id, "agent_did": agent_did}),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+            "claim_route": actor_claim_route
+        }),
     )
     .await;
     let completed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
@@ -1500,12 +1584,30 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
         agent_did,
     );
     assert_eq!(completed.payload["completed_by"].as_str(), Some(agent_did));
+    assert_actor_projection(
+        &completed.payload,
+        "claimer",
+        agent_did,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
+    assert_actor_projection(
+        &completed.payload,
+        "completer",
+        agent_did,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
 
     let _ = authed_post_json(
         app,
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/settle"),
-        json!({"mission_id": mission_id}),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": agent_did,
+            "claim_route": actor_claim_route
+        }),
     )
     .await;
     let settled = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
@@ -1515,6 +1617,20 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
     assert_eq!(settled.kind, "mission.settled");
     assert_mission_gateway_projection_payload(&settled.payload, mission_id, "settled", agent_did);
     assert!(settled.payload["settled_at"].as_i64().is_some());
+    assert_actor_projection(
+        &settled.payload,
+        "claimer",
+        agent_did,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
+    assert_actor_projection(
+        &settled.payload,
+        "completer",
+        agent_did,
+        "Agent-MX1111",
+        "agent-MX1111.public",
+    );
 }
 
 fn assert_mission_gateway_projection_payload(
@@ -1528,6 +1644,7 @@ fn assert_mission_gateway_projection_payload(
     assert_eq!(payload["task_type"].as_str(), Some("wattetheria.mission"));
     assert_eq!(payload["status"].as_str(), Some(status));
     assert_eq!(payload["claimed_by"].as_str(), Some(claimed_by));
+    assert_eq!(payload["claimer_agent_did"].as_str(), Some(claimed_by));
     assert_eq!(
         payload["publisher_wattswarm_node_id"].as_str(),
         payload["task_contract"]["inputs"]["publisher_wattswarm_node_id"].as_str()

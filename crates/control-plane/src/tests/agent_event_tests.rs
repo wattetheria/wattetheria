@@ -265,6 +265,105 @@ async fn agent_events_sync_signed_payment_event_to_ledger_before_decision() {
 }
 
 #[tokio::test]
+async fn agent_events_defer_inbound_dm_until_friendship_is_active() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let remote_identity = Identity::new_random();
+    let local_agent_did = state.agent_did.clone();
+    let agent_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "remote-node-1",
+        Some(&local_agent_did),
+        "social.dm.send",
+        json!({
+            "source_public_id": "agent-remote.123",
+            "target_public_id": "agent-local.456",
+            "message_id": "dm-message-1",
+            "thread_id": "dm:agent-remote.123:agent-local.456",
+            "content": {"text": "hello before friendship"},
+            "sent_at": 10
+        }),
+    );
+    let event = json!({
+        "event": {
+            "event_id": "evt-deferred-dm-1",
+            "event_type": "topic_message_requires_reply",
+            "source_kind": "topic_message",
+            "source_node_id": "remote-node-1",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": agent_envelope,
+            "payload": {
+                "feed_key": "wattswarm.dm",
+                "scope_hint": "group:dm-1",
+                "message_id": "dm-message-1",
+                "topic_content": {
+                    "kind": "direct_message",
+                    "text": "hello before friendship"
+                }
+            },
+            "requires_commit": true,
+            "allowed_actions": ["reply", "ignore"],
+            "created_at": 10
+        }
+    });
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(event.to_string()))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(response["decision"], Value::Null);
+    assert_eq!(
+        response["detail"].as_str(),
+        Some("deferred until friendship is active")
+    );
+    let deferred = state
+        .social_store
+        .get_deferred_agent_event("evt-deferred-dm-1")
+        .expect("get deferred event")
+        .expect("deferred event");
+    assert_eq!(deferred.status, "waiting_for_friendship");
+    assert_eq!(deferred.local_public_id, "agent-local.456");
+    assert_eq!(deferred.remote_public_id, "agent-remote.123");
+
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: "friendship-deferred-dm".to_owned(),
+            local_public_id: "agent-local.456".to_owned(),
+            remote_public_id: "agent-remote.123".to_owned(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: None,
+            thread_id: Some("dm:agent-remote.123:agent-local.456".to_owned()),
+            created_at: 20,
+            updated_at: 20,
+        },
+    )
+    .expect("activate friendship");
+
+    let replayed = crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship(
+        &state,
+        "agent-local.456",
+        "agent-remote.123",
+    )
+    .await
+    .expect("replay deferred dm events");
+    assert_eq!(replayed, 1);
+    let deferred = state
+        .social_store
+        .get_deferred_agent_event("evt-deferred-dm-1")
+        .expect("get deferred event")
+        .expect("deferred event");
+    assert_eq!(deferred.status, "replayed");
+    assert!(deferred.replayed_at.is_some());
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn agent_events_sync_mission_lifecycle_to_network_claims_before_decision() {
     let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
@@ -275,7 +374,7 @@ async fn agent_events_sync_mission_lifecycle_to_network_claims_before_decision()
         "mission-claim-sync-1",
         &local_agent_did,
         "exec-claim-sync-1",
-        Some("claimed".to_string()),
+        Some("network_claim_submitted".to_string()),
         NetworkMissionClaimMetadata {
             mission_feed_key: Some("wattetheria.missions".to_string()),
             mission_scope_hint: Some("group:mission-claim-sync-1".to_string()),
@@ -344,7 +443,7 @@ async fn agent_events_sync_mission_lifecycle_to_network_claims_before_decision()
         .into_iter()
         .find(|record| record.mission_id == "mission-claim-sync-1")
         .expect("claim record");
-    assert_eq!(record.status.as_deref(), Some("approved"));
+    assert_eq!(record.status.as_deref(), Some("claimed"));
 
     let settled = json!({
         "kind": "mission_settled",
@@ -397,6 +496,232 @@ async fn agent_events_sync_mission_lifecycle_to_network_claims_before_decision()
         .records()
         .into_iter()
         .find(|record| record.mission_id == "mission-claim-sync-1")
+        .expect("claim record");
+    assert_eq!(record.status.as_deref(), Some("settled"));
+}
+
+#[tokio::test]
+async fn agent_events_sync_task_claim_decision_to_network_claims_before_decision() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let local_agent_did = state.agent_did.clone();
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "mission-claim-event-sync-1",
+        "remote-task-claim-event-sync-1",
+        &local_agent_did,
+        "exec-claim-event-sync-1",
+        Some("network_claim_submitted".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-claim-event-sync-1".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let publisher_identity = Identity::new_random();
+    let claim_decision = json!({
+        "approved": true,
+        "task_id": "remote-task-claim-event-sync-1",
+        "task_inputs": {
+            "mission_id": "mission-claim-event-sync-1",
+            "agent_did": local_agent_did,
+        }
+    });
+    let claim_decision_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&local_agent_did),
+        "task.claim.decision",
+        claim_decision.clone(),
+    );
+    let claim_decision_event = json!({
+        "event": {
+            "event_id": "evt-task-claim-decision-sync",
+            "event_type": "task_claim_decision_received",
+            "source_kind": "task_lifecycle",
+            "source_node_id": "publisher-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": claim_decision_envelope,
+            "payload": claim_decision,
+            "requires_commit": false,
+            "allowed_actions": ["complete_mission", "ignore"],
+            "correlation_id": "remote-task-claim-event-sync-1",
+            "dedupe_key": "task_claim_decision:remote-task-claim-event-sync-1",
+            "created_at": 10
+        }
+    });
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(claim_decision_event.to_string()))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let record = registry
+        .records()
+        .into_iter()
+        .find(|record| record.mission_id == "mission-claim-event-sync-1")
+        .expect("claim record");
+    assert_eq!(record.status.as_deref(), Some("claimed"));
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_events_sync_task_completion_and_settlement_to_network_claims_before_decision() {
+    let (_dir, router, _token, _policy_engine, state) = build_test_app(20);
+    let local_agent_did = state.agent_did.clone();
+    let mission_id = "mission-claim-event-sync-2";
+    let task_id = "remote-task-lifecycle-event-sync-2";
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        mission_id,
+        task_id,
+        &local_agent_did,
+        "exec-claim-event-sync-2",
+        Some("claimed".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-claim-event-sync-2".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let publisher_identity = Identity::new_random();
+    let completion_decision = json!({
+        "approved": true,
+        "retry_requested": false,
+        "task_id": task_id,
+        "execution_id": "exec-claim-event-sync-2",
+        "task_inputs": {
+            "kind": "wattetheria_mission",
+            "mission_id": mission_id,
+            "agent_did": local_agent_did,
+        }
+    });
+    let completion_decision_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&local_agent_did),
+        "task.completion.decision",
+        completion_decision.clone(),
+    );
+    let completion_decision_event = json!({
+        "event": {
+            "event_id": "evt-task-completion-decision-sync",
+            "event_type": "task_completion_decision_received",
+            "source_kind": "task_lifecycle",
+            "source_node_id": "publisher-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": completion_decision_envelope,
+            "payload": completion_decision,
+            "requires_commit": false,
+            "allowed_actions": ["ignore"],
+            "correlation_id": task_id,
+            "dedupe_key": "task_completion_decision:remote-task-lifecycle-event-sync-2",
+            "created_at": 11
+        }
+    });
+
+    let response = request_json(
+        router.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                completion_decision_event.to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let record = registry
+        .records()
+        .into_iter()
+        .find(|record| record.mission_id == mission_id)
+        .expect("claim record");
+    assert_eq!(record.status.as_deref(), Some("completed"));
+
+    let settlement = json!({
+        "task_id": task_id,
+        "execution_id": "exec-claim-event-sync-2",
+        "receipt": {
+            "status": "settled",
+            "mission_id": mission_id,
+        },
+        "task_inputs": {
+            "kind": "wattetheria_mission",
+            "mission_id": mission_id,
+            "agent_did": local_agent_did,
+        }
+    });
+    let settlement_envelope = signed_agent_event_envelope(
+        &publisher_identity,
+        "publisher-node",
+        Some(&local_agent_did),
+        "task.settled",
+        settlement.clone(),
+    );
+    let settlement_event = json!({
+        "event": {
+            "event_id": "evt-task-settled-sync",
+            "event_type": "task_settled_received",
+            "source_kind": "task_lifecycle",
+            "source_node_id": "publisher-node",
+            "target_agent_id": local_agent_did,
+            "target_executor": "core-agent",
+            "agent_envelope": settlement_envelope,
+            "payload": settlement,
+            "requires_commit": false,
+            "allowed_actions": ["ignore"],
+            "correlation_id": task_id,
+            "dedupe_key": "task_settled:remote-task-lifecycle-event-sync-2",
+            "created_at": 12
+        }
+    });
+
+    let response = request_json(
+        router,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(settlement_event.to_string()))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let record = registry
+        .records()
+        .into_iter()
+        .find(|record| record.mission_id == mission_id)
         .expect("claim record");
     assert_eq!(record.status.as_deref(), Some("settled"));
 }
@@ -672,6 +997,20 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
         dm_message.clone(),
     );
     let expected_source_agent_id = dm_envelope.source_agent_id.clone();
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: "friendship-topic-dm-reply".to_owned(),
+            local_public_id: "self-alpha".to_owned(),
+            remote_public_id: "peer-alpha".to_owned(),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: None,
+            thread_id: Some("dm:self-alpha:peer-alpha".to_owned()),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed active friendship");
     let state = ControlPlaneState {
         brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
             &BrainProviderConfig::OpenaiCompatible {
@@ -1575,30 +1914,10 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
         committed["updated_at"].as_i64().unwrap_or_default()
             >= committed["created_at"].as_i64().unwrap_or_default()
     );
-    let messages = bridge.messages.lock().await;
-    assert_eq!(messages.len(), 1);
-    assert_eq!(
-        messages[0].content["kind"].as_str(),
-        Some("mission_claim_approved")
-    );
-    assert_eq!(messages[0].content["mission_id"].as_str(), Some(mission_id));
-    let lifecycle_envelope = messages[0]
-        .agent_envelope
-        .as_ref()
-        .expect("claim approval lifecycle topic carries agent envelope");
-    assert_eq!(
-        lifecycle_envelope.capability.as_deref(),
-        Some("mission.claim.approve")
-    );
-    assert_eq!(
-        lifecycle_envelope.target_agent_id.as_deref(),
-        Some("did:key:claimer")
-    );
     assert!(
-        lifecycle_envelope.source_agent_card.is_some(),
-        "claim approval lifecycle topic includes source agent card"
+        bridge.messages.lock().await.is_empty(),
+        "ordinary mission claim approval is published through task lifecycle events, not topic messages"
     );
-    drop(messages);
 
     let claimed = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
@@ -1696,6 +2015,7 @@ async fn agent_action_commit_settles_mission_completed_topic_without_candidate_f
         }),
     )
     .await;
+    bridge.messages.lock().await.clear();
 
     let content = json!({
         "kind": "mission_completed",
@@ -1760,15 +2080,9 @@ async fn agent_action_commit_settles_mission_completed_topic_without_candidate_f
         Some("mission_settled")
     );
 
-    let messages = bridge.messages.lock().await;
-    assert_eq!(messages.len(), 3);
-    assert_eq!(
-        messages[1].content["kind"].as_str(),
-        Some("mission_completed")
-    );
-    assert_eq!(
-        messages[2].content["kind"].as_str(),
-        Some("mission_settled")
+    assert!(
+        bridge.messages.lock().await.is_empty(),
+        "ordinary mission completion and settlement use task lifecycle events, not topic messages"
     );
 }
 
