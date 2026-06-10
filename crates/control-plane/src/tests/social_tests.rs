@@ -1160,8 +1160,7 @@ async fn agent_action_commit_routes_registered_hive_topic_reply_with_signed_enve
     assert!(
         event.payload["message_id"]
             .as_str()
-            .filter(|value| !value.is_empty())
-            .is_some()
+            .is_some_and(|value| !value.is_empty())
     );
     let gateway_plan =
         crate::gateway_dispatch::plan_stream_event(&event).expect("gateway hive activity plan");

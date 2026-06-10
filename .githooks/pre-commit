@@ -1,0 +1,37 @@
+#!/bin/sh
+set -eu
+
+# Keep GitNexus local index ignore rules out of the committed .gitignore.
+if [ -f .gitignore ] &&
+  grep -Eq '^[[:space:]]*(#.*GitNexus|\.gitnexus/?)[[:space:]]*$' .gitignore; then
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+  awk '
+    /^[[:space:]]*#.*GitNexus/ { next }
+    /^[[:space:]]*\.gitnexus\/?[[:space:]]*$/ { next }
+    { print }
+  ' .gitignore > "$tmp"
+
+  if ! cmp -s .gitignore "$tmp"; then
+    mv "$tmp" .gitignore
+    git add .gitignore
+  fi
+fi
+
+if ! git diff --cached --quiet -- \
+  '*.rs' \
+  'Cargo.toml' \
+  'Cargo.lock' \
+  'rust-toolchain.toml'; then
+  if ! command -v rustup >/dev/null 2>&1; then
+    echo "rustup is required for Wattetheria pre-commit checks." >&2
+    exit 1
+  fi
+
+  rustup update stable
+  rustup component add clippy rustfmt --toolchain stable
+
+  cargo +stable fmt --all -- --check
+  cargo +stable clippy --workspace --all-targets -- -D warnings
+fi
