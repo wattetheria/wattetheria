@@ -111,10 +111,7 @@ RUN sed -i \
 
 # Fetch wattswarm proto file for gRPC codegen (build.rs uses WATTSWARM_SYNC_PROTO).
 ARG WATTSWARM_PROTO_REV=main
-RUN --mount=type=secret,id=github_token \
-    TOKEN=$(cat /run/secrets/github_token 2>/dev/null || echo "") \
-    && curl -fsSL \
-      -H "Authorization: token ${TOKEN}" \
+RUN curl -fsSL \
       "https://raw.githubusercontent.com/wattetheria/wattswarm/${WATTSWARM_PROTO_REV}/apps/wattswarm/proto/wattetheria_sync.proto" \
       -o /tmp/wattetheria_sync.proto
 
