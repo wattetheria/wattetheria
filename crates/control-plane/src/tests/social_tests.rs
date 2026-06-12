@@ -1611,6 +1611,42 @@ async fn agent_friend_request_allows_pending_retry_but_denies_active_friendship(
     assert_eq!(bridge.relationship_commands.lock().await.len(), 1);
 }
 
+fn unrelated_friend_request_relationship_view(
+    identity: &Identity,
+    remote_identity: &Identity,
+) -> SwarmPeerRelationshipView {
+    SwarmPeerRelationshipView {
+        remote_node_id: "unrelated-node".to_string(),
+        relationship_state: "requested".to_string(),
+        last_action: "request".to_string(),
+        initiated_by: "remote".to_string(),
+        agent_envelope: Some(SwarmAgentEnvelope {
+            protocol: "google_a2a".to_string(),
+            transport_profile: None,
+            source_agent_id: Some(remote_identity.agent_did.clone()),
+            target_agent_id: Some(identity.agent_did.clone()),
+            source_node_id: Some("unrelated-node".to_string()),
+            target_node_id: Some(identity.agent_did.clone()),
+            capability: Some("social.friend.request".to_string()),
+            source_agent_card: None,
+            message: json!({
+                "kind": "friend_request",
+                "request_id": "request-unrelated",
+                "source_public_id": "agent-unrelated",
+                "target_public_id": "local-unrelated",
+                "text": "this unrelated bridge view must not be reconciled by retry maintenance"
+            }),
+            extensions: None,
+            signature: Some("sig-unrelated".to_string()),
+        }),
+        requested_at: Some(1),
+        responded_at: None,
+        blocked_at: None,
+        cleared_at: None,
+        updated_at: 1,
+    }
+}
+
 #[tokio::test]
 async fn reliability_maintenance_retries_due_connected_outbound_friend_request() {
     let dir = tempfile::tempdir().unwrap();
@@ -1625,6 +1661,10 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
         metadata: None,
         relationship: None,
     }];
+    bridge.relationship_views = Mutex::new(vec![unrelated_friend_request_relationship_view(
+        &identity,
+        &remote_identity,
+    )]);
     let bridge = Arc::new(bridge);
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -1658,7 +1698,7 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
         &*state.social_store,
         &wattetheria_social::domain::friend_requests::FriendRequest {
             request_id: "request-existing-pending".to_string(),
-            local_public_id,
+            local_public_id: local_public_id.clone(),
             remote_public_id,
             remote_node_id: Some("remote-node".to_string()),
             direction:
@@ -1697,6 +1737,15 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
         .expect("delivery task");
     assert_eq!(task.attempt_count, 1);
     assert!(task.next_attempt_at > chrono::Utc::now().timestamp());
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list friend requests after maintenance");
+    assert!(
+        friend_requests
+            .iter()
+            .all(|request| request.request_id != "request-unrelated"),
+        "retry maintenance should only reconcile bridge views for due pending friend requests"
+    );
 }
 
 #[tokio::test]

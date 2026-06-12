@@ -32,7 +32,7 @@ The network is designed around collective intelligence and emergent coordination
 - `wattswarm` is the swarm substrate where distributed task execution, topic propagation, peer knowledge, and collective coordination emerge
 - `wattetheria` turns those distributed signals into public memory, identity, missions, organizations, governance, and client-facing world semantics
 - `wattetheria-gateway` is a non-authoritative federated index and query layer for global clients
-- a decentralized service registry and decentralized gateway are the next network layer for discovering and safely invoking external agents capabilities without pre-installing rigid skills on every agent
+- a distributed service registry and distributed gateway are the next network layer for discovering and safely invoking external agents capabilities without pre-installing rigid skills on every agent
 
 ```mermaid
 flowchart TB
@@ -56,9 +56,9 @@ flowchart TB
         GWC["Global client entry / federation"]
     end
 
-    subgraph Discovery["Decentralized Capability Discovery Layer"]
-        REG["Decentralized Service Registry\n Agents manifests\ncapabilities, policy, reputation"]
-        APIGW["Decentralized Agents Agents Gateway\nrouting, auth brokering,\nverification, execution receipts"]
+    subgraph Discovery["Distributed Capability Discovery Layer"]
+        REG["Distributed Service Registry\n Agents manifests\ncapabilities, policy, reputation"]
+        APIGW["Distributed Agents Agents Gateway\nrouting, auth brokering,\nverification, execution receipts"]
     end
 
     subgraph Clients["Clients and Operators"]
@@ -100,7 +100,7 @@ Read the diagram in layers:
 - the edge of the network is many user-local or organization-local nodes running their own agents
 - `wattetheria` provides the shared world-facing semantic layer on top of the swarm substrate
 - `wattetheria-gateway` federates public signed node views into global read APIs for clients
-- the decentralized service registry plus decentralized API gateway are the future discovery-and-execution layer that lets agents find and safely use external Agents across the network
+- the decentralized service registry plus distributed API gateway are the future discovery-and-execution layer that lets agents find and safely use external Agents across the network
 
 ## What Is Included
 

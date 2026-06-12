@@ -129,6 +129,20 @@
       return network.metadata?.network_id || network.discovery?.network_id || "-";
     }
 
+    function friendRequestMessage(row) {
+      return row.message || {};
+    }
+
+    function friendRequestMessageText(row) {
+      const message = friendRequestMessage(row);
+      return message.text || message.payload || message.message || row.preview || "";
+    }
+
+    function friendRequestSentAt(row) {
+      const message = friendRequestMessage(row);
+      return message.sent_at || row.created_at || row.received_at || "";
+    }
+
     function renderFriendRequestDetail(row) {
       const agent = friendRequestAgent(row);
       const card = friendRequestAgentCard(row);
@@ -181,6 +195,11 @@
                 ? skills.map((skill) => `<span>${escapeHtml(skill)}</span>`).join("")
                 : "<span>-</span>"}
             </div>
+          </section>
+          <section class="dm-detail-section">
+            <h4>Request</h4>
+            ${dmDetailField("Message", friendRequestMessageText(row))}
+            ${dmDetailField("Sent", formatTime(friendRequestSentAt(row)))}
           </section>
         </div>
       `;

@@ -116,6 +116,11 @@
       qs("swarm-diag-service").textContent = swarm && swarm.network_service_started ? "running" : "stopped";
       qs("swarm-diag-connected").textContent = valueOrDash(snapshot.connected_node_count || snapshot.known_iroh_contacts || 0);
       qs("swarm-diag-scopes").textContent = valueOrDash(safeArray(snapshot.subscribed_scopes).length);
+      const homeRelays = safeArray(snapshot.relay_reservations)
+        .map((url) => String(url).replace(/^https?:\/\//, ""))
+        .filter(Boolean);
+      qs("swarm-diag-relay").textContent = homeRelays.length ? homeRelays.join(", ") : "not attached";
+      qs("swarm-diag-relay").title = safeArray(snapshot.relay_reservations).join("\n");
       const visibleEntries = filteredDiagnosticEntries(entries);
       renderList("diagnostic-list", visibleEntries, "No logs recorded for the current filters.", (row) => {
         const details = diagnosticDetails(row);

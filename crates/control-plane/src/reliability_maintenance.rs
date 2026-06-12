@@ -42,12 +42,31 @@ pub async fn run_reliability_maintenance_tick_once(
     limit: usize,
 ) -> anyhow::Result<usize> {
     let now = chrono::Utc::now().timestamp();
+    let due = state
+        .social_store
+        .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
+        .map_err(anyhow::Error::msg)?;
+    if due.is_empty() {
+        return Ok(0);
+    }
+
     let (identities, bindings) = load_social_identity_maps(state).await;
     let relationship_views = state
         .swarm_bridge
         .list_peer_relationships()
         .await
         .unwrap_or_default();
+    let pending_remote_nodes = due
+        .iter()
+        .filter_map(|request| request.remote_node_id.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>();
+    let pending_relationship_views = relationship_views
+        .iter()
+        .filter(|view| pending_remote_nodes.contains(view.remote_node_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let peers = state.swarm_bridge.peers().await.unwrap_or_default();
     let connected_nodes = peers
         .into_iter()
@@ -61,18 +80,13 @@ pub async fn run_reliability_maintenance_tick_once(
         &local.public_id,
         &identities,
         &bindings,
-        &relationship_views,
+        &pending_relationship_views,
     )?;
-
-    let due = state
-        .social_store
-        .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
-        .map_err(anyhow::Error::msg)?;
     let mut processed = 0;
     for request in due {
         maintain_outbound_friend_request(
             state,
-            &relationship_views,
+            &pending_relationship_views,
             &connected_nodes,
             &request,
             now,
