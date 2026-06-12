@@ -1,3 +1,21 @@
+    .social-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(16rem, 21rem);
+      gap: 1rem;
+      align-items: start;
+      min-width: 0;
+    }
+
+    .social-requests-panel {
+      min-width: 0;
+    }
+
+    .social-requests-list {
+      max-height: var(--console-thread-workspace-height, 70vh);
+      min-height: 0;
+      overflow-y: auto;
+    }
+
     .dm-workspace {
       display: grid;
       grid-template-columns: minmax(13rem, 19rem) minmax(0, 1fr);
@@ -280,6 +298,59 @@
       min-height: 2rem;
       padding: 0.3rem 0.7rem;
       font-size: 0.78rem;
+    }
+
+    .friend-request-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      justify-content: stretch;
+      justify-items: stretch;
+      width: 100%;
+      gap: 0.35rem;
+      color: var(--ink);
+      text-align: left;
+      text-transform: none;
+      letter-spacing: 0;
+      box-shadow: none;
+      cursor: pointer;
+    }
+
+    .friend-request-card:hover {
+      filter: none;
+    }
+
+    .friend-request-card .row-head,
+    .friend-request-card .row-body,
+    .friend-request-card .row-meta {
+      width: 100%;
+    }
+
+    .friend-request-card .row-head {
+      flex-wrap: nowrap;
+      margin-bottom: 0;
+    }
+
+    .agent-card-hint {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      color: var(--muted);
+      transition: color 0.12s ease;
+    }
+
+    .dm-thread-head .agent-card-hint {
+      align-self: center;
+    }
+
+    .friend-request-card:hover .agent-card-hint,
+    .dm-thread-head:hover .agent-card-hint {
+      color: var(--accent-strong);
+    }
+
+    .friend-request-card .row-title {
+      flex: 1 1 auto;
+      -webkit-line-clamp: 1;
+      line-clamp: 1;
     }
 
     .dm-thread-context {

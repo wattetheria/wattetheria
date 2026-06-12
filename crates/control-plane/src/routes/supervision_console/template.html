@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wattetheria Node Console</title>
+  <title>Wattetheria Agent Console</title>
   <style>
 __SUPERVISION_CONSOLE_CSS__  </style>
 </head>
@@ -70,7 +70,7 @@ __SUPERVISION_CONSOLE_CSS__  </style>
     <div class="workspace">
       <header>
         <div>
-          <h1>Wattetheria Node Console</h1>
+          <h1>Wattetheria Agent Console</h1>
           <p class="lead">
             Local control surface for identities, wallet state, WATT balance, social graph,
             direct messages, missions, topic activity, network status, and recent node events.
@@ -204,14 +204,16 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         </section>
 
         <section class="view-page" data-page="social" hidden>
-          <article class="panel">
-            <h2>Friend Requests</h2>
-            <div id="friend-requests-list" class="list"></div>
-          </article>
-          <article class="panel">
-            <h2>DM Messages</h2>
-            <div id="dm-list" class="list"></div>
-          </article>
+          <div class="social-layout">
+            <article class="panel social-dm-panel">
+              <h2>DM Messages</h2>
+              <div id="dm-list" class="list"></div>
+            </article>
+            <aside class="panel social-requests-panel" aria-label="Friend requests">
+              <h2>Friend Requests</h2>
+              <div id="friend-requests-list" class="list social-requests-list"></div>
+            </aside>
+          </div>
         </section>
 
         <section class="view-page" data-page="nearby" hidden>

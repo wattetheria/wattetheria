@@ -16,6 +16,7 @@
     let activeLogMode = "all";
     let activeDmThreadKey = "";
     let dmDetailOpen = false;
+    let friendRequestDetailId = "";
     let activeHiveKey = "";
     let hiveMessageLoadingKey = "";
     const hiveMessageCache = new Map();

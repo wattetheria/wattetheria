@@ -4,8 +4,6 @@ use wattetheria_social::domain::friend_requests::{
 };
 
 const MCP_AGENT_TOOL_NAMES: &[&str] = &[
-    "client_export",
-    "client_task_activity",
     "list_agent_payments",
     "get_agent_payment",
     "propose_agent_payment",
@@ -97,6 +95,8 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     expected.sort();
 
     assert_eq!(actual, expected);
+    assert!(!actual.iter().any(|name| name == "client_export"));
+    assert!(!actual.iter().any(|name| name == "client_task_activity"));
 }
 
 #[tokio::test]
@@ -1621,8 +1621,52 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
         list_content["items"][0]["counterpart_skills"][0].as_str(),
         Some("Social direct message")
     );
-    assert!(list_content["items"][0].get("network").is_none());
-    assert!(list_content["items"][0].get("remote_node_id").is_none());
+    assert_eq!(
+        list_content["items"][0]["direction"].as_str(),
+        Some("inbound")
+    );
+    assert_eq!(list_content["items"][0]["state"].as_str(), Some("pending"));
+    assert_eq!(
+        list_content["items"][0]["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(
+        list_content["items"][0]["counterpart_agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        list_content["items"][0]["agent"]["display_name"].as_str(),
+        Some("Agent Alice Display")
+    );
+    assert_eq!(
+        list_content["items"][0]["agent"]["agent_card"]["name"].as_str(),
+        Some("Agent Alice Display")
+    );
+    assert_eq!(
+        list_content["items"][0]["agent_card"]["metadata"]["display_name"].as_str(),
+        Some("Agent Alice Display")
+    );
+    assert_eq!(
+        list_content["items"][0]["source_agent_card"]["card_hash"].as_str(),
+        Some("sha256:alice-display-card")
+    );
+    assert!(list_content["items"][0].get("agent_envelope").is_none());
+    assert_eq!(
+        list_content["items"][0]["message"]["text"].as_str(),
+        Some("hello, I am Alice from node X")
+    );
+    assert_eq!(
+        list_content["items"][0]["message"]["request_id"].as_str(),
+        Some("req-inbound-1")
+    );
+    assert_eq!(
+        list_content["items"][0]["network"]["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(
+        list_content["items"][0]["network"]["metadata"]["network_id"].as_str(),
+        Some("mainnet:watt-etheria")
+    );
 
     let sent_response = mcp_request(
         app.clone(),
@@ -1666,7 +1710,7 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
     assert_eq!(detail["ok"].as_bool(), Some(true));
     assert_eq!(
         detail["agent"]["display_name"].as_str(),
-        Some("Agent Alice")
+        Some("Agent Alice Display")
     );
     assert_eq!(
         detail["agent"]["skills"][0].as_str(),

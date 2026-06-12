@@ -30,7 +30,7 @@ use wattetheria_kernel::relationships::RelationshipEdge;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
     SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipAction,
-    SwarmRelationshipActionCommand,
+    SwarmRelationshipActionCommand, SwarmSourceAgentCard,
 };
 use wattetheria_social::application::{
     block_service, friend_request_service, friendship_service, message_service,
@@ -650,11 +650,17 @@ fn relationship_remote_agent_id(view: &SwarmPeerRelationshipView) -> Option<Stri
 }
 
 fn relationship_remote_agent_card(view: &SwarmPeerRelationshipView) -> Option<&Value> {
+    relationship_remote_source_agent_card(view).map(|card| &card.card)
+}
+
+fn relationship_remote_source_agent_card(
+    view: &SwarmPeerRelationshipView,
+) -> Option<&SwarmSourceAgentCard> {
     let envelope = view.agent_envelope.as_ref()?;
     if !source_agent_card_is_remote(view, envelope) {
         return None;
     }
-    envelope.source_agent_card.as_ref().map(|card| &card.card)
+    envelope.source_agent_card.as_ref()
 }
 
 fn agent_card_display_name(card: &Value) -> Option<String> {
@@ -875,12 +881,17 @@ fn relationship_payload_identity_key(payload: &Value) -> Option<String> {
 }
 
 fn envelope_message_text(envelope: Option<&SwarmAgentEnvelope>) -> Option<String> {
-    envelope
-        .and_then(|envelope| envelope.message.get("text"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+    envelope.and_then(|envelope| {
+        ["text", "payload", "message"].into_iter().find_map(|key| {
+            envelope
+                .message
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+    })
 }
 
 fn truncate_preview(text: &str) -> String {
@@ -899,6 +910,7 @@ fn friend_request_summary_payload(
     request: &FriendRequest,
     identities: &BTreeMap<String, PublicIdentity>,
     view: Option<&SwarmPeerRelationshipView>,
+    peer: Option<&SwarmPeerView>,
     counterpart_label: &str,
 ) -> Value {
     let display_name = relationship_remote_agent_display_name(view).unwrap_or_else(|| {
@@ -912,7 +924,40 @@ fn friend_request_summary_payload(
         "request_id".to_string(),
         Value::String(request.request_id.clone()),
     );
+    object.insert(
+        "direction".to_string(),
+        Value::String(request_direction_label(request.direction).to_string()),
+    );
+    object.insert(
+        "state".to_string(),
+        Value::String(request_state_label(request.state).to_string()),
+    );
+    object.insert("created_at".to_string(), json!(request.created_at));
+    object.insert("updated_at".to_string(), json!(request.updated_at));
     object.insert(counterpart_label.to_string(), Value::String(display_name));
+    object.insert(
+        "counterpart_public_id".to_string(),
+        Value::String(request.remote_public_id.clone()),
+    );
+    object.insert(
+        "counterpart_agent_public_id".to_string(),
+        Value::String(request.remote_public_id.clone()),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "counterpart_agent_did",
+        view.and_then(relationship_remote_agent_id)
+            .map(Value::String),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "remote_node_id",
+        request
+            .remote_node_id
+            .clone()
+            .or_else(|| view.map(|view| view.remote_node_id.clone()))
+            .map(Value::String),
+    );
     insert_payload_if_present(
         &mut object,
         "preview",
@@ -923,6 +968,32 @@ fn friend_request_summary_payload(
     if !skills.is_empty() {
         object.insert("counterpart_skills".to_string(), json!(skills));
     }
+    object.insert(
+        "agent".to_string(),
+        friend_request_agent_payload(request, identities, view),
+    );
+    object.insert("message".to_string(), friend_request_message_payload(view));
+    object.insert(
+        "network".to_string(),
+        friend_request_network_payload(request, view, peer),
+    );
+    if let Some(source_agent_card) = view.and_then(relationship_remote_source_agent_card) {
+        object.insert("source_agent_card".to_string(), json!(source_agent_card));
+        object.insert("agent_card".to_string(), source_agent_card.card.clone());
+        object.insert(
+            "agent_card_hash".to_string(),
+            Value::String(source_agent_card.card_hash.clone()),
+        );
+        object.insert(
+            "agent_card_issued_at".to_string(),
+            json!(source_agent_card.issued_at),
+        );
+        insert_payload_if_present(
+            &mut object,
+            "agent_card_signature",
+            source_agent_card.signature.clone().map(Value::String),
+        );
+    }
     Value::Object(object)
 }
 
@@ -932,6 +1003,7 @@ fn friend_request_agent_payload(
     view: Option<&SwarmPeerRelationshipView>,
 ) -> Value {
     let identity = identities.get(&request.remote_public_id);
+    let card = view.and_then(relationship_remote_agent_card);
     let mut object = Map::new();
     object.insert(
         "public_id".to_string(),
@@ -940,17 +1012,51 @@ fn friend_request_agent_payload(
     insert_payload_if_present(
         &mut object,
         "display_name",
-        identity.map(|identity| Value::String(identity.display_name.clone())),
+        card.and_then(agent_card_display_name)
+            .or_else(|| identity.map(|identity| identity.display_name.clone()))
+            .map(Value::String),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "description",
+        card.and_then(|card| {
+            card.get("description")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .map(Value::String),
     );
     insert_payload_if_present(
         &mut object,
         "agent_did",
+        view.and_then(relationship_remote_agent_id)
+            .or_else(|| {
+                identity
+                    .and_then(|identity| identity.agent_did.clone())
+                    .or_else(|| {
+                        view.and_then(|view| view.agent_envelope.as_ref())
+                            .and_then(|envelope| envelope.source_agent_id.clone())
+                    })
+            })
+            .map(Value::String),
+    );
+    insert_payload_if_present(
+        &mut object,
+        "node_id",
+        view.and_then(relationship_remote_source_agent_card)
+            .and_then(|card| card.node_id.clone())
+            .or_else(|| request.remote_node_id.clone())
+            .or_else(|| view.map(|view| view.remote_node_id.clone()))
+            .map(Value::String),
+    );
+    insert_friend_request_agent_card_payload(&mut object, card, view);
+    insert_payload_if_present(
+        &mut object,
+        "identity_agent_did",
         identity
             .and_then(|identity| identity.agent_did.clone())
-            .or_else(|| {
-                view.and_then(|view| view.agent_envelope.as_ref())
-                    .and_then(|envelope| envelope.source_agent_id.clone())
-            })
             .map(Value::String),
     );
     insert_payload_if_present(
@@ -966,13 +1072,69 @@ fn friend_request_agent_payload(
     Value::Object(object)
 }
 
+fn insert_friend_request_agent_card_payload(
+    object: &mut Map<String, Value>,
+    card: Option<&Value>,
+    view: Option<&SwarmPeerRelationshipView>,
+) {
+    insert_payload_if_present(
+        object,
+        "card_hash",
+        view.and_then(relationship_remote_source_agent_card)
+            .map(|card| Value::String(card.card_hash.clone())),
+    );
+    insert_payload_if_present(
+        object,
+        "card_issued_at",
+        view.and_then(relationship_remote_source_agent_card)
+            .map(|card| json!(card.issued_at)),
+    );
+    insert_payload_if_present(
+        object,
+        "protocol_version",
+        card.and_then(|card| card.get("protocolVersion"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(value.to_string())),
+    );
+    insert_payload_if_present(
+        object,
+        "preferred_transport",
+        card.and_then(|card| card.get("preferredTransport"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| Value::String(value.to_string())),
+    );
+    insert_payload_if_present(
+        object,
+        "metadata",
+        card.and_then(|card| card.get("metadata")).cloned(),
+    );
+    insert_payload_if_present(
+        object,
+        "capabilities",
+        card.and_then(|card| card.get("capabilities")).cloned(),
+    );
+    insert_payload_if_present(object, "agent_card", card.cloned());
+    insert_payload_if_present(
+        object,
+        "source_agent_card",
+        view.and_then(relationship_remote_source_agent_card)
+            .map(|card| json!(card)),
+    );
+}
+
 fn friend_request_message_payload(view: Option<&SwarmPeerRelationshipView>) -> Value {
-    let mut object = Map::new();
     let Some(envelope) = view.and_then(|view| view.agent_envelope.as_ref()) else {
-        return Value::Object(object);
+        return Value::Object(Map::new());
     };
-    for key in ["kind", "text", "sent_at"] {
-        insert_payload_if_present(&mut object, key, envelope.message.get(key).cloned());
+    let mut object = envelope.message.as_object().cloned().unwrap_or_default();
+    if !object.contains_key("text")
+        && let Some(text) = envelope_message_text(Some(envelope))
+    {
+        object.insert("text".to_string(), Value::String(text));
     }
     Value::Object(object)
 }
@@ -2350,7 +2512,7 @@ pub(crate) async fn list_friend_requests(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let (local_public_id, identities, friend_requests, relationship_views, _peers) =
+    let (local_public_id, identities, friend_requests, relationship_views, peers) =
         match load_friend_request_views(&state, None).await {
             Ok(result) => result,
             Err(error) => return internal_error(&error),
@@ -2373,6 +2535,7 @@ pub(crate) async fn list_friend_requests(
                 request,
                 &identities,
                 matching_relationship_view(&relationship_views, request),
+                matching_peer(&peers, request),
                 "from",
             )
         })
@@ -2403,7 +2566,7 @@ pub(crate) async fn list_sent_friend_requests(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let (local_public_id, identities, friend_requests, relationship_views, _peers) =
+    let (local_public_id, identities, friend_requests, relationship_views, peers) =
         match load_friend_request_views(&state, None).await {
             Ok(result) => result,
             Err(error) => return internal_error(&error),
@@ -2423,6 +2586,7 @@ pub(crate) async fn list_sent_friend_requests(
                 request,
                 &identities,
                 matching_relationship_view(&relationship_views, request),
+                matching_peer(&peers, request),
                 "to",
             );
             if let Some(object) = item.as_object_mut() {

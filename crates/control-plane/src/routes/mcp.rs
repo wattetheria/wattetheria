@@ -111,6 +111,7 @@ pub(crate) async fn mcp(
         "tools/list" => json!({
             "tools": agent_tools()
                 .iter()
+                .filter(|tool| is_visible_agent_tool(tool.name))
                 .map(|tool| mcp_tool(tool, tool.is_available(&state)))
                 .collect::<Vec<_>>()
         }),
@@ -2091,6 +2092,10 @@ impl AgentTool {
 
 fn agent_tools() -> &'static [AgentTool] {
     &AGENT_TOOLS
+}
+
+fn is_visible_agent_tool(name: &str) -> bool {
+    !matches!(name, "client_export" | "client_task_activity")
 }
 
 #[rustfmt::skip]

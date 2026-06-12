@@ -18,7 +18,7 @@
         margin-top: 0;
       }
 
-      .toolbar, .log-toolbar, .mission-toolbar, .summary, .content-grid, .columns, .wallet-grid, .wallet-fields, .wallet-binding-chain, .identity-protection, .identity-detail-grid, .dm-workspace, .swarm-hives-layout, .form-grid, .form-grid.four {
+      .toolbar, .log-toolbar, .mission-toolbar, .summary, .content-grid, .columns, .wallet-grid, .wallet-fields, .wallet-binding-chain, .identity-protection, .identity-detail-grid, .dm-workspace, .swarm-hives-layout, .social-layout, .form-grid, .form-grid.four {
         grid-template-columns: 1fr;
       }
 

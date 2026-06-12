@@ -1,3 +1,9 @@
+    const AGENT_CARD_HINT = `
+      <span class="agent-card-hint" title="View agent card" aria-hidden="true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M15 8h4M15 12h4M6 16h6"/></svg>
+      </span>
+    `;
+
     function renderFriends(payload) {
       if (!qs("friends-list")) return;
       const rows = safeArray(payload.friend_relationships)
@@ -75,17 +81,148 @@
       ) || {};
     }
 
+    function friendRequestAgent(row) {
+      return row.agent || {};
+    }
+
+    function friendRequestAgentCard(row) {
+      return row.agent_card || row.source_agent_card?.card || row.agent?.agent_card || {};
+    }
+
+    function friendRequestDisplayName(row) {
+      const agent = friendRequestAgent(row);
+      const card = friendRequestAgentCard(row);
+      const metadata = agent.metadata || card.metadata || {};
+      return row.from
+        || agent.display_name
+        || card.name
+        || metadata.display_name
+        || row.counterpart_display_name
+        || row.counterpart_public_id
+        || row.request_id;
+    }
+
+    function friendRequestDescription(row) {
+      const agent = friendRequestAgent(row);
+      const card = friendRequestAgentCard(row);
+      return agent.description || card.description || "";
+    }
+
+    function friendRequestPublicId(row) {
+      const agent = friendRequestAgent(row);
+      return row.counterpart_agent_public_id || row.counterpart_public_id || agent.public_id;
+    }
+
+    function friendRequestAgentDid(row) {
+      const agent = friendRequestAgent(row);
+      return agent.agent_did || row.counterpart_agent_did;
+    }
+
+    function friendRequestRemoteNode(row) {
+      const agent = friendRequestAgent(row);
+      const network = row.network || {};
+      return network.remote_node_id || agent.node_id || row.remote_node_id;
+    }
+
+    function friendRequestNetworkLabel(row) {
+      const network = row.network || {};
+      return network.metadata?.network_id || network.discovery?.network_id || "-";
+    }
+
+    function renderFriendRequestDetail(row) {
+      const agent = friendRequestAgent(row);
+      const card = friendRequestAgentCard(row);
+      const network = row.network || {};
+      const displayName = friendRequestDisplayName(row);
+      const publicId = friendRequestPublicId(row);
+      const agentDid = friendRequestAgentDid(row);
+      const remoteNodeId = friendRequestRemoteNode(row);
+      const status = network.status || row.state || "pending";
+      const networkLabel = friendRequestNetworkLabel(row);
+      const relationshipLabel = row.state || row.direction || "pending";
+      const skills = dmSkillLabels(agent.skills || row.counterpart_skills || card.skills);
+      const description = friendRequestDescription(row);
+      return `
+        <div class="dm-detail-card">
+          <div class="dm-detail-hero">
+            <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(displayName))}</div>
+            <div class="dm-detail-title-block">
+              <div class="dm-detail-title-row">
+                <h3>${escapeHtml(displayName)}</h3>
+                ${pill(row.direction || "inbound", row.state || "pending")}
+              </div>
+              <p>${escapeHtml(compactId(publicId, 42))}</p>
+              <div class="dm-detail-meta">
+                <span>${escapeHtml(valueOrDash(status))}</span>
+                <span>${escapeHtml(valueOrDash(networkLabel))}</span>
+              </div>
+              ${description ? `<p class="dm-detail-description">${escapeHtml(description)}</p>` : ""}
+            </div>
+            <button type="button" class="secondary dm-detail-close" data-friend-request-detail-close>Close</button>
+          </div>
+          <div class="dm-detail-grid">
+            <section class="dm-detail-section">
+              <h4>Public Identity</h4>
+              ${dmDetailField("Public", compactId(publicId, 52))}
+              ${dmDetailField("Agent", compactId(agentDid, 52))}
+              ${dmDetailField("Node", compactId(remoteNodeId, 52))}
+            </section>
+            <section class="dm-detail-section">
+              <h4>Network</h4>
+              ${dmDetailField("Status", status)}
+              ${dmDetailField("Network", networkLabel)}
+              ${dmDetailField("Relationship", relationshipLabel)}
+            </section>
+          </div>
+          <section class="dm-detail-section dm-detail-skills">
+            <h4>Skills</h4>
+            <div class="dm-detail-skill-list">
+              ${skills.length
+                ? skills.map((skill) => `<span>${escapeHtml(skill)}</span>`).join("")
+                : "<span>-</span>"}
+            </div>
+          </section>
+        </div>
+      `;
+    }
+
     function renderFriendRequests(payload) {
       const rows = safeArray(payload.pending_friend_requests);
-      renderList("friend-requests-list", rows, "No pending friend requests.", (row) => `
-        <div class="row">
-          <div class="row-head">
-            <div class="row-title">${escapeHtml(row.from || row.counterpart_display_name || row.counterpart_public_id || row.request_id)}</div>
-            ${pill("inbound", "pending")}
-          </div>
-          <div class="row-body">${escapeHtml(row.preview || compactId(row.request_id, 32))}</div>
-        </div>
-      `);
+      if (!rows.some((row) => row.request_id === friendRequestDetailId)) {
+        friendRequestDetailId = "";
+      }
+      renderList("friend-requests-list", rows, "No pending friend requests.", (row) => {
+        return `
+          <button type="button" class="row friend-request-card" data-friend-request-detail="${escapeHtml(row.request_id)}" title="View agent card">
+            <span class="row-head">
+              <span class="row-title">${escapeHtml(friendRequestDisplayName(row))}</span>
+              ${pill(row.direction || "inbound", row.state || "pending")}
+              ${AGENT_CARD_HINT}
+            </span>
+          </button>
+        `;
+      });
+      const target = qs("friend-requests-list");
+      const detail = rows.find((row) => row.request_id === friendRequestDetailId);
+      if (detail) {
+        target.insertAdjacentHTML("beforeend", `<div class="dm-detail-modal" data-friend-request-detail-modal>${renderFriendRequestDetail(detail)}</div>`);
+      }
+      target.querySelectorAll("[data-friend-request-detail]").forEach((button) => {
+        button.addEventListener("click", () => {
+          friendRequestDetailId = button.dataset.friendRequestDetail || "";
+          renderFriendRequests(payload);
+        });
+      });
+      target.querySelector("[data-friend-request-detail-close]")?.addEventListener("click", () => {
+        friendRequestDetailId = "";
+        renderFriendRequests(payload);
+      });
+      target.querySelector("[data-friend-request-detail-modal]")?.addEventListener("click", (event) => {
+        if (event.target === event.currentTarget) {
+          friendRequestDetailId = "";
+          renderFriendRequests(payload);
+        }
+      });
     }
 
     function dmConversationLabel(row) {
@@ -354,7 +491,7 @@
       `;
       return `
         <div class="dm-thread-head-shell">
-          <button type="button" class="dm-thread-head" data-dm-detail-toggle>
+          <button type="button" class="dm-thread-head" data-dm-detail-toggle title="View agent card">
             <span>
               <span class="row-title">${escapeHtml(displayName)}</span>
               <span class="row-body">
@@ -363,6 +500,7 @@
               </span>
             </span>
             ${pill(status, status)}
+            ${AGENT_CARD_HINT}
           </button>
           ${dmDetailOpen ? `<div class="dm-detail-modal" data-dm-detail-modal>${detailCard}</div>` : ""}
         </div>
