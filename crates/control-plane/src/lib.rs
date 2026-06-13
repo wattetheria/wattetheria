@@ -93,6 +93,10 @@ fn network_router() -> Router<ControlPlaneState> {
 
 fn console_router() -> Router<ControlPlaneState> {
     Router::new()
+        .route(
+            "/favicon.png",
+            get(routes::console::supervision_favicon_png),
+        )
         .route("/supervision", get(routes::console::supervision_console))
         .route(
             "/supervision/console",

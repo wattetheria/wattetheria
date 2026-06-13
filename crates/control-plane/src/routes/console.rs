@@ -1,9 +1,11 @@
 use axum::extract::State;
+use axum::http::header::CONTENT_TYPE;
 use axum::response::{Html, IntoResponse};
 
 use crate::state::ControlPlaneState;
 
 const SUPERVISION_CONSOLE_HTML: &str = include_str!("supervision_console/template.html");
+const SUPERVISION_FAVICON_PNG: &[u8] = include_bytes!("supervision_console/public/favicon.png");
 const SUPERVISION_CONSOLE_CSS: &str = concat!(
     include_str!("supervision_console/css/theme.css"),
     "\n",
@@ -91,6 +93,10 @@ pub(crate) async fn supervision_console(
     let bootstrap_control_token =
         serde_json::to_string(&state.auth_token).unwrap_or_else(|_| "\"\"".to_string());
     Html(render_supervision_console(&bootstrap_control_token))
+}
+
+pub(crate) async fn supervision_favicon_png() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "image/png")], SUPERVISION_FAVICON_PNG)
 }
 
 fn render_supervision_console(bootstrap_control_token: &str) -> String {
