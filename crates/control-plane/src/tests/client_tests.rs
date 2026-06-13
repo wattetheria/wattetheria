@@ -924,6 +924,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Borealis".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: None,
             thread_id: None,
@@ -943,7 +944,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
     }
 
     let friends = authed_get_json(
-        app,
+        app.clone(),
         &token,
         &format!("/v1/client/friends?public_id={local_public_id}"),
     )
@@ -977,6 +978,33 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
         Some("mainnet:watt-etheria")
     );
     assert_eq!(items[0]["relationship_kind"].as_str(), Some("friend"));
+
+    let mut removed_friendship =
+        friendship_service::list_friendships(&*state.social_store, &local_public_id)
+            .expect("list seeded friendship")
+            .into_iter()
+            .find(|friendship| friendship.remote_public_id == remote_public_id)
+            .expect("seeded friendship");
+    removed_friendship.state = wattetheria_social::domain::friendships::FriendshipState::Removed;
+    removed_friendship.updated_at = 2;
+    friendship_service::upsert_friendship(&*state.social_store, &removed_friendship)
+        .expect("mark friendship removed");
+
+    let friends_after_remove = authed_get_json(
+        app.clone(),
+        &token,
+        &format!("/v1/client/friends?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(friends_after_remove.as_array().unwrap().len(), 0);
+
+    let agent_friends_after_remove = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(agent_friends_after_remove.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

@@ -86,7 +86,6 @@ impl SocialStore {
 
 fn import_legacy_social_tables(conn: &Connection) -> SocialResult<()> {
     for table in [
-        "public_identities",
         "public_transport_bindings",
         "friend_requests",
         "friendships",
@@ -108,6 +107,33 @@ fn import_legacy_social_tables(conn: &Connection) -> SocialResult<()> {
             SocialError::Storage(format!("import legacy social table {table}: {error}"))
         })?;
     }
+    if legacy_table_exists(conn, "public_identities")? {
+        import_legacy_public_identities(conn)?;
+    }
+    Ok(())
+}
+
+fn import_legacy_public_identities(conn: &Connection) -> SocialResult<()> {
+    let columns = legacy_table_columns(conn, "public_identities")?;
+    let state_expression = if columns.iter().any(|column| column == "identity_state") {
+        "identity_state"
+    } else {
+        "CASE WHEN active = 0 THEN 'removed' ELSE 'active' END"
+    };
+    conn.execute(
+        &format!(
+            "INSERT OR IGNORE INTO public_identities (
+                public_id, agent_did, display_name, description, capabilities_json, skills_json,
+                did_document_json, identity_state, last_profile_fetched_at, created_at, updated_at
+             )
+             SELECT
+                public_id, agent_did, display_name, description, capabilities_json, skills_json,
+                did_document_json, {state_expression}, last_profile_fetched_at, created_at, updated_at
+             FROM legacy_social.public_identities"
+        ),
+        [],
+    )
+    .map_err(|error| SocialError::Storage(format!("import legacy public identities: {error}")))?;
     Ok(())
 }
 
@@ -124,6 +150,22 @@ fn legacy_table_exists(conn: &Connection, table: &str) -> SocialResult<bool> {
     .map_err(|error| SocialError::Storage(format!("query legacy table {table}: {error}")))
 }
 
+fn legacy_table_columns(conn: &Connection, table: &str) -> SocialResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA legacy_social.table_info({table})"))
+        .map_err(|error| {
+            SocialError::Storage(format!("prepare legacy table_info({table}): {error}"))
+        })?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| {
+            SocialError::Storage(format!("query legacy table_info({table}): {error}"))
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        SocialError::Storage(format!("collect legacy table_info({table}): {error}"))
+    })
+}
+
 impl RemoteIdentityRepository for SocialStore {
     fn upsert_remote_identity(&self, identity: &RemoteIdentityProfile) -> SocialResult<()> {
         let capabilities = serde_json::to_string(&identity.capabilities)
@@ -134,7 +176,7 @@ impl RemoteIdentityRepository for SocialStore {
             .execute(
                 "INSERT INTO public_identities (
                     public_id, agent_did, display_name, description, capabilities_json, skills_json,
-                    did_document_json, active, last_profile_fetched_at, created_at, updated_at
+                    did_document_json, identity_state, last_profile_fetched_at, created_at, updated_at
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(public_id) DO UPDATE SET
                     agent_did = excluded.agent_did,
@@ -143,7 +185,7 @@ impl RemoteIdentityRepository for SocialStore {
                     capabilities_json = excluded.capabilities_json,
                     skills_json = excluded.skills_json,
                     did_document_json = excluded.did_document_json,
-                    active = excluded.active,
+                    identity_state = excluded.identity_state,
                     last_profile_fetched_at = excluded.last_profile_fetched_at,
                     updated_at = excluded.updated_at",
                 params![
@@ -157,7 +199,7 @@ impl RemoteIdentityRepository for SocialStore {
                         .did_document_json
                         .as_ref()
                         .map(serde_json::Value::to_string),
-                    bool_to_sqlite(identity.active),
+                    remote_identity_state_to_str(identity.active),
                     identity.last_profile_fetched_at,
                     identity.created_at,
                     identity.updated_at
@@ -172,7 +214,7 @@ impl RemoteIdentityRepository for SocialStore {
         let mut stmt = conn
             .prepare(
                 "SELECT public_id, agent_did, display_name, description, capabilities_json,
-                        skills_json, did_document_json, active, last_profile_fetched_at, created_at, updated_at
+                        skills_json, did_document_json, identity_state, last_profile_fetched_at, created_at, updated_at
                  FROM public_identities
                  ORDER BY updated_at DESC, public_id ASC",
             )
@@ -190,7 +232,7 @@ impl RemoteIdentityRepository for SocialStore {
         self.conn()?
             .query_row(
                 "SELECT public_id, agent_did, display_name, description, capabilities_json,
-                        skills_json, did_document_json, active, last_profile_fetched_at, created_at, updated_at
+                        skills_json, did_document_json, identity_state, last_profile_fetched_at, created_at, updated_at
                  FROM public_identities
                  WHERE public_id = ?1",
                 params![public_id],
@@ -471,12 +513,13 @@ impl FriendshipRepository for SocialStore {
         self.conn()?
             .execute(
                 "INSERT INTO friendships (
-                    friendship_id, local_public_id, remote_public_id, state,
+                    friendship_id, local_public_id, remote_public_id, display_name, state,
                     established_from_request_id, thread_id, created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(friendship_id) DO UPDATE SET
                     local_public_id = excluded.local_public_id,
                     remote_public_id = excluded.remote_public_id,
+                    display_name = excluded.display_name,
                     state = excluded.state,
                     established_from_request_id = excluded.established_from_request_id,
                     thread_id = excluded.thread_id,
@@ -485,6 +528,7 @@ impl FriendshipRepository for SocialStore {
                     friendship.friendship_id,
                     friendship.local_public_id,
                     friendship.remote_public_id,
+                    friendship.display_name,
                     friendship_state_to_str(friendship.state),
                     friendship.established_from_request_id,
                     friendship.thread_id,
@@ -500,7 +544,7 @@ impl FriendshipRepository for SocialStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT friendship_id, local_public_id, remote_public_id, state,
+                "SELECT friendship_id, local_public_id, remote_public_id, display_name, state,
                         established_from_request_id, thread_id, created_at, updated_at
                  FROM friendships
                  WHERE local_public_id = ?1
@@ -521,7 +565,7 @@ impl FriendshipRepository for SocialStore {
     ) -> SocialResult<Option<Friendship>> {
         self.conn()?
             .query_row(
-                "SELECT friendship_id, local_public_id, remote_public_id, state,
+                "SELECT friendship_id, local_public_id, remote_public_id, display_name, state,
                         established_from_request_id, thread_id, created_at, updated_at
                  FROM friendships
                  WHERE local_public_id = ?1 AND remote_public_id = ?2",
@@ -840,7 +884,7 @@ fn row_to_remote_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemoteIde
             .map(|value| serde_json::from_str(&value))
             .transpose()
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
-        active: sqlite_to_bool(row.get::<_, i64>(7)?),
+        active: remote_identity_state_from_str(&row.get::<_, String>(7)?).map_err(to_row_error)?,
         last_profile_fetched_at: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
@@ -929,11 +973,12 @@ fn row_to_friendship(row: &rusqlite::Row<'_>) -> rusqlite::Result<Friendship> {
         friendship_id: row.get(0)?,
         local_public_id: row.get(1)?,
         remote_public_id: row.get(2)?,
-        state: friendship_state_from_str(&row.get::<_, String>(3)?).map_err(to_row_error)?,
-        established_from_request_id: row.get(4)?,
-        thread_id: row.get(5)?,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        display_name: row.get(3)?,
+        state: friendship_state_from_str(&row.get::<_, String>(4)?).map_err(to_row_error)?,
+        established_from_request_id: row.get(5)?,
+        thread_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }
 
@@ -1033,6 +1078,20 @@ fn bool_to_sqlite(value: bool) -> i64 {
 
 fn sqlite_to_bool(value: i64) -> bool {
     value != 0
+}
+
+fn remote_identity_state_to_str(active: bool) -> &'static str {
+    if active { "active" } else { "removed" }
+}
+
+fn remote_identity_state_from_str(value: &str) -> SocialResult<bool> {
+    match value {
+        "active" => Ok(true),
+        "removed" => Ok(false),
+        other => Err(SocialError::Storage(format!(
+            "unknown remote identity state: {other}"
+        ))),
+    }
 }
 
 fn policy_rule_type_to_str(value: PolicyRuleType) -> &'static str {
@@ -1322,6 +1381,17 @@ mod tests {
         path
     }
 
+    fn public_identity_columns(conn: &Connection) -> Vec<(String, String)> {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(public_identities)")
+            .expect("prepare public identity table info");
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(1)?, row.get(2)?)))
+            .expect("query public identity table info");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect public identity table info")
+    }
+
     #[test]
     fn store_bootstraps_policy_rules_and_is_idempotent() {
         let store = SocialStore::open_in_memory().expect("open store");
@@ -1475,6 +1545,7 @@ mod tests {
             friendship_id: "friendship-1".to_owned(),
             local_public_id: "did:key:alice".to_owned(),
             remote_public_id: "did:key:bob".to_owned(),
+            display_name: Some("Bob".to_owned()),
             state: FriendshipState::Active,
             established_from_request_id: Some("request-1".to_owned()),
             thread_id: Some("thread-1".to_owned()),
@@ -1593,6 +1664,7 @@ mod tests {
                 friendship_id: "friendship-1".to_owned(),
                 local_public_id: "did:key:alice".to_owned(),
                 remote_public_id: "did:key:bob".to_owned(),
+                display_name: Some("Bob".to_owned()),
                 state: FriendshipState::Active,
                 established_from_request_id: Some("request-1".to_owned()),
                 thread_id: None,
@@ -1627,6 +1699,19 @@ mod tests {
         store
             .upsert_remote_identity(&identity)
             .expect("save remote identity");
+        let conn = store.conn().expect("sqlite conn");
+        let columns = public_identity_columns(&conn);
+        assert!(columns.contains(&("identity_state".to_owned(), "TEXT".to_owned())));
+        assert!(!columns.iter().any(|(name, _)| name == "active"));
+        let stored_state: String = conn
+            .query_row(
+                "SELECT identity_state FROM public_identities WHERE public_id = ?1",
+                params!["did:key:bob"],
+                |row| row.get(0),
+            )
+            .expect("raw identity state");
+        assert_eq!(stored_state, "active");
+        drop(conn);
 
         let binding = RemoteTransportBinding {
             public_id: "did:key:bob".to_owned(),
@@ -1684,6 +1769,59 @@ mod tests {
                 .expect("list transport bindings by public_id"),
             vec![binding]
         );
+    }
+
+    #[test]
+    fn store_migrates_public_identity_active_column_to_identity_state() {
+        let path = unique_test_db_path("identity-state-migration");
+        {
+            let conn = Connection::open(&path).expect("open sqlite");
+            conn.execute_batch(
+                "CREATE TABLE public_identities (
+                    public_id TEXT PRIMARY KEY,
+                    agent_did TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    description TEXT,
+                    capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    skills_json TEXT NOT NULL DEFAULT '[]',
+                    did_document_json TEXT,
+                    active INTEGER NOT NULL,
+                    last_profile_fetched_at INTEGER,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO public_identities (
+                    public_id, agent_did, display_name, description, capabilities_json, skills_json,
+                    did_document_json, active, last_profile_fetched_at, created_at, updated_at
+                ) VALUES (
+                    'did:key:bob', 'did:key:bob', 'Bob', NULL, '[]', '[]',
+                    NULL, 0, NULL, 1, 2
+                );",
+            )
+            .expect("seed old schema");
+        }
+
+        let store = SocialStore::open(&path).expect("open migrated store");
+        let identity = store
+            .get_remote_identity("did:key:bob")
+            .expect("get migrated identity")
+            .expect("migrated identity");
+        assert!(!identity.active);
+        let conn = store.conn().expect("sqlite conn");
+        let columns = public_identity_columns(&conn);
+        assert!(columns.contains(&("identity_state".to_owned(), "TEXT".to_owned())));
+        assert!(!columns.iter().any(|(name, _)| name == "active"));
+        let stored_state: String = conn
+            .query_row(
+                "SELECT identity_state FROM public_identities WHERE public_id = ?1",
+                params!["did:key:bob"],
+                |row| row.get(0),
+            )
+            .expect("raw identity state");
+        assert_eq!(stored_state, "removed");
+        drop(conn);
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1767,6 +1905,7 @@ mod tests {
             friendship_id: "friendship-1".to_owned(),
             local_public_id: "did:key:alice".to_owned(),
             remote_public_id: "did:key:bob".to_owned(),
+            display_name: Some("Bob".to_owned()),
             state: FriendshipState::Active,
             established_from_request_id: Some("request-1".to_owned()),
             thread_id: Some("thread-1".to_owned()),

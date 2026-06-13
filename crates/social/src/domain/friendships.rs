@@ -13,6 +13,7 @@ pub struct Friendship {
     pub friendship_id: String,
     pub local_public_id: String,
     pub remote_public_id: String,
+    pub display_name: Option<String>,
     pub state: FriendshipState,
     pub established_from_request_id: Option<String>,
     pub thread_id: Option<String>,

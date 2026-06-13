@@ -9,3 +9,5 @@ npm/native/*/bin/
 .wattetheria-docker/
 .wattswarm-docker/
 does-not-exist
+data/
+docker-compose.dbeaver.yml

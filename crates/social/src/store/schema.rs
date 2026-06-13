@@ -1,30 +1,35 @@
 use crate::types::{SocialError, SocialResult};
 use rusqlite::{Connection, OptionalExtension};
 
-pub(crate) const SCHEMA_VERSION: i64 = 4;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const SCHEMA_VERSION_TABLE: &str = "social_schema_version";
+const CREATE_PUBLIC_IDENTITIES_TABLE: &str = "CREATE TABLE IF NOT EXISTS public_identities (
+    public_id TEXT PRIMARY KEY,
+    agent_did TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    description TEXT,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    skills_json TEXT NOT NULL DEFAULT '[]',
+    did_document_json TEXT,
+    identity_state TEXT NOT NULL DEFAULT 'active',
+    last_profile_fetched_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);";
 
 pub fn migrate(conn: &Connection) -> SocialResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS social_schema_version (
             version INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS public_identities (
-            public_id TEXT PRIMARY KEY,
-            agent_did TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            description TEXT,
-            capabilities_json TEXT NOT NULL DEFAULT '[]',
-            skills_json TEXT NOT NULL DEFAULT '[]',
-            did_document_json TEXT,
-            active INTEGER NOT NULL,
-            last_profile_fetched_at INTEGER,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS public_transport_bindings (
+        );",
+    )
+    .map_err(|error| SocialError::Storage(format!("migrate schema version table: {error}")))?;
+    conn.execute_batch(CREATE_PUBLIC_IDENTITIES_TABLE)
+        .map_err(|error| {
+            SocialError::Storage(format!("migrate public identities table: {error}"))
+        })?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS public_transport_bindings (
             public_id TEXT NOT NULL,
             transport_node_id TEXT NOT NULL,
             transport_kind TEXT NOT NULL,
@@ -89,6 +94,7 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
             friendship_id TEXT PRIMARY KEY,
             local_public_id TEXT NOT NULL,
             remote_public_id TEXT NOT NULL,
+            display_name TEXT,
             state TEXT NOT NULL,
             established_from_request_id TEXT,
             thread_id TEXT,
@@ -182,6 +188,8 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
     )
     .map_err(|error| SocialError::Storage(format!("migrate sqlite schema: {error}")))?;
 
+    migrate_public_identity_state_column(conn)?;
+
     let version: Option<i64> = conn
         .query_row(
             &format!("SELECT version FROM {SCHEMA_VERSION_TABLE} LIMIT 1"),
@@ -217,6 +225,29 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
         .map_err(|error| SocialError::Storage(format!("add matcher_json column: {error}")))?;
     }
 
+    let has_friendship_display_name = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(friendships)")
+            .map_err(|error| {
+                SocialError::Storage(format!("prepare table_info(friendships): {error}"))
+            })?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|error| {
+                SocialError::Storage(format!("query table_info(friendships): {error}"))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                SocialError::Storage(format!("collect table_info(friendships): {error}"))
+            })?
+            .into_iter()
+            .any(|name| name == "display_name")
+    };
+    if !has_friendship_display_name {
+        conn.execute("ALTER TABLE friendships ADD COLUMN display_name TEXT", [])
+            .map_err(|error| SocialError::Storage(format!("add display_name column: {error}")))?;
+    }
+
     if version.is_none() {
         conn.execute(
             &format!("INSERT INTO {SCHEMA_VERSION_TABLE} (version) VALUES (?1)"),
@@ -232,4 +263,43 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
     }
 
     Ok(())
+}
+
+fn migrate_public_identity_state_column(conn: &Connection) -> SocialResult<()> {
+    let columns = table_columns(conn, "public_identities")?;
+    let has_active = columns.iter().any(|column| column == "active");
+    let has_identity_state = columns.iter().any(|column| column == "identity_state");
+    if has_active && !has_identity_state {
+        conn.execute_batch(&format!(
+            "DROP TABLE IF EXISTS public_identities_legacy_active;
+             ALTER TABLE public_identities RENAME TO public_identities_legacy_active;
+             {CREATE_PUBLIC_IDENTITIES_TABLE}
+             INSERT INTO public_identities (
+                public_id, agent_did, display_name, description, capabilities_json, skills_json,
+                did_document_json, identity_state, last_profile_fetched_at, created_at, updated_at
+             )
+             SELECT
+                public_id, agent_did, display_name, description, capabilities_json, skills_json,
+                did_document_json,
+                CASE WHEN active = 0 THEN 'removed' ELSE 'active' END,
+                last_profile_fetched_at, created_at, updated_at
+             FROM public_identities_legacy_active;
+             DROP TABLE public_identities_legacy_active;"
+        ))
+        .map_err(|error| {
+            SocialError::Storage(format!("migrate public identity active state: {error}"))
+        })?;
+    }
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table: &str) -> SocialResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| SocialError::Storage(format!("prepare table_info({table}): {error}")))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| SocialError::Storage(format!("query table_info({table}): {error}")))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| SocialError::Storage(format!("collect table_info({table}): {error}")))
 }

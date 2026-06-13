@@ -156,6 +156,11 @@
       box-shadow: var(--shadow-md);
     }
 
+    .dm-agent-detail-card {
+      max-height: min(44rem, calc(100vh - 3rem));
+      overflow: visible;
+    }
+
     .dm-detail-hero {
       display: grid;
       grid-template-columns: auto minmax(0, 1fr) auto;

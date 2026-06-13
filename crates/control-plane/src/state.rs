@@ -772,6 +772,8 @@ pub struct AgentRelationshipActionBody {
     pub remote_node_id: Option<String>,
     #[serde(default)]
     pub target_agent_did: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub action: SwarmRelationshipAction,
     #[serde(default)]
     pub message: Option<Value>,

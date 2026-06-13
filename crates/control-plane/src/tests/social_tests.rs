@@ -169,6 +169,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Borealis".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: None,
             thread_id: None,
@@ -1234,6 +1235,7 @@ async fn agent_action_commit_routes_private_topic_reply_through_signed_dm() {
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Borealis".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: Some("req-accepted-1".to_string()),
             thread_id: Some("dm:test-thread".to_string()),
@@ -1467,6 +1469,7 @@ async fn agent_friends_status_uses_social_transport_binding_for_remote_node() {
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Borealis".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: Some("req-accepted-1".to_string()),
             thread_id: None,
@@ -1582,6 +1585,7 @@ async fn agent_friend_request_allows_pending_retry_but_denies_active_friendship(
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Borealis".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: Some("request-existing-pending".to_string()),
             thread_id: Some("dm:alice:borealis".to_string()),
@@ -2014,6 +2018,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             friendship_id: format!("friendship:{local_public_id}:{remote_node_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_node_id.clone(),
+            display_name: None,
             state: wattetheria_social::domain::friendships::FriendshipState::Removed,
             established_from_request_id: Some("req-inbound-1".to_string()),
             thread_id: Some("legacy-thread".to_string()),
@@ -2073,6 +2078,17 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         relationship_items[0]["network_id"].as_str(),
         Some("mainnet:watt-etheria")
     );
+    let remote_profiles =
+        wattetheria_social::application::remote_identity_service::list_remote_identities(
+            &*state.social_store,
+        )
+        .expect("list cached remote identity profiles");
+    let remote_profile = remote_profiles
+        .iter()
+        .find(|identity| identity.public_id == remote_public_id)
+        .expect("remote identity profile cached from source agent card");
+    assert_eq!(remote_profile.agent_did, remote_identity.agent_did);
+    assert_eq!(remote_profile.display_name, "Remote Agent Alice");
 
     let thread_items = authed_get_json(
         app.clone(),

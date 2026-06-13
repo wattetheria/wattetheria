@@ -1200,7 +1200,9 @@ fn relationship_payload_from_friendship(
     transport_bindings: &[RemoteTransportBinding],
 ) -> Value {
     let identity = identities.get(&friendship.remote_public_id);
-    let display_name = identity.map(|identity| identity.display_name.clone());
+    let display_name = identity
+        .map(|identity| identity.display_name.clone())
+        .or_else(|| friendship.display_name.clone());
     let transport_binding = transport_bindings
         .iter()
         .find(|binding| binding.public_id == friendship.remote_public_id);
@@ -1229,6 +1231,13 @@ fn relationship_payload_from_friendship(
         "pending_inbound": false,
         "pending_outbound": false,
     })
+}
+
+fn relationship_payload_is_active_friend(item: &Value) -> bool {
+    matches!(
+        item.get("relationship_state").and_then(Value::as_str),
+        Some("accepted" | "active" | "friend")
+    )
 }
 
 fn relationship_payload_from_block(
@@ -1357,6 +1366,24 @@ fn counterpart_snapshot(
     }
 }
 
+fn known_identity_from_source_agent_card(
+    counterpart_public_id: &str,
+    source_agent_card: &SwarmSourceAgentCard,
+    fallback_identity: Option<&PublicIdentity>,
+    observed_at: i64,
+) -> orchestration_service::KnownIdentitySnapshot {
+    let created_at = i64::try_from(source_agent_card.issued_at).unwrap_or(observed_at);
+    orchestration_service::KnownIdentitySnapshot {
+        public_id: counterpart_public_id.to_string(),
+        agent_did: fallback_identity.and_then(|identity| identity.agent_did.clone()),
+        display_name: agent_card_display_name(&source_agent_card.card)
+            .or_else(|| fallback_identity.map(|identity| identity.display_name.clone()))
+            .unwrap_or_else(|| counterpart_public_id.to_string()),
+        active: fallback_identity.is_none_or(|identity| identity.active),
+        created_at,
+    }
+}
+
 pub(crate) fn reconcile_swarm_relationship_views(
     state: &ControlPlaneState,
     local_public_id: &str,
@@ -1369,20 +1396,34 @@ pub(crate) fn reconcile_swarm_relationship_views(
         let counterpart_public_id = relationship_remote_public_id(view)
             .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
             .unwrap_or_else(|| view.remote_node_id.clone());
-        let target_agent = identities
-            .get(&counterpart_public_id)
-            .and_then(|identity| identity.agent_did.clone())
+        let target_agent = relationship_remote_agent_id(view)
+            .or_else(|| {
+                identities
+                    .get(&counterpart_public_id)
+                    .and_then(|identity| identity.agent_did.clone())
+            })
             .unwrap_or_else(|| counterpart_public_id.clone());
-        synced.push(orchestration_service::RelationshipSyncView {
-            counterpart: counterpart_snapshot(
-                identities,
-                bindings,
+        let observed_at = i64::try_from(view.updated_at).unwrap_or_default();
+        let mut counterpart = counterpart_snapshot(
+            identities,
+            bindings,
+            &counterpart_public_id,
+            &target_agent,
+            &view.remote_node_id,
+            observed_at,
+        );
+        if let Some(source_agent_card) = relationship_remote_source_agent_card(view) {
+            counterpart.known_identity = Some(known_identity_from_source_agent_card(
                 &counterpart_public_id,
-                &target_agent,
-                &view.remote_node_id,
-                i64::try_from(view.updated_at).unwrap_or_default(),
-            ),
+                source_agent_card,
+                identities.get(&counterpart_public_id),
+                observed_at,
+            ));
+        }
+        synced.push(orchestration_service::RelationshipSyncView {
+            counterpart,
             relationship_state: view.relationship_state.clone(),
+            last_action: Some(view.last_action.clone()),
             initiated_by: view.initiated_by.clone(),
             request_id: view
                 .agent_envelope
@@ -1402,7 +1443,7 @@ pub(crate) fn reconcile_swarm_relationship_views(
             responded_at: view
                 .responded_at
                 .and_then(|value| i64::try_from(value).ok()),
-            updated_at: i64::try_from(view.updated_at).unwrap_or_default(),
+            updated_at: observed_at,
         });
     }
     orchestration_service::reconcile_relationship_views(
@@ -2365,7 +2406,7 @@ pub(crate) async fn list_agent_relationships(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let items = match build_agent_relationship_payload(
+    let mut items = match build_agent_relationship_payload(
         &state,
         query.public_id.as_deref(),
         query.counterpart_public_id.as_deref(),
@@ -2375,6 +2416,7 @@ pub(crate) async fn list_agent_relationships(
         Ok(items) => items,
         Err(error) => return internal_error(&error),
     };
+    items.retain(relationship_payload_is_active_friend);
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -2804,10 +2846,183 @@ pub(crate) async fn agent_relationship_action(
     handle_agent_relationship_action(state, headers, body, auth).await
 }
 
-async fn resolve_agent_relationship_counterpart(
+fn friendship_display_name<'a>(
+    friendship: &'a Friendship,
+    identities: &'a BTreeMap<String, PublicIdentity>,
+) -> Option<&'a str> {
+    friendship
+        .display_name
+        .as_deref()
+        .or_else(|| {
+            identities
+                .get(&friendship.remote_public_id)
+                .map(|item| item.display_name.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn friendship_matches_remote_node(
+    friendship: &Friendship,
+    remote_node_id: &str,
+    bindings: &BTreeMap<String, ControllerBinding>,
+    transport_bindings: &[RemoteTransportBinding],
+) -> bool {
+    friendship.remote_public_id == remote_node_id
+        || bindings
+            .get(&friendship.remote_public_id)
+            .and_then(|binding| binding.controller_node_id.as_deref())
+            == Some(remote_node_id)
+        || transport_bindings.iter().any(|binding| {
+            binding.public_id == friendship.remote_public_id
+                && binding.transport_kind == TransportKind::Wattswarm
+                && binding.transport_node_id == remote_node_id
+        })
+}
+
+fn friendship_matches_agent_did(
+    friendship: &Friendship,
+    target_agent_did: &str,
+    identities: &BTreeMap<String, PublicIdentity>,
+    transport_bindings: &[RemoteTransportBinding],
+) -> bool {
+    identities
+        .get(&friendship.remote_public_id)
+        .and_then(|identity| identity.agent_did.as_deref())
+        == Some(target_agent_did)
+        || transport_bindings.iter().any(|binding| {
+            binding.public_id == friendship.remote_public_id
+                && binding.agent_did.as_deref() == Some(target_agent_did)
+        })
+}
+
+fn target_from_active_friendship(
+    friendship: &Friendship,
+    identities: &BTreeMap<String, PublicIdentity>,
+    bindings: &BTreeMap<String, ControllerBinding>,
+    transport_bindings: &[RemoteTransportBinding],
+) -> Result<SocialCounterpartTarget, String> {
+    let transport_binding = transport_bindings.iter().find(|binding| {
+        binding.public_id == friendship.remote_public_id
+            && binding.transport_kind == TransportKind::Wattswarm
+            && !binding.transport_node_id.trim().is_empty()
+    });
+    let remote_node = transport_binding
+        .map(|binding| binding.transport_node_id.clone())
+        .or_else(|| {
+            bindings
+                .get(&friendship.remote_public_id)
+                .and_then(|binding| binding.controller_node_id.clone())
+        })
+        .ok_or_else(|| {
+            format!(
+                "remote node binding missing for active friend {}",
+                friendship.remote_public_id
+            )
+        })?;
+    let target_agent = identities
+        .get(&friendship.remote_public_id)
+        .and_then(|identity| identity.agent_did.clone())
+        .or_else(|| transport_binding.and_then(|binding| binding.agent_did.clone()))
+        .unwrap_or_else(|| friendship.remote_public_id.clone());
+    Ok(SocialCounterpartTarget {
+        counterpart_public_id: friendship.remote_public_id.clone(),
+        remote_node,
+        target_agent,
+    })
+}
+
+async fn resolve_remove_agent_friend_counterpart(
     state: &ControlPlaneState,
+    local_public_id: &str,
     body: &AgentRelationshipActionBody,
 ) -> Result<SocialCounterpartTarget, String> {
+    let display_name = body
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let counterpart_public_id = body
+        .counterpart_public_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let remote_node_id = body
+        .remote_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let target_agent_did = body
+        .target_agent_did
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if display_name.is_none()
+        && counterpart_public_id.is_none()
+        && remote_node_id.is_none()
+        && target_agent_did.is_none()
+    {
+        return Err(
+            "display_name, remote_node_id, target_agent_did, or counterpart_public_id is required"
+                .to_string(),
+        );
+    }
+
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .map_err(|error| format!("query transport bindings: {error}"))?;
+    let active_friendships =
+        friendship_service::list_friendships(&*state.social_store, local_public_id)
+            .map_err(|error| format!("query friendships: {error}"))?
+            .into_iter()
+            .filter(|friendship| friendship.state == FriendshipState::Active)
+            .collect::<Vec<_>>();
+
+    let matches = active_friendships
+        .iter()
+        .filter(|friendship| {
+            display_name.is_some_and(|value| {
+                friendship_display_name(friendship, &identities) == Some(value)
+            }) || counterpart_public_id == Some(friendship.remote_public_id.as_str())
+                || target_agent_did.is_some_and(|value| {
+                    friendship_matches_agent_did(
+                        friendship,
+                        value,
+                        &identities,
+                        &transport_bindings,
+                    )
+                })
+                || remote_node_id.is_some_and(|value| {
+                    friendship_matches_remote_node(
+                        friendship,
+                        value,
+                        &bindings,
+                        &transport_bindings,
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+
+    match matches.as_slice() {
+        [friendship] => {
+            target_from_active_friendship(friendship, &identities, &bindings, &transport_bindings)
+        }
+        [] => Err("active friendship not found for remove_agent_friend".to_string()),
+        _ => Err("multiple active friends matched; provide counterpart_public_id".to_string()),
+    }
+}
+
+async fn resolve_agent_relationship_counterpart(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    body: &AgentRelationshipActionBody,
+) -> Result<SocialCounterpartTarget, String> {
+    if body.action == SwarmRelationshipAction::Remove {
+        return resolve_remove_agent_friend_counterpart(state, local_public_id, body).await;
+    }
+
     let remote_node_id = body
         .remote_node_id
         .as_deref()
@@ -2860,12 +3075,13 @@ async fn handle_agent_relationship_action(
         agent_id: local_agent_id,
         display_name: local_display_name,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let counterpart = match resolve_agent_relationship_counterpart(&state, &body).await {
-        Ok(counterpart) => counterpart,
-        Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-        }
-    };
+    let counterpart =
+        match resolve_agent_relationship_counterpart(&state, &local_public_id, &body).await {
+            Ok(counterpart) => counterpart,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
     let SocialCounterpartTarget {
         counterpart_public_id,
         remote_node,

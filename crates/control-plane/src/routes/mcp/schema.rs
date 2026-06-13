@@ -637,6 +637,10 @@ fn relationship_action_schema(tool: &AgentTool, message_description: &str) -> Va
                 "counterpart_public_id",
                 "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
             ),
+            string_field(
+                "display_name",
+                "Counterpart agent display name. Used to resolve an existing accepted friend for remove_agent_friend.",
+            ),
             value_field("message", message_description),
             value_field("extensions", "Optional signed envelope extension payload."),
         ],

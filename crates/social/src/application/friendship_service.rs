@@ -108,6 +108,7 @@ mod tests {
             friendship_id: "friendship-1".to_owned(),
             local_public_id: "did:key:alice".to_owned(),
             remote_public_id: "did:key:bob".to_owned(),
+            display_name: None,
             state: FriendshipState::Active,
             established_from_request_id: Some("request-1".to_owned()),
             thread_id: Some("thread-1".to_owned()),

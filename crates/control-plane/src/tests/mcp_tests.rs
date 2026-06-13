@@ -1024,6 +1024,7 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Remove".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: Some("request-remove-1".to_string()),
             thread_id: Some(format!("dm:{local_public_id}:{remote_public_id}")),
@@ -1043,7 +1044,7 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
             "params": {
                 "name": "remove_agent_friend",
                 "arguments": {
-                    "target_agent_did": remote_identity.agent_did,
+                    "display_name": "Broker Remove",
                     "message": {
                         "kind": "friend_remove",
                         "text": "remove friend"
@@ -1091,10 +1092,16 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
 
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
         .expect("list friendships after remove");
-    assert!(friendships.iter().any(|friendship| {
-        friendship.remote_public_id == remote_public_id
-            && friendship.state == wattetheria_social::domain::friendships::FriendshipState::Removed
-    }));
+    assert_eq!(friendships.len(), 1);
+    assert_eq!(
+        friendships[0].friendship_id,
+        format!("friendship:{local_public_id}:{remote_public_id}")
+    );
+    assert_eq!(friendships[0].remote_public_id, remote_public_id);
+    assert_eq!(
+        friendships[0].state,
+        wattetheria_social::domain::friendships::FriendshipState::Removed
+    );
 }
 
 #[tokio::test]
@@ -1155,6 +1162,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
             friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
             local_public_id: local_public_id.clone(),
             remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker DM".to_string()),
             state: wattetheria_social::domain::friendships::FriendshipState::Active,
             established_from_request_id: None,
             thread_id: None,
@@ -1949,6 +1957,12 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .as_object()
             .unwrap()
             .contains_key("target_agent_did")
+    );
+    assert!(
+        remove_agent_friend["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("display_name")
     );
     assert!(
         !remove_agent_friend["inputSchema"]["required"]

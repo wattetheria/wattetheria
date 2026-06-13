@@ -467,7 +467,7 @@
       const skills = dmSkillLabels(detail.counterpart_skills);
       const description = String(detail.counterpart_description || "").trim();
       const detailCard = `
-        <div class="dm-detail-card">
+        <div class="dm-detail-card dm-agent-detail-card">
           <div class="dm-detail-hero">
             <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(displayName))}</div>
             <div class="dm-detail-title-block">
