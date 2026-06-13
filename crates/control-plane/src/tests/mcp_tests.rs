@@ -1811,19 +1811,27 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let publish_collective_mission = find_tool(tools, "publish_collective_mission");
     assert_schema_requires(
         publish_collective_mission,
-        &[
-            "title",
-            "description",
-            "domain",
-            "reward",
-            "payload",
-            "agents",
-        ],
+        &["title", "description", "domain", "reward", "payload"],
     );
     assert_schema_omits(publish_collective_mission, &["publisher", "publisher_kind"]);
+    let collective_required = publish_collective_mission["inputSchema"]["required"]
+        .as_array()
+        .unwrap();
+    assert!(!collective_required.iter().any(|field| field == "agents"));
     assert_eq!(
-        publish_collective_mission["inputSchema"]["properties"]["agents"]["minItems"].as_u64(),
-        Some(1)
+        publish_collective_mission["inputSchema"]["properties"]["mode"]["enum"][1].as_str(),
+        Some("stigmergy")
+    );
+    assert!(
+        publish_collective_mission["inputSchema"]["properties"]["mode"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("Defaults to stigmergy"))
+    );
+    assert!(
+        publish_collective_mission["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("min_participants")
     );
     assert_eq!(
         publish_collective_mission["inputSchema"]["properties"]["kickoff"]["type"].as_str(),
@@ -2314,6 +2322,7 @@ fn collective_mission_request() -> Value {
         "params": {
             "name": "publish_collective_mission",
             "arguments": {
+                "mode": "committee",
                 "title": "Collective MCP mission",
                 "description": "Run several agents through Wattswarm.",
                 "publisher": "wrong-manual-value",
@@ -2338,6 +2347,36 @@ fn collective_mission_request() -> Value {
                         "prompt": "Check remote evidence."
                     }
                 ],
+                "aggregation": {"mode": "MAJORITY"},
+                "kickoff": true
+            }
+        }
+    })
+}
+
+fn collective_stigmergy_mission_request() -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "publish_collective_mission",
+            "arguments": {
+                "title": "Open collective MCP mission",
+                "description": "Let subscribed agents decide whether to contribute.",
+                "domain": "trade",
+                "reward": {
+                    "agent_watt": 10,
+                    "reputation": 0,
+                    "capacity": 0,
+                    "treasury_share_watt": 0
+                },
+                "payload": {"objective": "open-collective-intel"},
+                "min_participants": 2,
+                "threshold_percent": 60,
+                "round_timeout_ms": 30000,
+                "max_rounds": 3,
+                "fallback_decision": "abstain",
                 "aggregation": {"mode": "MAJORITY"},
                 "kickoff": true
             }
@@ -2424,6 +2463,125 @@ async fn mcp_publish_collective_mission_submits_wattswarm_run_and_links_result()
     assert_eq!(
         result["events"]["events"][0]["event_type"].as_str(),
         Some("RUN_KICKOFF")
+    );
+}
+
+#[tokio::test]
+async fn mcp_get_collective_mission_result_allows_locally_linked_run_id() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let response = mcp_request(app.clone(), &token, collective_mission_request()).await;
+    let mission_id = response["result"]["structuredContent"]["mission_id"]
+        .as_str()
+        .expect("mission id");
+    let run_id = response["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .expect("run id");
+
+    let result_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "get_collective_mission_result",
+                "arguments": {
+                    "run_id": run_id
+                }
+            }
+        }),
+    )
+    .await;
+
+    let result = &result_response["result"]["structuredContent"];
+    assert_eq!(result_response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(result["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(result["run_id"].as_str(), Some(run_id));
+    assert_eq!(result["link"]["mission_id"].as_str(), Some(mission_id));
+}
+
+#[tokio::test]
+async fn mcp_get_collective_mission_result_rejects_unlinked_run_id() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_collective_mission_result",
+                "arguments": {
+                    "run_id": "external-run-1"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("collective mission run link not found for run_id: external-run-1")
+    );
+}
+
+#[tokio::test]
+async fn mcp_publish_collective_mission_stigmergy_omits_agents_and_binds_market_task() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+
+    let response = mcp_request(app.clone(), &token, collective_stigmergy_mission_request()).await;
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let mission_id = content["mission_id"].as_str().expect("mission id");
+    assert_eq!(
+        content["run_spec"]["agents"].as_array().map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        content["run_spec"]["market_task_id"].as_str(),
+        Some(mission_id)
+    );
+    assert_eq!(
+        content["run_spec"]["feed_key"].as_str(),
+        Some("wattetheria.missions")
+    );
+    assert_eq!(
+        content["run_spec"]["scope_hint"].as_str(),
+        Some(format!("group:{mission_id}").as_str())
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["min_participants"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["threshold_percent"].as_u64(),
+        Some(60)
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["round_timeout_ms"].as_u64(),
+        Some(30000)
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["max_rounds"].as_u64(),
+        Some(3)
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["fallback_decision"].as_str(),
+        Some("abstain")
+    );
+
+    let persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted["runs"][mission_id]["run_spec"]["market_task_id"].as_str(),
+        Some(mission_id)
     );
 }
 

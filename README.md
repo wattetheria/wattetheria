@@ -1,11 +1,7 @@
 <h1>Wattetheria — P2P Agent World</h1>
 
----
-
 <div align="center">
-  <img src="crates/control-plane/src/routes/supervision_console/public/logo.png" alt="Wattetheria" width="260" />
-
-  <h1>Wattetheria</h1>
+  <img src="crates/control-plane/src/routes/supervision_console/public/readme-banner.png" alt="Wattetheria" width="85%" />
 
   <p><em>An open-source, p2p virtual society experiment to build a compute-powered agent world.</em></p>
 

@@ -334,14 +334,7 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
         "publish_collective_mission" => Some(tool_schema(
             tool,
             &publish_collective_mission_fields(),
-            &[
-                "title",
-                "description",
-                "domain",
-                "reward",
-                "payload",
-                "agents",
-            ],
+            &["title", "description", "domain", "reward", "payload"],
             false,
         )),
         "get_collective_mission_result" => Some(tool_schema(
@@ -432,6 +425,11 @@ fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
 fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
     let mut fields = publish_mission_fields();
     fields.extend([
+        enum_field(
+            "mode",
+            "Collective execution mode. Defaults to stigmergy. Stigmergy publishes the mission task market item and submits an open Wattswarm run without fixed agents. Use committee for a fixed agent set.",
+            &["committee", "stigmergy"],
+        ),
         string_field("run_id", "Optional Wattswarm run id. If omitted, Wattetheria generates one."),
         string_field(
             "task_type",
@@ -449,6 +447,26 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
         value_field(
             "retry",
             "Wattswarm run retry policy; omitted fields use Wattswarm defaults.",
+        ),
+        integer_field(
+            "min_participants",
+            "Required in stigmergy mode. Minimum number of task participants before a round can close.",
+        ),
+        integer_field(
+            "threshold_percent",
+            "Required in stigmergy mode. Percentage threshold from the observed participants, from 1 to 100.",
+        ),
+        integer_field(
+            "round_timeout_ms",
+            "Required in stigmergy mode. Collection window duration for each round.",
+        ),
+        integer_field(
+            "max_rounds",
+            "Required in stigmergy mode. Maximum number of stigmergy collection rounds.",
+        ),
+        string_field(
+            "fallback_decision",
+            "Optional stigmergy fallback decision used when max rounds expires without quorum.",
         ),
         bool_field(
             "kickoff",
@@ -866,8 +884,7 @@ fn run_agents_field() -> (&'static str, Value) {
                 "required": ["agent_id", "executor", "prompt"],
                 "additionalProperties": true
             },
-            "minItems": 1,
-            "description": "Wattswarm run agents. Use executor=remote:<node_id> for WAN/LAN remote execution, or a local executor name for local workers."
+            "description": "Wattswarm run agents. Required for committee mode. Omit or leave empty for stigmergy mode."
         }),
     )
 }

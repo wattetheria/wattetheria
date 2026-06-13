@@ -18,6 +18,7 @@ use super::{
 const DEFAULT_EVENTS_LIMIT: usize = 50;
 const MAX_EVENTS_LIMIT: usize = 200;
 const COLLECTIVE_TASK_TYPE: &str = "wattetheria.collective_mission";
+const MISSION_FEED_KEY: &str = "wattetheria.missions";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CollectiveMissionRunIndex {
@@ -35,13 +36,25 @@ struct CollectiveMissionRunLink {
     wattswarm_run: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollectiveExecutionMode {
+    Committee,
+    Stigmergy,
+}
+
+struct CollectiveExecutionSpec {
+    mode: CollectiveExecutionMode,
+    agents: Value,
+    round_policy: Option<Value>,
+}
+
 pub(super) async fn publish_collective_mission_result(
     state: &ControlPlaneState,
     auth: &str,
     arguments: &Value,
 ) -> Value {
-    let agents = match collective_agents(arguments) {
-        Ok(agents) => agents,
+    let execution = match collective_execution_spec(arguments) {
+        Ok(execution) => execution,
         Err(error) => return tool_error(&json!({"error": error})),
     };
     let public_id = local_public_id(state).await;
@@ -78,7 +91,7 @@ pub(super) async fn publish_collective_mission_result(
     };
 
     let kickoff = bool_argument(arguments, "kickoff").unwrap_or(true);
-    let run_spec = build_run_spec(arguments, &mission_id, &mission, &agents);
+    let run_spec = build_run_spec(arguments, &mission_id, &mission, &execution);
     let command = SwarmRunSubmitCommand {
         spec: run_spec.clone(),
         kickoff,
@@ -206,13 +219,32 @@ fn resolve_run_link(
     arguments: &Value,
 ) -> Result<ResolvedRunLink, String> {
     if let Some(run_id) = optional_string(arguments, "run_id") {
-        let link = mission_id
-            .and_then(|mission_id| index.runs.get(mission_id))
-            .filter(|link| link.run_id == run_id);
+        let link = match mission_id {
+            Some(mission_id) => {
+                let Some(link) = index.runs.get(mission_id) else {
+                    return Err(format!(
+                        "collective mission run link not found for mission_id: {mission_id}"
+                    ));
+                };
+                if link.run_id != run_id {
+                    return Err(format!(
+                        "collective mission run link not found for mission_id: {mission_id} and run_id: {run_id}"
+                    ));
+                }
+                link
+            }
+            None => index
+                .runs
+                .values()
+                .find(|link| link.run_id == run_id)
+                .ok_or_else(|| {
+                    format!("collective mission run link not found for run_id: {run_id}")
+                })?,
+        };
         return Ok(ResolvedRunLink {
-            mission_id: mission_id.map_or(Value::Null, |value| Value::String(value.to_owned())),
+            mission_id: Value::String(link.mission_id.clone()),
             run_id,
-            link: link.map_or(Value::Null, |link| json!(link)),
+            link: json!(link),
         });
     }
     let Some(mission_id) = mission_id else {
@@ -281,17 +313,29 @@ fn mission_publish_body(arguments: &Value, public_id: &str) -> Value {
     Value::Object(body)
 }
 
-fn build_run_spec(arguments: &Value, mission_id: &str, mission: &Value, agents: &Value) -> Value {
+fn build_run_spec(
+    arguments: &Value,
+    mission_id: &str,
+    mission: &Value,
+    execution: &CollectiveExecutionSpec,
+) -> Value {
     let run_id =
         optional_string(arguments, "run_id").unwrap_or_else(|| format!("collective-{mission_id}"));
-    json!({
+    let mut spec = json!({
         "run_id": run_id,
         "task_type": optional_string(arguments, "task_type").unwrap_or_else(|| COLLECTIVE_TASK_TYPE.to_owned()),
         "shared_inputs": shared_inputs(arguments, mission_id, mission),
-        "agents": agents,
+        "agents": execution.agents,
         "retry": argument_value(arguments, "retry").cloned().unwrap_or_else(|| json!({})),
         "aggregation": argument_value(arguments, "aggregation").cloned().unwrap_or_else(|| json!({})),
-    })
+    });
+    if execution.mode == CollectiveExecutionMode::Stigmergy {
+        spec["market_task_id"] = Value::String(mission_id.to_owned());
+        spec["feed_key"] = Value::String(MISSION_FEED_KEY.to_owned());
+        spec["scope_hint"] = Value::String(format!("group:{mission_id}"));
+        spec["round_policy"] = execution.round_policy.clone().unwrap_or(Value::Null);
+    }
+    spec
 }
 
 fn shared_inputs(arguments: &Value, mission_id: &str, mission: &Value) -> Value {
@@ -309,7 +353,32 @@ fn shared_inputs(arguments: &Value, mission_id: &str, mission: &Value) -> Value 
         })
 }
 
-fn collective_agents(arguments: &Value) -> Result<Value, String> {
+fn collective_execution_spec(arguments: &Value) -> Result<CollectiveExecutionSpec, String> {
+    let mode = collective_execution_mode(arguments)?;
+    let agents = collective_agents(arguments, mode)?;
+    let round_policy = match mode {
+        CollectiveExecutionMode::Committee => None,
+        CollectiveExecutionMode::Stigmergy => Some(stigmergy_round_policy(arguments)?),
+    };
+    Ok(CollectiveExecutionSpec {
+        mode,
+        agents,
+        round_policy,
+    })
+}
+
+fn collective_execution_mode(arguments: &Value) -> Result<CollectiveExecutionMode, String> {
+    match optional_string(arguments, "mode").as_deref() {
+        None | Some("stigmergy") => Ok(CollectiveExecutionMode::Stigmergy),
+        Some("committee") => Ok(CollectiveExecutionMode::Committee),
+        Some(mode) => Err(format!("mode must be committee or stigmergy, got {mode}")),
+    }
+}
+
+fn collective_agents(arguments: &Value, mode: CollectiveExecutionMode) -> Result<Value, String> {
+    if mode == CollectiveExecutionMode::Stigmergy {
+        return Ok(json!([]));
+    }
     let Some(agents) = argument_value(arguments, "agents") else {
         return Err("agents is required".to_owned());
     };
@@ -332,6 +401,36 @@ fn collective_agents(arguments: &Value) -> Result<Value, String> {
         }
     }
     Ok(agents.clone())
+}
+
+fn stigmergy_round_policy(arguments: &Value) -> Result<Value, String> {
+    let min_participants = required_positive_integer(arguments, "min_participants")?;
+    let threshold_percent = required_positive_integer(arguments, "threshold_percent")?;
+    if threshold_percent > 100 {
+        return Err("threshold_percent must be between 1 and 100".to_owned());
+    }
+    let round_timeout_ms = required_positive_integer(arguments, "round_timeout_ms")?;
+    let max_rounds = required_positive_integer(arguments, "max_rounds")?;
+    let mut policy = json!({
+        "min_participants": min_participants,
+        "threshold_percent": threshold_percent,
+        "round_timeout_ms": round_timeout_ms,
+        "max_rounds": max_rounds,
+    });
+    if let Some(fallback_decision) = optional_string(arguments, "fallback_decision") {
+        policy["fallback_decision"] = Value::String(fallback_decision);
+    }
+    Ok(policy)
+}
+
+fn required_positive_integer(arguments: &Value, key: &str) -> Result<u64, String> {
+    let Some(value) = argument_value(arguments, key).and_then(Value::as_u64) else {
+        return Err(format!("{key} is required for stigmergy mode"));
+    };
+    if value == 0 {
+        return Err(format!("{key} must be greater than zero"));
+    }
+    Ok(value)
 }
 
 fn argument_object(arguments: &Value) -> &Map<String, Value> {
