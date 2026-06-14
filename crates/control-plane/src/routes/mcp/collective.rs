@@ -294,23 +294,44 @@ fn mission_publish_body(arguments: &Value, public_id: &str) -> Value {
         "title",
         "description",
         "domain",
+        "scope",
         "subnet_id",
         "zone_id",
         "required_role",
         "required_faction",
         "reward",
-        "payload",
     ] {
         if let Some(value) = source.get(key) {
             body.insert(key.to_owned(), value.clone());
         }
     }
+    body.insert(
+        "payload".to_owned(),
+        collective_mission_payload(source.get("payload")),
+    );
     body.insert("publisher".to_owned(), Value::String(public_id.to_owned()));
     body.insert(
         "publisher_kind".to_owned(),
         Value::String("player".to_owned()),
     );
     Value::Object(body)
+}
+
+fn collective_mission_payload(payload: Option<&Value>) -> Value {
+    let mut object = match payload {
+        Some(Value::Object(object)) => object.clone(),
+        Some(value) => {
+            let mut object = Map::new();
+            object.insert("payload".to_owned(), value.clone());
+            object
+        }
+        None => Map::new(),
+    };
+    object.insert(
+        "task_type".to_owned(),
+        Value::String(COLLECTIVE_TASK_TYPE.to_owned()),
+    );
+    Value::Object(object)
 }
 
 fn build_run_spec(

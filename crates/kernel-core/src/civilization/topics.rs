@@ -1,3 +1,4 @@
+use crate::types::PublicGeoPayload;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ pub enum TopicProjectionKind {
     DirectConversation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HiveProfile {
     pub topic_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,6 +33,12 @@ pub struct HiveProfile {
     pub participant_public_ids: Vec<String>,
     pub created_by_public_id: String,
     pub why_this_exists: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lng: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_source: Option<String>,
     pub active: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -50,6 +57,7 @@ pub struct TopicCreateSpec {
     pub participant_public_ids: Vec<String>,
     pub created_by_public_id: String,
     pub why_this_exists: Option<String>,
+    pub public_geo: Option<PublicGeoPayload>,
     pub active: bool,
 }
 
@@ -88,6 +96,9 @@ impl HiveRegistry {
             .hives
             .get(&topic_id)
             .map_or(now, |topic| topic.created_at);
+        let (lat, lng, coordinate_source) = spec.public_geo.map_or((None, None, None), |geo| {
+            (Some(geo.lat), Some(geo.lng), Some(geo.coordinate_source))
+        });
         let profile = HiveProfile {
             topic_id: topic_id.clone(),
             network_id: spec.network_id,
@@ -101,6 +112,9 @@ impl HiveRegistry {
             participant_public_ids: spec.participant_public_ids,
             created_by_public_id: spec.created_by_public_id,
             why_this_exists: spec.why_this_exists,
+            lat,
+            lng,
+            coordinate_source,
             active: spec.active,
             created_at,
             updated_at: now,
@@ -183,6 +197,11 @@ mod tests {
             participant_public_ids: vec!["captain-aurora".to_string()],
             created_by_public_id: "captain-aurora".to_string(),
             why_this_exists: Some("Shared mission pressure".to_string()),
+            public_geo: Some(PublicGeoPayload {
+                lat: -33.8399,
+                lng: 151.0583,
+                coordinate_source: "ip_api".to_string(),
+            }),
             active: true,
         });
         registry.persist(&path).unwrap();
@@ -197,6 +216,9 @@ mod tests {
             Some("mainnet:test")
         );
         assert_eq!(topic.topic_id, "mainnet:test@crew.chat@group:crew-7");
+        assert_eq!(topic.lat, Some(-33.8399));
+        assert_eq!(topic.lng, Some(151.0583));
+        assert_eq!(topic.coordinate_source.as_deref(), Some("ip_api"));
         let subnet_topic = registry.upsert_hive(TopicCreateSpec {
             network_id: Some("subnet:alpha".to_string()),
             feed_key: "crew.chat".to_string(),
@@ -209,6 +231,7 @@ mod tests {
             participant_public_ids: Vec::new(),
             created_by_public_id: "captain-aurora".to_string(),
             why_this_exists: None,
+            public_geo: None,
             active: true,
         });
         assert_ne!(topic.topic_id, subnet_topic.topic_id);

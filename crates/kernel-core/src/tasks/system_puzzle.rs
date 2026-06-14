@@ -252,7 +252,7 @@ const fn default_verifier_watt() -> i64 {
 mod tests {
     use super::*;
     use crate::civilization::missions::{
-        MissionDomain, MissionPublisherKind, MissionReward, MissionStatus,
+        MissionDomain, MissionPublisherKind, MissionReward, MissionScope, MissionStatus,
     };
     use serde_json::json;
 
@@ -367,6 +367,7 @@ mod tests {
             publisher: solver_public_id.to_string(),
             publisher_kind: MissionPublisherKind::System,
             domain: MissionDomain::Power,
+            scope: MissionScope::RealWorld,
             subnet_id: None,
             zone_id: None,
             required_role: None,
@@ -386,6 +387,9 @@ mod tests {
                 proof,
             })
             .unwrap(),
+            lat: None,
+            lng: None,
+            coordinate_source: None,
             created_at: 1,
             updated_at: 1,
             claimed_by: None,

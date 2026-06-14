@@ -17,7 +17,7 @@ use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, ControllerKind, OwnershipScope, PublicIdentityRegistry,
 };
 use wattetheria_kernel::civilization::missions::{
-    MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionStatus,
+    MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionScope, MissionStatus,
 };
 use wattetheria_kernel::civilization::organizations::{
     OrganizationKind, OrganizationProposalKind, OrganizationRegistry, OrganizationRole,
@@ -40,6 +40,7 @@ use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with};
 use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
 use wattetheria_kernel::swarm_bridge::{SwarmBridge, SwarmRelationshipAction};
+use wattetheria_kernel::types::PublicGeoPayload;
 use wattetheria_social::SocialStore;
 
 #[derive(Debug)]
@@ -151,6 +152,11 @@ impl ControlPlaneState {
         sign_payload_with(payload, self.signer.as_ref())
     }
 
+    #[must_use]
+    pub fn public_geo_payload(&self) -> PublicGeoPayload {
+        self.geo_location.public_payload()
+    }
+
     pub fn append_signed_event(
         &self,
         event_type: impl Into<String>,
@@ -245,6 +251,15 @@ pub enum GeoSource {
 }
 
 impl NodeGeoLocation {
+    #[must_use]
+    pub fn public_payload(&self) -> PublicGeoPayload {
+        PublicGeoPayload {
+            lat: self.lat,
+            lng: self.lng,
+            coordinate_source: self.source.as_str().to_string(),
+        }
+    }
+
     pub async fn load_or_fetch(_data_dir: &std::path::Path, fallback_id: &str) -> Arc<Self> {
         match fetch_geo_from_ip_api().await {
             Ok(geo) => {
@@ -286,6 +301,17 @@ impl NodeGeoLocation {
                     source: GeoSource::Derived,
                 })
             }
+        }
+    }
+}
+
+impl GeoSource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::IpApi => "ip_api",
+            Self::Cached => "cached",
+            Self::Derived => "derived",
         }
     }
 }
@@ -513,6 +539,12 @@ pub struct TopicCreateBody {
     pub participant_public_ids: Vec<String>,
     pub why_this_exists: Option<String>,
     pub initial_message: Option<Value>,
+    #[serde(default = "default_true")]
+    pub include_public_geo: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -652,6 +684,8 @@ pub struct MissionPublishBody {
     pub publisher: String,
     pub publisher_kind: MissionPublisherKind,
     pub domain: MissionDomain,
+    #[serde(default)]
+    pub scope: MissionScope,
     pub subnet_id: Option<String>,
     pub zone_id: Option<String>,
     pub required_role: Option<RolePath>,

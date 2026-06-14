@@ -1,4 +1,5 @@
 use crate::civilization::profiles::{Faction, RolePath};
+use crate::types::PublicGeoPayload;
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,14 @@ pub enum MissionDomain {
     Security,
     Trade,
     Culture,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionScope {
+    #[default]
+    RealWorld,
+    InWorld,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,12 +62,20 @@ pub struct CivilMission {
     pub publisher: String,
     pub publisher_kind: MissionPublisherKind,
     pub domain: MissionDomain,
+    #[serde(default)]
+    pub scope: MissionScope,
     pub subnet_id: Option<String>,
     pub zone_id: Option<String>,
     pub required_role: Option<RolePath>,
     pub required_faction: Option<Faction>,
     pub reward: MissionReward,
     pub payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lng: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinate_source: Option<String>,
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
@@ -102,6 +119,8 @@ pub struct NetworkMissionClaimMetadata {
     pub publisher_wattswarm_node_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     #[serde(default, skip_serializing)]
     pub task_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,7 +254,76 @@ impl MissionBoard {
         reward: MissionReward,
         payload: Value,
     ) -> CivilMission {
+        self.publish_with_scope(
+            title,
+            description,
+            publisher,
+            publisher_kind,
+            domain,
+            MissionScope::default(),
+            subnet_id,
+            zone_id,
+            required_role,
+            required_faction,
+            reward,
+            payload,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with_scope(
+        &mut self,
+        title: &str,
+        description: &str,
+        publisher: &str,
+        publisher_kind: MissionPublisherKind,
+        domain: MissionDomain,
+        scope: MissionScope,
+        subnet_id: Option<String>,
+        zone_id: Option<String>,
+        required_role: Option<RolePath>,
+        required_faction: Option<Faction>,
+        reward: MissionReward,
+        payload: Value,
+    ) -> CivilMission {
+        self.publish_with_scope_and_geo(
+            title,
+            description,
+            publisher,
+            publisher_kind,
+            domain,
+            scope,
+            subnet_id,
+            zone_id,
+            required_role,
+            required_faction,
+            reward,
+            payload,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with_scope_and_geo(
+        &mut self,
+        title: &str,
+        description: &str,
+        publisher: &str,
+        publisher_kind: MissionPublisherKind,
+        domain: MissionDomain,
+        scope: MissionScope,
+        subnet_id: Option<String>,
+        zone_id: Option<String>,
+        required_role: Option<RolePath>,
+        required_faction: Option<Faction>,
+        reward: MissionReward,
+        payload: Value,
+        public_geo: Option<PublicGeoPayload>,
+    ) -> CivilMission {
         let now = Utc::now().timestamp();
+        let (lat, lng, coordinate_source) = public_geo.map_or((None, None, None), |geo| {
+            (Some(geo.lat), Some(geo.lng), Some(geo.coordinate_source))
+        });
         let mission = CivilMission {
             mission_id: uuid::Uuid::new_v4().to_string(),
             title: title.to_string(),
@@ -243,12 +331,16 @@ impl MissionBoard {
             publisher: publisher.to_string(),
             publisher_kind,
             domain,
+            scope,
             subnet_id,
             zone_id,
             required_role,
             required_faction,
             reward,
             payload,
+            lat,
+            lng,
+            coordinate_source,
             created_at: now,
             updated_at: now,
             claimed_by: None,

@@ -1087,6 +1087,7 @@ async fn agent_action_commit_routes_registered_hive_topic_reply_with_signed_enve
             participant_public_ids: Vec::new(),
             created_by_public_id: "local-public".to_string(),
             why_this_exists: None,
+            public_geo: None,
             active: true,
         });
     }

@@ -396,6 +396,11 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
             "Mission domain.",
             &["wealth", "power", "security", "trade", "culture"],
         ),
+        enum_field(
+            "scope",
+            "Mission scope. Defaults to real_world.",
+            &["real_world", "in_world"],
+        ),
         string_field("subnet_id", "Optional target subnet."),
         string_field("zone_id", "Optional target zone."),
         enum_field(

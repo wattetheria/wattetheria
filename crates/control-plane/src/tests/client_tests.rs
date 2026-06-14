@@ -33,6 +33,12 @@ fn assert_actor_projection(
     );
 }
 
+fn assert_public_geo_projection(value: &serde_json::Value) {
+    assert_eq!(value["lat"].as_f64(), Some(0.0));
+    assert_eq!(value["lng"].as_f64(), Some(0.0));
+    assert_eq!(value["coordinate_source"].as_str(), Some("derived"));
+}
+
 fn network_claim_test_metadata(title: &str, mission_id: &str) -> NetworkMissionClaimMetadata {
     NetworkMissionClaimMetadata {
         title: Some(title.to_string()),
@@ -41,6 +47,7 @@ fn network_claim_test_metadata(title: &str, mission_id: &str) -> NetworkMissionC
         publisher_display_name: Some("Remote Publisher".to_string()),
         publisher_wattswarm_node_id: Some("publisher-node".to_string()),
         domain: Some("trade".to_string()),
+        scope: Some("real_world".to_string()),
         task_status: None,
         mission_feed_key: Some("wattetheria.missions".to_string()),
         mission_scope_hint: Some(format!("group:{mission_id}")),
@@ -1194,6 +1201,7 @@ async fn client_export_excludes_local_friends_and_dm() {
             participant_public_ids: vec![local_public_id.clone(), remote_public_id.clone()],
             created_by_public_id: local_public_id.clone(),
             why_this_exists: Some("coordination".to_string()),
+            public_geo: None,
             active: true,
         });
         topics.upsert_hive(wattetheria_kernel::civilization::topics::TopicCreateSpec {
@@ -1209,6 +1217,7 @@ async fn client_export_excludes_local_friends_and_dm() {
             participant_public_ids: vec![local_public_id.clone(), remote_public_id.clone()],
             created_by_public_id: local_public_id.clone(),
             why_this_exists: Some("private conversation".to_string()),
+            public_geo: None,
             active: true,
         });
     }
@@ -1554,6 +1563,8 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
         .expect("publish event timeout")
         .expect("publish event");
     assert_eq!(published.kind, "mission.published");
+    assert_public_geo_projection(&published.payload);
+    assert_public_geo_projection(&published.payload["task_contract"]["inputs"]);
     assert_eq!(
         published.payload["created_by_agent_identity"].as_str(),
         Some("Captain Aurora")
@@ -1670,6 +1681,7 @@ fn assert_mission_gateway_projection_payload(
     assert_eq!(payload["mission_id"].as_str(), Some(mission_id));
     assert_eq!(payload["task_id"].as_str(), Some(mission_id));
     assert_eq!(payload["task_type"].as_str(), Some("wattetheria.mission"));
+    assert_eq!(payload["scope"].as_str(), Some("real_world"));
     assert_eq!(payload["status"].as_str(), Some(status));
     assert_eq!(payload["claimed_by"].as_str(), Some(claimed_by));
     assert_eq!(payload["claimer_agent_did"].as_str(), Some(claimed_by));
@@ -1685,6 +1697,12 @@ fn assert_mission_gateway_projection_payload(
         payload["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
         Some(format!("group:{mission_id}").as_str())
     );
+    assert_eq!(
+        payload["task_contract"]["inputs"]["scope"].as_str(),
+        Some("real_world")
+    );
+    assert_public_geo_projection(payload);
+    assert_public_geo_projection(&payload["task_contract"]["inputs"]);
     assert_eq!(
         payload["swarm_scope"],
         json!({

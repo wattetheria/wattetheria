@@ -638,6 +638,11 @@ async fn commit_publish_mission(
         Ok(None) => wattetheria_kernel::civilization::missions::MissionDomain::Trade,
         Err(error) => return bad_request(error),
     };
+    let scope = match optional_payload_value(&body.decision.payload, "scope", "mission scope") {
+        Ok(Some(value)) => value,
+        Ok(None) => wattetheria_kernel::civilization::missions::MissionScope::default(),
+        Err(error) => return bad_request(error),
+    };
     let reward = match optional_payload_value(&body.decision.payload, "reward", "mission reward") {
         Ok(Some(value)) => value,
         Ok(None) => return bad_request("publish_mission requires reward"),
@@ -665,6 +670,7 @@ async fn commit_publish_mission(
             publisher,
             publisher_kind,
             domain,
+            scope,
             subnet_id: body
                 .decision
                 .payload

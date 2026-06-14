@@ -1774,7 +1774,24 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         publish_mission["inputSchema"]["properties"]["title"]["type"].as_str(),
         Some("string")
     );
-    assert_schema_omits(publish_mission, &["publisher", "publisher_kind"]);
+    assert_eq!(
+        publish_mission["inputSchema"]["properties"]["scope"]["enum"][0].as_str(),
+        Some("real_world")
+    );
+    assert_eq!(
+        publish_mission["inputSchema"]["properties"]["scope"]["enum"][1].as_str(),
+        Some("in_world")
+    );
+    assert_schema_omits(
+        publish_mission,
+        &[
+            "publisher",
+            "publisher_kind",
+            "lat",
+            "lng",
+            "coordinate_source",
+        ],
+    );
     assert_eq!(
         publish_mission["inputSchema"]["properties"]
             .get("body")
@@ -1813,11 +1830,29 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         publish_collective_mission,
         &["title", "description", "domain", "reward", "payload"],
     );
-    assert_schema_omits(publish_collective_mission, &["publisher", "publisher_kind"]);
+    assert_schema_omits(
+        publish_collective_mission,
+        &[
+            "publisher",
+            "publisher_kind",
+            "lat",
+            "lng",
+            "coordinate_source",
+        ],
+    );
     let collective_required = publish_collective_mission["inputSchema"]["required"]
         .as_array()
         .unwrap();
     assert!(!collective_required.iter().any(|field| field == "agents"));
+    assert!(!collective_required.iter().any(|field| field == "scope"));
+    assert_eq!(
+        publish_collective_mission["inputSchema"]["properties"]["scope"]["enum"][0].as_str(),
+        Some("real_world")
+    );
+    assert_eq!(
+        publish_collective_mission["inputSchema"]["properties"]["scope"]["enum"][1].as_str(),
+        Some("in_world")
+    );
     assert_eq!(
         publish_collective_mission["inputSchema"]["properties"]["mode"]["enum"][1].as_str(),
         Some("stigmergy")
@@ -1865,7 +1900,16 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
 
     let create_hive = find_tool(tools, "create_hive");
-    assert_schema_omits(create_hive, &["public_id", "initial_message"]);
+    assert_schema_omits(
+        create_hive,
+        &[
+            "public_id",
+            "initial_message",
+            "lat",
+            "lng",
+            "coordinate_source",
+        ],
+    );
     assert_eq!(
         create_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
         Some(
@@ -1874,7 +1918,16 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
     let create_private_hive = find_tool(tools, "create_private_hive");
     assert_schema_requires(create_private_hive, &["feed_key", "display_name"]);
-    assert_schema_omits(create_private_hive, &["public_id", "initial_message"]);
+    assert_schema_omits(
+        create_private_hive,
+        &[
+            "public_id",
+            "initial_message",
+            "lat",
+            "lng",
+            "coordinate_source",
+        ],
+    );
     assert_eq!(
         create_private_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
         Some(
@@ -2201,6 +2254,7 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
     let mission_id = mission["mission_id"].as_str().expect("mission id");
     assert_eq!(mission["task_id"].as_str(), Some(mission_id));
     assert_eq!(mission["task_type"].as_str(), Some("wattetheria.mission"));
+    assert_eq!(mission["scope"].as_str(), Some("real_world"));
     assert_eq!(
         mission["mission_scope_hint"].as_str(),
         Some(format!("group:{mission_id}").as_str())
@@ -2221,6 +2275,12 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
         mission["task_contract"]["inputs"]["mission_scope_hint"].as_str(),
         mission["mission_scope_hint"].as_str()
     );
+    assert_eq!(
+        mission["task_contract"]["inputs"]["scope"].as_str(),
+        Some("real_world")
+    );
+    assert_public_geo_projection(mission);
+    assert_public_geo_projection(&mission["task_contract"]["inputs"]);
 }
 
 #[tokio::test]
@@ -2328,6 +2388,7 @@ fn collective_mission_request() -> Value {
                 "publisher": "wrong-manual-value",
                 "publisher_kind": "system",
                 "domain": "trade",
+                "scope": "in_world",
                 "reward": {
                     "agent_watt": 10,
                     "reputation": 0,
@@ -2414,6 +2475,25 @@ fn assert_collective_publish_result<'a>(
         content["mission"]["publisher_kind"].as_str(),
         Some("player")
     );
+    assert_eq!(
+        content["mission"]["task_type"].as_str(),
+        Some("wattetheria.collective_mission")
+    );
+    assert_eq!(content["mission"]["scope"].as_str(), Some("in_world"));
+    assert_public_geo_projection(&content["mission"]);
+    assert_eq!(
+        content["mission"]["task_contract"]["inputs"]["scope"].as_str(),
+        Some("in_world")
+    );
+    assert_public_geo_projection(&content["mission"]["task_contract"]["inputs"]);
+    assert_eq!(
+        content["mission"]["payload"]["task_type"].as_str(),
+        Some("wattetheria.collective_mission")
+    );
+    assert_eq!(
+        content["mission"]["payload"]["objective"].as_str(),
+        Some("collective-intel")
+    );
     let mission_id = content["mission_id"].as_str().expect("mission id");
     let run_id = content["run_id"].as_str().expect("run id");
     assert_eq!(content["wattswarm_run"]["kicked_off"].as_bool(), Some(true));
@@ -2425,6 +2505,11 @@ fn assert_collective_publish_result<'a>(
         content["run_spec"]["shared_inputs"]["mission_id"].as_str(),
         Some(mission_id)
     );
+    assert_eq!(
+        content["run_spec"]["shared_inputs"]["mission"]["scope"].as_str(),
+        Some("in_world")
+    );
+    assert_public_geo_projection(&content["run_spec"]["shared_inputs"]["mission"]);
     assert_eq!(
         content["run_spec"]["agents"][1]["executor"].as_str(),
         Some("remote:12D3KooScout")
@@ -2592,7 +2677,7 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
     let local_public_id = self_json["id"].as_str().unwrap();
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -2605,7 +2690,8 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
                     "feed_key": "mcp-topic-feed",
                     "scope_hint": "group:mcp-topic-feed",
                     "display_name": "MCP Hive",
-                    "projection_kind": "chat_room"
+                    "projection_kind": "chat_room",
+                    "include_public_geo": false
                 }
             }
         }),
@@ -2618,6 +2704,22 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
         content["hive"]["created_by_public_id"].as_str(),
         Some(local_public_id)
     );
+    assert_public_geo_projection(&content["hive"]);
+    let topic_id = content["hive"]["topic_id"].as_str().unwrap();
+    let export_json = public_get_json(
+        app,
+        &format!(
+            "/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=1&task_limit=1&organization_limit=1&rpc_log_limit=1&leaderboard_limit=1"
+        ),
+    )
+    .await;
+    let public_topic = export_json["payload"]["public_topics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|topic| topic["topic_id"].as_str() == Some(topic_id))
+        .unwrap();
+    assert_public_geo_projection(public_topic);
 }
 
 #[tokio::test]
@@ -2674,6 +2776,8 @@ async fn mcp_create_private_hive_defaults_to_unique_group_dm_chat_room_scope() {
         first_hive["participant_public_ids"][0].as_str(),
         Some("friend-public-1")
     );
+    assert_public_geo_omitted(first_hive);
+    assert_public_geo_omitted(second_hive);
 }
 
 #[tokio::test]
@@ -3634,4 +3738,16 @@ fn assert_schema_omits(tool: &Value, omitted: &[&str]) {
             tool["name"].as_str().unwrap()
         );
     }
+}
+
+fn assert_public_geo_projection(value: &Value) {
+    assert_eq!(value["lat"].as_f64(), Some(0.0));
+    assert_eq!(value["lng"].as_f64(), Some(0.0));
+    assert_eq!(value["coordinate_source"].as_str(), Some("derived"));
+}
+
+fn assert_public_geo_omitted(value: &Value) {
+    assert!(value.get("lat").is_none());
+    assert!(value.get("lng").is_none());
+    assert!(value.get("coordinate_source").is_none());
 }

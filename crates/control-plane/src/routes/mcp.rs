@@ -1816,6 +1816,9 @@ async fn tool_body_with_local_identity(
 }
 
 fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), String> {
+    if tool.name == "create_hive" {
+        normalize_mcp_public_hive_request(body);
+    }
     if tool.name == "create_private_hive" {
         normalize_mcp_private_hive_request(body)?;
     }
@@ -1823,6 +1826,13 @@ fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), Str
         normalize_mcp_payment_request_amount(body)?;
     }
     Ok(())
+}
+
+fn normalize_mcp_public_hive_request(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    object.insert("include_public_geo".to_string(), Value::Bool(true));
 }
 
 fn normalize_mcp_private_hive_request(body: &mut Value) -> Result<(), String> {
@@ -1855,6 +1865,7 @@ fn normalize_mcp_private_hive_request(body: &mut Value) -> Result<(), String> {
             Value::String("chat_room".to_string()),
         );
     }
+    object.insert("include_public_geo".to_string(), Value::Bool(false));
     Ok(())
 }
 

@@ -415,6 +415,7 @@ async fn build_published_client_task_payload(
         "task_type": "wattetheria.mission",
         "title": mission.title,
         "domain": mission_domain_label(&mission.domain),
+        "scope": mission.scope,
         "reward_watt": mission.reward.agent_watt,
         "task_bounty_watt": mission.reward.agent_watt,
         "executor_bounty_watt": mission.reward.agent_watt,
@@ -426,6 +427,9 @@ async fn build_published_client_task_payload(
         "claimer_id": mission.claimed_by,
         "created_at": timestamp_to_rfc3339(mission.created_at),
         "task_origin": "published",
+        "lat": mission.lat,
+        "lng": mission.lng,
+        "coordinate_source": mission.coordinate_source.clone(),
     });
     if let Some(object) = task.as_object_mut() {
         if let Some(identity) =
@@ -473,6 +477,7 @@ fn build_claimed_client_task_payload(
         "task_type": "wattetheria.mission",
         "title": metadata.title.clone().unwrap_or_else(|| claim.mission_id.clone()),
         "domain": metadata.domain.clone(),
+        "scope": metadata.scope.clone(),
         "reward_watt": metadata.reward_watt,
         "task_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),
         "executor_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),

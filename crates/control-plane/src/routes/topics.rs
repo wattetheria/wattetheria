@@ -462,6 +462,7 @@ async fn persist_created_topic(
     network_id: &str,
 ) -> anyhow::Result<HiveProfile> {
     let mut topics = state.hive_registry.lock().await;
+    let public_geo = body.include_public_geo.then(|| state.public_geo_payload());
     let topic = topics.upsert_hive(TopicCreateSpec {
         network_id: Some(network_id.to_owned()),
         feed_key: body.feed_key,
@@ -474,6 +475,7 @@ async fn persist_created_topic(
         participant_public_ids: body.participant_public_ids,
         created_by_public_id: public_id.to_owned(),
         why_this_exists: body.why_this_exists,
+        public_geo,
         active: true,
     });
     state.local_db.save_domain(
@@ -1037,6 +1039,7 @@ async fn persist_subscribed_hive_profile(
         created_by_public_id,
         why_this_exists: normalized_owned(body.why_this_exists.as_deref())
             .or_else(|| hive.why_this_exists.clone()),
+        public_geo: None,
         active: true,
     });
     state.local_db.save_domain(
@@ -1097,6 +1100,9 @@ async fn resolve_hive_profile_with_route(
                     participant_public_ids: Vec::new(),
                     created_by_public_id: String::new(),
                     why_this_exists: None,
+                    lat: None,
+                    lng: None,
+                    coordinate_source: None,
                     active: true,
                     created_at: now,
                     updated_at: now,

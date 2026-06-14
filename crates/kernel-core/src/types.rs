@@ -1,7 +1,7 @@
 //! Shared protocol domain types used across kernel and CLI surfaces.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AgentStats {
@@ -9,6 +9,24 @@ pub struct AgentStats {
     pub watt: i64,
     pub reputation: i64,
     pub capacity: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PublicGeoPayload {
+    pub lat: f64,
+    pub lng: f64,
+    pub coordinate_source: String,
+}
+
+impl PublicGeoPayload {
+    pub fn insert_into_json_object(&self, object: &mut Map<String, Value>) {
+        object.insert("lat".to_string(), Value::from(self.lat));
+        object.insert("lng".to_string(), Value::from(self.lng));
+        object.insert(
+            "coordinate_source".to_string(),
+            Value::String(self.coordinate_source.clone()),
+        );
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -218,6 +218,7 @@ fn network_claim_metadata(
             .clone()
             .or_else(|| network_claim_string(body, contract, "publisher_wattswarm_node_id")),
         domain: network_claim_string(body, contract, "domain"),
+        scope: network_claim_string(body, contract, "scope"),
         task_status: None,
         mission_feed_key: Some(route.mission_feed_key.clone()),
         mission_scope_hint: Some(route.mission_scope_hint.clone()),
@@ -765,11 +766,15 @@ fn mission_task_inputs(
         "mission_feed_key": MISSION_FEED_KEY,
         "mission_scope_hint": mission_scope_hint,
         "domain": mission.domain,
+        "scope": mission.scope,
         "reward": mission.reward,
         "required_role": mission.required_role,
         "required_faction": mission.required_faction,
         "subnet_id": mission.subnet_id,
         "zone_id": mission.zone_id,
+        "lat": mission.lat,
+        "lng": mission.lng,
+        "coordinate_source": mission.coordinate_source.clone(),
         "payload": mission.payload,
     });
     if let Some(delegation) = settlement_delegation_from_payload(&mission.payload)
@@ -814,11 +819,15 @@ fn mission_announce_command(
         "title": mission.title,
         "description": mission.description,
         "domain": mission.domain,
+        "scope": mission.scope,
         "reward": mission.reward,
         "publisher": mission.publisher,
         "publisher_agent_did": publisher_agent_did,
         "publisher_display_name": publisher_display_name,
         "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
+        "lat": mission.lat,
+        "lng": mission.lng,
+        "coordinate_source": mission.coordinate_source.clone(),
         "mission_feed_key": MISSION_FEED_KEY,
         "mission_scope_hint": mission_scope_hint,
     });
@@ -843,12 +852,17 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
     let Some(object) = payload.as_object_mut() else {
         return payload;
     };
+    let task_type = mission
+        .payload
+        .get("task_type")
+        .and_then(Value::as_str)
+        .unwrap_or("wattetheria.mission");
     object
         .entry("task_id".to_string())
         .or_insert_with(|| Value::String(mission.mission_id.clone()));
     object
         .entry("task_type".to_string())
-        .or_insert_with(|| Value::String("wattetheria.mission".to_string()));
+        .or_insert_with(|| Value::String(task_type.to_string()));
     if let Some(delegation) = settlement_delegation_from_payload(&mission.payload) {
         object.insert("settlement_delegation".to_owned(), delegation.clone());
     }
@@ -861,7 +875,7 @@ fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskCo
     );
     object.insert(
         "task_type".to_string(),
-        Value::String(contract.task_type.clone()),
+        Value::String(task_type.to_string()),
     );
     object.insert(
         "task_contract".to_string(),
@@ -1959,18 +1973,20 @@ pub(crate) async fn mission_publish(
     let mission_payload =
         payload_with_settlement_delegation(body.payload, settlement_delegation.as_ref());
     let mut board = state.mission_board.lock().await;
-    let mission = board.publish(
+    let mission = board.publish_with_scope_and_geo(
         &body.title,
         &body.description,
         &body.publisher,
         body.publisher_kind,
         body.domain,
+        body.scope,
         body.subnet_id,
         body.zone_id,
         body.required_role,
         body.required_faction,
         body.reward,
         mission_payload,
+        Some(state.public_geo_payload()),
     );
     if let Err(error) = state
         .local_db
@@ -2749,6 +2765,7 @@ mod tests {
             inputs["mission_scope_hint"].as_str(),
             Some(format!("group:{}", mission.mission_id).as_str())
         );
+        assert_eq!(inputs["scope"].as_str(), Some("real_world"));
     }
 
     #[test]
@@ -2776,5 +2793,6 @@ mod tests {
             command.summary["mission_scope_hint"].as_str(),
             Some(command.scope_hint.as_str())
         );
+        assert_eq!(command.summary["scope"].as_str(), Some("real_world"));
     }
 }
