@@ -17,6 +17,7 @@
       const detailView = qs("servicenet-detail-view");
       if (listView) listView.hidden = false;
       if (detailView) detailView.hidden = true;
+      renderServiceNetList();
       serviceNetStatus("");
     }
 

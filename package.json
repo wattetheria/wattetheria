@@ -1,6 +1,6 @@
 {
   "name": "wattetheria",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "description": "Wattetheria deployment CLI",
   "license": "AGPL-3.0-only",
   "type": "commonjs",
