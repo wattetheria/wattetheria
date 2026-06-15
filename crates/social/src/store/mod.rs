@@ -495,6 +495,8 @@ impl FriendRequestRepository for SocialStore {
                         decision_reason, correlation_id, created_at, updated_at, expires_at
                  FROM friend_requests
                  WHERE local_public_id = ?1
+                   AND request_id IS NOT NULL
+                   AND trim(request_id) <> ''
                  ORDER BY updated_at DESC, request_id ASC",
             )
             .map_err(|error| {
@@ -1392,6 +1394,21 @@ mod tests {
             .expect("collect public identity table info")
     }
 
+    fn table_column_not_null(conn: &Connection, table: &str, column: &str) -> bool {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table info");
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+            })
+            .expect("query table info");
+        rows.collect::<Result<Vec<_>, _>>()
+            .expect("collect table info")
+            .into_iter()
+            .any(|(name, not_null)| name == column && not_null != 0)
+    }
+
     #[test]
     fn store_bootstraps_policy_rules_and_is_idempotent() {
         let store = SocialStore::open_in_memory().expect("open store");
@@ -1820,6 +1837,72 @@ mod tests {
             .expect("raw identity state");
         assert_eq!(stored_state, "removed");
         drop(conn);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn store_creates_friend_requests_with_required_request_id() {
+        let store = SocialStore::open_in_memory().expect("open store");
+        let conn = store.conn().expect("sqlite conn");
+        assert!(table_column_not_null(
+            &conn,
+            "friend_requests",
+            "request_id"
+        ));
+        let insert_null = conn.execute(
+            "INSERT INTO friend_requests (
+                request_id, local_public_id, remote_public_id, direction, state, created_at, updated_at
+            ) VALUES (NULL, ?1, ?2, 'outbound', 'pending', 3, 3)",
+            params!["did:key:alice", "did:key:mallory"],
+        );
+        assert!(insert_null.is_err());
+    }
+
+    #[test]
+    fn store_skips_invalid_friend_requests_when_reading_legacy_rows() {
+        let path = unique_test_db_path("legacy-invalid-friend-request");
+        {
+            let conn = Connection::open(&path).expect("open sqlite");
+            conn.execute_batch(
+                "CREATE TABLE friend_requests (
+                    request_id TEXT PRIMARY KEY,
+                    local_public_id TEXT NOT NULL,
+                    remote_public_id TEXT NOT NULL,
+                    remote_node_id TEXT,
+                    direction TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    decision_reason TEXT,
+                    correlation_id TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    expires_at INTEGER
+                );
+                INSERT INTO friend_requests (
+                    request_id, local_public_id, remote_public_id, remote_node_id, direction, state,
+                    decision_reason, correlation_id, created_at, updated_at, expires_at
+                ) VALUES
+                (NULL, 'did:key:alice', 'did:key:null', 'node-null', 'outbound', 'pending',
+                    NULL, NULL, 1, 1, NULL),
+                ('', 'did:key:alice', 'did:key:empty', 'node-empty', 'outbound', 'pending',
+                    NULL, NULL, 2, 2, NULL),
+                ('request-1', 'did:key:alice', 'did:key:bob', 'node-bob', 'outbound', 'pending',
+                    NULL, 'correlation-1', 3, 3, NULL);",
+            )
+            .expect("seed invalid legacy rows");
+        }
+
+        let store = SocialStore::open(&path).expect("open store");
+        let requests = store
+            .list_friend_requests("did:key:alice")
+            .expect("list friend requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].request_id, "request-1");
+        let due = store
+            .due_outbound_pending_friend_requests(303, 300, 10)
+            .expect("query due friend requests");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].request_id, "request-1");
 
         let _ = std::fs::remove_file(path);
     }

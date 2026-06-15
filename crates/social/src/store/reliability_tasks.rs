@@ -39,6 +39,8 @@ impl SocialStore {
                    AND friendships.state = 'active'
                  WHERE friend_requests.direction = 'outbound'
                    AND friend_requests.state = 'pending'
+                   AND friend_requests.request_id IS NOT NULL
+                   AND trim(friend_requests.request_id) <> ''
                    AND friend_requests.remote_node_id IS NOT NULL
                    AND trim(friend_requests.remote_node_id) <> ''
                    AND friendships.friendship_id IS NULL

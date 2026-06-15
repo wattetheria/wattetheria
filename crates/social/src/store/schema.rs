@@ -44,7 +44,7 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
         );
 
         CREATE TABLE IF NOT EXISTS friend_requests (
-            request_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL PRIMARY KEY,
             local_public_id TEXT NOT NULL,
             remote_public_id TEXT NOT NULL,
             remote_node_id TEXT,
