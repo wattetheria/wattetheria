@@ -1438,6 +1438,9 @@ async fn agent_friends_status_uses_social_transport_binding_for_remote_node() {
     bridge.peers = vec![SwarmPeerView {
         node_id: remote_node_id.clone(),
         connected: Some(true),
+        recently_seen: Some(true),
+        stale: Some(false),
+        last_seen_age_ms: None,
         discovery: None,
         metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
         relationship: None,
@@ -1662,6 +1665,9 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
     bridge.peers = vec![SwarmPeerView {
         node_id: "remote-node".to_string(),
         connected: Some(true),
+        recently_seen: Some(true),
+        stale: Some(false),
+        last_seen_age_ms: None,
         discovery: None,
         metadata: None,
         relationship: None,
@@ -1867,6 +1873,9 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: None,
             metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
             relationship: None,

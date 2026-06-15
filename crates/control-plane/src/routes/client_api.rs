@@ -113,7 +113,9 @@ async fn swarm_peers_with_live_connection_status(
     Ok(peers)
 }
 
-async fn live_peer_connection_status(state: &ControlPlaneState) -> BTreeMap<String, bool> {
+async fn live_peer_connection_status(
+    state: &ControlPlaneState,
+) -> BTreeMap<String, PeerConnectionHealth> {
     let query = SwarmDiagnosticsQuery {
         limit: Some(1),
         ..SwarmDiagnosticsQuery::default()
@@ -126,9 +128,17 @@ async fn live_peer_connection_status(state: &ControlPlaneState) -> BTreeMap<Stri
         .unwrap_or_default()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeerConnectionHealth {
+    connected: bool,
+    recently_seen: bool,
+    stale: bool,
+    last_seen_age_ms: Option<u64>,
+}
+
 fn peer_connection_status_from_diagnostics(
     diagnostics: &SwarmDiagnosticsSnapshot,
-) -> BTreeMap<String, bool> {
+) -> BTreeMap<String, PeerConnectionHealth> {
     diagnostics
         .snapshot
         .as_ref()
@@ -145,18 +155,35 @@ fn peer_connection_status_from_diagnostics(
                 .map(str::trim)
                 .filter(|value| !value.is_empty())?;
             let connected = entry.get("connected").and_then(Value::as_bool)?;
-            Some((peer_id.to_owned(), connected))
+            let recently_seen = entry
+                .get("recently_seen")
+                .and_then(Value::as_bool)
+                .unwrap_or(connected);
+            let stale = entry.get("stale").and_then(Value::as_bool).unwrap_or(false);
+            let last_seen_age_ms = entry.get("last_seen_age_ms").and_then(Value::as_u64);
+            Some((
+                peer_id.to_owned(),
+                PeerConnectionHealth {
+                    connected,
+                    recently_seen,
+                    stale,
+                    last_seen_age_ms,
+                },
+            ))
         })
         .collect()
 }
 
 fn apply_live_peer_connection_status(
     peers: &mut [SwarmPeerView],
-    connection_status: &BTreeMap<String, bool>,
+    connection_status: &BTreeMap<String, PeerConnectionHealth>,
 ) {
     for peer in peers {
-        if let Some(connected) = connection_status.get(&peer.node_id).copied() {
-            peer.connected = Some(connected);
+        if let Some(health) = connection_status.get(&peer.node_id).copied() {
+            peer.connected = Some(health.connected);
+            peer.recently_seen = Some(health.recently_seen);
+            peer.stale = Some(health.stale);
+            peer.last_seen_age_ms = health.last_seen_age_ms;
         }
     }
 }
@@ -164,6 +191,8 @@ fn apply_live_peer_connection_status(
 fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
     let node_id = peer.node_id;
     let connected = peer.connected.unwrap_or(true);
+    let recently_seen = peer.recently_seen.unwrap_or(connected);
+    let stale = peer.stale.unwrap_or(false);
     let source_kind = peer
         .discovery
         .as_ref()
@@ -183,25 +212,35 @@ fn build_client_peer_payload(peer: SwarmPeerView) -> Value {
         "online"
     } else if relationship_state == Some("blocked") {
         "blocked"
+    } else if stale {
+        "stale"
     } else if peer.discovery.is_some() {
         "discovered"
     } else {
         "offline"
     };
 
-    json!({
+    let mut object = json!({
         "id": node_id.clone(),
         "node_id": node_id,
         "latency_ms": 0,
         "status": status,
         "connected": connected,
+        "recently_seen": recently_seen,
+        "stale": stale,
         "source_kind": source_kind,
         "relationship_state": relationship_state,
         "endpoint": endpoint,
         "discovery": peer.discovery,
         "metadata": peer.metadata,
         "relationship": peer.relationship,
-    })
+    });
+    if let Value::Object(object) = &mut object
+        && let Some(last_seen_age_ms) = peer.last_seen_age_ms
+    {
+        object.insert("last_seen_age_ms".to_owned(), json!(last_seen_age_ms));
+    }
+    object
 }
 
 fn insert_if_some(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {
@@ -222,6 +261,8 @@ fn insert_if_some(object: &mut Map<String, Value>, key: &str, value: Option<Valu
 fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
     let node_id = peer.node_id;
     let connected = peer.connected.unwrap_or(true);
+    let recently_seen = peer.recently_seen.unwrap_or(connected);
+    let stale = peer.stale.unwrap_or(false);
     let relationship_state = peer
         .relationship
         .as_ref()
@@ -236,6 +277,8 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
         "online"
     } else if relationship_state == Some("blocked") {
         "blocked"
+    } else if stale {
+        "stale"
     } else if peer.discovery.is_some() {
         "discovered"
     } else {
@@ -246,6 +289,11 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
     object.insert("remote_node_id".to_string(), Value::String(node_id));
     object.insert("status".to_string(), Value::String(status.to_string()));
     object.insert("connected".to_string(), Value::Bool(connected));
+    object.insert("recently_seen".to_string(), Value::Bool(recently_seen));
+    object.insert("stale".to_string(), Value::Bool(stale));
+    if let Some(last_seen_age_ms) = peer.last_seen_age_ms {
+        object.insert("last_seen_age_ms".to_string(), json!(last_seen_age_ms));
+    }
     insert_if_some(
         &mut object,
         "endpoint",
@@ -1576,7 +1624,10 @@ mod tests {
                 "peer_health": [
                     {
                         "network_peer_id": "peer-a",
-                        "connected": true
+                        "connected": true,
+                        "recently_seen": true,
+                        "stale": false,
+                        "last_seen_age_ms": 12_000
                     }
                 ]
             })),
@@ -1586,6 +1637,9 @@ mod tests {
         let mut peers = vec![SwarmPeerView {
             node_id: "peer-a".to_owned(),
             connected: Some(false),
+            recently_seen: Some(false),
+            stale: Some(true),
+            last_seen_age_ms: None,
             discovery: Some(json!({
                 "source_kind": "contact_material_probe"
             })),
@@ -1598,13 +1652,19 @@ mod tests {
         let compact_payload = compact_nearby_peer_payload(peers.remove(0));
 
         assert_eq!(full_payload["connected"].as_bool(), Some(true));
+        assert_eq!(full_payload["recently_seen"].as_bool(), Some(true));
+        assert_eq!(full_payload["stale"].as_bool(), Some(false));
+        assert_eq!(full_payload["last_seen_age_ms"].as_u64(), Some(12_000));
         assert_eq!(full_payload["status"].as_str(), Some("online"));
         assert_eq!(compact_payload["connected"].as_bool(), Some(true));
+        assert_eq!(compact_payload["recently_seen"].as_bool(), Some(true));
+        assert_eq!(compact_payload["stale"].as_bool(), Some(false));
+        assert_eq!(compact_payload["last_seen_age_ms"].as_u64(), Some(12_000));
         assert_eq!(compact_payload["status"].as_str(), Some("online"));
     }
 
     #[test]
-    fn live_peer_health_demotes_stale_connected_peer_to_discovered() {
+    fn live_peer_health_reports_stale_connected_peer() {
         let diagnostics = SwarmDiagnosticsSnapshot {
             ok: true,
             generated_at: "1970-01-01T00:00:00Z".to_owned(),
@@ -1613,7 +1673,10 @@ mod tests {
                 "peer_health": [
                     {
                         "network_peer_id": "peer-a",
-                        "connected": false
+                        "connected": false,
+                        "recently_seen": false,
+                        "stale": true,
+                        "last_seen_age_ms": 181_000
                     }
                 ]
             })),
@@ -1623,6 +1686,9 @@ mod tests {
         let mut peers = vec![SwarmPeerView {
             node_id: "peer-a".to_owned(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: Some(json!({
                 "source_kind": "bootstrap"
             })),
@@ -1634,6 +1700,33 @@ mod tests {
         let payload = build_client_peer_payload(peers.remove(0));
 
         assert_eq!(payload["connected"].as_bool(), Some(false));
-        assert_eq!(payload["status"].as_str(), Some("discovered"));
+        assert_eq!(payload["recently_seen"].as_bool(), Some(false));
+        assert_eq!(payload["stale"].as_bool(), Some(true));
+        assert_eq!(payload["last_seen_age_ms"].as_u64(), Some(181_000));
+        assert_eq!(payload["status"].as_str(), Some("stale"));
+    }
+
+    #[test]
+    fn blocked_peer_status_takes_priority_over_stale() {
+        let peer = SwarmPeerView {
+            node_id: "peer-a".to_owned(),
+            connected: Some(false),
+            recently_seen: Some(false),
+            stale: Some(true),
+            last_seen_age_ms: Some(181_000),
+            discovery: Some(json!({
+                "source_kind": "bootstrap"
+            })),
+            metadata: None,
+            relationship: Some(json!({
+                "relationship_state": "blocked"
+            })),
+        };
+
+        let full_payload = build_client_peer_payload(peer.clone());
+        let compact_payload = compact_nearby_peer_payload(peer);
+
+        assert_eq!(full_payload["status"].as_str(), Some("blocked"));
+        assert_eq!(compact_payload["status"].as_str(), Some("blocked"));
     }
 }

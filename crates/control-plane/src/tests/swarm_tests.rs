@@ -101,6 +101,9 @@ async fn network_routes_surface_bridge_read_models() {
             SwarmPeerView {
                 node_id: "peer-a".to_string(),
                 connected: Some(true),
+                recently_seen: Some(true),
+                stale: Some(false),
+                last_seen_age_ms: None,
                 discovery: None,
                 metadata: None,
                 relationship: None,
@@ -108,6 +111,9 @@ async fn network_routes_surface_bridge_read_models() {
             SwarmPeerView {
                 node_id: "peer-b".to_string(),
                 connected: Some(true),
+                recently_seen: Some(true),
+                stale: Some(false),
+                last_seen_age_ms: None,
                 discovery: None,
                 metadata: None,
                 relationship: None,

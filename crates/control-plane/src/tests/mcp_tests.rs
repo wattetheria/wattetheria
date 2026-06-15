@@ -1400,6 +1400,9 @@ async fn mcp_list_nearby_returns_compact_peer_snapshot() {
         peers: vec![SwarmPeerView {
             node_id: "peer-nearby-1".to_owned(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: Some(json!({
                 "source_kind": "bootstrap"
             })),
@@ -1474,6 +1477,9 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: Some(json!({"source_kind": "bootstrap"})),
             metadata: Some(json!({
                 "endpoint_id": "iroh-endpoint-inbound",

@@ -49,6 +49,12 @@ pub struct SwarmPeerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connected: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recently_seen: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -1495,6 +1501,9 @@ fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
             SwarmPeerView {
                 node_id,
                 connected: Some(true),
+                recently_seen: Some(true),
+                stale: Some(false),
+                last_seen_age_ms: None,
                 discovery: None,
                 metadata: None,
                 relationship: None,
@@ -1512,17 +1521,32 @@ fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
             continue;
         };
         let connected = record.get("connected").and_then(Value::as_bool);
+        let recently_seen = record.get("recently_seen").and_then(Value::as_bool);
+        let stale = record.get("stale").and_then(Value::as_bool);
+        let last_seen_age_ms = record.get("last_seen_age_ms").and_then(Value::as_u64);
         let peer = peers
             .entry(node_id.clone())
             .or_insert_with(|| SwarmPeerView {
                 node_id,
                 connected,
+                recently_seen,
+                stale,
+                last_seen_age_ms,
                 discovery: None,
                 metadata: None,
                 relationship: None,
             });
         if peer.connected.is_none() {
             peer.connected = connected;
+        }
+        if peer.recently_seen.is_none() {
+            peer.recently_seen = recently_seen;
+        }
+        if peer.stale.is_none() {
+            peer.stale = stale;
+        }
+        if peer.last_seen_age_ms.is_none() {
+            peer.last_seen_age_ms = last_seen_age_ms;
         }
         peer.discovery = record
             .get("discovery")
@@ -1633,27 +1657,42 @@ mod tests {
     fn wattswarm_peer_views_preserve_local_peer_records() {
         let peers = wattswarm_peer_views(PeersListResponse {
             peers: vec!["peer-a".to_owned()],
-            records: vec![json!({
-                "node_id": "peer-a",
-                "connected": true,
-                "discovery": {
-                    "endpoint_id": "iroh-endpoint-a",
-                    "source_kind": "bootstrap"
-                },
-                "metadata": {
-                    "endpoint_id": "iroh-endpoint-a",
-                    "handshake_status": "identified"
-                },
-                "relationship": {
-                    "relationship_state": "friend",
-                    "last_action": "accept"
-                }
-            })],
+            records: vec![
+                json!({
+                    "node_id": "peer-a",
+                    "connected": true,
+                    "recently_seen": true,
+                    "stale": false,
+                    "last_seen_age_ms": 100,
+                    "discovery": {
+                        "endpoint_id": "iroh-endpoint-a",
+                        "source_kind": "bootstrap"
+                    },
+                    "metadata": {
+                        "endpoint_id": "iroh-endpoint-a",
+                        "handshake_status": "identified"
+                    },
+                    "relationship": {
+                        "relationship_state": "friend",
+                        "last_action": "accept"
+                    }
+                }),
+                json!({
+                    "node_id": "peer-b",
+                    "connected": false,
+                    "recently_seen": false,
+                    "stale": true,
+                    "last_seen_age_ms": 181_000
+                }),
+            ],
         });
 
-        assert_eq!(peers.len(), 1);
+        assert_eq!(peers.len(), 2);
         assert_eq!(peers[0].node_id, "peer-a");
         assert_eq!(peers[0].connected, Some(true));
+        assert_eq!(peers[0].recently_seen, Some(true));
+        assert_eq!(peers[0].stale, Some(false));
+        assert_eq!(peers[0].last_seen_age_ms, Some(100));
         assert_eq!(
             peers[0]
                 .discovery
@@ -1670,5 +1709,10 @@ mod tests {
                 .and_then(Value::as_str),
             Some("friend")
         );
+        assert_eq!(peers[1].node_id, "peer-b");
+        assert_eq!(peers[1].connected, Some(false));
+        assert_eq!(peers[1].recently_seen, Some(false));
+        assert_eq!(peers[1].stale, Some(true));
+        assert_eq!(peers[1].last_seen_age_ms, Some(181_000));
     }
 }

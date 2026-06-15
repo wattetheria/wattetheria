@@ -86,6 +86,9 @@ async fn client_api_routes_align_with_client_dtos() {
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: Some(json!({
                 "endpoint_id": "iroh-endpoint-a",
                 "source_kind": "bootstrap"
@@ -873,6 +876,9 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
             connected: Some(false),
+            recently_seen: Some(false),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: Some(json!({"source_kind": "known"})),
             metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
             relationship: None,
@@ -1051,6 +1057,9 @@ async fn client_export_excludes_local_friends_and_dm() {
         peers: vec![SwarmPeerView {
             node_id: remote_node_id.clone(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: None,
             metadata: None,
             relationship: None,
@@ -1328,6 +1337,9 @@ async fn client_export_is_public_and_signed() {
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: None,
             metadata: None,
             relationship: None,
@@ -1731,6 +1743,9 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
         peers: vec![SwarmPeerView {
             node_id: "peer-a".to_string(),
             connected: Some(true),
+            recently_seen: Some(true),
+            stale: Some(false),
+            last_seen_age_ms: None,
             discovery: None,
             metadata: None,
             relationship: None,

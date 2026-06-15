@@ -329,7 +329,7 @@ where
                         decision_reason: None,
                         correlation_id: view.correlation_id.clone(),
                         created_at: requested_at,
-                        updated_at: view.updated_at,
+                        updated_at,
                         expires_at: None,
                     },
                 ))?;
@@ -456,6 +456,12 @@ where
                             friendship.remote_public_id == view.counterpart.counterpart_public_id
                                 && friendship.state == FriendshipState::Active
                         });
+                if existing_friendship
+                    .as_ref()
+                    .is_some_and(|friendship| friendship.created_at > updated_at)
+                {
+                    continue;
+                }
                 let existing_thread = thread_service::find_thread(
                     repository,
                     local_public_id,
@@ -1272,6 +1278,15 @@ mod tests {
     }
 
     fn seed_friendship(store: &SocialStore, state: FriendshipState) {
+        seed_friendship_with_times(store, state, 1, 1);
+    }
+
+    fn seed_friendship_with_times(
+        store: &SocialStore,
+        state: FriendshipState,
+        created_at: i64,
+        updated_at: i64,
+    ) {
         friendship_service::upsert_friendship(
             store,
             &Friendship {
@@ -1282,8 +1297,8 @@ mod tests {
                 state,
                 established_from_request_id: Some("req-1".to_string()),
                 thread_id: Some("dm:alice:bob".to_string()),
-                created_at: 1,
-                updated_at: 1,
+                created_at,
+                updated_at,
             },
         )
         .expect("seed friendship");
@@ -1476,6 +1491,34 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_relationship_request_clamps_out_of_order_update_time() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                counterpart: counterpart(30),
+                relationship_state: "requested".to_string(),
+                last_action: Some("request".to_string()),
+                initiated_by: "remote".to_string(),
+                request_id: Some("req-1".to_string()),
+                correlation_id: Some("corr-1".to_string()),
+                requested_at: Some(30),
+                responded_at: None,
+                updated_at: 20,
+            }],
+        )
+        .expect("reconcile requested relationship");
+
+        let requests = friend_request_service::list_friend_requests(&store, "did:key:alice")
+            .expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].state, FriendRequestState::Pending);
+        assert_eq!(requests[0].created_at, 30);
+        assert_eq!(requests[0].updated_at, 30);
+    }
+
+    #[test]
     fn reconcile_relationship_remove_marks_friendship_removed_and_thread_closed() {
         let store = SocialStore::open_in_memory().expect("social store");
         seed_friendship(&store, FriendshipState::Active);
@@ -1527,6 +1570,54 @@ mod tests {
         assert_eq!(identities.len(), 1);
         assert!(!identities[0].active);
         assert_eq!(identities[0].updated_at, 40);
+    }
+
+    #[test]
+    fn reconcile_relationship_remove_ignores_stale_remove_before_active_friendship() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        seed_friendship_with_times(&store, FriendshipState::Active, 100, 110);
+        thread_service::upsert_thread(
+            &store,
+            &DirectThread {
+                thread_id: "dm:alice:bob".to_string(),
+                local_public_id: "did:key:alice".to_string(),
+                remote_public_id: "did:key:bob".to_string(),
+                transport_thread_id: "transport:alice:bob".to_string(),
+                state: ThreadState::Ready,
+                last_message_at: Some(110),
+                created_at: 100,
+                updated_at: 110,
+            },
+        )
+        .expect("seed thread");
+
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                counterpart: counterpart(90),
+                relationship_state: "none".to_string(),
+                last_action: Some("remove".to_string()),
+                initiated_by: "remote".to_string(),
+                request_id: Some("req-1".to_string()),
+                correlation_id: Some("corr-1".to_string()),
+                requested_at: Some(10),
+                responded_at: Some(90),
+                updated_at: 120,
+            }],
+        )
+        .expect("ignore stale remove");
+
+        let friendships =
+            friendship_service::list_friendships(&store, "did:key:alice").expect("friendships");
+        let threads = thread_service::list_threads(&store, "did:key:alice").expect("threads");
+        assert_eq!(friendships.len(), 1);
+        assert_eq!(friendships[0].state, FriendshipState::Active);
+        assert_eq!(friendships[0].created_at, 100);
+        assert_eq!(friendships[0].updated_at, 110);
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].state, ThreadState::Ready);
+        assert_eq!(threads[0].updated_at, 110);
     }
 
     #[test]
