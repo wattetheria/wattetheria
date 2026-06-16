@@ -959,6 +959,165 @@ async fn agent_events_route_translates_openai_compatible_reply_into_structured_d
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_events_auto_commit_friend_request_accepts_relationship() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"accept\",\"reason\":\"trusted peer\",\"payload\":{\"message\":{\"request_id\":\"req-auto-accept\",\"correlation_id\":\"corr-auto-accept\",\"text\":\"happy to connect\"}}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, router, token, _policy_engine, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    let base_url = format!("http://{addr}/v1");
+    let local_public_id =
+        bootstrap_broker_identity(router.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-remote", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Remote".to_owned(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .expect("upsert remote identity");
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_owned(),
+            Some("remote-node".to_owned()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "req-auto-accept".to_owned(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            remote_node_id: Some("remote-node".to_owned()),
+            direction: wattetheria_social::domain::friend_requests::FriendRequestDirection::Inbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: Some("corr-auto-accept".to_owned()),
+            created_at: 1,
+            updated_at: 1,
+            expires_at: None,
+        },
+    )
+    .expect("save inbound friend request");
+    let agent_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "remote-node",
+        Some(&identity.agent_did),
+        "social.relationship.request",
+        json!({
+            "source_public_id": remote_public_id,
+            "target_public_id": local_public_id,
+            "request_id": "req-auto-accept",
+            "correlation_id": "corr-auto-accept"
+        }),
+    );
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-friend-auto-accept",
+                        "event_type": "friend_request",
+                        "source_kind": "peer_relationship",
+                        "source_node_id": "remote-node",
+                        "target_agent_id": identity.agent_did,
+                        "target_executor": "core-agent",
+                        "agent_envelope": agent_envelope,
+                        "payload": {},
+                        "requires_commit": true,
+                        "allowed_actions": ["accept", "reject", "block"],
+                        "correlation_id": "corr-auto-accept",
+                        "dedupe_key": "friend:req-auto-accept",
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(response["decision"]["action"].as_str(), Some("accept"));
+    assert_eq!(
+        response["decision"]["route"].as_str(),
+        Some("wattetheria_commit")
+    );
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    assert_eq!(
+        commands[0].action,
+        wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Accept
+    );
+    drop(commands);
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("list friendships");
+    assert_eq!(friendships.len(), 1);
+    assert_eq!(friendships[0].remote_public_id, remote_public_id);
+    assert_eq!(
+        friendships[0].state,
+        wattetheria_social::domain::friendships::FriendshipState::Active
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -23,7 +24,9 @@ use wattetheria_social::domain::friendships::FriendshipState;
 pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
 
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
-use crate::state::ControlPlaneState;
+use crate::state::{
+    AgentActionCommitBody, AgentActionCommitEvent, AgentActionDecision, ControlPlaneState,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct AgentEventCallbackRequest {
@@ -137,9 +140,6 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
                 | "request_retry"
                 | "human_review"
         ),
-        "task_completion_decision_received" | "task_settled_received" => {
-            matches!(action, "ignore" | "human_review")
-        }
         "topic_message_requires_reply" => {
             matches!(action, "reply" | "complete_mission" | "settle_mission")
         }
@@ -1615,7 +1615,45 @@ fn disallowed_action_response(
     Json(response).into_response()
 }
 
-fn selected_action_response(
+async fn commit_wattetheria_decision(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    decision: &AgentDecisionEnvelope,
+) -> axum::http::StatusCode {
+    let mut headers = HeaderMap::new();
+    let auth_value = format!("Bearer {}", state.auth_token);
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        HeaderValue::from_str(&auth_value).expect("valid bearer token header"),
+    );
+    let response = Box::pin(crate::routes::core::agent_action_commit(
+        State(state.clone()),
+        headers,
+        Json(AgentActionCommitBody {
+            event: AgentActionCommitEvent {
+                event_id: event.event_id.clone(),
+                event_type: event.event_type.clone(),
+                source_kind: event.source_kind.clone(),
+                source_node_id: event.source_node_id.clone(),
+                target_agent_id: event.target_agent_id.clone(),
+                agent_envelope: event.agent_envelope.clone(),
+                payload: event.payload.clone(),
+                requires_commit: event.requires_commit,
+            },
+            decision: AgentActionDecision {
+                decision_id: decision.decision_id.clone(),
+                action: decision.action.clone(),
+                route: decision.route.clone(),
+                reason: decision.reason.clone(),
+                payload: decision.payload.clone(),
+            },
+        }),
+    ))
+    .await;
+    response.status()
+}
+
+async fn selected_action_response(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
     action: &str,
@@ -1645,6 +1683,36 @@ fn selected_action_response(
         reason: resolution.reason.clone(),
         payload: resolution.payload.clone(),
     };
+    let commit_status = if route == "wattetheria_commit" {
+        Some(commit_wattetheria_decision(state, event, &decision).await)
+    } else {
+        None
+    };
+    if let Some(status) = commit_status {
+        record_agent_event_diagnostic(
+            state,
+            event,
+            if status.is_success() { "info" } else { "error" },
+            "decision.commit",
+            if status.is_success() { "ok" } else { "error" },
+            format!(
+                "agent event decision commit {}: {} -> {}",
+                if status.is_success() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                event.event_type,
+                action
+            ),
+            &json!({
+                "decision_id": &decision.decision_id,
+                "action": action,
+                "route": route,
+                "status_code": status.as_u16(),
+            }),
+        );
+    }
     let detail = format!("selected {action} for {}", event.event_type);
     let response = AgentEventCallbackResponse {
         ok: true,
@@ -1656,7 +1724,7 @@ fn selected_action_response(
     Json(response).into_response()
 }
 
-fn response_from_resolution(
+async fn response_from_resolution(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
     verified_context: Option<&VerifiedAgentContext>,
@@ -1687,7 +1755,7 @@ fn response_from_resolution(
     {
         return disallowed_action_response(state, event, &action, &resolution, acked_at);
     }
-    selected_action_response(state, event, &action, route, &resolution, acked_at)
+    selected_action_response(state, event, &action, route, &resolution, acked_at).await
 }
 
 async fn process_agent_event_decision(
@@ -1753,6 +1821,7 @@ async fn process_agent_event_decision(
         decision.resolution,
         acked_at,
     )
+    .await
 }
 
 pub(crate) async fn replay_deferred_dm_agent_events_for_friendship(

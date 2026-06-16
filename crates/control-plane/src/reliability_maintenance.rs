@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use tokio::time::{Duration, interval};
 use tracing::{debug, warn};
 use wattetheria_kernel::swarm_bridge::{
-    SwarmAgentEnvelope, SwarmPeerRelationshipView, SwarmRelationshipAction,
+    SwarmAgentEnvelope, SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipAction,
     SwarmRelationshipActionCommand,
 };
 use wattetheria_social::domain::friend_requests::FriendRequest;
@@ -68,10 +68,10 @@ pub async fn run_reliability_maintenance_tick_once(
         .cloned()
         .collect::<Vec<_>>();
     let peers = state.swarm_bridge.peers().await.unwrap_or_default();
-    let connected_nodes = peers
-        .into_iter()
-        .filter(|peer| peer.connected.unwrap_or(false))
-        .map(|peer| peer.node_id)
+    let reachable_nodes = peers
+        .iter()
+        .filter(|peer| peer_is_reachable(peer))
+        .map(|peer| peer.node_id.clone())
         .collect::<BTreeSet<_>>();
 
     let local = resolve_social_local_context(state, None).await;
@@ -87,7 +87,7 @@ pub async fn run_reliability_maintenance_tick_once(
         maintain_outbound_friend_request(
             state,
             &pending_relationship_views,
-            &connected_nodes,
+            &reachable_nodes,
             &request,
             now,
         )
@@ -101,7 +101,7 @@ pub async fn run_reliability_maintenance_tick_once(
 async fn maintain_outbound_friend_request(
     state: &ControlPlaneState,
     relationship_views: &[SwarmPeerRelationshipView],
-    connected_nodes: &BTreeSet<String>,
+    reachable_nodes: &BTreeSet<String>,
     request: &FriendRequest,
     now: i64,
 ) -> anyhow::Result<()> {
@@ -111,7 +111,7 @@ async fn maintain_outbound_friend_request(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .context("pending friend request missing remote_node_id")?;
-    if !connected_nodes.contains(remote_node_id) {
+    if !reachable_nodes.contains(remote_node_id) {
         state
             .social_store
             .defer_reliability_task(
@@ -119,7 +119,7 @@ async fn maintain_outbound_friend_request(
                 &request.request_id,
                 now,
                 now + FRIEND_REQUEST_MIN_RETRY_DELAY_SEC,
-                Some("remote peer is not connected"),
+                Some("remote peer is not reachable"),
             )
             .map_err(anyhow::Error::msg)?;
         return Ok(());
@@ -172,6 +172,18 @@ fn retry_delay_after_attempt(attempt_count: i64) -> i64 {
         .get(index)
         .copied()
         .unwrap_or(*FRIEND_REQUEST_RETRY_DELAY_SEC.last().unwrap_or(&3600))
+}
+
+/// A peer is reachable for an outbound retry when it is either a live-connected
+/// swarm peer or was recently seen, and is not marked stale. This matches the
+/// "online"/"discovered" signals the Nearby view shows, so the retry no longer
+/// waits for a strict `connected == true` that an intermittent peer rarely
+/// reports at the exact tick moment.
+fn peer_is_reachable(peer: &SwarmPeerView) -> bool {
+    if peer.stale == Some(true) {
+        return false;
+    }
+    peer.connected == Some(true) || peer.recently_seen == Some(true)
 }
 
 async fn build_retry_friend_request_envelope(

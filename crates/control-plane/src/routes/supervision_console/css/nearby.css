@@ -126,18 +126,16 @@
       color: var(--accent-contrast);
     }
 
-    .nearby-table-wrap {
-      max-width: 80rem;
-    }
-
     .nearby-table {
       table-layout: fixed;
+      width: 100%;
     }
 
-    .nearby-table th:nth-child(1) { width: 8rem; }
-    .nearby-table th:nth-child(2) { width: 24rem; }
-    .nearby-table th:nth-child(3) { width: 7rem; }
-    .nearby-table th:nth-child(4) { width: 9rem; }
+    .nearby-table th:nth-child(1) { width: 9%; }
+    .nearby-table th:nth-child(2) { width: 33%; }
+    .nearby-table th:nth-child(3) { width: 9%; }
+    .nearby-table th:nth-child(4) { width: 13%; }
+    .nearby-table th:nth-child(5) { width: 36%; }
 
     .nearby-table td {
       vertical-align: middle;

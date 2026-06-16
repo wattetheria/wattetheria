@@ -1760,6 +1760,93 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
 }
 
 #[tokio::test]
+async fn reliability_maintenance_retries_recently_seen_but_unconnected_outbound_friend_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let mut bridge = MockSwarmBridge::default_for(identity.agent_did.clone());
+    // Recently seen but not a strict live peer: reachable for retry after loosening.
+    bridge.peers = vec![SwarmPeerView {
+        node_id: "remote-node".to_string(),
+        connected: Some(false),
+        recently_seen: Some(true),
+        stale: Some(false),
+        last_seen_age_ms: None,
+        discovery: None,
+        metadata: None,
+        relationship: None,
+    }];
+    bridge.relationship_views = Mutex::new(vec![unrelated_friend_request_relationship_view(
+        &identity,
+        &remote_identity,
+    )]);
+    let bridge = Arc::new(bridge);
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app, &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Borealis".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("remote-node".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "request-recently-seen-pending".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id,
+            remote_node_id: Some("remote-node".to_string()),
+            direction:
+                wattetheria_social::domain::friend_requests::FriendRequestDirection::Outbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: Some("correlation-1".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            expires_at: None,
+        },
+    )
+    .unwrap();
+
+    let processed = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run reliability maintenance");
+
+    assert_eq!(processed, 1);
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].remote_node_id, "remote-node");
+    drop(commands);
+    let task = state
+        .social_store
+        .get_reliability_task("friend_request", "request-recently-seen-pending")
+        .expect("get delivery task")
+        .expect("delivery task");
+    assert_eq!(task.attempt_count, 1);
+}
+
+#[tokio::test]
 async fn agent_dm_is_denied_when_counterpart_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
