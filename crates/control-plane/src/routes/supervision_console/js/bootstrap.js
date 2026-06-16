@@ -33,6 +33,16 @@
         if (lastConsolePayload) renderMissions(lastConsolePayload);
       });
     });
+    qs("nearby-search")?.addEventListener("input", (event) => {
+      nearbySearchQuery = event.target.value;
+      renderNearbyPage();
+    });
+    document.querySelectorAll("[data-nearby-status]").forEach((button) => {
+      button.addEventListener("click", () => {
+        nearbyStatusFilter = button.dataset.nearbyStatus || "all";
+        renderNearbyPage();
+      });
+    });
     document.querySelectorAll("[data-log-mode]").forEach((button) => {
       button.addEventListener("click", () => {
         activeLogMode = button.dataset.logMode || "all";

@@ -166,7 +166,7 @@ async fn topic_activity_or_empty(
     topic: &HiveProfile,
 ) -> Option<SwarmTopicActivitySnapshot> {
     if let Some(snapshot) = load_cached_topic_activity(
-        &state.local_db,
+        state,
         topic.network_id.as_deref(),
         &topic.feed_key,
         &topic.scope_hint,
@@ -681,7 +681,7 @@ async fn load_task_run_projection_snapshot(
     state: &ControlPlaneState,
     limit: usize,
 ) -> anyhow::Result<SwarmTaskRunProjectionSnapshot> {
-    if let Some(snapshot) = load_cached_task_run_projection(&state.local_db).await {
+    if let Some(snapshot) = load_cached_task_run_projection(state).await {
         Ok(snapshot)
     } else {
         state.swarm_bridge.task_run_projection(limit, limit).await
@@ -733,7 +733,7 @@ pub(crate) async fn client_topic_messages(
     let cached_snapshot = if query.before_created_at.is_none() && query.before_message_id.is_none()
     {
         load_cached_topic_activity(
-            &state.local_db,
+            &state,
             query.network_id.as_deref(),
             &query.feed_key,
             &query.scope_hint,

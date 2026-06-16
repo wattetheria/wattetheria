@@ -64,6 +64,8 @@
         if (sourceLabel) metaLines.push(sourceLabel);
         rows.push({
           key,
+          node_id: nodeId,
+          raw: node,
           kind: "node",
           name: node.display_name || node.name || nodeId,
           status: node.status || relationshipState || (connected ? "online" : (stale ? "stale" : "discovered")),
@@ -114,13 +116,168 @@
       qs(listId).innerHTML = rows.length ? nearbyRowsHtml(rows) : empty(emptyText);
     }
 
+    function nearbyAgeShort(ageMs) {
+      const value = Number(ageMs);
+      if (!Number.isFinite(value) || value < 0) return "-";
+      if (value < 1000) return "now";
+      const seconds = Math.round(value / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return `${hours}h`;
+      return `${Math.round(hours / 24)}d`;
+    }
+
+    function nearbyStatusGroup(row) {
+      const status = nearbyStatus(row);
+      if (status === "online") return "online";
+      if (status === "pending") return "pending";
+      if (status === "stale") return "stale";
+      if (status === "blocked") return "blocked";
+      return "offline";
+    }
+
+    function nearbyStatusCounts(rows) {
+      const counts = { all: rows.length, online: 0, pending: 0, stale: 0, offline: 0, blocked: 0 };
+      for (const row of rows) counts[nearbyStatusGroup(row)] += 1;
+      return counts;
+    }
+
+    function nearbyFilteredRows(rows) {
+      const query = nearbySearchQuery.trim().toLowerCase();
+      return rows.filter((row) => {
+        if (nearbyStatusFilter !== "all" && nearbyStatusGroup(row) !== nearbyStatusFilter) return false;
+        if (!query) return true;
+        return `${row.node_id || ""} ${row.name || ""}`.toLowerCase().includes(query);
+      });
+    }
+
+    function nearbyTableRowsHtml(rows) {
+      return rows.map((row) => {
+        const status = nearbyStatus(row);
+        const fullId = row.node_id || row.name || "";
+        return `
+          <tr class="nearby-row" data-nearby-node="${escapeHtml(fullId)}" tabindex="0" role="button" title="View agent card">
+            <td>${pill(status, status)}</td>
+            <td class="nearby-cell-id" title="${escapeHtml(fullId)}">${escapeHtml(compactId(fullId, 22))}</td>
+            <td class="nearby-cell-kind">${escapeHtml(row.kind || "node")}</td>
+            <td class="nearby-cell-age">${escapeHtml(nearbyAgeShort(row.last_seen_age_ms))}</td>
+            <td class="nearby-cell-source">${escapeHtml(valueOrDash(row.source_kind))}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function nearbyDetailCardHtml(row) {
+      const node = row.raw || {};
+      const displayName = row.name || row.node_id || "agent";
+      const status = nearbyStatus(row);
+      const fullId = row.node_id || "";
+      const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
+      const publicKey = node.public_key || at(node, ["metadata", "public_key"]);
+      const lastSeen = nearbyLastSeenLabel(row.last_seen_age_ms) || "-";
+      const updatedAt = row.updated_at ? formatTime(row.updated_at) : "-";
+      const connection = row.connected ? "connected" : (row.stale ? "stale" : "not connected");
+      return renderAgentDetailCard({
+        avatarSeed: displayName,
+        title: compactId(displayName, 28),
+        statusLabel: status,
+        statusClass: status,
+        subtitle: compactId(fullId, 48),
+        meta: [connection, lastSeen, row.source_kind],
+        sections: [
+          { title: "Identity", fields: [
+            { label: "Node", value: compactId(fullId, 52) },
+            { label: "Endpoint", value: compactId(endpoint, 52) },
+            { label: "Public Key", value: compactId(publicKey, 52) },
+          ] },
+          { title: "Network", fields: [
+            { label: "Connection", value: connection },
+            { label: "Last Seen", value: lastSeen },
+            { label: "Source", value: row.source_kind },
+            { label: "Relationship", value: row.relationship_state },
+            { label: "Updated", value: updatedAt },
+          ] },
+        ],
+        modalAttr: "data-nearby-detail-modal",
+        closeAttr: "data-nearby-detail-close",
+      });
+    }
+
+    function bindNearbyTableEvents(target) {
+      target.querySelectorAll("[data-nearby-node]").forEach((rowEl) => {
+        const open = () => {
+          nearbyDetailId = rowEl.dataset.nearbyNode || "";
+          renderNearbyPage();
+        };
+        rowEl.addEventListener("click", open);
+        rowEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            open();
+          }
+        });
+      });
+      const closeDetail = () => {
+        nearbyDetailId = "";
+        renderNearbyPage();
+      };
+      target.querySelector("[data-nearby-detail-close]")?.addEventListener("click", closeDetail);
+      target.querySelector("[data-nearby-detail-modal]")?.addEventListener("click", (event) => {
+        if (event.target === event.currentTarget) closeDetail();
+      });
+    }
+
+    function renderNearbyPage() {
+      const rows = nearbyAllRows;
+      const counts = nearbyStatusCounts(rows);
+      document.querySelectorAll("[data-nearby-count]").forEach((el) => {
+        el.textContent = String(counts[el.dataset.nearbyCount] ?? 0);
+      });
+      document.querySelectorAll("[data-nearby-status]").forEach((button) => {
+        const active = (button.dataset.nearbyStatus || "all") === nearbyStatusFilter;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", active ? "true" : "false");
+      });
+
+      const filtered = nearbyFilteredRows(rows);
+      const countLabel = qs("nearby-count");
+      if (countLabel) {
+        const narrowed = nearbySearchQuery.trim() || nearbyStatusFilter !== "all";
+        countLabel.textContent = narrowed
+          ? `${filtered.length} shown / ${rows.length} total`
+          : `${rows.length} total`;
+      }
+
+      if (nearbyDetailId && !rows.some((row) => (row.node_id || "") === nearbyDetailId)) {
+        nearbyDetailId = "";
+      }
+      const detailRow = nearbyDetailId
+        ? rows.find((row) => (row.node_id || "") === nearbyDetailId)
+        : null;
+
+      const target = qs("nearby-table");
+      if (!target) return;
+      const emptyText = rows.length ? "No agents match this filter." : "No nearby agents.";
+      const tableHtml = filtered.length
+        ? `<table class="nearby-table">
+            <thead><tr><th>Status</th><th>Agent</th><th>Kind</th><th>Last seen</th><th>Source</th></tr></thead>
+            <tbody>${nearbyTableRowsHtml(filtered)}</tbody>
+          </table>`
+        : empty(emptyText);
+      target.innerHTML = tableHtml + (detailRow ? nearbyDetailCardHtml(detailRow) : "");
+      bindNearbyTableEvents(target);
+    }
+
     function renderNearby(payload) {
-      const rows = buildNearbyRows(payload);
-      renderNearbyList("nearby-count", "nearby-list", rows, "No nearby agents.");
+      nearbyAllRows = buildNearbyRows(payload);
 
       const overviewNearby = qs("overview-nearby");
-      overviewNearby.hidden = rows.length === 0;
-      if (rows.length) {
-        renderNearbyList("overview-nearby-count", "overview-nearby-list", rows, "No nearby agents.");
+      overviewNearby.hidden = nearbyAllRows.length === 0;
+      if (nearbyAllRows.length) {
+        renderNearbyList("overview-nearby-count", "overview-nearby-list", nearbyAllRows, "No nearby agents.");
       }
+
+      renderNearbyPage();
     }

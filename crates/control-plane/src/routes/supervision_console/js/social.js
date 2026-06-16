@@ -156,38 +156,28 @@
       const relationshipLabel = row.state || row.direction || "pending";
       const skills = dmSkillLabels(agent.skills || row.counterpart_skills || card.skills);
       const description = friendRequestDescription(row);
-      return `
-        <div class="dm-detail-card">
-          <div class="dm-detail-hero">
-            <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(displayName))}</div>
-            <div class="dm-detail-title-block">
-              <div class="dm-detail-title-row">
-                <h3>${escapeHtml(displayName)}</h3>
-                ${pill(row.direction || "inbound", row.state || "pending")}
-              </div>
-              <p>${escapeHtml(compactId(publicId, 42))}</p>
-              <div class="dm-detail-meta">
-                <span>${escapeHtml(valueOrDash(status))}</span>
-                <span>${escapeHtml(valueOrDash(networkLabel))}</span>
-              </div>
-              ${description ? `<p class="dm-detail-description">${escapeHtml(description)}</p>` : ""}
-            </div>
-            <button type="button" class="secondary dm-detail-close" data-friend-request-detail-close>Close</button>
-          </div>
-          <div class="dm-detail-grid">
-            <section class="dm-detail-section">
-              <h4>Public Identity</h4>
-              ${dmDetailField("Public", compactId(publicId, 52))}
-              ${dmDetailField("Agent", compactId(agentDid, 52))}
-              ${dmDetailField("Node", compactId(remoteNodeId, 52))}
-            </section>
-            <section class="dm-detail-section">
-              <h4>Network</h4>
-              ${dmDetailField("Status", status)}
-              ${dmDetailField("Network", networkLabel)}
-              ${dmDetailField("Relationship", relationshipLabel)}
-            </section>
-          </div>
+      return renderAgentDetailCard({
+        cardClass: "",
+        avatarSeed: displayName,
+        title: displayName,
+        statusLabel: row.direction || "inbound",
+        statusClass: row.state || "pending",
+        subtitle: compactId(publicId, 42),
+        meta: [valueOrDash(status), valueOrDash(networkLabel)],
+        description: description,
+        sections: [
+          { title: "Public Identity", fields: [
+            { label: "Public", value: compactId(publicId, 52) },
+            { label: "Agent", value: compactId(agentDid, 52) },
+            { label: "Node", value: compactId(remoteNodeId, 52) },
+          ] },
+          { title: "Network", fields: [
+            { label: "Status", value: status },
+            { label: "Network", value: networkLabel },
+            { label: "Relationship", value: relationshipLabel },
+          ] },
+        ],
+        extra: `
           <section class="dm-detail-section dm-detail-skills">
             <h4>Skills</h4>
             <div class="dm-detail-skill-list">
@@ -200,9 +190,10 @@
             <h4>Request</h4>
             ${dmDetailField("Message", friendRequestMessageText(row))}
             ${dmDetailField("Sent", formatTime(friendRequestSentAt(row)))}
-          </section>
-        </div>
-      `;
+          </section>`,
+        modalAttr: "data-friend-request-detail-modal",
+        closeAttr: "data-friend-request-detail-close",
+      });
     }
 
     function renderFriendRequests(payload) {
@@ -224,7 +215,7 @@
       const target = qs("friend-requests-list");
       const detail = rows.find((row) => row.request_id === friendRequestDetailId);
       if (detail) {
-        target.insertAdjacentHTML("beforeend", `<div class="dm-detail-modal" data-friend-request-detail-modal>${renderFriendRequestDetail(detail)}</div>`);
+        target.insertAdjacentHTML("beforeend", renderFriendRequestDetail(detail));
       }
       target.querySelectorAll("[data-friend-request-detail]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -466,38 +457,27 @@
       const relationshipClass = detail.status || detail.relationship_state || detail.relationship_kind;
       const skills = dmSkillLabels(detail.counterpart_skills);
       const description = String(detail.counterpart_description || "").trim();
-      const detailCard = `
-        <div class="dm-detail-card dm-agent-detail-card">
-          <div class="dm-detail-hero">
-            <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(displayName))}</div>
-            <div class="dm-detail-title-block">
-              <div class="dm-detail-title-row">
-                <h3>${escapeHtml(displayName)}</h3>
-                ${pill(relationshipLabel, relationshipClass)}
-              </div>
-              <p>${escapeHtml(compactId(publicId, 42))}</p>
-              <div class="dm-detail-meta">
-                <span>${escapeHtml(valueOrDash(status))}</span>
-                <span>${escapeHtml(valueOrDash(network))}</span>
-              </div>
-              ${description ? `<p class="dm-detail-description">${escapeHtml(description)}</p>` : ""}
-            </div>
-            <button type="button" class="secondary dm-detail-close" data-dm-detail-close>Close</button>
-          </div>
-          <div class="dm-detail-grid">
-            <section class="dm-detail-section">
-              <h4>Public Identity</h4>
-              ${dmDetailField("Public", compactId(publicId, 52))}
-              ${dmDetailField("Agent", compactId(agentDid, 52))}
-              ${dmDetailField("Node", compactId(remoteNodeId, 52))}
-            </section>
-            <section class="dm-detail-section">
-              <h4>Network</h4>
-              ${dmDetailField("Status", status)}
-              ${dmDetailField("Network", network)}
-              ${dmDetailField("Relationship", relationshipLabel)}
-            </section>
-          </div>
+      const detailCard = renderAgentDetailCard({
+        avatarSeed: displayName,
+        title: displayName,
+        statusLabel: relationshipLabel,
+        statusClass: relationshipClass,
+        subtitle: compactId(publicId, 42),
+        meta: [valueOrDash(status), valueOrDash(network)],
+        description: description,
+        sections: [
+          { title: "Public Identity", fields: [
+            { label: "Public", value: compactId(publicId, 52) },
+            { label: "Agent", value: compactId(agentDid, 52) },
+            { label: "Node", value: compactId(remoteNodeId, 52) },
+          ] },
+          { title: "Network", fields: [
+            { label: "Status", value: status },
+            { label: "Network", value: network },
+            { label: "Relationship", value: relationshipLabel },
+          ] },
+        ],
+        extra: `
           <section class="dm-detail-section dm-detail-skills">
             <h4>Skills</h4>
             <div class="dm-detail-skill-list">
@@ -505,9 +485,10 @@
                 ? skills.map((skill) => `<span>${escapeHtml(skill)}</span>`).join("")
                 : "<span>-</span>"}
             </div>
-          </section>
-        </div>
-      `;
+          </section>`,
+        modalAttr: "data-dm-detail-modal",
+        closeAttr: "data-dm-detail-close",
+      });
       return `
         <div class="dm-thread-head-shell">
           <button type="button" class="dm-thread-head" data-dm-detail-toggle title="View agent card">
@@ -521,7 +502,7 @@
             ${pill(status, status)}
             ${AGENT_CARD_HINT}
           </button>
-          ${dmDetailOpen ? `<div class="dm-detail-modal" data-dm-detail-modal>${detailCard}</div>` : ""}
+          ${dmDetailOpen ? detailCard : ""}
         </div>
         <div class="dm-thread-context">[ thread context: ${escapeHtml(compactId(conversation.threadId, 34))} ]</div>
         <div class="dm-bubble-list">

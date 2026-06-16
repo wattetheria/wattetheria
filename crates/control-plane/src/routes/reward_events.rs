@@ -9,7 +9,9 @@ use wattetheria_kernel::economy::{
 use wattetheria_kernel::local_db;
 
 use crate::routes::identity::IdentityContextView;
-use crate::routes::reward_view::refresh_known_wallet_balances;
+use crate::routes::reward_view::{
+    load_wallet_balance_state_or_default, refresh_known_wallet_balances,
+};
 use crate::state::{ControlPlaneState, StreamEvent};
 
 pub(crate) struct ContributionEventArgs<'a> {
@@ -53,7 +55,7 @@ pub(crate) async fn record_contribution_event(
             }),
         )?;
         refresh_known_wallet_balances(state).await?;
-        publish_ranking_update(state, &event)?;
+        publish_ranking_update(state, &event);
     }
     Ok(event)
 }
@@ -103,16 +105,11 @@ fn contribution_event_id(
     ))
 }
 
-fn publish_ranking_update(
-    state: &ControlPlaneState,
-    event: &ContributionEvent,
-) -> anyhow::Result<()> {
-    let reward_balances: WalletBalanceState = state
-        .local_db
-        .load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
+fn publish_ranking_update(state: &ControlPlaneState, event: &ContributionEvent) {
+    let reward_balances: WalletBalanceState = load_wallet_balance_state_or_default(state);
     let Some(balance) = reward_balances.get(&event.controller_id, event.public_id.as_deref())
     else {
-        return Ok(());
+        return;
     };
     let balance_stats = balance.balance().stats();
     let public_id = event.public_id.as_deref().unwrap_or(&event.controller_id);
@@ -145,5 +142,4 @@ fn publish_ranking_update(
         timestamp: Utc::now().timestamp(),
         payload,
     });
-    Ok(())
 }

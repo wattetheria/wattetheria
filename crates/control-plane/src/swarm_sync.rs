@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -40,7 +41,16 @@ pub const DEFAULT_WATTSWARM_SYNC_GRPC_PORT: u16 = 7791;
 
 const NETWORK_PROJECTION_CACHE_DOMAIN: &str = "wattswarm.sync.cache.network_projection";
 const TASK_RUN_PROJECTION_CACHE_DOMAIN: &str = "wattswarm.sync.cache.task_run_projection";
+const SYNC_CACHE_DB_FILE: &str = "wattswarm_sync_cache.db";
 const CACHE_MAX_AGE_SEC: i64 = 30;
+
+fn sync_cache_db_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("cache").join(SYNC_CACHE_DB_FILE)
+}
+
+fn open_sync_cache_db(data_dir: &Path) -> Result<Arc<LocalDb>> {
+    Ok(Arc::new(LocalDb::open(sync_cache_db_path(data_dir))?))
+}
 
 #[must_use]
 pub fn spawn_wattswarm_sync_bridge(
@@ -50,6 +60,13 @@ pub fn spawn_wattswarm_sync_bridge(
     let grpc_endpoint = grpc_endpoint
         .map(|endpoint| endpoint.trim().to_string())
         .filter(|endpoint| !endpoint.is_empty())?;
+    let sync_cache_db = match open_sync_cache_db(&state.data_dir) {
+        Ok(db) => Some(db),
+        Err(error) => {
+            warn!("open wattswarm sync cache db failed: {error:#}");
+            None
+        }
+    };
     Some(tokio::spawn(async move {
         let startup_geo_task = tokio::spawn(run_startup_geo_sync_until_done(
             state.clone(),
@@ -58,16 +75,22 @@ pub fn spawn_wattswarm_sync_bridge(
         let network_task = tokio::spawn(run_network_projection_stream(
             state.clone(),
             grpc_endpoint.clone(),
+            sync_cache_db.clone(),
         ));
         let task_run_task = tokio::spawn(run_task_run_projection_stream(
             state.clone(),
             grpc_endpoint.clone(),
+            sync_cache_db.clone(),
         ));
         let social_task = tokio::spawn(run_social_projection_stream(
             state.clone(),
             grpc_endpoint.clone(),
         ));
-        let topic_task = tokio::spawn(run_topic_projection_supervisor(state, grpc_endpoint));
+        let topic_task = tokio::spawn(run_topic_projection_supervisor(
+            state,
+            grpc_endpoint,
+            sync_cache_db,
+        ));
         let _ = tokio::join!(
             startup_geo_task,
             network_task,
@@ -142,9 +165,14 @@ async fn run_startup_geo_sync_until_done(state: ControlPlaneState, grpc_endpoint
     }
 }
 
-async fn run_network_projection_stream(state: ControlPlaneState, grpc_endpoint: String) {
+async fn run_network_projection_stream(
+    state: ControlPlaneState,
+    grpc_endpoint: String,
+    sync_cache_db: Option<Arc<LocalDb>>,
+) {
     loop {
-        match network_projection_session(state.clone(), &grpc_endpoint).await {
+        match network_projection_session(state.clone(), &grpc_endpoint, sync_cache_db.clone()).await
+        {
             Ok(()) => debug!("wattswarm network projection stream closed cleanly"),
             Err(error) => warn!("wattswarm network projection stream failed: {error:#}"),
         }
@@ -152,7 +180,11 @@ async fn run_network_projection_stream(state: ControlPlaneState, grpc_endpoint: 
     }
 }
 
-async fn network_projection_session(state: ControlPlaneState, grpc_endpoint: &str) -> Result<()> {
+async fn network_projection_session(
+    state: ControlPlaneState,
+    grpc_endpoint: &str,
+    sync_cache_db: Option<Arc<LocalDb>>,
+) -> Result<()> {
     let mut client = connect_client(grpc_endpoint).await?;
     let request = Request::new(ProjectionStreamRequest {
         poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
@@ -177,7 +209,13 @@ async fn network_projection_session(state: ControlPlaneState, grpc_endpoint: &st
             sync_controller_node_id(&state, &node_id).await;
             controller_node_id_synced = true;
         }
-        emit_projection_frame(&state, "wattswarm.sync.network_projection", &frame).await;
+        emit_projection_frame(
+            &state,
+            sync_cache_db.as_ref(),
+            "wattswarm.sync.network_projection",
+            &frame,
+        )
+        .await;
     }
     Ok(())
 }
@@ -226,9 +264,15 @@ async fn sync_controller_node_id(state: &ControlPlaneState, wattswarm_node_id: &
     );
 }
 
-async fn run_task_run_projection_stream(state: ControlPlaneState, grpc_endpoint: String) {
+async fn run_task_run_projection_stream(
+    state: ControlPlaneState,
+    grpc_endpoint: String,
+    sync_cache_db: Option<Arc<LocalDb>>,
+) {
     loop {
-        match task_run_projection_session(state.clone(), &grpc_endpoint).await {
+        match task_run_projection_session(state.clone(), &grpc_endpoint, sync_cache_db.clone())
+            .await
+        {
             Ok(()) => debug!("wattswarm task/run projection stream closed cleanly"),
             Err(error) => warn!("wattswarm task/run projection stream failed: {error:#}"),
         }
@@ -236,7 +280,11 @@ async fn run_task_run_projection_stream(state: ControlPlaneState, grpc_endpoint:
     }
 }
 
-async fn task_run_projection_session(state: ControlPlaneState, grpc_endpoint: &str) -> Result<()> {
+async fn task_run_projection_session(
+    state: ControlPlaneState,
+    grpc_endpoint: &str,
+    sync_cache_db: Option<Arc<LocalDb>>,
+) -> Result<()> {
     let mut client = connect_client(grpc_endpoint).await?;
     let request = Request::new(ProjectionStreamRequest {
         poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
@@ -256,7 +304,13 @@ async fn task_run_projection_session(state: ControlPlaneState, grpc_endpoint: &s
         .await
         .context("read wattswarm task/run projection frame")?
     {
-        emit_projection_frame(&state, "wattswarm.sync.task_run_projection", &frame).await;
+        emit_projection_frame(
+            &state,
+            sync_cache_db.as_ref(),
+            "wattswarm.sync.task_run_projection",
+            &frame,
+        )
+        .await;
     }
     Ok(())
 }
@@ -296,7 +350,11 @@ async fn social_projection_session(state: ControlPlaneState, grpc_endpoint: &str
     Ok(())
 }
 
-async fn run_topic_projection_supervisor(state: ControlPlaneState, grpc_endpoint: String) {
+async fn run_topic_projection_supervisor(
+    state: ControlPlaneState,
+    grpc_endpoint: String,
+    sync_cache_db: Option<Arc<LocalDb>>,
+) {
     let mut topic_tasks: HashMap<String, JoinHandle<()>> = HashMap::new();
 
     loop {
@@ -322,10 +380,17 @@ async fn run_topic_projection_supervisor(state: ControlPlaneState, grpc_endpoint
             }
             let state_clone = state.clone();
             let grpc_endpoint_clone = grpc_endpoint.clone();
+            let sync_cache_db_clone = sync_cache_db.clone();
             topic_tasks.insert(
                 key,
                 tokio::spawn(async move {
-                    run_topic_projection_stream(state_clone, grpc_endpoint_clone, topic).await;
+                    run_topic_projection_stream(
+                        state_clone,
+                        grpc_endpoint_clone,
+                        topic,
+                        sync_cache_db_clone,
+                    )
+                    .await;
                 }),
             );
         }
@@ -338,9 +403,12 @@ async fn run_topic_projection_stream(
     state: ControlPlaneState,
     grpc_endpoint: String,
     topic: HiveProfile,
+    sync_cache_db: Option<Arc<LocalDb>>,
 ) {
     loop {
-        match topic_projection_session(state.clone(), &grpc_endpoint, &topic).await {
+        match topic_projection_session(state.clone(), &grpc_endpoint, &topic, sync_cache_db.clone())
+            .await
+        {
             Ok(()) => debug!(
                 feed_key = %topic.feed_key,
                 scope_hint = %topic.scope_hint,
@@ -370,6 +438,7 @@ async fn topic_projection_session(
     state: ControlPlaneState,
     grpc_endpoint: &str,
     topic: &HiveProfile,
+    sync_cache_db: Option<Arc<LocalDb>>,
 ) -> Result<()> {
     let mut client = connect_client(grpc_endpoint).await?;
     let request = Request::new(ProjectionStreamRequest {
@@ -396,7 +465,13 @@ async fn topic_projection_session(
             topic.feed_key, topic.scope_hint
         )
     })? {
-        emit_projection_frame(&state, "wattswarm.sync.topic_activity", &frame).await;
+        emit_projection_frame(
+            &state,
+            sync_cache_db.as_ref(),
+            "wattswarm.sync.topic_activity",
+            &frame,
+        )
+        .await;
     }
     Ok(())
 }
@@ -439,6 +514,7 @@ async fn apply_social_projection_frame(
 
 async fn emit_projection_frame(
     state: &ControlPlaneState,
+    sync_cache_db: Option<&Arc<LocalDb>>,
     event_kind: &str,
     frame: &ProjectionFrame,
 ) {
@@ -447,13 +523,15 @@ async fn emit_projection_frame(
             "raw_json_payload": frame.json_payload,
         })
     });
-    let local_db = state.local_db.clone();
-    let kind = frame.kind.clone();
-    let payload_clone = payload.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        persist_projection_frame(&local_db, &kind, &payload_clone);
-    })
-    .await;
+    if let Some(sync_cache_db) = sync_cache_db {
+        let cache_db = sync_cache_db.clone();
+        let kind = frame.kind.clone();
+        let payload_clone = payload.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            persist_projection_frame(&cache_db, &kind, &payload_clone);
+        })
+        .await;
+    }
     let _ = state.stream_tx.send(StreamEvent {
         kind: event_kind.to_string(),
         timestamp: Utc::now().timestamp(),
@@ -508,52 +586,77 @@ fn persist_projection_frame(local_db: &LocalDb, kind: &str, payload: &Value) {
 }
 
 pub(crate) async fn load_cached_task_run_projection(
-    local_db: &Arc<LocalDb>,
+    state: &ControlPlaneState,
 ) -> Option<SwarmTaskRunProjectionSnapshot> {
-    let db = local_db.clone();
+    let data_dir = state.data_dir.clone();
     tokio::task::spawn_blocking(move || {
-        match db.load_domain_if_fresh(TASK_RUN_PROJECTION_CACHE_DOMAIN, CACHE_MAX_AGE_SEC) {
-            Ok(value) => value,
+        let db = match open_sync_cache_db(&data_dir) {
+            Ok(db) => db,
             Err(error) => {
-                warn!("load task/run projection cache failed: {error:#}");
-                None
+                warn!("open task/run projection cache db failed: {error:#}");
+                return None;
             }
-        }
+        };
+        load_cached_task_run_projection_from_db(&db)
     })
     .await
     .unwrap_or(None)
 }
 
+fn load_cached_task_run_projection_from_db(db: &LocalDb) -> Option<SwarmTaskRunProjectionSnapshot> {
+    match db.load_domain_if_fresh(TASK_RUN_PROJECTION_CACHE_DOMAIN, CACHE_MAX_AGE_SEC) {
+        Ok(value) => value,
+        Err(error) => {
+            warn!("load task/run projection cache failed: {error:#}");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn save_cached_task_run_projection(
-    local_db: &Arc<LocalDb>,
+    data_dir: &Path,
     snapshot: SwarmTaskRunProjectionSnapshot,
 ) -> anyhow::Result<()> {
-    let db = local_db.clone();
+    let db = open_sync_cache_db(data_dir)?;
     tokio::task::spawn_blocking(move || db.save_domain(TASK_RUN_PROJECTION_CACHE_DOMAIN, &snapshot))
         .await
         .map_err(|error| anyhow::anyhow!("join task/run projection cache save: {error}"))?
 }
 
 pub(crate) async fn load_cached_topic_activity(
-    local_db: &Arc<LocalDb>,
+    state: &ControlPlaneState,
     network_id: Option<&str>,
     feed_key: &str,
     scope_hint: &str,
 ) -> Option<SwarmTopicActivitySnapshot> {
-    let db = local_db.clone();
+    let data_dir = state.data_dir.clone();
     let domain = topic_activity_cache_domain(network_id, feed_key, scope_hint);
-    tokio::task::spawn_blocking(
-        move || match db.load_domain_if_fresh(&domain, CACHE_MAX_AGE_SEC) {
-            Ok(value) => value,
+    tokio::task::spawn_blocking(move || {
+        let db = match open_sync_cache_db(&data_dir) {
+            Ok(db) => db,
             Err(error) => {
-                warn!("load topic activity cache failed: {error:#}");
-                None
+                warn!("open topic activity cache db failed: {error:#}");
+                return None;
             }
-        },
-    )
+        };
+        load_cached_topic_activity_from_db(&db, &domain)
+    })
     .await
     .unwrap_or(None)
+}
+
+fn load_cached_topic_activity_from_db(
+    db: &LocalDb,
+    domain: &str,
+) -> Option<SwarmTopicActivitySnapshot> {
+    match db.load_domain_if_fresh(domain, CACHE_MAX_AGE_SEC) {
+        Ok(value) => value,
+        Err(error) => {
+            warn!("load topic activity cache failed: {error:#}");
+            None
+        }
+    }
 }
 
 fn topic_activity_cache_domain(
@@ -642,7 +745,7 @@ mod tests {
         };
         db.save_domain(TASK_RUN_PROJECTION_CACHE_DOMAIN, &snapshot)
             .expect("save task/run projection");
-        assert_eq!(load_cached_task_run_projection(&db).await, Some(snapshot));
+        assert_eq!(load_cached_task_run_projection_from_db(&db), Some(snapshot));
     }
 
     #[tokio::test]
@@ -679,8 +782,34 @@ mod tests {
         )
         .expect("save topic activity");
         assert_eq!(
-            load_cached_topic_activity(&db, Some("net"), "guild.chat", "guild:defi").await,
+            load_cached_topic_activity_from_db(
+                &db,
+                &topic_activity_cache_domain(Some("net"), "guild.chat", "guild:defi")
+            ),
             Some(snapshot)
         );
+    }
+
+    #[test]
+    fn sync_cache_db_is_separate_from_primary_local_db() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let primary_db = LocalDb::open(dir.path().join("wattetheria.db")).expect("open primary db");
+        let cache_db = open_sync_cache_db(dir.path()).expect("open sync cache db");
+        let payload = json!({
+            "generated_at": 1,
+            "node_id": "node-1",
+            "running": true
+        });
+
+        persist_projection_frame(&cache_db, "network_projection", &payload);
+
+        let primary_value = primary_db
+            .load_domain::<Value>(NETWORK_PROJECTION_CACHE_DOMAIN)
+            .expect("read primary projection cache");
+        let cache_value = cache_db
+            .load_domain::<Value>(NETWORK_PROJECTION_CACHE_DOMAIN)
+            .expect("read sync projection cache");
+        assert!(primary_value.is_none());
+        assert_eq!(cache_value, Some(payload));
     }
 }

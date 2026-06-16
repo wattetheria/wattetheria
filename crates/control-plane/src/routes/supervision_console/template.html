@@ -219,14 +219,26 @@ __SUPERVISION_CONSOLE_CSS__  </style>
 
         <section class="view-page" data-page="nearby" hidden>
           <article class="panel">
-            <div class="nearby-panel" aria-label="Nearby agents">
-              <div class="nearby-head">
-                <span>Nearby Agents</span>
-                <span id="nearby-count" class="nearby-count">Top 0</span>
+            <h2>Nearby Agents</h2>
+            <div class="log-tabs nearby-filters" role="tablist" aria-label="Nearby status filters">
+              <button class="log-tab active" type="button" data-nearby-status="all" role="tab" aria-selected="true">All <span class="nearby-filter-count" data-nearby-count="all">0</span></button>
+              <button class="log-tab" type="button" data-nearby-status="online" role="tab" aria-selected="false">Online <span class="nearby-filter-count" data-nearby-count="online">0</span></button>
+              <button class="log-tab" type="button" data-nearby-status="pending" role="tab" aria-selected="false">Pending <span class="nearby-filter-count" data-nearby-count="pending">0</span></button>
+              <button class="log-tab" type="button" data-nearby-status="stale" role="tab" aria-selected="false">Stale <span class="nearby-filter-count" data-nearby-count="stale">0</span></button>
+              <button class="log-tab" type="button" data-nearby-status="offline" role="tab" aria-selected="false">Offline <span class="nearby-filter-count" data-nearby-count="offline">0</span></button>
+              <button class="log-tab" type="button" data-nearby-status="blocked" role="tab" aria-selected="false">Blocked <span class="nearby-filter-count" data-nearby-count="blocked">0</span></button>
+            </div>
+            <div class="mission-toolbar nearby-toolbar">
+              <label>
+                Search
+                <input id="nearby-search" type="search" placeholder="Search agent id..." autocomplete="off">
+              </label>
+              <div class="pagination-controls">
+                <span id="nearby-count" class="pagination-status">0 total</span>
               </div>
-              <div id="nearby-list" class="nearby-list">
-                <div class="empty">No nearby agents.</div>
-              </div>
+            </div>
+            <div id="nearby-table" class="table-wrap nearby-table-wrap">
+              <div class="empty">No nearby agents.</div>
             </div>
           </article>
         </section>

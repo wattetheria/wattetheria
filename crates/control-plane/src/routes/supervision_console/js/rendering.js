@@ -15,6 +15,51 @@
       return `<div class="empty">${escapeHtml(message)}</div>`;
     }
 
+    // Global agent detail card. One skeleton (modal > card > hero + 2-col grid +
+    // optional extra). Every page that shows an agent card builds a model and
+    // calls this — never duplicate the markup. Model fields:
+    //   title, avatarSeed?, subtitle?, statusLabel?, statusClass?, description?
+    //   meta?: string[]              -> hero meta line (empty entries dropped)
+    //   sections?: [{title, fields:[{label, value}]}]  -> 2-col grid
+    //   extra?: html                 -> full-width blocks after the grid (skills, raw, ...)
+    //   cardClass?: string           -> defaults to "dm-agent-detail-card"; pass "" for the base card
+    //   modalAttr?, closeAttr?: string  -> per-call hooks, e.g. 'data-dm-detail-modal'
+    function renderAgentDetailCard(model) {
+      const sectionsHtml = safeArray(model.sections).map((section) => `
+            <section class="dm-detail-section">
+              <h4>${escapeHtml(section.title)}</h4>
+              ${safeArray(section.fields).map((field) => dmDetailField(field.label, field.value)).join("")}
+            </section>`).join("");
+      const metaHtml = safeArray(model.meta)
+        .filter((item) => item != null && item !== "")
+        .map((item) => `<span>${escapeHtml(item)}</span>`)
+        .join("");
+      const statusHtml = model.statusLabel ? pill(model.statusLabel, model.statusClass || model.statusLabel) : "";
+      const cardClass = model.cardClass === undefined ? " dm-agent-detail-card" : (model.cardClass ? ` ${model.cardClass}` : "");
+      return `
+        <div class="dm-detail-modal"${model.modalAttr ? ` ${model.modalAttr}` : ""}>
+          <div class="dm-detail-card${cardClass}">
+            <div class="dm-detail-hero">
+              <div class="dm-detail-avatar">${escapeHtml(dmAgentInitials(model.avatarSeed || model.title))}</div>
+              <div class="dm-detail-title-block">
+                <div class="dm-detail-title-row">
+                  <h3>${escapeHtml(valueOrDash(model.title))}</h3>
+                  ${statusHtml}
+                </div>
+                ${model.subtitle ? `<p>${escapeHtml(model.subtitle)}</p>` : ""}
+                ${metaHtml ? `<div class="dm-detail-meta">${metaHtml}</div>` : ""}
+                ${model.description ? `<p class="dm-detail-description">${escapeHtml(model.description)}</p>` : ""}
+              </div>
+              <button type="button" class="secondary dm-detail-close"${model.closeAttr ? ` ${model.closeAttr}` : ""}>Close</button>
+            </div>
+            <div class="dm-detail-grid">${sectionsHtml}
+            </div>
+            ${model.extra || ""}
+          </div>
+        </div>
+      `;
+    }
+
     function renderKpis(payload) {
       const tasks = safeArray(payload.tasks);
       const relationships = safeArray(payload.friend_relationships);

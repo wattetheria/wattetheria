@@ -360,7 +360,13 @@ fn load_civilization_runtime_state(
         local_db.load_domain_or_default(local_db::domain::ECONOMIC_POLICY)?;
     local_db.save_domain(local_db::domain::ECONOMIC_POLICY, &economic_policy)?;
     let watt_balance_state: WalletBalanceState =
-        local_db.load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
+        match local_db.load_domain_or_default(local_db::domain::WATT_BALANCE_STATE) {
+            Ok(state) => state,
+            Err(error) => {
+                warn!("reset invalid watt balance state during startup: {error:#}");
+                WalletBalanceState::default()
+            }
+        };
     local_db.save_domain(local_db::domain::WATT_BALANCE_STATE, &watt_balance_state)?;
     let galaxy_state: GalaxyState = load_or_migrate_galaxy(
         local_db,

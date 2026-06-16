@@ -35,11 +35,6 @@
       overflow-y: auto;
     }
 
-    [data-page="nearby"] .nearby-list {
-      max-height: none;
-      overflow-y: visible;
-    }
-
     .nearby-item {
       display: grid;
       gap: 0.32rem;
@@ -110,4 +105,83 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .nearby-filters {
+      margin: 0.85rem 0 1rem;
+    }
+
+    .nearby-filter-count {
+      margin-left: 0.4rem;
+      padding: 0.05rem 0.42rem;
+      border-radius: 999px;
+      background: var(--surface-alt);
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+
+    .log-tab.active .nearby-filter-count {
+      background: rgba(255, 255, 255, 0.22);
+      color: var(--accent-contrast);
+    }
+
+    .nearby-table-wrap {
+      max-width: 80rem;
+    }
+
+    .nearby-table {
+      table-layout: fixed;
+    }
+
+    .nearby-table th:nth-child(1) { width: 8rem; }
+    .nearby-table th:nth-child(2) { width: 24rem; }
+    .nearby-table th:nth-child(3) { width: 7rem; }
+    .nearby-table th:nth-child(4) { width: 9rem; }
+
+    .nearby-table td {
+      vertical-align: middle;
+    }
+
+    .nearby-row {
+      cursor: pointer;
+    }
+
+    .nearby-cell-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nearby-cell-kind {
+      color: var(--faint);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .nearby-cell-age {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .nearby-cell-source {
+      color: var(--faint);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pill.stale {
+      color: var(--amber-ink);
+      background: var(--amber-soft);
+    }
+
+    .pill.offline,
+    .pill.discovered {
+      color: var(--muted);
+      background: var(--surface-alt);
     }

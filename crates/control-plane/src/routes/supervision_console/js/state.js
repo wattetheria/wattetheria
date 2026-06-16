@@ -23,6 +23,10 @@
     const hiveMessageErrors = new Map();
     let missionSearchQuery = "";
     let activeMissionTab = "published";
+    let nearbyStatusFilter = "all";
+    let nearbySearchQuery = "";
+    let nearbyDetailId = "";
+    let nearbyAllRows = [];
     const missionPageByTab = { published: 1, claim_submitted: 1, claimed: 1 };
     const missionPageSize = 10;
     let servicenetTemplate = null;

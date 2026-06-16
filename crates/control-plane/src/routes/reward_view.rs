@@ -1,6 +1,7 @@
 use chrono::Utc;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use tracing::warn;
 use wattetheria_kernel::civilization::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::economy::{
     ContributionEventLog, EconomicPolicy, WalletBalanceState, WalletBoundBalance,
@@ -15,6 +16,21 @@ fn load_economic_policy(state: &ControlPlaneState) -> anyhow::Result<EconomicPol
     state
         .local_db
         .load_domain_or_default(local_db::domain::ECONOMIC_POLICY)
+}
+
+pub(crate) fn load_wallet_balance_state_or_default(
+    state: &ControlPlaneState,
+) -> WalletBalanceState {
+    match state
+        .local_db
+        .load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)
+    {
+        Ok(state) => state,
+        Err(error) => {
+            warn!("reset invalid watt balance state cache: {error:#}");
+            WalletBalanceState::default()
+        }
+    }
 }
 
 pub(crate) async fn wallet_bound_balance_for_identity(
@@ -45,9 +61,7 @@ pub(crate) async fn persist_wallet_balance_for_identity(
         public_id,
     );
     drop(missions);
-    let mut balance_state: WalletBalanceState = state
-        .local_db
-        .load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
+    let mut balance_state = load_wallet_balance_state_or_default(state);
     let record = balance_state.upsert(controller_id, public_id, &balance, Utc::now().timestamp());
     state
         .local_db
@@ -60,9 +74,7 @@ pub(crate) async fn refresh_known_wallet_balances(state: &ControlPlaneState) -> 
     let policy = load_economic_policy(state)?;
     let missions = state.mission_board.lock().await;
     let contribution_events = load_contribution_event_log(state)?;
-    let mut balance_state: WalletBalanceState = state
-        .local_db
-        .load_domain_or_default(local_db::domain::WATT_BALANCE_STATE)?;
+    let mut balance_state = load_wallet_balance_state_or_default(state);
     let updated_at = Utc::now().timestamp();
     for (controller_id, public_id) in subjects {
         let balance = wallet_bound_balance_from_rewards(

@@ -371,6 +371,44 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
 }
 
 #[tokio::test]
+async fn client_self_recovers_invalid_wallet_balance_state_payload() {
+    let (_dir, app, token, _identity, state) = build_test_app(20);
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE,
+            &json!({
+                "generated_at": 1_781_550_374_613_i64,
+                "node_id": "node-1",
+                "network_id": "mainnet:watt-etheria",
+                "running": true,
+                "peers": ["peer-a"]
+            }),
+        )
+        .expect("seed invalid wallet balance payload");
+
+    let self_json = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/client/self?public_id={public_id}"),
+    )
+    .await;
+
+    assert_eq!(self_json["watt_balance"].as_i64(), Some(0));
+    let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .expect("read repaired wallet balance state")
+        .expect("wallet balance state exists");
+    assert!(
+        balance_state
+            .get(&state.agent_did, Some(&public_id))
+            .is_some()
+    );
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
     use sha2::Digest as _;
@@ -1137,7 +1175,7 @@ async fn client_export_excludes_local_friends_and_dm() {
         build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
     let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
     crate::swarm_sync::save_cached_task_run_projection(
-        &state.local_db,
+        &state.data_dir,
         wattetheria_kernel::swarm_sync::SwarmTaskRunProjectionSnapshot {
             generated_at: 1_710_000_120,
             recent_tasks: vec![wattetheria_kernel::swarm_sync::SwarmTaskProjectionSummary {
