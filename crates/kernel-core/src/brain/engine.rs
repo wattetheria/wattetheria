@@ -495,6 +495,8 @@ fn build_agent_event_prompt(event: &Value) -> Result<String> {
             "1. payload must be a JSON object. ",
             "2. Do not invent fields that are not needed by the selected action. ",
             "3. Preserve IDs from the input payload when known. ",
+            "4. If more context is needed and MCP tools are available, you can use tools marked readOnly=true. ",
+            "5. MCP tool use is optional; do not call tools when the input already contains enough context. ",
             "Event type: {}. ",
             "Relevant action schema: {}. ",
             "Input: {}"
@@ -555,13 +557,10 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
             "block: reject and block the counterpart; payload may include message or extensions."
                 .to_owned(),
         ),
-        ("dm_received" | "topic_message_requires_reply", "reply") => Some(
+        ("topic_message_requires_reply", "reply") => Some(
             "reply: payload must include content; include reply_to_message_id only when replying to a topic message."
                 .to_owned(),
         ),
-        ("dm_received", "block") => {
-            Some("block: block the message sender; payload may include message or extensions.".to_owned())
-        }
         (_, "ignore") => Some("ignore: acknowledge without side effects; payload should be {}.".to_owned()),
         ("payment_request" | "payment_update", "authorize") => {
             Some("authorize: approve payment authorization; payload may include sender_address.".to_owned())
@@ -971,6 +970,38 @@ mod tests {
         assert!(!prompt.contains("task_result_received"));
         assert!(!prompt.contains("settle_mission"));
         assert!(!prompt.contains("mission_claim_approved"));
+    }
+
+    #[test]
+    fn agent_event_prompt_guides_mcp_context_tool_usage() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "topic_message_requires_reply",
+            "allowed_actions": ["reply", "ignore"],
+            "payload": {},
+            "mcp_context_tools": [
+                {
+                    "name": "list_hive_messages",
+                    "_meta": {
+                        "wattetheria": {
+                            "readOnly": true
+                        }
+                    }
+                },
+                {
+                    "name": "post_hive_message",
+                    "_meta": {
+                        "wattetheria": {
+                            "readOnly": false
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("readOnly=true"));
+        assert!(prompt.contains("If more context is needed"));
+        assert!(prompt.contains("MCP tool use is optional"));
     }
 
     #[test]

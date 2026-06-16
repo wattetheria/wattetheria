@@ -117,7 +117,6 @@ fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
 fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
     match event_type {
         "friend_request" => matches!(action, "accept" | "reject" | "block"),
-        "dm_received" => matches!(action, "reply" | "block" | "ignore"),
         "payment_request" | "payment_update" => {
             matches!(
                 action,
@@ -589,7 +588,6 @@ fn remote_event_requires_signed_agent_envelope(event: &AgentEventEnvelope) -> bo
         "payment_request"
             | "payment_update"
             | "friend_request"
-            | "dm_received"
             | "task_claim_received"
             | "task_claim_decision_received"
             | "task_result_received"

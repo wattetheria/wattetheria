@@ -282,6 +282,14 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
         servicenet["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/servicenet/agents")
     );
+    assert_eq!(
+        list_hives["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        create_hive["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(false)
+    );
 }
 
 #[tokio::test]
@@ -899,6 +907,53 @@ async fn mcp_request_agent_friend_sends_relationship_action_to_remote_node() {
             .and_then(Value::as_str),
         Some("nearby-node-1")
     );
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_rejects_overlong_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "remote_node_id": "nearby-node-1",
+                    "message": "x".repeat(121)
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("friend request message must be at most 120 characters")
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["max_chars"].as_u64(),
+        Some(120)
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["actual_chars"].as_u64(),
+        Some(121)
+    );
+    let commands = bridge.relationship_commands.lock().await;
+    assert!(commands.is_empty());
 }
 
 #[tokio::test]

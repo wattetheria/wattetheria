@@ -1763,6 +1763,7 @@ fn mcp_tool(tool: &AgentTool, available: bool) -> McpTool {
     } else {
         format!("{} Currently unavailable on this node.", tool.description)
     };
+    let read_only = mcp_tool_is_read_only(tool);
     McpTool {
         name: tool.name,
         description,
@@ -1773,10 +1774,15 @@ fn mcp_tool(tool: &AgentTool, available: bool) -> McpTool {
                 "method": tool.method.as_str(),
                 "path": tool.path,
                 "available": available,
+                "readOnly": read_only,
                 "source": "wattetheria.mcp.tools.v1"
             }
         }),
     }
+}
+
+fn mcp_tool_is_read_only(tool: &AgentTool) -> bool {
+    tool.method == Method::GET
 }
 
 fn tool_uri(tool: &AgentTool, arguments: &Value) -> Result<String, String> {

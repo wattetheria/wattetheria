@@ -363,7 +363,6 @@ fn agent_action_commit_route_label(
 ) -> &'static str {
     match (event_type, action) {
         ("friend_request", "accept" | "reject" | "block") => "friend_request",
-        ("dm_received", "reply" | "block" | "ignore") => "dm_received",
         (
             "payment_request" | "payment_update",
             "authorize" | "reject" | "submit" | "settle" | "cancel",
@@ -418,59 +417,6 @@ async fn commit_friend_request(
         }),
     )
     .await
-}
-
-async fn commit_dm_received(
-    state: ControlPlaneState,
-    commit_headers: HeaderMap,
-    body: AgentActionCommitBody,
-) -> Response {
-    let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
-        return bad_request("dm_received missing source_public_id");
-    };
-    match body.decision.action.as_str() {
-        "reply" => {
-            let Some(content) = body.decision.payload.get("content").cloned() else {
-                return bad_request("dm reply requires content");
-            };
-            crate::routes::civilization::send_agent_dm_message(
-                State(state),
-                commit_headers,
-                Json(AgentDmSendBody {
-                    public_id: event_message_public_id(&body, "target_public_id"),
-                    counterpart_public_id,
-                    content,
-                    extensions: body.decision.payload.get("extensions").cloned(),
-                }),
-            )
-            .await
-        }
-        "block" => {
-            crate::routes::civilization::agent_relationship_action(
-                State(state),
-                commit_headers,
-                Json(AgentRelationshipActionBody {
-                    public_id: event_message_public_id(&body, "target_public_id"),
-                    counterpart_public_id: Some(counterpart_public_id),
-                    remote_node_id: None,
-                    target_agent_did: None,
-                    display_name: None,
-                    action: SwarmRelationshipAction::Block,
-                    message: body.decision.payload.get("message").cloned(),
-                    extensions: body.decision.payload.get("extensions").cloned(),
-                }),
-            )
-            .await
-        }
-        "ignore" => Json(json!({
-            "ok": true,
-            "status": "ignored",
-            "event_id": body.event.event_id,
-            "decision_id": body.decision.decision_id,
-        }))
-        .into_response(),
-        _ => unreachable!("dm action already matched"),
-    }
 }
 
 async fn commit_payment_action(
@@ -1091,9 +1037,6 @@ async fn dispatch_agent_action_commit(
     match (event_type, action) {
         ("friend_request", "accept" | "reject" | "block") => {
             commit_friend_request(state, commit_headers, body).await
-        }
-        ("dm_received", "reply" | "block" | "ignore") => {
-            commit_dm_received(state, commit_headers, body).await
         }
         (
             "payment_request" | "payment_update",

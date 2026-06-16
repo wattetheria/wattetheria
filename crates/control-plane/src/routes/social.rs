@@ -50,6 +50,8 @@ use wattetheria_social::domain::threads::{DirectThread, ThreadState};
 use wattetheria_social::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
 use wattetheria_social::policy::decisions::PolicyDecision;
 
+const FRIEND_REQUEST_MESSAGE_MAX_CHARS: usize = 120;
+
 struct CommitResponseArgs<'a> {
     action_type: &'a str,
     target_id: Option<String>,
@@ -1766,6 +1768,35 @@ fn build_relationship_action_message(
     )
 }
 
+fn friend_request_message_char_count(message: &Value) -> usize {
+    match message {
+        Value::String(value) => value.chars().count(),
+        _ => serde_json::to_string(message)
+            .unwrap_or_else(|_| message.to_string())
+            .chars()
+            .count(),
+    }
+}
+
+fn friend_request_message_error(message: Option<&Value>) -> Option<Response> {
+    let message = message?;
+    let length = friend_request_message_char_count(message);
+    if length > FRIEND_REQUEST_MESSAGE_MAX_CHARS {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "friend request message must be at most {FRIEND_REQUEST_MESSAGE_MAX_CHARS} characters"
+                ),
+                "max_chars": FRIEND_REQUEST_MESSAGE_MAX_CHARS,
+                "actual_chars": length
+            })),
+        )
+            .into_response());
+    }
+    None
+}
+
 struct SignedRelationshipActionArgs {
     local_agent_id: String,
     local_display_name: Option<String>,
@@ -3094,6 +3125,9 @@ async fn handle_agent_relationship_action(
     let now = Utc::now().timestamp();
     let mut base_message = body.message;
     if body.action == SwarmRelationshipAction::Request {
+        if let Some(response) = friend_request_message_error(base_message.as_ref()) {
+            return response;
+        }
         match ensure_outbound_friend_request_allowed(
             &state,
             &local_public_id,

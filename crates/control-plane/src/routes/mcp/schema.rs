@@ -634,7 +634,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         )),
         "request_agent_friend" => Some(relationship_action_schema(
             tool,
-            "Optional friend request message payload.",
+            "Optional friend request message payload. Maximum 120 characters.",
         )),
         "remove_agent_friend" => Some(relationship_action_schema(
             tool,

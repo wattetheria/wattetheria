@@ -157,7 +157,6 @@
       const skills = dmSkillLabels(agent.skills || row.counterpart_skills || card.skills);
       const description = friendRequestDescription(row);
       return renderAgentDetailCard({
-        cardClass: "",
         avatarSeed: displayName,
         title: displayName,
         statusLabel: row.direction || "inbound",

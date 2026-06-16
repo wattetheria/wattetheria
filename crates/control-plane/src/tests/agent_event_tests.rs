@@ -829,7 +829,7 @@ async fn agent_events_sync_mission_completed_to_publisher_board_before_decision(
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn agent_events_route_translates_openai_compatible_reply_into_structured_decision() {
+async fn agent_events_route_rejects_legacy_dm_received() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind listener");
@@ -916,15 +916,11 @@ async fn agent_events_route_translates_openai_compatible_reply_into_structured_d
     )
     .await;
 
-    assert_eq!(response["ok"].as_bool(), Some(true));
-    assert_eq!(response["decision"]["action"].as_str(), Some("reply"));
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert_eq!(response["decision"], Value::Null);
     assert_eq!(
-        response["decision"]["route"].as_str(),
-        Some("wattetheria_commit")
-    );
-    assert_eq!(
-        response["decision"]["payload"]["content"].as_str(),
-        Some("hello back")
+        response["detail"].as_str(),
+        Some("unsupported action reply for event_type dm_received")
     );
 
     let entries = crate::diagnostics::list_diagnostics(
