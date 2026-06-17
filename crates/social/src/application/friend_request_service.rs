@@ -1,7 +1,16 @@
-use crate::domain::friend_requests::{FriendRequest, FriendRequestState};
-use crate::ports::repositories::FriendRequestRepository;
+use crate::domain::friend_requests::{FriendRequest, FriendRequestDirection, FriendRequestState};
+use crate::ports::repositories::{FriendRequestRepository, ReliabilityTaskRepository};
 use crate::types::{SocialError, SocialResult};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+
+const FRIEND_REQUEST_OBJECT_KIND: &str = "friend_request";
+
+#[derive(Debug, Clone, Copy)]
+pub struct FriendRequestCounterpartRef<'a> {
+    pub public_id: &'a str,
+    pub remote_node_id: &'a str,
+    pub target_agent: &'a str,
+}
 
 pub fn upsert_friend_request<R>(repository: &R, request: &FriendRequest) -> SocialResult<()>
 where
@@ -46,6 +55,65 @@ where
     repository
         .list_friend_requests(local_public_id)
         .map(dedupe_friend_requests)
+}
+
+pub fn settle_related_outbound_friend_requests<R>(
+    repository: &R,
+    local_public_id: &str,
+    counterpart: FriendRequestCounterpartRef<'_>,
+    state: FriendRequestState,
+    decision_reason: &str,
+    occurred_at: i64,
+) -> SocialResult<()>
+where
+    R: FriendRequestRepository + ReliabilityTaskRepository,
+{
+    let counterpart_keys = counterpart_match_keys(counterpart);
+    let requests = list_friend_requests(repository, local_public_id)?;
+    for request in requests {
+        if request.direction != FriendRequestDirection::Outbound
+            || request.state != FriendRequestState::Pending
+            || !request_matches_counterpart(&request, &counterpart_keys)
+        {
+            continue;
+        }
+        upsert_friend_request(
+            repository,
+            &FriendRequest {
+                state,
+                decision_reason: Some(decision_reason.to_string()),
+                updated_at: request.updated_at.max(occurred_at),
+                ..request.clone()
+            },
+        )?;
+        repository.clear_reliability_task(FRIEND_REQUEST_OBJECT_KIND, &request.request_id)?;
+    }
+    Ok(())
+}
+
+fn counterpart_match_keys(counterpart: FriendRequestCounterpartRef<'_>) -> BTreeSet<String> {
+    [
+        counterpart.public_id,
+        counterpart.remote_node_id,
+        counterpart.target_agent,
+    ]
+    .into_iter()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(ToOwned::to_owned)
+    .collect()
+}
+
+fn request_matches_counterpart(
+    request: &FriendRequest,
+    counterpart_keys: &BTreeSet<String>,
+) -> bool {
+    counterpart_keys.contains(request.remote_public_id.trim())
+        || request
+            .remote_node_id
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|remote_node_id| counterpart_keys.contains(remote_node_id))
 }
 
 fn coalesce_friend_request(

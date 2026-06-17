@@ -42,7 +42,7 @@ pub async fn run_reliability_maintenance_tick_once(
     limit: usize,
 ) -> anyhow::Result<usize> {
     let now = chrono::Utc::now().timestamp();
-    let due = state
+    let mut due = state
         .social_store
         .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
         .map_err(anyhow::Error::msg)?;
@@ -67,14 +67,26 @@ pub async fn run_reliability_maintenance_tick_once(
         .filter(|view| pending_remote_nodes.contains(view.remote_node_id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
-    let local = resolve_social_local_context(state, None).await;
-    reconcile_swarm_relationship_views(
-        state,
-        &local.public_id,
-        &identities,
-        &bindings,
-        &pending_relationship_views,
-    )?;
+    let pending_local_public_ids = due
+        .iter()
+        .map(|request| request.local_public_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for local_public_id in pending_local_public_ids {
+        reconcile_swarm_relationship_views(
+            state,
+            local_public_id,
+            &identities,
+            &bindings,
+            &pending_relationship_views,
+        )?;
+    }
+    due = state
+        .social_store
+        .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
+        .map_err(anyhow::Error::msg)?;
+    if due.is_empty() {
+        return Ok(0);
+    }
     let mut processed = 0;
     for request in due {
         maintain_outbound_friend_request(state, &pending_relationship_views, &request, now)

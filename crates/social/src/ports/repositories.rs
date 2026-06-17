@@ -30,6 +30,10 @@ pub trait FriendRequestRepository {
     fn list_friend_requests(&self, local_public_id: &str) -> SocialResult<Vec<FriendRequest>>;
 }
 
+pub trait ReliabilityTaskRepository {
+    fn clear_reliability_task(&self, object_kind: &str, object_id: &str) -> SocialResult<()>;
+}
+
 pub trait FriendshipRepository {
     fn upsert_friendship(&self, friendship: &Friendship) -> SocialResult<()>;
     fn find_friendship(

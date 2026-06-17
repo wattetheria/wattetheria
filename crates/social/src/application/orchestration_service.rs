@@ -14,7 +14,8 @@ use crate::domain::threads::{DirectThread, ThreadState};
 use crate::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
 use crate::ports::repositories::{
     BlockRepository, FriendRequestRepository, FriendshipRepository, MessageReceiptRepository,
-    MessageRepository, RemoteIdentityRepository, ThreadRepository, TransportBindingRepository,
+    MessageRepository, ReliabilityTaskRepository, RemoteIdentityRepository, ThreadRepository,
+    TransportBindingRepository,
 };
 use crate::types::{SocialError, SocialResult};
 use serde_json::Value;
@@ -257,6 +258,7 @@ where
     R: RemoteIdentityRepository
         + TransportBindingRepository
         + FriendRequestRepository
+        + ReliabilityTaskRepository
         + FriendshipRepository
         + BlockRepository
         + ThreadRepository,
@@ -379,6 +381,18 @@ where
                     true,
                     updated_at,
                 )?;
+                friend_request_service::settle_related_outbound_friend_requests(
+                    repository,
+                    local_public_id,
+                    friend_request_service::FriendRequestCounterpartRef {
+                        public_id: &view.counterpart.counterpart_public_id,
+                        remote_node_id: &view.counterpart.remote_node_id,
+                        target_agent: &view.counterpart.target_agent,
+                    },
+                    FriendRequestState::Accepted,
+                    "accepted",
+                    updated_at,
+                )?;
             }
             ("rejected", _) => {
                 ignore_conflict(friend_request_service::upsert_friend_request(
@@ -397,6 +411,18 @@ where
                         expires_at: None,
                     },
                 ))?;
+                friend_request_service::settle_related_outbound_friend_requests(
+                    repository,
+                    local_public_id,
+                    friend_request_service::FriendRequestCounterpartRef {
+                        public_id: &view.counterpart.counterpart_public_id,
+                        remote_node_id: &view.counterpart.remote_node_id,
+                        target_agent: &view.counterpart.target_agent,
+                    },
+                    FriendRequestState::Rejected,
+                    "rejected",
+                    updated_at,
+                )?;
             }
             ("blocked", _) => {
                 ignore_conflict(friend_request_service::upsert_friend_request(
@@ -447,6 +473,18 @@ where
                         updated_at,
                     },
                 ))?;
+                friend_request_service::settle_related_outbound_friend_requests(
+                    repository,
+                    local_public_id,
+                    friend_request_service::FriendRequestCounterpartRef {
+                        public_id: &view.counterpart.counterpart_public_id,
+                        remote_node_id: &view.counterpart.remote_node_id,
+                        target_agent: &view.counterpart.target_agent,
+                    },
+                    FriendRequestState::Blocked,
+                    "blocked",
+                    updated_at,
+                )?;
             }
             ("none", Some("remove")) => {
                 let existing_friendship =
@@ -802,6 +840,7 @@ where
     R: RemoteIdentityRepository
         + TransportBindingRepository
         + FriendRequestRepository
+        + ReliabilityTaskRepository
         + FriendshipRepository
         + BlockRepository
         + ThreadRepository,
@@ -901,23 +940,49 @@ where
                 true,
                 input.occurred_at,
             )?;
+            friend_request_service::settle_related_outbound_friend_requests(
+                repository,
+                &input.local_public_id,
+                friend_request_service::FriendRequestCounterpartRef {
+                    public_id: &input.counterpart.counterpart_public_id,
+                    remote_node_id: &input.counterpart.remote_node_id,
+                    target_agent: &input.counterpart.target_agent,
+                },
+                FriendRequestState::Accepted,
+                "accepted",
+                input.occurred_at,
+            )?;
         }
-        RelationshipAction::Reject => friend_request_service::upsert_friend_request(
-            repository,
-            &FriendRequest {
-                request_id,
-                local_public_id: input.local_public_id.clone(),
-                remote_public_id: input.counterpart.counterpart_public_id.clone(),
-                remote_node_id: Some(input.counterpart.remote_node_id.clone()),
-                direction: FriendRequestDirection::Inbound,
-                state: FriendRequestState::Rejected,
-                decision_reason: Some("rejected".to_string()),
-                correlation_id: input.correlation_id.clone(),
-                created_at: input.occurred_at,
-                updated_at: input.occurred_at,
-                expires_at: None,
-            },
-        )?,
+        RelationshipAction::Reject => {
+            friend_request_service::upsert_friend_request(
+                repository,
+                &FriendRequest {
+                    request_id,
+                    local_public_id: input.local_public_id.clone(),
+                    remote_public_id: input.counterpart.counterpart_public_id.clone(),
+                    remote_node_id: Some(input.counterpart.remote_node_id.clone()),
+                    direction: FriendRequestDirection::Inbound,
+                    state: FriendRequestState::Rejected,
+                    decision_reason: Some("rejected".to_string()),
+                    correlation_id: input.correlation_id.clone(),
+                    created_at: input.occurred_at,
+                    updated_at: input.occurred_at,
+                    expires_at: None,
+                },
+            )?;
+            friend_request_service::settle_related_outbound_friend_requests(
+                repository,
+                &input.local_public_id,
+                friend_request_service::FriendRequestCounterpartRef {
+                    public_id: &input.counterpart.counterpart_public_id,
+                    remote_node_id: &input.counterpart.remote_node_id,
+                    target_agent: &input.counterpart.target_agent,
+                },
+                FriendRequestState::Rejected,
+                "rejected",
+                input.occurred_at,
+            )?;
+        }
         RelationshipAction::Cancel => friend_request_service::upsert_friend_request(
             repository,
             &FriendRequest {
@@ -1056,6 +1121,18 @@ where
                     created_at: input.occurred_at,
                     updated_at: input.occurred_at,
                 },
+            )?;
+            friend_request_service::settle_related_outbound_friend_requests(
+                repository,
+                &input.local_public_id,
+                friend_request_service::FriendRequestCounterpartRef {
+                    public_id: &input.counterpart.counterpart_public_id,
+                    remote_node_id: &input.counterpart.remote_node_id,
+                    target_agent: &input.counterpart.target_agent,
+                },
+                FriendRequestState::Blocked,
+                "blocked",
+                input.occurred_at,
             )?;
         }
         RelationshipAction::Unblock => block_service::remove_block(
@@ -1423,6 +1500,84 @@ mod tests {
         assert_eq!(friendships[0].state, FriendshipState::Active);
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].state, ThreadState::Ready);
+    }
+
+    #[test]
+    fn relationship_response_settles_related_outbound_pending_request_and_clears_retry_task() {
+        for (action, expected_state, expected_reason) in [
+            (
+                RelationshipAction::Accept,
+                FriendRequestState::Accepted,
+                "accepted",
+            ),
+            (
+                RelationshipAction::Reject,
+                FriendRequestState::Rejected,
+                "rejected",
+            ),
+            (
+                RelationshipAction::Block,
+                FriendRequestState::Blocked,
+                "blocked",
+            ),
+        ] {
+            let store = SocialStore::open_in_memory().expect("social store");
+            friend_request_service::upsert_friend_request(
+                &store,
+                &FriendRequest {
+                    request_id: "outbound-pending".to_string(),
+                    local_public_id: "did:key:alice".to_string(),
+                    remote_public_id: "node-bob".to_string(),
+                    remote_node_id: Some("node-bob".to_string()),
+                    direction: FriendRequestDirection::Outbound,
+                    state: FriendRequestState::Pending,
+                    decision_reason: None,
+                    correlation_id: Some("corr-outbound".to_string()),
+                    created_at: 1,
+                    updated_at: 1,
+                    expires_at: None,
+                },
+            )
+            .expect("seed outbound request");
+            store
+                .record_reliability_attempt("friend_request", "outbound-pending", 2, 3, None)
+                .expect("seed retry task");
+
+            persist_relationship_action(
+                &store,
+                &PersistRelationshipActionInput {
+                    local_public_id: "did:key:alice".to_string(),
+                    counterpart: counterpart(10),
+                    action,
+                    request_id: Some(format!("response-{expected_reason}")),
+                    correlation_id: Some("corr-response".to_string()),
+                    occurred_at: 10,
+                },
+            )
+            .expect("persist relationship response");
+
+            let requests = friend_request_service::list_friend_requests(&store, "did:key:alice")
+                .expect("list requests");
+            let settled = requests
+                .iter()
+                .find(|request| request.request_id == "outbound-pending")
+                .expect("settled outbound request");
+            assert_eq!(settled.state, expected_state);
+            assert_eq!(settled.decision_reason.as_deref(), Some(expected_reason));
+            assert_eq!(settled.remote_public_id, "node-bob");
+            assert!(
+                store
+                    .get_reliability_task("friend_request", "outbound-pending")
+                    .expect("get retry task")
+                    .is_none()
+            );
+            assert!(
+                store
+                    .due_outbound_pending_friend_requests(20, 0, 10)
+                    .expect("query due requests")
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

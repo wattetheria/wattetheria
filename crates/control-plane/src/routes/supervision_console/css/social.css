@@ -157,7 +157,7 @@
     }
 
     .dm-agent-detail-card {
-      max-height: min(44rem, calc(100vh - 3rem));
+      max-height: none;
       overflow: visible;
     }
 

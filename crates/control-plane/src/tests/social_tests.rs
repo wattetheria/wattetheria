@@ -1768,6 +1768,44 @@ fn unrelated_friend_request_relationship_view(
     }
 }
 
+fn accepted_friend_request_relationship_view(
+    identity: &Identity,
+    remote_identity: &Identity,
+    remote_node_id: &str,
+    local_public_id: &str,
+    remote_public_id: &str,
+) -> SwarmPeerRelationshipView {
+    SwarmPeerRelationshipView {
+        remote_node_id: remote_node_id.to_string(),
+        relationship_state: "accepted".to_string(),
+        last_action: "accept".to_string(),
+        initiated_by: "remote".to_string(),
+        agent_envelope: Some(SwarmAgentEnvelope {
+            protocol: "google_a2a".to_string(),
+            transport_profile: Some("wattswarm_mesh".to_string()),
+            source_agent_id: Some(remote_identity.agent_did.clone()),
+            target_agent_id: Some(identity.agent_did.clone()),
+            source_node_id: Some(remote_node_id.to_string()),
+            target_node_id: Some(identity.agent_did.clone()),
+            capability: Some("social.friend.accept".to_string()),
+            source_agent_card: None,
+            message: json!({
+                "request_id": "remote-accepted-request",
+                "correlation_id": "remote-accepted-correlation",
+                "source_public_id": remote_public_id,
+                "target_public_id": local_public_id,
+            }),
+            extensions: None,
+            signature: Some("sig-remote-accepted".to_string()),
+        }),
+        requested_at: Some(1),
+        responded_at: Some(2),
+        blocked_at: None,
+        cleared_at: None,
+        updated_at: 2,
+    }
+}
+
 #[tokio::test]
 async fn reliability_maintenance_retries_due_connected_outbound_friend_request() {
     let dir = tempfile::tempdir().unwrap();
@@ -1869,6 +1907,113 @@ async fn reliability_maintenance_retries_due_connected_outbound_friend_request()
             .iter()
             .all(|request| request.request_id != "request-unrelated"),
         "retry maintenance should only reconcile bridge views for due pending friend requests"
+    );
+}
+
+#[tokio::test]
+async fn reliability_maintenance_settles_reverse_accepted_outbound_request_without_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_node_id = "remote-node";
+    let mut bridge = MockSwarmBridge::default_for(identity.agent_did.clone());
+    bridge.peers = vec![SwarmPeerView {
+        node_id: remote_node_id.to_string(),
+        connected: Some(true),
+        recently_seen: Some(true),
+        stale: Some(false),
+        last_seen_age_ms: None,
+        discovery: None,
+        metadata: None,
+        relationship: None,
+    }];
+    let bridge = Arc::new(bridge);
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app, &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Borealis".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some(remote_node_id.to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    bridge
+        .relationship_views
+        .lock()
+        .await
+        .push(accepted_friend_request_relationship_view(
+            &identity,
+            &remote_identity,
+            remote_node_id,
+            &local_public_id,
+            &remote_public_id,
+        ));
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "stale-outbound-pending".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_node_id.to_string(),
+            remote_node_id: Some(remote_node_id.to_string()),
+            direction:
+                wattetheria_social::domain::friend_requests::FriendRequestDirection::Outbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: Some("stale-correlation".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            expires_at: None,
+        },
+    )
+    .unwrap();
+    state
+        .social_store
+        .record_reliability_attempt("friend_request", "stale-outbound-pending", 2, 3, None)
+        .expect("seed retry task");
+
+    let processed = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run reliability maintenance");
+
+    assert_eq!(processed, 0);
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+    let requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list friend requests after maintenance");
+    let settled = requests
+        .iter()
+        .find(|request| request.request_id == "stale-outbound-pending")
+        .expect("settled stale outbound request");
+    assert_eq!(
+        settled.state,
+        wattetheria_social::domain::friend_requests::FriendRequestState::Accepted
+    );
+    assert!(
+        state
+            .social_store
+            .get_reliability_task("friend_request", "stale-outbound-pending")
+            .expect("get retry task")
+            .is_none()
     );
 }
 

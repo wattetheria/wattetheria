@@ -1,6 +1,7 @@
 use super::{SocialStore, row_to_friend_request};
 use crate::domain::friend_requests::FriendRequest;
 use crate::domain::reliability_tasks::ReliabilityTask;
+use crate::ports::repositories::ReliabilityTaskRepository;
 use crate::types::{SocialError, SocialResult};
 use rusqlite::{OptionalExtension, params};
 
@@ -154,6 +155,18 @@ impl SocialStore {
             .map_err(|error| {
                 SocialError::Storage(format!("record reliability attempt: {error}"))
             })?;
+        Ok(())
+    }
+}
+
+impl ReliabilityTaskRepository for SocialStore {
+    fn clear_reliability_task(&self, object_kind: &str, object_id: &str) -> SocialResult<()> {
+        self.conn()?
+            .execute(
+                "DELETE FROM reliability_tasks WHERE object_kind = ?1 AND object_id = ?2",
+                params![object_kind, object_id],
+            )
+            .map_err(|error| SocialError::Storage(format!("clear reliability task: {error}")))?;
         Ok(())
     }
 }
