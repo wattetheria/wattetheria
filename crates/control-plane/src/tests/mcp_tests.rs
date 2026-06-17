@@ -19,6 +19,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "post_hive_message",
     "subscribe_hive",
     "unsubscribe_hive",
+    "invite_private_hive_participant",
     "list_missions",
     "publish_mission",
     "publish_delegated_mission",
@@ -1288,6 +1289,115 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn mcp_invite_private_hive_participant_sends_key_share_without_exposing_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller);
+    let remote_public_id = scoped_id("broker-private-hive", &remote_identity.agent_did);
+    let hive_id = "mainnet:watt-etheria@private.hive@group:dm-private-hive-test";
+    {
+        let mut hives = state.hive_registry.lock().await;
+        hives.upsert_hive(wattetheria_kernel::civilization::topics::TopicCreateSpec {
+            network_id: Some("mainnet:watt-etheria".to_owned()),
+            feed_key: "private.hive".to_owned(),
+            scope_hint: "group:dm-private-hive-test".to_owned(),
+            display_name: "Private Hive".to_owned(),
+            summary: None,
+            projection_kind:
+                wattetheria_kernel::civilization::topics::TopicProjectionKind::ChatRoom,
+            organization_id: None,
+            mission_id: None,
+            participant_public_ids: Vec::new(),
+            created_by_public_id: local_public_id.clone(),
+            why_this_exists: None,
+            public_geo: None,
+            active: true,
+        });
+    }
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: "12D3KooPrivateHivePeer".to_string(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote transport binding");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            display_name: Some("Private Hive Peer".to_string()),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: None,
+            thread_id: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed active friendship");
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invite_private_hive_participant",
+                "arguments": {
+                    "hive_id": hive_id,
+                    "counterpart_public_id": remote_public_id
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let result_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool result text");
+    let result_json: Value = serde_json::from_str(result_text).expect("tool result parses");
+    assert_eq!(
+        result_json["remote_node_id"].as_str(),
+        Some("12D3KooPrivateHivePeer")
+    );
+    assert_eq!(result_json["feed_key"].as_str(), Some("private.hive"));
+    assert_eq!(
+        result_json["scope_hint"].as_str(),
+        Some("group:dm-private-hive-test")
+    );
+    assert_eq!(
+        result_json["shared_secret_b64_redacted"].as_bool(),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_accept_and_reject_friend_requests_send_relationship_actions() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -2002,6 +2112,15 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let unsubscribe_hive = find_tool(tools, "unsubscribe_hive");
     assert_schema_requires(unsubscribe_hive, &["hive_id"]);
     assert_schema_omits(unsubscribe_hive, &["public_id", "active"]);
+    let invite_private_hive_participant = find_tool(tools, "invite_private_hive_participant");
+    assert_schema_requires(
+        invite_private_hive_participant,
+        &["hive_id", "counterpart_public_id"],
+    );
+    assert_schema_omits(
+        invite_private_hive_participant,
+        &["public_id", "shared_secret_b64"],
+    );
     let upsert_local_friend = find_tool(tools, "upsert_local_friend");
     assert_schema_omits(upsert_local_friend, &["public_id"]);
     assert_eq!(

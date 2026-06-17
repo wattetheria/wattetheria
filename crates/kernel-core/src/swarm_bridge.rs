@@ -257,6 +257,14 @@ pub struct SwarmDirectMessageCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmPrivateHiveKeyShareCommand {
+    pub remote_node_id: String,
+    pub feed_key: String,
+    pub scope_hint: String,
+    pub agent_envelope: SwarmAgentEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmAgentPaymentCommand {
     pub remote_node_id: String,
     pub message_kind: String,
@@ -433,6 +441,15 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn send_peer_direct_message(&self, _command: SwarmDirectMessageCommand) -> Result<Value> {
         Err(anyhow!("wattswarm peer direct messages are not configured"))
+    }
+
+    async fn share_private_hive_key(
+        &self,
+        _command: SwarmPrivateHiveKeyShareCommand,
+    ) -> Result<Value> {
+        Err(anyhow!(
+            "wattswarm private hive key sharing is not configured"
+        ))
     }
 
     async fn publish_agent_payment_message(
@@ -700,6 +717,13 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn send_peer_direct_message(&self, command: SwarmDirectMessageCommand) -> Result<Value> {
         self.topic_api()?.send_peer_direct_message(command).await
+    }
+
+    async fn share_private_hive_key(
+        &self,
+        command: SwarmPrivateHiveKeyShareCommand,
+    ) -> Result<Value> {
+        self.topic_api()?.share_private_hive_key(command).await
     }
 
     async fn publish_agent_payment_message(
@@ -1074,6 +1098,24 @@ impl HttpWattswarmApi {
             .json::<Value>()
             .await
             .context("decode wattswarm peer direct message response")
+    }
+
+    async fn share_private_hive_key(
+        &self,
+        command: SwarmPrivateHiveKeyShareCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!(
+                "{}/api/peers/dm/private-hive-key-shares",
+                self.base_url
+            ))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm private hive key share response")
     }
 
     async fn publish_agent_payment_message(

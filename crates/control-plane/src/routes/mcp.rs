@@ -1973,6 +1973,7 @@ async fn apply_local_identity_defaults(
         | "post_hive_message"
         | "subscribe_hive"
         | "unsubscribe_hive"
+        | "invite_private_hive_participant"
         | "propose_agent_payment"
         | "upsert_local_friend"
         | "send_agent_dm_message"
@@ -2116,7 +2117,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 48] = [
+const AGENT_TOOLS: [AgentTool; 49] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -2134,6 +2135,7 @@ const AGENT_TOOLS: [AgentTool; 48] = [
     AgentTool { name: "post_hive_message", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "Post a message to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "subscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/subscribe", description: "Subscribe the local controller to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
+    AgentTool { name: "invite_private_hive_participant", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/invite", description: "Invite an accepted friend to a private Hive by sending the Hive key share over encrypted DM.", availability: Availability::TopicBridge },
     AgentTool { name: "list_missions", method: Method::GET, path: "/api/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
     AgentTool { name: "publish_delegated_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a mission backed by an external ServiceNet settlement delegation reference.", availability: Availability::Always },

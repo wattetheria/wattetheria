@@ -165,6 +165,12 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
             &["hive_id"],
             false,
         )),
+        "invite_private_hive_participant" => Some(tool_schema(
+            tool,
+            &invite_private_hive_participant_fields(),
+            &["hive_id", "counterpart_public_id"],
+            false,
+        )),
         _ => None,
     }
 }
@@ -305,6 +311,16 @@ fn subscribe_hive_fields() -> Vec<(&'static str, Value)> {
         string_field(
             "why_this_exists",
             "Optional Hive purpose text from list_hives.",
+        ),
+    ]
+}
+
+fn invite_private_hive_participant_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("hive_id", "Private Wattetheria Hive ID."),
+        string_field(
+            "counterpart_public_id",
+            "Accepted friend public identity to invite.",
         ),
     ]
 }

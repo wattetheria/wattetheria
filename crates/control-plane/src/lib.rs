@@ -531,6 +531,10 @@ fn hive_wattetheria_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/hives/{hive_id}/unsubscribe",
             post(routes::topics::unsubscribe_hive),
         )
+        .route(
+            "/v1/wattetheria/hives/{hive_id}/invite",
+            post(routes::topics::invite_private_hive_participant),
+        )
 }
 
 fn organization_civilization_router() -> Router<ControlPlaneState> {

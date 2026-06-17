@@ -839,6 +839,12 @@ pub struct AgentDmSendBody {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PrivateHiveInviteBody {
+    pub public_id: Option<String>,
+    pub counterpart_public_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AgentPaymentsQuery {
     pub public_id: Option<String>,
     pub counterpart_public_id: Option<String>,

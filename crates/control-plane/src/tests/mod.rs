@@ -45,11 +45,11 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
     SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipActionCommand,
-    SwarmRunSubmitCommand, SwarmSourceAgentCard, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
-    SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskCompletionDecisionCommand,
-    SwarmTaskProposeCandidateCommand, SwarmTaskSettleCommand, SwarmTopicCursorView,
-    SwarmTopicMessageView,
+    SwarmPeerRelationshipView, SwarmPeerView, SwarmPrivateHiveKeyShareCommand,
+    SwarmRelationshipActionCommand, SwarmRunSubmitCommand, SwarmSourceAgentCard,
+    SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskClaimDecisionCommand,
+    SwarmTaskCompleteCommand, SwarmTaskCompletionDecisionCommand, SwarmTaskProposeCandidateCommand,
+    SwarmTaskSettleCommand, SwarmTopicCursorView, SwarmTopicMessageView,
 };
 use wattetheria_kernel::swarm_sync::{
     SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTopicActivitySnapshot,
@@ -1082,6 +1082,22 @@ impl SwarmBridge for MockSwarmBridge {
             "ok": true,
             "remote_node_id": command.remote_node_id,
             "message_kind": "direct",
+        }))
+    }
+
+    async fn share_private_hive_key(
+        &self,
+        command: SwarmPrivateHiveKeyShareCommand,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "remote_node_id": command.remote_node_id,
+            "feed_key": command.feed_key,
+            "scope_hint": command.scope_hint,
+            "thread_id": "dm:key-share",
+            "message_id": "dm-msg-key-share",
+            "event_id": "evt-key-share",
+            "shared_secret_b64_redacted": true,
         }))
     }
 

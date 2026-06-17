@@ -7,6 +7,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::topics::{HiveProfile, TopicCreateSpec, TopicProjectionKind};
+use wattetheria_kernel::swarm_bridge::{SwarmAgentEnvelope, SwarmPrivateHiveKeyShareCommand};
+use wattetheria_social::application::{friendship_service, transport_binding_service};
+use wattetheria_social::domain::friendships::FriendshipState;
+use wattetheria_social::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
 use wattswarm_protocol::types::ScopeHint;
 
 use crate::auth::{authorize, internal_error};
@@ -18,8 +22,8 @@ use crate::routes::reward_events::{
 };
 use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
 use crate::state::{
-    ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody, StreamEvent,
-    TopicCreateBody, TopicsQuery,
+    ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody,
+    PrivateHiveInviteBody, StreamEvent, TopicCreateBody, TopicsQuery,
 };
 
 const HIVE_SCOPE_HINT_ERROR: &str = "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>";
@@ -55,7 +59,10 @@ fn default_agent_display_name(agent_did: &str) -> String {
     format!("Agent-{suffix}")
 }
 
-fn context_agent_did(state: &ControlPlaneState, context: &IdentityContextView) -> String {
+pub(crate) fn context_agent_did(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+) -> String {
     context
         .public_memory_owner
         .agent_did
@@ -63,7 +70,10 @@ fn context_agent_did(state: &ControlPlaneState, context: &IdentityContextView) -
         .unwrap_or_else(|| state.agent_did.clone())
 }
 
-fn context_agent_display_name(state: &ControlPlaneState, context: &IdentityContextView) -> String {
+pub(crate) fn context_agent_display_name(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+) -> String {
     context.public_identity.as_ref().map_or_else(
         || default_agent_display_name(&context_agent_did(state, context)),
         |identity| identity.display_name.clone(),
@@ -75,7 +85,7 @@ async fn hive_agent_envelope(
     context: &IdentityContextView,
     capability: &str,
     message: Value,
-) -> anyhow::Result<wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope> {
+) -> anyhow::Result<SwarmAgentEnvelope> {
     build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
@@ -89,6 +99,134 @@ async fn hive_agent_envelope(
             extensions: None,
         },
     )
+}
+
+type PrivateHiveInviteResult<T> = Result<T, Box<Response>>;
+
+fn private_hive_invite_json_error(status: StatusCode, body: Value) -> Response {
+    (status, Json(body)).into_response()
+}
+
+fn is_private_hive_profile(hive: &HiveProfile) -> bool {
+    hive.feed_key != "wattswarm.dm" && hive.scope_hint.starts_with("group:dm-")
+}
+
+async fn load_private_hive(
+    state: &ControlPlaneState,
+    hive_id: &str,
+) -> PrivateHiveInviteResult<HiveProfile> {
+    let Some(hive) = state.hive_registry.lock().await.get(hive_id) else {
+        return Err(Box::new(private_hive_invite_json_error(
+            StatusCode::NOT_FOUND,
+            json!({"error": "hive not found"}),
+        )));
+    };
+    if !hive.active {
+        return Err(Box::new(private_hive_invite_json_error(
+            StatusCode::FORBIDDEN,
+            json!({
+                "error": "hive subscription required",
+                "hive_id": hive.topic_id,
+                "message": "subscribe to this hive before inviting participants"
+            }),
+        )));
+    }
+    if !is_private_hive_profile(&hive) {
+        return Err(Box::new(private_hive_invite_json_error(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "hive is not a private hive"}),
+        )));
+    }
+    Ok(hive)
+}
+
+fn counterpart_public_id(body: &PrivateHiveInviteBody) -> PrivateHiveInviteResult<String> {
+    let public_id = body.counterpart_public_id.trim();
+    if public_id.is_empty() {
+        return Err(Box::new(private_hive_invite_json_error(
+            StatusCode::BAD_REQUEST,
+            json!({"error": "counterpart_public_id is required"}),
+        )));
+    }
+    Ok(public_id.to_owned())
+}
+
+fn ensure_active_friend(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    counterpart_public_id: &str,
+) -> PrivateHiveInviteResult<()> {
+    let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)
+        .map_err(|error| Box::new(internal_error(&anyhow::anyhow!(error))))?;
+    if friendships.iter().any(|friendship| {
+        friendship.remote_public_id == counterpart_public_id
+            && friendship.state == FriendshipState::Active
+    }) {
+        return Ok(());
+    }
+    Err(Box::new(private_hive_invite_json_error(
+        StatusCode::BAD_REQUEST,
+        json!({"error": "private hive invites require an active friend"}),
+    )))
+}
+
+fn wattswarm_binding(
+    state: &ControlPlaneState,
+    counterpart_public_id: &str,
+) -> PrivateHiveInviteResult<RemoteTransportBinding> {
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .map_err(|error| Box::new(internal_error(&anyhow::anyhow!(error))))?;
+    transport_bindings
+        .into_iter()
+        .find(|binding| {
+            binding.public_id == counterpart_public_id
+                && binding.transport_kind == TransportKind::Wattswarm
+                && !binding.transport_node_id.trim().is_empty()
+        })
+        .ok_or_else(|| {
+            Box::new(private_hive_invite_json_error(
+                StatusCode::BAD_REQUEST,
+                json!({"error": "remote Wattswarm node binding missing for active friend"}),
+            ))
+        })
+}
+
+async fn build_private_hive_invite_envelope(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+    hive: &HiveProfile,
+    local_public_id: &str,
+    counterpart_public_id: &str,
+    transport_binding: &RemoteTransportBinding,
+) -> PrivateHiveInviteResult<SwarmAgentEnvelope> {
+    let target_agent_id = transport_binding
+        .agent_did
+        .clone()
+        .unwrap_or_else(|| counterpart_public_id.to_owned());
+    let message = json!({
+        "action": "private_hive_invite",
+        "hive_id": hive.topic_id,
+        "feed_key": hive.feed_key,
+        "scope_hint": hive.scope_hint,
+        "source_public_id": local_public_id,
+        "target_public_id": counterpart_public_id,
+        "sent_at": Utc::now().timestamp(),
+    });
+    build_signed_agent_envelope_for_nodes(
+        state,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: context_agent_did(state, context),
+            source_display_name: Some(context_agent_display_name(state, context)),
+            target_agent_id: Some(target_agent_id),
+            source_node_id: state.swarm_bridge.local_node_id().await.ok(),
+            target_node_id: Some(transport_binding.transport_node_id.clone()),
+            capability: "hive.private_key_share".to_owned(),
+            message,
+            extensions: None,
+        },
+    )
+    .map_err(|error| Box::new(internal_error(&error)))
 }
 
 struct HiveEnvelopeRoute<'a> {
@@ -607,6 +745,98 @@ pub(crate) async fn unsubscribe_hive(
     Json(body): Json<HiveSubscriptionBody>,
 ) -> Response {
     update_hive_subscription(state, headers, hive_id, body, false).await
+}
+
+pub(crate) async fn invite_private_hive_participant(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(hive_id): Path<String>,
+    Json(body): Json<PrivateHiveInviteBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .clone()
+        .unwrap_or_else(|| context.public_memory_owner.controller.clone());
+    let hive = match load_private_hive(&state, &hive_id).await {
+        Ok(hive) => hive,
+        Err(response) => return *response,
+    };
+    let counterpart_public_id = match counterpart_public_id(&body) {
+        Ok(public_id) => public_id,
+        Err(response) => return *response,
+    };
+    if let Err(response) = ensure_active_friend(&state, &local_public_id, &counterpart_public_id) {
+        return *response;
+    }
+    let transport_binding = match wattswarm_binding(&state, &counterpart_public_id) {
+        Ok(binding) => binding,
+        Err(response) => return *response,
+    };
+    let agent_envelope = match build_private_hive_invite_envelope(
+        &state,
+        &context,
+        &hive,
+        &local_public_id,
+        &counterpart_public_id,
+        &transport_binding,
+    )
+    .await
+    {
+        Ok(envelope) => envelope,
+        Err(response) => return *response,
+    };
+    let response = match state
+        .swarm_bridge
+        .share_private_hive_key(SwarmPrivateHiveKeyShareCommand {
+            remote_node_id: transport_binding.transport_node_id.clone(),
+            feed_key: hive.feed_key.clone(),
+            scope_hint: hive.scope_hint.clone(),
+            agent_envelope,
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return internal_error(&error),
+    };
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "hive".to_string(),
+        action: "hive.private.invite".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(hive.topic_id.clone()),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "hive_id": hive.topic_id,
+            "feed_key": hive.feed_key,
+            "scope_hint": hive.scope_hint,
+            "counterpart_public_id": counterpart_public_id,
+            "remote_node_id": transport_binding.transport_node_id,
+            "shared_secret_b64_redacted": true,
+        })),
+    });
+    Json(json!({
+        "ok": true,
+        "hive_id": hive.topic_id,
+        "feed_key": hive.feed_key,
+        "scope_hint": hive.scope_hint,
+        "counterpart_public_id": counterpart_public_id,
+        "remote_node_id": response["remote_node_id"],
+        "thread_id": response["thread_id"],
+        "message_id": response["message_id"],
+        "event_id": response["event_id"],
+        "shared_secret_b64_redacted": true,
+    }))
+    .into_response()
 }
 
 async fn update_hive_subscription(
