@@ -617,8 +617,13 @@ fn source_agent_card_is_remote(
     view: &SwarmPeerRelationshipView,
     envelope: &SwarmAgentEnvelope,
 ) -> bool {
-    envelope.source_node_id.as_deref() == Some(view.remote_node_id.as_str())
-        || view.initiated_by == "remote"
+    if envelope.source_node_id.as_deref() == Some(view.remote_node_id.as_str()) {
+        return true;
+    }
+    if envelope.target_node_id.as_deref() == Some(view.remote_node_id.as_str()) {
+        return false;
+    }
+    view.initiated_by == "remote"
 }
 
 fn relationship_remote_public_id(view: &SwarmPeerRelationshipView) -> Option<String> {

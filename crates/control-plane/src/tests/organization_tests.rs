@@ -516,7 +516,7 @@ async fn organization_endpoints_and_views_work() {
 #[tokio::test]
 async fn supervision_console_page_serves_canonical_surface() {
     let (_dir, app, _token, _, _state) = build_test_app(20);
-    let (status, _body) = request_text(
+    let (status, body) = request_text(
         app,
         axum::http::Request::builder()
             .uri("/supervision")
@@ -526,4 +526,9 @@ async fn supervision_console_page_serves_canonical_surface() {
     .await;
 
     assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("function formatDiagnosticJson(row)"));
+    assert!(body.contains("\"timestamp_sort\""));
+    assert!(body.contains("normalized.startsWith(\"timestamp_\")"));
+    assert!(body.contains("normalized.endsWith(\"_at\")"));
+    assert!(body.contains("escapeHtml(formatDiagnosticJson(row))"));
 }

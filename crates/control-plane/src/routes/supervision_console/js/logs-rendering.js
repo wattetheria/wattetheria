@@ -102,6 +102,55 @@
       });
     }
 
+    const DIAGNOSTIC_JSON_TIME_FIELDS = new Set([
+      "acknowledged_at",
+      "created_at",
+      "generated_at",
+      "queued_at",
+      "received_at",
+      "sent_at",
+      "timestamp",
+      "timestamp_ms",
+      "timestamp_sort",
+      "updated_at",
+    ]);
+
+    function diagnosticJsonTimeField(key) {
+      const normalized = String(key || "").toLowerCase();
+      return DIAGNOSTIC_JSON_TIME_FIELDS.has(normalized)
+        || normalized.endsWith("_at")
+        || normalized.endsWith("_at_ms")
+        || normalized.startsWith("timestamp_")
+        || normalized.endsWith("_timestamp");
+    }
+
+    function formatDiagnosticJsonValue(key, value) {
+      if (Array.isArray(value)) {
+        return value.map((item) => formatDiagnosticJsonValue("", item));
+      }
+      if (value && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value).map(([childKey, childValue]) => [
+            childKey,
+            formatDiagnosticJsonValue(childKey, childValue),
+          ]),
+        );
+      }
+      if (!diagnosticJsonTimeField(key)) return value;
+      if (typeof value === "number") return formatTime(value);
+      if (typeof value === "string" && /^\d{10,13}$/.test(value.trim())) {
+        return formatTime(Number(value));
+      }
+      if (typeof value === "string" && !Number.isNaN(Date.parse(value))) {
+        return formatTime(value);
+      }
+      return value;
+    }
+
+    function formatDiagnosticJson(row) {
+      return JSON.stringify(formatDiagnosticJsonValue("", row), null, 2);
+    }
+
     function renderDiagnostics(payload, entries) {
       const local = payload?.local || {};
       const swarm = payload?.swarm || {};
@@ -147,7 +196,7 @@
             <div class="row-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
             <details class="row-details">
               <summary>JSON</summary>
-              <pre class="code">${escapeHtml(JSON.stringify(row, null, 2))}</pre>
+              <pre class="code">${escapeHtml(formatDiagnosticJson(row))}</pre>
             </details>
           </div>
         `;

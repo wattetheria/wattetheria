@@ -2391,6 +2391,171 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_social_reconcile_remote_accept_uses_target_public_id_for_outbound_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_node_id = "658c23767f26cf7b90971b2ac9834313515d3e289312b17e7e643569598eb95e";
+    let remote_public_id = "658c23767f26cf7b90971b2ac9834313515d3e289312b17e7e643569598eb95e";
+    let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
+        local_node_id: identity.agent_did.clone(),
+        agent_stats: BTreeMap::new(),
+        network_status: SwarmNetworkStatusView {
+            running: true,
+            mode: "network".to_string(),
+            peer_protocol_distribution: BTreeMap::new(),
+        },
+        peers: Vec::new(),
+        subscriptions: Mutex::new(Vec::new()),
+        messages: Mutex::new(Vec::new()),
+        relationship_views: Mutex::new(Vec::new()),
+        relationship_commands: Mutex::new(Vec::new()),
+        dm_threads: Mutex::new(vec![SwarmPeerDmThreadView {
+            remote_node_id: remote_node_id.to_string(),
+            thread_id: "dm:remote-accept-thread".to_string(),
+            thread_kind: "direct".to_string(),
+            session_state: "ready".to_string(),
+            relationship_established_at: Some(1_781_671_983),
+            created_at: 1_781_671_983,
+            updated_at: 1_781_671_983,
+            last_message_at: None,
+        }]),
+        dm_messages: Mutex::new(BTreeMap::new()),
+        dm_commands: Mutex::new(Vec::new()),
+        payment_commands: Mutex::new(Vec::new()),
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "request-remote-accept".to_string(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: local_public_id.clone(),
+            remote_node_id: Some(remote_node_id.to_string()),
+            direction: wattetheria_social::domain::friend_requests::FriendRequestDirection::Inbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Accepted,
+            decision_reason: Some("accepted".to_string()),
+            correlation_id: Some("correlation-remote-accept".to_string()),
+            created_at: 1_781_671_870,
+            updated_at: 1_781_671_983,
+            expires_at: None,
+        },
+    )
+    .expect("seed mis-reconciled self friend request");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{local_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: local_public_id.clone(),
+            display_name: Some("Self Alias".to_string()),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("request-remote-accept".to_string()),
+            thread_id: Some("dm:self-alias".to_string()),
+            created_at: 1_781_671_870,
+            updated_at: 1_781_671_983,
+        },
+    )
+    .expect("seed mis-reconciled self friendship");
+    bridge
+        .relationship_views
+        .lock()
+        .await
+        .push(SwarmPeerRelationshipView {
+            remote_node_id: remote_node_id.to_string(),
+            relationship_state: "accepted".to_string(),
+            last_action: "accept".to_string(),
+            initiated_by: "remote".to_string(),
+            agent_envelope: Some(SwarmAgentEnvelope {
+                protocol: "google_a2a".to_string(),
+                transport_profile: Some("wattswarm_mesh".to_string()),
+                source_agent_id: Some(identity.agent_did.clone()),
+                target_agent_id: Some(remote_identity.agent_did.clone()),
+                source_node_id: Some(identity.agent_did.clone()),
+                target_node_id: Some(remote_node_id.to_string()),
+                capability: Some("social.friend.request".to_string()),
+                source_agent_card: None,
+                message: json!({
+                    "action": "request",
+                    "request_id": "request-remote-accept",
+                    "correlation_id": "correlation-remote-accept",
+                    "source_public_id": local_public_id,
+                    "target_public_id": remote_public_id,
+                    "payload": "hello"
+                }),
+                extensions: None,
+                signature: Some("sig-remote-accept".to_string()),
+            }),
+            requested_at: Some(1_781_671_870),
+            responded_at: Some(1_781_671_983),
+            blocked_at: None,
+            cleared_at: None,
+            updated_at: 1_781_671_983,
+        });
+
+    let relationship_items = authed_get_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/social/agent-friends?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(relationship_items.as_array().unwrap().len(), 1);
+    assert_eq!(
+        relationship_items[0]["counterpart_public_id"].as_str(),
+        Some(remote_public_id)
+    );
+    assert_eq!(
+        relationship_items[0]["relationship_state"].as_str(),
+        Some("active")
+    );
+
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("list reconciled friendships");
+    let active_friendships = friendships
+        .iter()
+        .filter(|friendship| {
+            friendship.state == wattetheria_social::domain::friendships::FriendshipState::Active
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(active_friendships.len(), 1);
+    assert_eq!(active_friendships[0].remote_public_id, remote_public_id);
+    assert_ne!(active_friendships[0].remote_public_id, local_public_id);
+    assert!(friendships.iter().any(|friendship| {
+        friendship.remote_public_id == local_public_id
+            && friendship.state == wattetheria_social::domain::friendships::FriendshipState::Removed
+    }));
+
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list reconciled friend requests");
+    assert_eq!(friend_requests.len(), 1);
+    assert_eq!(friend_requests[0].remote_public_id, remote_public_id);
+    assert_eq!(
+        friend_requests[0].state,
+        wattetheria_social::domain::friend_requests::FriendRequestState::Accepted
+    );
+
+    let thread_items = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/wattetheria/social/agent-dm/threads?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(thread_items.as_array().unwrap().len(), 1);
+    assert_eq!(
+        thread_items[0]["counterpart_public_id"].as_str(),
+        Some(remote_public_id)
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
