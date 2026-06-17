@@ -1006,6 +1006,119 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
     );
 }
 
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn agent_action_commit_payment_authorize_uses_ledger_remote_node_without_controller_binding()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        fail_accept_and_finalize: false,
+        local_node_id: identity.agent_did.clone(),
+        agent_stats: BTreeMap::new(),
+        network_status: SwarmNetworkStatusView {
+            running: true,
+            mode: "network".to_string(),
+            peer_protocol_distribution: BTreeMap::new(),
+        },
+        peers: Vec::new(),
+        subscriptions: Mutex::new(Vec::new()),
+        messages: Mutex::new(Vec::new()),
+        relationship_views: Mutex::new(Vec::new()),
+        relationship_commands: Mutex::new(Vec::new()),
+        dm_threads: Mutex::new(Vec::new()),
+        dm_messages: Mutex::new(BTreeMap::new()),
+        dm_commands: Mutex::new(Vec::new()),
+        payment_commands: Mutex::new(Vec::new()),
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-borealis", &remote_identity.agent_did);
+    let sender_address = seed_active_payment_account(&state);
+    let payment_id = {
+        let mut ledger = state.payment_ledger.lock().await;
+        ledger
+            .propose(
+                &identity.agent_did,
+                wattetheria_kernel::payments::ProposePaymentRequest {
+                    sender_public_id: local_public_id.clone(),
+                    remote_node_id: "12D3KooRemotePeer".to_string(),
+                    recipient_public_id: remote_public_id.clone(),
+                    recipient_did: remote_identity.agent_did.clone(),
+                    amount: "2500000".to_string(),
+                    currency: "USDT".to_string(),
+                    rail: "x402".to_string(),
+                    layer: wattetheria_kernel::payments::SettlementLayer::Web3,
+                    network: Some("base-sepolia".to_string()),
+                    recipient_address: None,
+                    mission_id: None,
+                    task_id: None,
+                    description: None,
+                    metadata: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap()
+            .payment_id
+    };
+
+    let committed = authed_post_json_with_headers(
+        app.clone(),
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-payment-no-binding-1",
+                "event_type": "payment_request",
+                "source_kind": "payment_summary",
+                "source_node_id": "12D3KooRemotePeer",
+                "payload": {
+                    "payment": {
+                        "payment_id": payment_id,
+                    }
+                },
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-payment-no-binding-1",
+                "action": "authorize",
+                "route": "wattetheria_commit",
+                "payload": {}
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-payment-no-binding-1"),
+            ("x-agent-decision-id", "dec-payment-no-binding-1"),
+        ],
+    )
+    .await;
+
+    assert_eq!(committed["status"].as_str(), Some("authorized"));
+    assert_eq!(
+        committed["sender_address"].as_str(),
+        Some(sender_address.as_str())
+    );
+    let payment_commands = bridge.payment_commands.lock().await;
+    assert_eq!(payment_commands.len(), 1);
+    assert_eq!(payment_commands[0].remote_node_id, "12D3KooRemotePeer");
+    assert_eq!(
+        payment_commands[0].agent_envelope.target_node_id.as_deref(),
+        Some("12D3KooRemotePeer")
+    );
+    assert_eq!(
+        payment_commands[0]
+            .agent_envelope
+            .target_agent_id
+            .as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+}
+
 #[tokio::test]
 async fn agent_action_commit_requires_local_hive_subscription_for_topic_reply() {
     let dir = tempfile::tempdir().unwrap();

@@ -1167,11 +1167,15 @@ async fn notify_counterpart_of_payment_change(
         }));
     }
     let counterpart =
-        match resolve_social_counterpart_target(state, &payment.recipient_public_id).await {
-            Ok(counterpart) => counterpart,
-            Err(_) => resolve_social_counterpart_target(state, &payment.sender_public_id)
-                .await
-                .map_err(anyhow::Error::msg)?,
+        if let Some(counterpart) = payment_counterpart_from_remote_node(state, payment) {
+            counterpart
+        } else {
+            match resolve_social_counterpart_target(state, &payment.recipient_public_id).await {
+                Ok(counterpart) => counterpart,
+                Err(_) => resolve_social_counterpart_target(state, &payment.sender_public_id)
+                    .await
+                    .map_err(anyhow::Error::msg)?,
+            }
         };
     send_payment_message(
         state,
@@ -1179,6 +1183,33 @@ async fn notify_counterpart_of_payment_change(
         &payment.agent_message(kind, Utc::now().timestamp()),
     )
     .await
+}
+
+fn payment_counterpart_from_remote_node(
+    state: &ControlPlaneState,
+    payment: &PaymentTransaction,
+) -> Option<SocialCounterpartTarget> {
+    let remote_node = payment.remote_node_id.trim();
+    if remote_node.is_empty() || remote_node.starts_with("servicenet:") {
+        return None;
+    }
+
+    let (counterpart_public_id, target_agent) = if payment.sender_did == state.agent_did {
+        (
+            payment.recipient_public_id.clone(),
+            payment.recipient_did.clone(),
+        )
+    } else if payment.recipient_did == state.agent_did {
+        (payment.sender_public_id.clone(), payment.sender_did.clone())
+    } else {
+        return None;
+    };
+
+    Some(SocialCounterpartTarget {
+        counterpart_public_id,
+        remote_node: remote_node.to_owned(),
+        target_agent,
+    })
 }
 
 async fn send_payment_message(

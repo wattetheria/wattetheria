@@ -999,17 +999,6 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
             )
             .expect("upsert remote identity");
     }
-    {
-        let mut bindings = state.controller_binding_registry.lock().await;
-        bindings.upsert(
-            &remote_public_id,
-            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
-            "remote-runtime".to_owned(),
-            Some("remote-node".to_owned()),
-            wattetheria_kernel::civilization::identities::OwnershipScope::External,
-            true,
-        );
-    }
     friend_request_service::upsert_friend_request(
         &*state.social_store,
         &wattetheria_social::domain::friend_requests::FriendRequest {
@@ -1098,6 +1087,11 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
     assert_eq!(
         commands[0].action,
         wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Accept
+    );
+    assert_eq!(commands[0].remote_node_id, "remote-node");
+    assert_eq!(
+        commands[0].agent_envelope.target_node_id.as_deref(),
+        Some("remote-node")
     );
     drop(commands);
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)

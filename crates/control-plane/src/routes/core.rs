@@ -104,6 +104,32 @@ fn event_message_public_id(
         .map(ToOwned::to_owned)
 }
 
+fn event_source_node_id(event: &crate::state::AgentActionCommitBody) -> Option<String> {
+    event
+        .event
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.source_node_id.as_deref())
+        .or(event.event.source_node_id.as_deref())
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer("/agent_envelope/source_node_id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer("/topic_content/agent_envelope/source_node_id")
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn topic_reply_is_direct_message(event: &crate::state::AgentActionCommitEvent) -> bool {
     event
         .payload
@@ -408,7 +434,7 @@ async fn commit_friend_request(
         Json(AgentRelationshipActionBody {
             public_id: event_message_public_id(&body, "target_public_id"),
             counterpart_public_id: Some(counterpart_public_id),
-            remote_node_id: None,
+            remote_node_id: event_source_node_id(&body),
             target_agent_did: None,
             display_name: None,
             action,
