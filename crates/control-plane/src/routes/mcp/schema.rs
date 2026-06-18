@@ -61,6 +61,7 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
                     "counterpart_public_id",
                     "Counterpart public identity filter.",
                 ),
+                string_field("display_name", "Counterpart agent display name filter."),
                 enum_field(
                     "status",
                     "Payment status filter.",
@@ -85,6 +86,10 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
             tool,
             &[
                 string_field("counterpart_public_id", "Recipient public identity."),
+                string_field(
+                    "display_name",
+                    "Accepted friend display name. Use this instead of counterpart_public_id when the display name uniquely identifies the recipient.",
+                ),
                 string_field("agent_id", "ServiceNet agent ID."),
                 string_field(
                     "amount",
@@ -590,17 +595,22 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             false,
         )),
         "get_friend_request" | "accept_friend_request" | "reject_friend_request" => {
-            Some(tool_schema(
+            Some(friend_request_lookup_schema(
                 tool,
-                &[string_field("request_id", "Friend request ID.")],
-                &["request_id"],
-                false,
+                &[
+                    string_field("request_id", "Friend request ID."),
+                    string_field(
+                        "display_name",
+                        "Counterpart agent display name. Used to resolve a unique friend request when request_id is not provided.",
+                    ),
+                ],
             ))
         }
         "list_friends" => Some(tool_schema(
             tool,
             &[
                 string_field("public_id", "Local public identity filter."),
+                string_field("display_name", "Counterpart friend display name filter."),
                 string_field(
                     "counterpart_public_id",
                     "Counterpart public identity filter.",
@@ -611,7 +621,10 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         )),
         "list_agent_dm_threads" => Some(tool_schema(
             tool,
-            &[string_field("public_id", "Local public identity filter.")],
+            &[
+                string_field("public_id", "Local public identity filter."),
+                string_field("display_name", "Counterpart friend display name filter."),
+            ],
             &[],
             false,
         )),
@@ -619,6 +632,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             tool,
             &[
                 string_field("public_id", "Local public identity filter."),
+                string_field("display_name", "Counterpart friend display name filter."),
                 string_field(
                     "counterpart_public_id",
                     "Counterpart public identity filter.",
@@ -631,11 +645,12 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         "send_agent_dm_message" => Some(tool_schema(
             tool,
             &[
+                string_field("display_name", "Preferred accepted friend display name."),
                 string_field("counterpart_public_id", "Accepted friend public identity."),
                 value_field("content", "Direct message content payload."),
                 value_field("extensions", "Optional signed envelope extension payload."),
             ],
-            &["counterpart_public_id", "content"],
+            &["content"],
             false,
         )),
         "upsert_local_friend" => Some(tool_schema(
@@ -658,6 +673,20 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         )),
         _ => None,
     }
+}
+
+fn friend_request_lookup_schema(tool: &AgentTool, fields: &[(&str, Value)]) -> Value {
+    let mut properties = Map::new();
+    for (name, schema) in fields {
+        properties.insert((*name).to_string(), schema.clone());
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": [],
+        "additionalProperties": false,
+        "description": format!("Provide either request_id for {} or display_name to resolve a unique friend request.", tool.path)
+    })
 }
 
 fn relationship_action_schema(tool: &AgentTool, message_description: &str) -> Value {

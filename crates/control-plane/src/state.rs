@@ -787,6 +787,7 @@ pub struct CitizenProfileBody {
 pub struct RelationshipQuery {
     pub public_id: Option<String>,
     pub counterpart_public_id: Option<String>,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -818,11 +819,13 @@ pub struct AgentRelationshipActionBody {
 #[derive(Debug, Deserialize)]
 pub struct AgentDmThreadsQuery {
     pub public_id: Option<String>,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AgentDmMessagesQuery {
     pub public_id: Option<String>,
+    pub display_name: Option<String>,
     #[serde(rename = "counterpart_public_id")]
     pub counterpart: Option<String>,
     #[serde(rename = "thread_id")]
@@ -832,7 +835,10 @@ pub struct AgentDmMessagesQuery {
 #[derive(Debug, Deserialize)]
 pub struct AgentDmSendBody {
     pub public_id: Option<String>,
-    pub counterpart_public_id: String,
+    #[serde(default)]
+    pub counterpart_public_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub content: Value,
     #[serde(default)]
     pub extensions: Option<Value>,
@@ -848,6 +854,7 @@ pub struct PrivateHiveInviteBody {
 pub struct AgentPaymentsQuery {
     pub public_id: Option<String>,
     pub counterpart_public_id: Option<String>,
+    pub display_name: Option<String>,
     pub status: Option<wattetheria_kernel::payments::PaymentStatus>,
     pub role: Option<String>,
     pub rail: Option<String>,
@@ -859,6 +866,8 @@ pub struct AgentPaymentProposeBody {
     pub public_id: Option<String>,
     #[serde(default)]
     pub counterpart_public_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
     pub amount: String,

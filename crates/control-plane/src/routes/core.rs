@@ -540,7 +540,8 @@ async fn commit_topic_reply(
             commit_headers,
             Json(AgentDmSendBody {
                 public_id: event_message_public_id(&body, "target_public_id"),
-                counterpart_public_id,
+                counterpart_public_id: Some(counterpart_public_id),
+                display_name: None,
                 content,
                 extensions: body.decision.payload.get("extensions").cloned(),
             }),

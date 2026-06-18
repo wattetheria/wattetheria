@@ -29,7 +29,6 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "complete_mission",
     "settle_mission",
     "list_friends",
-    "upsert_local_friend",
     "list_nearby",
     "list_friend_requests",
     "list_sent_friend_requests",
@@ -41,9 +40,6 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "list_agent_dm_threads",
     "list_agent_dm_messages",
     "send_agent_dm_message",
-    "send_mailbox_message",
-    "list_mailbox_messages",
-    "ack_mailbox_message",
     "list_servicenet_agents",
     "get_servicenet_agent",
     "delete_servicenet_agent",
@@ -72,7 +68,7 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -105,7 +101,7 @@ async fn mcp_success_records_contribution_reward_event() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -597,6 +593,187 @@ async fn mcp_propose_agent_payment_normalizes_stablecoin_amount_for_counterpart(
     assert_eq!(
         payment_commands[0].payment["amount"].as_str(),
         Some("1000000")
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn mcp_agent_payments_support_friend_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller);
+    let remote_public_id = scoped_id("broker-payments", &remote_identity.agent_did);
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Payments".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooPaymentPeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
+    wattetheria_social::application::remote_identity_service::upsert_remote_identity(
+        &*state.social_store,
+        &wattetheria_social::domain::identities::RemoteIdentityProfile {
+            public_id: remote_public_id.clone(),
+            agent_did: remote_identity.agent_did.clone(),
+            display_name: "Broker Payments".to_string(),
+            description: None,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            did_document_json: None,
+            active: true,
+            last_profile_fetched_at: Some(1),
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote identity");
+    wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+        &*state.social_store,
+        &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+            public_id: remote_public_id.clone(),
+            agent_did: Some(remote_identity.agent_did.clone()),
+            transport_kind:
+                wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+            transport_node_id: "12D3KooPaymentPeer".to_string(),
+            binding_source: "friendship".to_string(),
+            binding_confidence: 90,
+            binding_proof_json: None,
+            binding_verified: true,
+            binding_verified_at: Some(1),
+            updated_at: 1,
+        },
+    )
+    .expect("seed remote transport binding");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Payments".to_string()),
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: None,
+            thread_id: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed active friendship");
+
+    let proposed = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_agent_payment",
+                "arguments": {
+                    "display_name": "Broker Payments",
+                    "amount": "2.50",
+                    "currency": "USDC",
+                    "rail": "x402",
+                    "layer": "web3",
+                    "network": "base"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(proposed["result"]["isError"].as_bool(), Some(false));
+    let payment = &proposed["result"]["structuredContent"]["payment"];
+    assert_eq!(
+        payment["recipient_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        payment["recipient_display_name"].as_str(),
+        Some("Broker Payments")
+    );
+    assert_eq!(
+        payment["counterpart_display_name"].as_str(),
+        Some("Broker Payments")
+    );
+    let payment_id = payment["payment_id"].as_str().unwrap();
+    let payment_commands = bridge.payment_commands.lock().await;
+    assert_eq!(payment_commands.len(), 1);
+    assert_eq!(payment_commands[0].remote_node_id, "12D3KooPaymentPeer");
+    drop(payment_commands);
+
+    let listed = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_agent_payments",
+                "arguments": {
+                    "display_name": "Broker Payments"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(listed["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        listed["result"]["structuredContent"]["count"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["items"][0]["counterpart_display_name"].as_str(),
+        Some("Broker Payments")
+    );
+
+    let fetched = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "get_agent_payment",
+                "arguments": {
+                    "payment_id": payment_id
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(fetched["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        fetched["result"]["structuredContent"]["counterpart_display_name"].as_str(),
+        Some("Broker Payments")
     );
 }
 
@@ -1243,7 +1420,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     .expect("seed existing millisecond dm thread");
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -1252,7 +1429,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
             "params": {
                 "name": "send_agent_dm_message",
                 "arguments": {
-                    "counterpart_public_id": remote_public_id,
+                    "display_name": "Broker DM",
                     "content": {
                         "type": "text",
                         "text": "hello over private group dm"
@@ -1285,6 +1462,165 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     .expect("dm thread exists");
     assert!(thread.updated_at >= thread.created_at);
     assert!(thread.updated_at >= 1_000_000_000_000);
+
+    let friends_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_friends",
+                "arguments": {
+                    "display_name": "Broker DM"
+                }
+            }
+        }),
+    )
+    .await;
+    let friends = &friends_response["result"]["structuredContent"];
+    assert_eq!(friends["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        friends["items"][0]["counterpart_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+
+    let threads_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "list_agent_dm_threads",
+                "arguments": {
+                    "display_name": "Broker DM"
+                }
+            }
+        }),
+    )
+    .await;
+    let threads = &threads_response["result"]["structuredContent"];
+    assert_eq!(threads["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        threads["items"][0]["counterpart_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+
+    let messages_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "list_agent_dm_messages",
+                "arguments": {
+                    "display_name": "Broker DM"
+                }
+            }
+        }),
+    )
+    .await;
+    let messages = &messages_response["result"]["structuredContent"];
+    assert_eq!(messages["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        messages["items"][0]["counterpart_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        messages["items"][0]["content"]["text"].as_str(),
+        Some("hello over private group dm")
+    );
+}
+
+#[tokio::test]
+async fn mcp_send_agent_dm_message_rejects_missing_or_ambiguous_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let local_public_id = context
+        .public_memory_owner
+        .public
+        .unwrap_or(context.public_memory_owner.controller);
+
+    let missing_target_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "send_agent_dm_message",
+                "arguments": {
+                    "content": {
+                        "type": "text",
+                        "text": "hello without target"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        missing_target_response["result"]["structuredContent"]["error"].as_str(),
+        Some("display_name or counterpart_public_id is required")
+    );
+
+    for remote_public_id in ["broker-duplicate-a", "broker-duplicate-b"] {
+        friendship_service::upsert_friendship(
+            &*state.social_store,
+            &wattetheria_social::domain::friendships::Friendship {
+                friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+                local_public_id: local_public_id.clone(),
+                remote_public_id: remote_public_id.to_string(),
+                display_name: Some("Duplicate Broker".to_string()),
+                state: wattetheria_social::domain::friendships::FriendshipState::Active,
+                established_from_request_id: None,
+                thread_id: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .expect("seed duplicate active friendship");
+    }
+
+    let duplicate_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "send_agent_dm_message",
+                "arguments": {
+                    "display_name": "Duplicate Broker",
+                    "content": {
+                        "type": "text",
+                        "text": "hello duplicate"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        duplicate_response["result"]["structuredContent"]["error"].as_str(),
+        Some("multiple active friends matched display_name; provide counterpart_public_id")
+    );
+    let commands = bridge.dm_commands.lock().await;
+    assert!(commands.is_empty());
 }
 
 #[tokio::test]
@@ -1496,7 +1832,7 @@ async fn mcp_accept_and_reject_friend_requests_send_relationship_actions() {
             "method": "tools/call",
             "params": {
                 "name": "accept_friend_request",
-                "arguments": {"request_id": "req-accept-1"}
+                "arguments": {"display_name": "Broker Accept"}
             }
         }),
     )
@@ -1510,7 +1846,7 @@ async fn mcp_accept_and_reject_friend_requests_send_relationship_actions() {
             "method": "tools/call",
             "params": {
                 "name": "reject_friend_request",
-                "arguments": {"request_id": "req-reject-1"}
+                "arguments": {"display_name": "Broker Reject"}
             }
         }),
     )
@@ -1879,7 +2215,7 @@ async fn mcp_friend_request_tools_split_list_and_detail_views() {
             "params": {
                 "name": "get_friend_request",
                 "arguments": {
-                    "request_id": "req-inbound-1"
+                    "display_name": "Agent Alice Display"
                 }
             }
         }),
@@ -1935,6 +2271,11 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     )
     .await;
     let tools = response["result"]["tools"].as_array().unwrap();
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool["name"] != "upsert_local_friend")
+    );
 
     let publish_mission = find_tool(tools, "publish_mission");
     assert_schema_requires(
@@ -2058,9 +2399,19 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .contains_key("run_id")
     );
 
+    let list_payments = find_tool(tools, "list_agent_payments");
+    assert_eq!(
+        list_payments["inputSchema"]["properties"]["display_name"]["type"].as_str(),
+        Some("string")
+    );
+
     let propose_payment = find_tool(tools, "propose_agent_payment");
     assert_schema_requires(propose_payment, &["amount", "currency", "rail"]);
     assert_schema_omits(propose_payment, &["public_id"]);
+    assert_eq!(
+        propose_payment["inputSchema"]["properties"]["display_name"]["type"].as_str(),
+        Some("string")
+    );
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["agent_id"]["type"].as_str(),
         Some("string")
@@ -2121,15 +2472,16 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         invite_private_hive_participant,
         &["public_id", "shared_secret_b64"],
     );
-    let upsert_local_friend = find_tool(tools, "upsert_local_friend");
-    assert_schema_omits(upsert_local_friend, &["public_id"]);
+    let list_friends = find_tool(tools, "list_friends");
     assert_eq!(
-        find_tool(tools, "list_friends")["_meta"]["wattetheria"]["path"].as_str(),
+        list_friends["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/agent-friends")
     );
-    assert_eq!(
-        upsert_local_friend["_meta"]["wattetheria"]["path"].as_str(),
-        Some("/v1/wattetheria/social/friends")
+    assert!(
+        list_friends["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("display_name")
     );
     let list_nearby = find_tool(tools, "list_nearby");
     assert_eq!(
@@ -2160,19 +2512,25 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         Some("/v1/wattetheria/social/sent-friend-requests")
     );
     let get_friend_request = find_tool(tools, "get_friend_request");
-    assert_schema_requires(get_friend_request, &["request_id"]);
+    assert_schema_requires(get_friend_request, &[]);
+    assert_schema_optional(get_friend_request, "request_id");
+    assert_schema_optional(get_friend_request, "display_name");
     assert_eq!(
         get_friend_request["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/friend-requests/{request_id}")
     );
     let accept_friend_request = find_tool(tools, "accept_friend_request");
-    assert_schema_requires(accept_friend_request, &["request_id"]);
+    assert_schema_requires(accept_friend_request, &[]);
+    assert_schema_optional(accept_friend_request, "request_id");
+    assert_schema_optional(accept_friend_request, "display_name");
     assert_eq!(
         accept_friend_request["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/friend-requests/{request_id}/accept")
     );
     let reject_friend_request = find_tool(tools, "reject_friend_request");
-    assert_schema_requires(reject_friend_request, &["request_id"]);
+    assert_schema_requires(reject_friend_request, &[]);
+    assert_schema_optional(reject_friend_request, "request_id");
+    assert_schema_optional(reject_friend_request, "display_name");
     assert_eq!(
         reject_friend_request["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/friend-requests/{request_id}/reject")
@@ -2222,13 +2580,31 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         list_agent_dm_threads["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/agent-dm/threads")
     );
+    assert!(
+        list_agent_dm_threads["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("display_name")
+    );
     let list_agent_dm_messages = find_tool(tools, "list_agent_dm_messages");
     assert_eq!(
         list_agent_dm_messages["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/social/agent-dm/messages")
     );
+    assert!(
+        list_agent_dm_messages["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("display_name")
+    );
     let send_agent_dm_message = find_tool(tools, "send_agent_dm_message");
-    assert_schema_requires(send_agent_dm_message, &["counterpart_public_id", "content"]);
+    assert_schema_requires(send_agent_dm_message, &["content"]);
+    assert!(
+        send_agent_dm_message["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("display_name")
+    );
     assert_schema_omits(send_agent_dm_message, &["public_id"]);
     assert_eq!(
         send_agent_dm_message["_meta"]["wattetheria"]["path"].as_str(),
@@ -2260,8 +2636,13 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let delete_servicenet_agent = find_tool(tools, "delete_servicenet_agent");
     assert_schema_requires(delete_servicenet_agent, &["agent_id"]);
 
-    let list_mailbox_messages = find_tool(tools, "list_mailbox_messages");
-    assert_schema_requires(list_mailbox_messages, &["subnet_id"]);
+    for hidden_tool in [
+        "send_mailbox_message",
+        "list_mailbox_messages",
+        "ack_mailbox_message",
+    ] {
+        assert!(tools.iter().all(|tool| tool["name"] != hidden_tool));
+    }
 
     let list_missions = find_tool(tools, "list_missions");
     assert_eq!(
@@ -3907,6 +4288,26 @@ fn assert_schema_requires(tool: &Value, expected: &[&str]) {
             tool["name"].as_str().unwrap()
         );
     }
+}
+
+fn assert_schema_optional(tool: &Value, field: &str) {
+    let properties = tool["inputSchema"]["properties"].as_object().unwrap();
+    assert!(
+        properties.contains_key(field),
+        "expected {} schema to include optional field {field}",
+        tool["name"].as_str().unwrap()
+    );
+    let required = tool["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    assert!(
+        !required.contains(&field),
+        "expected {} schema field {field} to be optional, got required {required:?}",
+        tool["name"].as_str().unwrap()
+    );
 }
 
 fn assert_schema_omits(tool: &Value, omitted: &[&str]) {

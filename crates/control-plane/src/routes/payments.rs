@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
@@ -26,6 +26,7 @@ use watt_wallet::{
     build_payment_account_binding_proof,
 };
 use wattetheria_kernel::audit::AuditEntry;
+use wattetheria_kernel::identities::PublicIdentity;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     AuthorizePaymentRequest, PaymentAgentMessage, PaymentLedger, PaymentMessageKind, PaymentQuery,
@@ -36,6 +37,9 @@ use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
 use wattetheria_kernel::wallet_identity::{
     load_or_create_wallet_backed_identity, open_local_wallet,
 };
+use wattetheria_social::application::friendship_service;
+use wattetheria_social::domain::friendships::{Friendship, FriendshipState};
+use wattetheria_social::ports::repositories::RemoteIdentityRepository;
 
 const PAYMENT_MESSAGE_CAPABILITY: &str = "payments.agent.transfer";
 const WALLET_BIND_CAPABILITY: &str = "wallet.bind";
@@ -46,6 +50,12 @@ struct PaymentProposalTarget {
     recipient_did: String,
     remote_node_id: String,
     social_counterpart: Option<SocialCounterpartTarget>,
+}
+
+struct PaymentDisplayNames {
+    sender: Option<String>,
+    recipient: Option<String>,
+    counterpart: Option<String>,
 }
 
 struct CommitResponseArgs<'a> {
@@ -307,7 +317,7 @@ pub(crate) async fn list_agent_payments(
     };
     let local = resolve_social_local_context(&state, query.public_id.as_deref()).await;
     let ledger = state.payment_ledger.lock().await;
-    let items = ledger
+    let payments = ledger
         .query(&PaymentQuery {
             status: query.status.clone(),
             sender_did: None,
@@ -340,10 +350,22 @@ pub(crate) async fn list_agent_payments(
             }
             true
         })
-        .map(payment_to_json)
+        .cloned()
         .collect::<Vec<_>>();
     let summary = serde_json::to_value(ledger.summary()).unwrap_or(Value::Null);
     drop(ledger);
+    let display_name = normalized_display_name(query.display_name.as_deref());
+    let mut items = Vec::new();
+    for payment in payments {
+        let include = if let Some(display_name) = display_name {
+            payment_display_name_matches(&state, &local.public_id, &payment, display_name).await
+        } else {
+            true
+        };
+        if include {
+            items.push(payment_to_display_json(&state, &local.public_id, &payment).await);
+        }
+    }
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -379,7 +401,7 @@ pub(crate) async fn get_agent_payment(
     };
     let local = resolve_social_local_context(&state, query.public_id.as_deref()).await;
     let ledger = state.payment_ledger.lock().await;
-    let Some(payment) = ledger.get(&payment_id) else {
+    let Some(payment) = ledger.get(&payment_id).cloned() else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": format!("payment not found: {payment_id}")})),
@@ -394,8 +416,8 @@ pub(crate) async fn get_agent_payment(
         )
             .into_response();
     }
-    let payload = payment_to_json(payment);
     drop(ledger);
+    let payload = payment_to_display_json(&state, &local.public_id, &payment).await;
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -416,17 +438,33 @@ pub(crate) async fn get_agent_payment(
 
 async fn resolve_payment_proposal_target(
     state: &ControlPlaneState,
+    local_public_id: &str,
     body: &mut AgentPaymentProposeBody,
 ) -> Result<PaymentProposalTarget, String> {
     let counterpart_public_id =
         trimmed_optional(body.counterpart_public_id.as_deref()).map(ToOwned::to_owned);
+    let display_name = trimmed_optional(body.display_name.as_deref()).map(ToOwned::to_owned);
     let agent_id = trimmed_optional(body.agent_id.as_deref()).map(ToOwned::to_owned);
-    match (counterpart_public_id.as_deref(), agent_id.as_deref()) {
-        (Some(_), Some(_)) => Err(
-            "provide either counterpart_public_id or agent_id for payment target, not both"
+    let target_count = [
+        counterpart_public_id.is_some(),
+        display_name.is_some(),
+        agent_id.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if target_count > 1 {
+        return Err(
+            "provide only one of display_name, counterpart_public_id, or agent_id for payment target"
                 .to_string(),
-        ),
-        (Some(counterpart_public_id), None) => {
+        );
+    }
+    match (
+        counterpart_public_id.as_deref(),
+        display_name.as_deref(),
+        agent_id.as_deref(),
+    ) {
+        (Some(counterpart_public_id), None, None) => {
             let counterpart =
                 resolve_social_counterpart_target(state, counterpart_public_id).await?;
             Ok(PaymentProposalTarget {
@@ -436,10 +474,31 @@ async fn resolve_payment_proposal_target(
                 social_counterpart: Some(counterpart),
             })
         }
-        (None, Some(agent_id)) => resolve_servicenet_payment_target(state, agent_id, body).await,
-        (None, None) => {
-            Err("counterpart_public_id or agent_id is required for payment target".to_string())
+        (None, Some(display_name), None) => {
+            let counterpart_public_id = resolve_payment_counterpart_public_id_by_display_name(
+                state,
+                local_public_id,
+                display_name,
+            )
+            .await?;
+            let counterpart =
+                resolve_social_counterpart_target(state, &counterpart_public_id).await?;
+            body.counterpart_public_id = Some(counterpart.counterpart_public_id.clone());
+            Ok(PaymentProposalTarget {
+                recipient_public_id: counterpart.counterpart_public_id.clone(),
+                recipient_did: counterpart.target_agent.clone(),
+                remote_node_id: counterpart.remote_node.clone(),
+                social_counterpart: Some(counterpart),
+            })
         }
+        (None, None, Some(agent_id)) => {
+            resolve_servicenet_payment_target(state, agent_id, body).await
+        }
+        (None, None, None) => Err(
+            "display_name, counterpart_public_id, or agent_id is required for payment target"
+                .to_string(),
+        ),
+        _ => unreachable!("payment target count already validated"),
     }
 }
 
@@ -476,6 +535,181 @@ async fn resolve_servicenet_payment_target(
         remote_node_id: format!("servicenet:{agent_id}"),
         social_counterpart: None,
     })
+}
+
+fn normalized_display_name(display_name: Option<&str>) -> Option<&str> {
+    display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn payment_identity_display_name(identities: &[PublicIdentity], public_id: &str) -> Option<String> {
+    identities
+        .iter()
+        .find(|identity| identity.public_id == public_id)
+        .map(|identity| identity.display_name.trim())
+        .filter(|display_name| !display_name.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn payment_remote_identity_display_name(
+    state: &ControlPlaneState,
+    public_id: &str,
+) -> Option<String> {
+    state
+        .social_store
+        .get_remote_identity(public_id)
+        .ok()
+        .flatten()
+        .filter(|identity| identity.active)
+        .map(|identity| identity.display_name.trim().to_string())
+        .filter(|display_name| !display_name.is_empty())
+}
+
+fn payment_public_display_name(
+    state: &ControlPlaneState,
+    identities: &[PublicIdentity],
+    public_id: &str,
+) -> Option<String> {
+    payment_identity_display_name(identities, public_id)
+        .or_else(|| payment_remote_identity_display_name(state, public_id))
+}
+
+fn payment_local_public_id<'a>(
+    state: &ControlPlaneState,
+    payment: &'a PaymentTransaction,
+) -> &'a str {
+    if payment.sender_did == state.agent_did {
+        &payment.sender_public_id
+    } else {
+        &payment.recipient_public_id
+    }
+}
+
+fn payment_friendship_display_name(
+    friendship: &Friendship,
+    identities: &[PublicIdentity],
+) -> Option<String> {
+    friendship
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| payment_identity_display_name(identities, &friendship.remote_public_id))
+}
+
+async fn payment_display_names(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    payment: &PaymentTransaction,
+) -> PaymentDisplayNames {
+    let identities = state.public_identity_registry.lock().await.list();
+    let sender_display_name =
+        payment_public_display_name(state, &identities, &payment.sender_public_id);
+    let recipient_display_name =
+        payment_public_display_name(state, &identities, &payment.recipient_public_id);
+    let counterpart_public_id = if payment.sender_public_id == local_public_id {
+        &payment.recipient_public_id
+    } else {
+        &payment.sender_public_id
+    };
+    let counterpart_display_name = if counterpart_public_id == payment.sender_public_id.as_str() {
+        sender_display_name.clone()
+    } else {
+        recipient_display_name.clone()
+    };
+    PaymentDisplayNames {
+        sender: sender_display_name,
+        recipient: recipient_display_name,
+        counterpart: counterpart_display_name,
+    }
+}
+
+async fn payment_to_display_json(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    payment: &PaymentTransaction,
+) -> Value {
+    let mut value = payment_to_json(payment);
+    let names = payment_display_names(state, local_public_id, payment).await;
+    if let Value::Object(object) = &mut value {
+        insert_optional_string(object, "sender_display_name", names.sender);
+        insert_optional_string(object, "recipient_display_name", names.recipient);
+        insert_optional_string(object, "counterpart_display_name", names.counterpart);
+    }
+    value
+}
+
+fn insert_optional_string(object: &mut Map<String, Value>, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        object.insert(key.to_string(), Value::String(value));
+    }
+}
+
+async fn payment_display_name_matches(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    payment: &PaymentTransaction,
+    display_name: &str,
+) -> bool {
+    let names = payment_display_names(state, local_public_id, payment).await;
+    [
+        names.sender.as_deref(),
+        names.recipient.as_deref(),
+        names.counterpart.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|name| name.trim() == display_name)
+}
+
+async fn resolve_payment_counterpart_public_id_by_display_name(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    display_name: &str,
+) -> Result<String, String> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err("display_name is required".to_string());
+    }
+
+    let identities = state.public_identity_registry.lock().await.list();
+    let active_friendships =
+        friendship_service::list_friendships(&*state.social_store, local_public_id)
+            .map_err(|error| format!("query friendships: {error}"))?
+            .into_iter()
+            .filter(|friendship| friendship.state == FriendshipState::Active)
+            .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for friendship in active_friendships {
+        let remote_identity = state
+            .social_store
+            .get_remote_identity(&friendship.remote_public_id)
+            .map_err(|error| format!("query remote identity: {error}"))?;
+        let remote_display_name = remote_identity
+            .as_ref()
+            .filter(|identity| identity.active)
+            .map(|identity| identity.display_name.trim())
+            .filter(|value| !value.is_empty());
+        let friendship_display_name = payment_friendship_display_name(&friendship, &identities);
+        if friendship_display_name.as_deref() == Some(display_name)
+            || remote_display_name == Some(display_name)
+        {
+            matches.push(friendship.remote_public_id);
+        }
+    }
+
+    match matches.as_slice() {
+        [counterpart_public_id] => Ok(counterpart_public_id.clone()),
+        [] => Err(format!(
+            "active friend not found for display_name {display_name}"
+        )),
+        _ => Err(
+            "multiple active friends matched display_name; provide counterpart_public_id"
+                .to_string(),
+        ),
+    }
 }
 
 fn servicenet_x402_accept(agent: &Value) -> Option<Value> {
@@ -559,11 +793,12 @@ pub(crate) async fn propose_agent_payment(
     };
     let local = resolve_social_local_context(&state, body.public_id.as_deref()).await;
     let request_counterpart_public_id = body.counterpart_public_id.clone();
+    let request_display_name = body.display_name.clone();
     let request_agent_id = body.agent_id.clone();
     let request_amount = body.amount.clone();
     let request_currency = body.currency.clone();
     let request_rail = body.rail.clone();
-    let target = match resolve_payment_proposal_target(&state, &mut body).await {
+    let target = match resolve_payment_proposal_target(&state, &local.public_id, &mut body).await {
         Ok(target) => target,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
@@ -625,7 +860,7 @@ pub(crate) async fn propose_agent_payment(
 
     let response_json = json!({
         "ok": true,
-        "payment": payment_to_json(&payment),
+        "payment": payment_to_display_json(&state, &local.public_id, &payment).await,
         "transport": response,
     });
     if let Err(error) = append_commit_response(
@@ -638,6 +873,7 @@ pub(crate) async fn propose_agent_payment(
             actor_agent_did: Some(local.agent_id),
             request_json: &json!({
                 "counterpart_public_id": request_counterpart_public_id,
+                "display_name": request_display_name,
                 "agent_id": request_agent_id,
                 "amount": request_amount,
                 "currency": request_currency,
@@ -689,7 +925,12 @@ pub(crate) async fn authorize_agent_payment(
         Some(authorized.sender_public_id.clone()),
         Some(json!({"payment_id": authorized.payment_id})),
     );
-    let response_json = payment_to_json(&authorized);
+    let response_json = payment_to_display_json(
+        &state,
+        payment_local_public_id(&state, &authorized),
+        &authorized,
+    )
+    .await;
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -762,7 +1003,8 @@ pub(crate) async fn submit_agent_payment(
             "settlement_receipt": updated.settlement_receipt
         })),
     );
-    let response_json = payment_to_json(&updated);
+    let response_json =
+        payment_to_display_json(&state, payment_local_public_id(&state, &updated), &updated).await;
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -866,7 +1108,8 @@ pub(crate) async fn settle_agent_payment(
         Some(updated.sender_public_id.clone()),
         Some(json!({"payment_id": updated.payment_id})),
     );
-    let response_json = payment_to_json(&updated);
+    let response_json =
+        payment_to_display_json(&state, payment_local_public_id(&state, &updated), &updated).await;
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -958,7 +1201,8 @@ pub(crate) async fn reject_agent_payment(
         Some(updated.recipient_public_id.clone()),
         Some(json!({"payment_id": updated.payment_id})),
     );
-    let response_json = payment_to_json(&updated);
+    let response_json =
+        payment_to_display_json(&state, payment_local_public_id(&state, &updated), &updated).await;
     if let Err(error) = append_commit_response(
         &state,
         &headers,
@@ -1010,7 +1254,8 @@ pub(crate) async fn cancel_agent_payment(
         Some(updated.sender_public_id.clone()),
         Some(json!({"payment_id": updated.payment_id})),
     );
-    let response_json = payment_to_json(&updated);
+    let response_json =
+        payment_to_display_json(&state, payment_local_public_id(&state, &updated), &updated).await;
     if let Err(error) = append_commit_response(
         &state,
         &headers,

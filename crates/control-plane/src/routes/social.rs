@@ -49,6 +49,7 @@ use wattetheria_social::domain::receipts::{MessageReceipt, ReceiptKind};
 use wattetheria_social::domain::threads::{DirectThread, ThreadState};
 use wattetheria_social::domain::transport_bindings::{RemoteTransportBinding, TransportKind};
 use wattetheria_social::policy::decisions::PolicyDecision;
+use wattetheria_social::ports::repositories::RemoteIdentityRepository;
 
 const FRIEND_REQUEST_MESSAGE_MAX_CHARS: usize = 120;
 
@@ -2453,6 +2454,9 @@ pub(crate) async fn list_agent_relationships(
         Err(error) => return internal_error(&error),
     };
     items.retain(relationship_payload_is_active_friend);
+    if let Some(display_name) = normalized_display_name_filter(query.display_name.as_deref()) {
+        items.retain(|item| payload_display_name_matches(item, display_name));
+    }
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -2898,6 +2902,22 @@ fn friendship_display_name<'a>(
         .filter(|value| !value.is_empty())
 }
 
+fn normalized_display_name_filter(display_name: Option<&str>) -> Option<&str> {
+    display_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn payload_display_name_matches(item: &Value, display_name: &str) -> bool {
+    [
+        "counterpart_display_name",
+        "counterpart_agent_name",
+        "display_name",
+    ]
+    .into_iter()
+    .any(|key| item.get(key).and_then(Value::as_str).map(str::trim) == Some(display_name))
+}
+
 fn friendship_matches_remote_node(
     friendship: &Friendship,
     remote_node_id: &str,
@@ -3204,10 +3224,13 @@ pub(crate) async fn list_agent_dm_threads(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let items = match build_agent_dm_threads_payload(&state, query.public_id.as_deref()).await {
+    let mut items = match build_agent_dm_threads_payload(&state, query.public_id.as_deref()).await {
         Ok(items) => items,
         Err(error) => return internal_error(&error),
     };
+    if let Some(display_name) = normalized_display_name_filter(query.display_name.as_deref()) {
+        items.retain(|item| payload_display_name_matches(item, display_name));
+    }
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -3233,7 +3256,7 @@ pub(crate) async fn list_agent_dm_messages(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let items = match build_agent_dm_messages_payload(
+    let mut items = match build_agent_dm_messages_payload(
         &state,
         query.public_id.as_deref(),
         query.counterpart.as_deref(),
@@ -3245,6 +3268,9 @@ pub(crate) async fn list_agent_dm_messages(
         Ok(items) => items,
         Err(error) => return internal_error(&error),
     };
+    if let Some(display_name) = normalized_display_name_filter(query.display_name.as_deref()) {
+        items.retain(|item| payload_display_name_matches(item, display_name));
+    }
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -3276,6 +3302,83 @@ pub(crate) async fn send_agent_dm_message(
     handle_send_agent_dm_message(state, headers, body, auth).await
 }
 
+async fn resolve_dm_counterpart_public_id(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    body: &AgentDmSendBody,
+) -> Result<String, String> {
+    let display_name = body
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let counterpart_public_id = body
+        .counterpart_public_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if let Some(display_name) = display_name {
+        return resolve_dm_counterpart_public_id_by_display_name(
+            state,
+            local_public_id,
+            display_name,
+        )
+        .await;
+    }
+
+    counterpart_public_id
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "display_name or counterpart_public_id is required".to_string())
+}
+
+async fn resolve_dm_counterpart_public_id_by_display_name(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    display_name: &str,
+) -> Result<String, String> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err("display_name is required".to_string());
+    }
+
+    let (identities, _) = load_social_identity_maps(state).await;
+    let active_friendships =
+        friendship_service::list_friendships(&*state.social_store, local_public_id)
+            .map_err(|error| format!("query friendships: {error}"))?
+            .into_iter()
+            .filter(|friendship| friendship.state == FriendshipState::Active)
+            .collect::<Vec<_>>();
+
+    let mut matches = Vec::new();
+    for friendship in active_friendships {
+        let remote_identity = state
+            .social_store
+            .get_remote_identity(&friendship.remote_public_id)
+            .map_err(|error| format!("query remote identity: {error}"))?;
+        let remote_display_name = remote_identity
+            .as_ref()
+            .filter(|identity| identity.active)
+            .map(|identity| identity.display_name.as_str());
+        let name_matches = friendship_display_name(&friendship, &identities) == Some(display_name)
+            || remote_display_name == Some(display_name);
+        if name_matches {
+            matches.push(friendship.remote_public_id);
+        }
+    }
+
+    match matches.as_slice() {
+        [counterpart_public_id] => Ok(counterpart_public_id.clone()),
+        [] => Err(format!(
+            "active friend not found for display_name {display_name}"
+        )),
+        _ => Err(
+            "multiple active friends matched display_name; provide counterpart_public_id"
+                .to_string(),
+        ),
+    }
+}
+
 async fn handle_send_agent_dm_message(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -3287,11 +3390,18 @@ async fn handle_send_agent_dm_message(
         agent_id: local_agent_id,
         display_name: local_display_name,
     } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
+    let dm_counterpart_public_id =
+        match resolve_dm_counterpart_public_id(&state, &local_public_id, &body).await {
+            Ok(counterpart_public_id) => counterpart_public_id,
+            Err(error) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+            }
+        };
     let SocialCounterpartTarget {
         counterpart_public_id,
         remote_node,
         target_agent,
-    } = match resolve_dm_counterpart_target(&state, &body.counterpart_public_id).await {
+    } = match resolve_dm_counterpart_target(&state, &dm_counterpart_public_id).await {
         Ok(counterpart) => counterpart,
         Err(error) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
@@ -3346,7 +3456,7 @@ async fn handle_send_agent_dm_message(
             remote_node_id: remote_node,
             thread_id,
             message_id,
-            request_counterpart_public_id: body.counterpart_public_id,
+            request_counterpart_public_id: dm_counterpart_public_id,
             content,
             agent_envelope_json,
             agent_signature,

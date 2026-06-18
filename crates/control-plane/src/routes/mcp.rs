@@ -25,6 +25,12 @@ use wattetheria_kernel::payments::{
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
 };
 use wattetheria_kernel::servicenet::ServiceNetInvokeRequest;
+use wattetheria_kernel::swarm_bridge::SwarmPeerRelationshipView;
+use wattetheria_social::application::friend_request_service;
+use wattetheria_social::domain::friend_requests::{
+    FriendRequest, FriendRequestDirection, FriendRequestState,
+};
+use wattetheria_social::ports::repositories::RemoteIdentityRepository;
 
 mod collective;
 mod schema;
@@ -1642,7 +1648,13 @@ async fn dispatch_loopback_tool(
     tool: &AgentTool,
     arguments: &Value,
 ) -> Result<Response, Response> {
-    let uri = match tool_uri(tool, arguments) {
+    let arguments = match tool_arguments_with_resolved_path_vars(&state, tool, arguments).await {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
+        }
+    };
+    let uri = match tool_uri(tool, &arguments) {
         Ok(uri) => uri,
         Err(error) => {
             return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
@@ -1651,7 +1663,7 @@ async fn dispatch_loopback_tool(
     let body = if tool.method == Method::GET {
         Body::empty()
     } else {
-        let body = match tool_body_with_local_identity(&state, tool, arguments).await {
+        let body = match tool_body_with_local_identity(&state, tool, &arguments).await {
             Ok(body) => body,
             Err(error) => {
                 return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
@@ -1671,6 +1683,171 @@ async fn dispatch_loopback_tool(
         .oneshot(request)
         .await
         .map_err(|error| internal_error(&anyhow::anyhow!(error)))
+}
+
+async fn tool_arguments_with_resolved_path_vars(
+    state: &ControlPlaneState,
+    tool: &AgentTool,
+    arguments: &Value,
+) -> Result<Value, String> {
+    let mut arguments = arguments.clone();
+    if matches!(
+        tool.name,
+        "get_friend_request" | "accept_friend_request" | "reject_friend_request"
+    ) && required_string(&arguments, "request_id").is_none()
+    {
+        let Some(display_name) = required_string(&arguments, "display_name") else {
+            return Ok(arguments);
+        };
+        let request_id = resolve_friend_request_id_by_display_name(
+            state,
+            &display_name,
+            tool.name != "get_friend_request",
+        )
+        .await?;
+        let Some(object) = arguments.as_object_mut() else {
+            return Err("tool arguments must be a JSON object".to_string());
+        };
+        object.insert("request_id".to_string(), Value::String(request_id));
+    }
+    Ok(arguments)
+}
+
+async fn resolve_friend_request_id_by_display_name(
+    state: &ControlPlaneState,
+    display_name: &str,
+    require_decidable: bool,
+) -> Result<String, String> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err("display_name is required".to_string());
+    }
+    let local_public_id = local_public_id(state).await;
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .map_err(|error| format!("query friend requests: {error}"))?;
+    let relationship_views = state.swarm_bridge.list_peer_relationships().await.ok();
+    let identities = state.public_identity_registry.lock().await.list();
+    let mut matches = Vec::new();
+    for request in friend_requests {
+        if require_decidable
+            && (request.direction != FriendRequestDirection::Inbound
+                || request.state != FriendRequestState::Pending)
+        {
+            continue;
+        }
+        if friend_request_display_name_matches(
+            state,
+            &identities,
+            relationship_views.as_deref().unwrap_or(&[]),
+            &request,
+            display_name,
+        ) {
+            matches.push(request.request_id);
+        }
+    }
+
+    match matches.as_slice() {
+        [request_id] => Ok(request_id.clone()),
+        [] => Err(format!(
+            "friend request not found for display_name {display_name}"
+        )),
+        _ => Err("multiple friend requests matched display_name; provide request_id".to_string()),
+    }
+}
+
+fn friend_request_display_name_matches(
+    state: &ControlPlaneState,
+    identities: &[wattetheria_kernel::identities::PublicIdentity],
+    relationship_views: &[SwarmPeerRelationshipView],
+    request: &FriendRequest,
+    display_name: &str,
+) -> bool {
+    friend_request_display_names(state, identities, relationship_views, request)
+        .into_iter()
+        .any(|name| name.trim() == display_name)
+}
+
+fn friend_request_display_names(
+    state: &ControlPlaneState,
+    identities: &[wattetheria_kernel::identities::PublicIdentity],
+    relationship_views: &[SwarmPeerRelationshipView],
+    request: &FriendRequest,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(identity) = identities
+        .iter()
+        .find(|identity| identity.public_id == request.remote_public_id)
+        && !identity.display_name.trim().is_empty()
+    {
+        names.push(identity.display_name.trim().to_string());
+    }
+    if let Ok(Some(identity)) = state
+        .social_store
+        .get_remote_identity(&request.remote_public_id)
+        && identity.active
+        && !identity.display_name.trim().is_empty()
+    {
+        names.push(identity.display_name.trim().to_string());
+    }
+    if let Some(view) = matching_friend_request_relationship_view(relationship_views, request)
+        && let Some(name) = relationship_view_agent_display_name(view)
+    {
+        names.push(name);
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn matching_friend_request_relationship_view<'a>(
+    views: &'a [SwarmPeerRelationshipView],
+    request: &FriendRequest,
+) -> Option<&'a SwarmPeerRelationshipView> {
+    views
+        .iter()
+        .find(|view| relationship_view_request_id(view) == Some(request.request_id.as_str()))
+        .or_else(|| {
+            request.remote_node_id.as_ref().and_then(|remote_node_id| {
+                views
+                    .iter()
+                    .find(|view| view.remote_node_id == *remote_node_id)
+            })
+        })
+}
+
+fn relationship_view_request_id(view: &SwarmPeerRelationshipView) -> Option<&str> {
+    view.agent_envelope.as_ref().and_then(|envelope| {
+        envelope
+            .message
+            .get("request_id")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                envelope
+                    .message
+                    .get("payload")
+                    .and_then(|payload| payload.get("request_id"))
+                    .and_then(Value::as_str)
+            })
+    })
+}
+
+fn relationship_view_agent_display_name(view: &SwarmPeerRelationshipView) -> Option<String> {
+    let card = view
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| envelope.source_agent_card.as_ref())
+        .map(|source_card| &source_card.card)?;
+    card.get("name")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            card.get("metadata")
+                .and_then(|metadata| metadata.get("display_name"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
@@ -1975,7 +2152,6 @@ async fn apply_local_identity_defaults(
         | "unsubscribe_hive"
         | "invite_private_hive_participant"
         | "propose_agent_payment"
-        | "upsert_local_friend"
         | "send_agent_dm_message"
         | "accept_friend_request"
         | "reject_friend_request"
@@ -2117,7 +2293,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 49] = [
+const AGENT_TOOLS: [AgentTool; 45] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -2145,7 +2321,6 @@ const AGENT_TOOLS: [AgentTool; 49] = [
     AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
     AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/agent-friends", description: "List accepted agent friend relationships.", availability: Availability::Always },
-    AgentTool { name: "upsert_local_friend", method: Method::POST, path: "/v1/wattetheria/social/friends", description: "Add or update a local-only Wattetheria friend relationship without notifying the remote node.", availability: Availability::Always },
     AgentTool { name: "list_nearby", method: Method::GET, path: "/v1/wattetheria/social/nearby", description: "List nearby Wattswarm/Iroh peer nodes visible to this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "list_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/friend-requests", description: "List inbound pending friend requests awaiting local approval.", availability: Availability::Always },
     AgentTool { name: "list_sent_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/sent-friend-requests", description: "List outbound friend requests sent by this local agent.", availability: Availability::Always },
@@ -2157,9 +2332,6 @@ const AGENT_TOOLS: [AgentTool; 49] = [
     AgentTool { name: "list_agent_dm_threads", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/threads", description: "List one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "list_agent_dm_messages", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/messages", description: "List messages in one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "send_agent_dm_message", method: Method::POST, path: "/v1/wattetheria/social/agent-dm/messages", description: "Send a signed one-to-one direct message to an accepted agent friend.", availability: Availability::Always },
-    AgentTool { name: "send_mailbox_message", method: Method::POST, path: "/v1/wattetheria/mailbox/messages", description: "Send a signed mailbox message.", availability: Availability::Always },
-    AgentTool { name: "list_mailbox_messages", method: Method::GET, path: "/v1/wattetheria/mailbox/messages", description: "List mailbox messages for a subnet.", availability: Availability::Always },
-    AgentTool { name: "ack_mailbox_message", method: Method::POST, path: "/v1/wattetheria/mailbox/ack", description: "Acknowledge a mailbox message.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },
