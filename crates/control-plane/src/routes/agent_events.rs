@@ -157,9 +157,14 @@ fn routes_to_noop(event_type: &str, action: &str) -> bool {
     }
 }
 
-fn build_brain_event_input(state: &ControlPlaneState, event: &AgentEventEnvelope) -> Value {
+fn build_brain_event_input(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+    network_id: &str,
+) -> Value {
     json!({
         "agent_did": state.agent_did,
+        "network_id": network_id,
         "event_id": event.event_id,
         "event_type": event.event_type,
         "source_kind": event.source_kind,
@@ -174,6 +179,32 @@ fn build_brain_event_input(state: &ControlPlaneState, event: &AgentEventEnvelope
         "agent_envelope": event.agent_envelope,
         "payload": sanitize_agent_event_payload_for_brain(&event.payload),
     })
+}
+
+async fn resolve_agent_event_network_id(
+    state: &ControlPlaneState,
+    event: &AgentEventEnvelope,
+) -> String {
+    for value in [
+        event.payload.get("network_id"),
+        event.payload.pointer("/topic_content/network_id"),
+        event
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.message.get("network_id")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(network_id) = value.as_str().map(str::trim).filter(|id| !id.is_empty()) {
+            return network_id.to_owned();
+        }
+    }
+    state
+        .swarm_bridge
+        .current_network_id()
+        .await
+        .unwrap_or_else(|_| "unknown".to_owned())
 }
 
 fn sanitize_agent_event_payload_for_brain(value: &Value) -> Value {
@@ -1764,7 +1795,8 @@ async fn process_agent_event_decision(
 ) -> Response {
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(&mut event);
-    let input = build_brain_event_input(state, &event);
+    let network_id = resolve_agent_event_network_id(state, &event).await;
+    let input = build_brain_event_input(state, &event, &network_id);
     record_agent_event_diagnostic(
         state,
         &event,

@@ -43,6 +43,10 @@ pub struct Cli {
     pub brain_model: String,
     #[arg(long)]
     pub brain_api_key_env: Option<String>,
+    #[arg(long)]
+    pub brain_runtime_adapter: Option<String>,
+    #[arg(long)]
+    pub brain_session_header_name: Option<String>,
     #[arg(long, default_value_t = false)]
     pub autonomy_enabled: bool,
     #[arg(long, default_value_t = 30)]

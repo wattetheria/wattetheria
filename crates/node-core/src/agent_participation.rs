@@ -186,8 +186,17 @@ impl BrainProviderSurface {
                 base_url,
                 model,
                 api_key_env,
+                runtime_adapter,
             } => Self {
-                kind: "openai-compatible".to_owned(),
+                kind: format!(
+                    "agent-runtime:{}",
+                    wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
+                        base_url,
+                        model,
+                        runtime_adapter.as_ref()
+                    )
+                    .key()
+                ),
                 base_url: Some(base_url.trim_end_matches('/').to_owned()),
                 model: Some(model.clone()),
                 api_key_env: api_key_env.clone(),
@@ -310,6 +319,7 @@ mod tests {
                 base_url: "http://127.0.0.1:4000/v1".to_owned(),
                 model: "openclaw-agent".to_owned(),
                 api_key_env: Some("WATTETHERIA_BRAIN_API_KEY".to_owned()),
+                runtime_adapter: None,
             },
             &bind,
             Some("http://127.0.0.1:8042"),

@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
-use wattetheria_kernel::brain::BrainProviderConfig;
+use wattetheria_kernel::brain::{AgentRuntimeAdapter, BrainProviderConfig};
 
 pub fn init_tracing() {
     tracing_subscriber::fmt()
@@ -29,6 +29,13 @@ pub fn resolve_brain_config(cli: &Cli) -> Result<BrainProviderConfig> {
             base_url: cli.brain_base_url.clone(),
             model: cli.brain_model.clone(),
             api_key_env: cli.brain_api_key_env.clone(),
+            runtime_adapter: cli
+                .brain_runtime_adapter
+                .as_deref()
+                .map(|kind| {
+                    AgentRuntimeAdapter::from_key(kind, cli.brain_session_header_name.as_deref())
+                })
+                .transpose()?,
         }),
         other => {
             bail!("unsupported --brain-provider-kind: {other} (use rules|ollama|openai-compatible)")

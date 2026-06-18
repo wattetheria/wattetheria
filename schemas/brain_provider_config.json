@@ -10,7 +10,30 @@
     },
     "base_url": {"type": "string"},
     "model": {"type": "string"},
-    "api_key_env": {"type": ["string", "null"]}
+    "api_key_env": {"type": ["string", "null"]},
+    "runtime_adapter": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["hermes", "openclaw"]},
+            "session_header_name": {"type": ["string", "null"], "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "session_header_name"],
+          "properties": {
+            "kind": {"type": "string", "const": "custom"},
+            "session_header_name": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
+    }
   },
   "allOf": [
     {

@@ -251,6 +251,7 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
             base_url,
             model,
             api_key_env,
+            runtime_adapter,
         } => {
             command
                 .arg("--brain-provider-kind")
@@ -261,6 +262,12 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
                 .arg(model);
             if let Some(name) = api_key_env {
                 command.arg("--brain-api-key-env").arg(name);
+            }
+            if let Some(adapter) = runtime_adapter {
+                command.arg("--brain-runtime-adapter").arg(adapter.key());
+                command
+                    .arg("--brain-session-header-name")
+                    .arg(adapter.session_header_name());
             }
         }
     }

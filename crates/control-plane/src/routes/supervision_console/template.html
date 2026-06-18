@@ -413,15 +413,23 @@ __SUPERVISION_CONSOLE_CSS__  </style>
             <div class="config-grid">
               <section class="config-section">
                 <div class="config-section-title">Endpoint Connection</div>
-                <p class="config-section-copy">Use an OpenAI-compatible endpoint exposed by a local or remote agent runtime.</p>
+                <p class="config-section-copy">Use the chat completions endpoint exposed by the selected agent runtime.</p>
                 <div class="field-stack">
+                  <div>
+                    <label class="field-label">Runtime Adapter</label>
+                    <div id="runtime-adapter-options" class="runtime-adapter-options" role="radiogroup" aria-label="Runtime adapter"></div>
+                  </div>
+                  <div>
+                    <label class="field-label" for="brain-session-header-name">Session Header Name</label>
+                    <input id="brain-session-header-name" class="field-input" placeholder="X-Agent-Session-Id">
+                  </div>
                   <div>
                     <label class="field-label" for="brain-openai-base-url">Base URL</label>
                     <input id="brain-openai-base-url" class="field-input" placeholder="http://host.docker.internal:8642/v1">
                   </div>
                   <div>
                     <label class="field-label" for="brain-openai-model">Model</label>
-                    <input id="brain-openai-model" class="field-input" placeholder="openclaw">
+                    <input id="brain-openai-model" class="field-input" placeholder="pi-agent">
                   </div>
                   <div>
                     <label class="field-label" for="brain-api-key">API Key</label>
@@ -449,6 +457,7 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                     Remote runtime or LLM
                     <span class="runtime-example-code">http://172.16.11.131:18789/v1</span>
                   </li>
+                  <li id="runtime-session-header-examples"></li>
                 </ul>
               </section>
             </div>

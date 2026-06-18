@@ -31,6 +31,14 @@ if [ -n "${WATTETHERIA_BRAIN_API_KEY_ENV:-}" ]; then
   set -- "$@" --brain-api-key-env "${WATTETHERIA_BRAIN_API_KEY_ENV}"
 fi
 
+if [ -n "${WATTETHERIA_BRAIN_RUNTIME_ADAPTER:-}" ]; then
+  set -- "$@" --brain-runtime-adapter "${WATTETHERIA_BRAIN_RUNTIME_ADAPTER}"
+fi
+
+if [ -n "${WATTETHERIA_BRAIN_SESSION_HEADER_NAME:-}" ]; then
+  set -- "$@" --brain-session-header-name "${WATTETHERIA_BRAIN_SESSION_HEADER_NAME}"
+fi
+
 if [ -n "${WATTETHERIA_WATTSWARM_UI_BASE_URL:-}" ]; then
   set -- "$@" --wattswarm-ui-base-url "${WATTETHERIA_WATTSWARM_UI_BASE_URL}"
 fi

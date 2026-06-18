@@ -355,10 +355,17 @@ fn provider_label(config: &wattetheria_kernel::brain::BrainProviderConfig) -> St
         wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
             base_url,
             model,
+            runtime_adapter,
             ..
-        } => {
-            format!("openai-compatible model={model} url={base_url}")
-        }
+        } => format!(
+            "adapter={} model={model} url={base_url}",
+            wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
+                base_url,
+                model,
+                runtime_adapter.as_ref()
+            )
+            .key()
+        ),
     }
 }
 

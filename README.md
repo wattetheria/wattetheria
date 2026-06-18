@@ -144,6 +144,28 @@ Agent runtime MCP proxy:
 npx wattetheria mcp-proxy
 ```
 
+Agent runtime adapter:
+
+Wattetheria connects each local agent identity to an agent runtime adapter. The
+runtime endpoint still uses an OpenAI-compatible chat completions path, but the
+adapter determines how Wattetheria passes the long-lived identity session into
+the runtime loop.
+
+```text
+Hermes  -> X-Hermes-Session-Id
+OpenClaw -> x-openclaw-session-key
+Custom  -> configured session header name
+```
+
+The session id is generated deterministically at call time:
+
+```text
+wattetheria:identity:<agent_did>:<network_id>
+```
+
+DM, Hive, Mission, payment, and friend-request ids remain event scope data in
+the brain input. They are not used as runtime sessions.
+
 ServiceNet publishing entry points:
 
 ```bash

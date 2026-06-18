@@ -871,6 +871,7 @@ async fn agent_events_route_rejects_legacy_dm_received() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -878,6 +879,7 @@ async fn agent_events_route_rejects_legacy_dm_received() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1034,6 +1036,7 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1041,6 +1044,7 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1168,6 +1172,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1175,6 +1180,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1298,6 +1304,7 @@ async fn agent_events_route_reports_openai_compatible_missing_content_body() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1305,6 +1312,7 @@ async fn agent_events_route_reports_openai_compatible_missing_content_body() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1377,6 +1385,7 @@ async fn agent_events_route_reports_openai_compatible_missing_content_body() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_allows_task_result_to_settle_mission_via_commit_plane() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -1421,6 +1430,7 @@ async fn agent_events_route_allows_task_result_to_settle_mission_via_commit_plan
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1428,6 +1438,7 @@ async fn agent_events_route_allows_task_result_to_settle_mission_via_commit_plan
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1529,6 +1540,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1536,6 +1548,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1652,6 +1665,7 @@ async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1659,6 +1673,7 @@ async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1775,6 +1790,7 @@ async fn agent_events_route_reject_claim_decision_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1782,6 +1798,7 @@ async fn agent_events_route_reject_claim_decision_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -1916,6 +1933,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -1923,6 +1941,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -2288,6 +2307,7 @@ async fn agent_events_route_claim_approved_topic_to_complete_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -2295,6 +2315,7 @@ async fn agent_events_route_claim_approved_topic_to_complete_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -2421,6 +2442,7 @@ async fn agent_events_route_mission_completed_topic_to_settle_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -2428,6 +2450,7 @@ async fn agent_events_route_mission_completed_topic_to_settle_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -2544,6 +2567,7 @@ async fn agent_events_convert_accept_result_to_settle_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -2551,6 +2575,7 @@ async fn agent_events_convert_accept_result_to_settle_mission_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
@@ -2661,6 +2686,7 @@ async fn agent_events_route_reject_result_decision_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(
@@ -2668,6 +2694,7 @@ async fn agent_events_route_reject_result_decision_to_wattetheria_commit() {
                 base_url: base_url.clone(),
                 model: "openclaw".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )),
         brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),

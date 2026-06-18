@@ -57,6 +57,8 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
             .body(axum::body::Body::from(
                 json!({
                     "kind": "openai-compatible",
+                    "adapter": "openclaw",
+                    "session_header_name": "X-OpenClaw-Thread",
                     "base_url": "http://127.0.0.1:18789/v1",
                     "model": "openclaw",
                     "api_key": "secret-runtime-key"
@@ -70,7 +72,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     assert_eq!(updated["restart_required"].as_bool(), Some(true));
     assert_eq!(
         updated["label"].as_str(),
-        Some("openai-compatible model=openclaw url=http://127.0.0.1:18789/v1")
+        Some("adapter=openclaw model=openclaw url=http://127.0.0.1:18789/v1")
     );
 
     let env_path = dir.path().join("deploy/.env");
@@ -79,6 +81,8 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     assert!(env_body.contains("WATTETHERIA_BRAIN_BASE_URL=http://127.0.0.1:18789/v1"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_MODEL=openclaw"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_RUNTIME_ADAPTER=openclaw"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_HEADER_NAME=X-OpenClaw-Thread"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY=secret-runtime-key"));
     assert!(!env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=secret-runtime-key"));
     assert!(!env_body.lines().any(|line| line.starts_with("OPENCLAW_")));
@@ -86,7 +90,16 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     let loaded = authed_get_json(app.clone(), &token, "/v1/brain/config").await;
     assert_eq!(
         loaded["label"].as_str(),
-        Some("openai-compatible model=openclaw url=http://127.0.0.1:18789/v1")
+        Some("adapter=openclaw model=openclaw url=http://127.0.0.1:18789/v1")
+    );
+    assert_eq!(loaded["runtime_adapter"].as_str(), Some("openclaw"));
+    assert_eq!(
+        loaded["session_header_name"].as_str(),
+        Some("X-OpenClaw-Thread")
+    );
+    assert_eq!(
+        loaded["config"]["runtime_adapter"]["session_header_name"].as_str(),
+        Some("X-OpenClaw-Thread")
     );
     assert_eq!(
         loaded["env_path"].as_str(),

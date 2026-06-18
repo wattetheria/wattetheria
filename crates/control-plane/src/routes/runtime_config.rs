@@ -8,10 +8,18 @@ use std::path::{Path, PathBuf};
 
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::brain::AgentRuntimeAdapter;
 
 const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
 const ENV_BRAIN_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY_ENV";
 const ENV_BRAIN_API_KEY: &str = "WATTETHERIA_BRAIN_API_KEY";
+const ENV_BRAIN_RUNTIME_ADAPTER: &str = "WATTETHERIA_BRAIN_RUNTIME_ADAPTER";
+const ENV_BRAIN_SESSION_HEADER_NAME: &str = "WATTETHERIA_BRAIN_SESSION_HEADER_NAME";
+const DEFAULT_RUNTIME_BASE_URL: &str = "http://host.docker.internal:8642/v1";
+
+fn supported_runtime_adapters() -> Value {
+    serde_json::to_value(AgentRuntimeAdapter::supported_metadata()).unwrap_or_else(|_| json!([]))
+}
 
 pub(crate) fn brain_provider_label(
     config: &wattetheria_kernel::brain::BrainProviderConfig,
@@ -24,9 +32,11 @@ pub(crate) fn brain_provider_label(
         wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
             base_url,
             model,
+            runtime_adapter,
             ..
         } => {
-            format!("openai-compatible model={model} url={base_url}")
+            let adapter = AgentRuntimeAdapter::infer(base_url, model, runtime_adapter.as_ref());
+            format!("adapter={} model={model} url={base_url}", adapter.key())
         }
     }
 }
@@ -133,6 +143,21 @@ fn normalize_brain_config_request(mut body: Value) -> anyhow::Result<(Value, Opt
             "api_key_env".to_string(),
             Value::String(DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV.to_string()),
         );
+        if let Some(adapter_value) = object.remove("adapter") {
+            let adapter = adapter_value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("adapter must be a string"))?;
+            let session_header = object
+                .get("session_header_name")
+                .or_else(|| object.get("custom_session_header_name"))
+                .and_then(Value::as_str);
+            object.insert(
+                "runtime_adapter".to_string(),
+                serde_json::to_value(AgentRuntimeAdapter::from_key(adapter, session_header)?)?,
+            );
+        }
+        object.remove("session_header_name");
+        object.remove("custom_session_header_name");
     }
     Ok((body, api_key))
 }
@@ -153,30 +178,44 @@ fn persist_brain_config_to_env(
     } else {
         Vec::new()
     };
-    let (provider_kind, base_url, model, api_key_env) = match config {
-        wattetheria_kernel::brain::BrainProviderConfig::Rules => (
-            "rules".to_string(),
-            String::new(),
-            String::new(),
-            String::new(),
-        ),
-        wattetheria_kernel::brain::BrainProviderConfig::Ollama { base_url, model } => (
-            "ollama".to_string(),
-            base_url.clone(),
-            model.clone(),
-            String::new(),
-        ),
-        wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
-            base_url,
-            model,
-            api_key_env,
-        } => (
-            "openai-compatible".to_string(),
-            base_url.clone(),
-            model.clone(),
-            api_key_env.clone().unwrap_or_default(),
-        ),
-    };
+    let (provider_kind, base_url, model, api_key_env, runtime_adapter, session_header_name) =
+        match config {
+            wattetheria_kernel::brain::BrainProviderConfig::Rules => (
+                "rules".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+            wattetheria_kernel::brain::BrainProviderConfig::Ollama { base_url, model } => (
+                "ollama".to_string(),
+                base_url.clone(),
+                model.clone(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ),
+            wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
+                base_url,
+                model,
+                api_key_env,
+                runtime_adapter,
+            } => (
+                "openai-compatible".to_string(),
+                base_url.clone(),
+                model.clone(),
+                api_key_env.clone().unwrap_or_default(),
+                AgentRuntimeAdapter::infer(base_url, model, runtime_adapter.as_ref())
+                    .key()
+                    .to_string(),
+                runtime_adapter
+                    .as_ref()
+                    .map(AgentRuntimeAdapter::session_header_name)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+        };
     upsert_env_line(
         &mut lines,
         "WATTETHERIA_BRAIN_PROVIDER_KIND",
@@ -185,6 +224,12 @@ fn persist_brain_config_to_env(
     upsert_env_line(&mut lines, "WATTETHERIA_BRAIN_BASE_URL", &base_url);
     upsert_env_line(&mut lines, "WATTETHERIA_BRAIN_MODEL", &model);
     upsert_env_line(&mut lines, ENV_BRAIN_API_KEY_ENV, &api_key_env);
+    upsert_env_line(&mut lines, ENV_BRAIN_RUNTIME_ADAPTER, &runtime_adapter);
+    upsert_env_line(
+        &mut lines,
+        ENV_BRAIN_SESSION_HEADER_NAME,
+        &session_header_name,
+    );
     if let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
         upsert_env_line(&mut lines, ENV_BRAIN_API_KEY, api_key);
     }
@@ -224,12 +269,31 @@ pub(crate) async fn brain_config_get(
     let label = brain_provider_label(&config);
     let env_path = deploy_env_path(&state.data_dir);
     let has_api_key = brain_api_key_present(&env_path, &config);
+    let (runtime_adapter, session_header_name) = match &config {
+        wattetheria_kernel::brain::BrainProviderConfig::OpenaiCompatible {
+            base_url,
+            model,
+            runtime_adapter,
+            ..
+        } => {
+            let adapter = AgentRuntimeAdapter::infer(base_url, model, runtime_adapter.as_ref());
+            (
+                Some(adapter.key().to_string()),
+                Some(adapter.session_header_name().to_string()),
+            )
+        }
+        _ => (None, None),
+    };
     Json(json!({
         "ok": true,
         "config": config,
         "label": label,
         "env_path": env_path.display().to_string(),
         "has_api_key": has_api_key,
+        "runtime_adapter": runtime_adapter,
+        "session_header_name": session_header_name,
+        "default_runtime_base_url": DEFAULT_RUNTIME_BASE_URL,
+        "supported_runtime_adapters": supported_runtime_adapters(),
     }))
     .into_response()
 }

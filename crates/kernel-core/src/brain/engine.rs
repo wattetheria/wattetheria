@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::borrow::Cow;
 
+use super::runtime_adapter::{AgentRuntimeAdapter, RuntimeSessionContext};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
@@ -61,6 +63,8 @@ pub enum BrainProviderConfig {
         base_url: String,
         model: String,
         api_key_env: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_adapter: Option<AgentRuntimeAdapter>,
     },
 }
 
@@ -98,10 +102,16 @@ impl BrainEngine {
                 base_url,
                 model,
                 api_key_env,
+                runtime_adapter,
             } => Box::new(OpenAiCompatibleBrain {
                 base_url: base_url.clone(),
                 model: model.clone(),
                 api_key_env: api_key_env.clone(),
+                runtime_adapter: AgentRuntimeAdapter::infer(
+                    base_url,
+                    model,
+                    runtime_adapter.as_ref(),
+                ),
             }),
         };
 
@@ -218,6 +228,7 @@ struct OpenAiCompatibleBrain {
     base_url: String,
     model: String,
     api_key_env: Option<String>,
+    runtime_adapter: AgentRuntimeAdapter,
 }
 
 const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
@@ -322,10 +333,15 @@ async fn decide_openai_compatible_agent_event(
     event: &Value,
 ) -> Result<AgentEventDecision> {
     let prompt = build_agent_event_prompt(event)?;
-    let generation = openai_compatible_generate_response(provider, &prompt).await?;
+    let session_context = RuntimeSessionContext::from_agent_event_input(event);
+    let generation =
+        openai_compatible_generate_response(provider, &prompt, session_context.as_ref()).await?;
     let parse = parse_agent_event_with_diagnostics(&generation.content, event).await?;
     let diagnostics = json!({
-        "provider": "openai-compatible",
+        "provider": "agent-runtime",
+        "runtime_adapter": provider.runtime_adapter.key(),
+        "runtime_session_id": session_context.as_ref().map(RuntimeSessionContext::session_id),
+        "runtime_session_header": session_context.as_ref().map(|_| provider.runtime_adapter.session_header_name()),
         "model": provider.model,
         "base_url": provider.base_url,
         "response_body": generation.response_body_snippet,
@@ -367,7 +383,7 @@ async fn openai_compatible_generate(
     provider: &OpenAiCompatibleBrain,
     prompt: &str,
 ) -> Result<String> {
-    Ok(openai_compatible_generate_response(provider, prompt)
+    Ok(openai_compatible_generate_response(provider, prompt, None)
         .await?
         .content)
 }
@@ -375,6 +391,7 @@ async fn openai_compatible_generate(
 async fn openai_compatible_generate_response(
     provider: &OpenAiCompatibleBrain,
     prompt: &str,
+    session_context: Option<&RuntimeSessionContext>,
 ) -> Result<OpenAiCompatibleGeneration> {
     let url = format!(
         "{}/chat/completions",
@@ -395,6 +412,11 @@ async fn openai_compatible_generate_response(
 
     if let Ok(token) = std::env::var(openai_compatible_api_key_env(provider)) {
         request = request.bearer_auth(token);
+    }
+    if let Some(session_context) = session_context {
+        request = provider
+            .runtime_adapter
+            .apply_session_header(request, session_context)?;
     }
 
     let response = request
@@ -910,6 +932,10 @@ fn validate_agent_event_resolution_with_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderMap;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use std::sync::{Arc, Mutex};
 
     #[tokio::test]
     async fn rules_brain_generates_human_report_and_actions() {
@@ -932,12 +958,79 @@ mod tests {
         assert_eq!(health, "rules_brain_ready");
     }
 
+    #[tokio::test]
+    async fn agent_runtime_adapter_sends_identity_session_header() {
+        let seen_session = Arc::new(Mutex::new(None::<String>));
+        let seen_session_clone = seen_session.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |headers: HeaderMap| {
+                let seen_session = seen_session_clone.clone();
+                async move {
+                    *seen_session.lock().expect("session mutex poisoned") = headers
+                        .get("x-hermes-session-id")
+                        .and_then(|value| value.to_str().ok())
+                        .map(ToOwned::to_owned);
+                    Json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "{\"action\":\"ignore\",\"reason\":\"test\",\"payload\":{}}"
+                            }
+                        }]
+                    }))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock");
+        });
+
+        let engine = BrainEngine::from_config(&BrainProviderConfig::OpenaiCompatible {
+            base_url: format!("http://{addr}/v1"),
+            model: "hermes-agent".to_owned(),
+            api_key_env: None,
+            runtime_adapter: Some(AgentRuntimeAdapter::Hermes {
+                session_header_name: None,
+            }),
+        });
+        let decision = engine
+            .decide_agent_event_with_diagnostics(&json!({
+                "agent_did": "did:key:zAgent",
+                "network_id": "mainnet:watt-etheria",
+                "event_type": "topic_message_requires_reply",
+                "allowed_actions": ["ignore"],
+                "payload": {}
+            }))
+            .await
+            .expect("runtime decision");
+
+        assert_eq!(
+            seen_session
+                .lock()
+                .expect("session mutex poisoned")
+                .as_deref(),
+            Some("wattetheria:identity:did:key:zAgent:mainnet:watt-etheria")
+        );
+        assert_eq!(
+            decision.diagnostics["runtime_adapter"].as_str(),
+            Some("hermes")
+        );
+        server.abort();
+    }
+
     #[test]
     fn openai_compatible_api_key_env_defaults_to_wattetheria_key() {
         let provider = OpenAiCompatibleBrain {
             base_url: "http://127.0.0.1:18789/v1".to_owned(),
             model: "openclaw".to_owned(),
             api_key_env: None,
+            runtime_adapter: AgentRuntimeAdapter::OpenClaw {
+                session_header_name: None,
+            },
         };
 
         assert_eq!(
@@ -1092,6 +1185,9 @@ mod tests {
             base_url: "http://127.0.0.1:18789/v1".to_owned(),
             model: "openclaw".to_owned(),
             api_key_env: Some("  CUSTOM_OPENAI_KEY  ".to_owned()),
+            runtime_adapter: AgentRuntimeAdapter::OpenClaw {
+                session_header_name: None,
+            },
         };
 
         assert_eq!(

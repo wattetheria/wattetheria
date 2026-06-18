@@ -492,8 +492,14 @@ fn brain_provider_descriptor(provider: &BrainProviderConfig) -> Value {
             base_url,
             model,
             api_key_env,
+            runtime_adapter,
         } => serde_json::json!({
-            "kind": "openai-compatible",
+            "kind": "agent-runtime",
+            "adapter": wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
+                base_url,
+                model,
+                runtime_adapter.as_ref()
+            ).key(),
             "base_url": base_url,
             "model": model,
             "api_key_env": api_key_env,

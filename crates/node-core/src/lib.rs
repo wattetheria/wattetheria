@@ -313,10 +313,19 @@ fn brain_provider_label(config: &BrainProviderConfig) -> String {
             format!("ollama model={model} url={base_url}")
         }
         BrainProviderConfig::OpenaiCompatible {
-            base_url, model, ..
-        } => {
-            format!("openai-compatible model={model} url={base_url}")
-        }
+            base_url,
+            model,
+            runtime_adapter,
+            ..
+        } => format!(
+            "adapter={} model={model} url={base_url}",
+            wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
+                base_url,
+                model,
+                runtime_adapter.as_ref()
+            )
+            .key()
+        ),
     }
 }
 
@@ -833,6 +842,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:11434".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -865,6 +876,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -874,6 +887,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8787/v1/".to_owned(),
                 model: "model".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )
         .expect("registration");
@@ -915,6 +929,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -925,6 +941,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8787/v1/".to_owned(),
                 model: "model".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )
         .expect("registration");
@@ -961,6 +978,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:8787/v1/".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -971,6 +990,7 @@ mod tests {
                 base_url: "http://127.0.0.1:8787/v1/".to_owned(),
                 model: "model".to_owned(),
                 api_key_env: None,
+                runtime_adapter: None,
             },
         )
         .expect("registration");
@@ -1017,6 +1037,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:11434".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -1062,6 +1084,8 @@ mod tests {
             brain_base_url: "http://127.0.0.1:11434".to_owned(),
             brain_model: "model".to_owned(),
             brain_api_key_env: None,
+            brain_runtime_adapter: None,
+            brain_session_header_name: None,
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };

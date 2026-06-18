@@ -34,6 +34,60 @@
       line-height: 1.5;
     }
 
+    .field-stack {
+      display: grid;
+      gap: 0.8rem;
+    }
+
+    .runtime-adapter-options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.45rem;
+    }
+
+    .runtime-adapter-option {
+      min-height: 3.2rem;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .runtime-adapter-name {
+      line-height: 1.1;
+    }
+
+    .runtime-adapter-header {
+      max-width: 100%;
+      color: var(--muted);
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.68rem;
+      font-weight: 500;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+      text-transform: none;
+    }
+
+    .runtime-adapter-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .runtime-adapter-option:has(input:checked) {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+    }
+
+    .runtime-adapter-option:has(input:checked) .runtime-adapter-header {
+      color: var(--accent-strong);
+    }
+
     .runtime-examples {
       margin: 0;
       padding-left: 1.1rem;
@@ -53,11 +107,6 @@
       font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
       font-size: 0.78rem;
       overflow-wrap: anywhere;
-    }
-
-    .field-stack {
-      display: grid;
-      gap: 0.8rem;
     }
 
     .field-label {
