@@ -140,6 +140,7 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
 fn topic_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "list_hives" => Some(tool_schema(tool, &list_hive_fields(), &[], false)),
+        "list_private_hives" => Some(tool_schema(tool, &list_private_hive_fields(), &[], false)),
         "create_hive" => Some(tool_schema(
             tool,
             &create_hive_fields(),
@@ -210,6 +211,20 @@ fn list_hive_fields() -> Vec<(&'static str, Value)> {
         bool_field(
             "include_inactive",
             "Whether inactive topics should be included.",
+        ),
+    ]
+}
+
+fn list_private_hive_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        integer_field("limit", "Maximum number of local private Hives to return."),
+        integer_field("offset", "Zero-based offset into local private Hives."),
+        string_field("network_id", "Wattswarm network ID filter."),
+        string_field("hive_id", "Private Hive ID filter."),
+        topic_projection_kind_field("Private Hive projection kind filter."),
+        bool_field(
+            "include_inactive",
+            "Whether inactive private Hives should be included.",
         ),
     ]
 }

@@ -2244,7 +2244,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                     agent_id: remote_identity.agent_did.clone(),
                     node_id: Some(remote_node_id.clone()),
                     card_hash: "sha256:remote-card".to_string(),
-                    issued_at: 1_710_000_120,
+                    issued_at: 1_710_000_120_000,
                     card: json!({
                         "name": "Remote Agent Alice",
                         "description": "Remote agent profile from the accepted relationship action.",
@@ -2298,7 +2298,19 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                     source_node_id: None,
                     target_node_id: None,
                     capability: Some("social.dm.send".to_string()),
-                    source_agent_card: None,
+                    source_agent_card: Some(SwarmSourceAgentCard {
+                        agent_id: remote_identity.agent_did.clone(),
+                        node_id: Some(remote_node_id.clone()),
+                        card_hash: "sha256:remote-card-renamed".to_string(),
+                        issued_at: 1_710_000_180_000,
+                        card: json!({
+                            "name": "Remote Agent Alice Renamed",
+                            "metadata": {
+                                "display_name": "Remote Agent Alice Renamed"
+                            }
+                        }),
+                        signature: Some("card-sig-2".to_string()),
+                    }),
                     message: json!({
                         "thread_id": transport_thread_id,
                         "message_id": "dm-msg-1",
@@ -2398,6 +2410,13 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         Some("hello inbound")
     );
 
+    let _ = authed_get_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/social/agent-dm/messages?public_id={local_public_id}"),
+    )
+    .await;
+
     let relationship_items = authed_get_json(
         app.clone(),
         &token,
@@ -2411,7 +2430,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     );
     assert_eq!(
         relationship_items[0]["counterpart_display_name"].as_str(),
-        Some("Remote Agent Alice")
+        Some("Remote Agent Alice Renamed")
     );
     assert_eq!(
         relationship_items[0]["counterpart_agent_did"].as_str(),
@@ -2443,7 +2462,12 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         .find(|identity| identity.public_id == remote_public_id)
         .expect("remote identity profile cached from source agent card");
     assert_eq!(remote_profile.agent_did, remote_identity.agent_did);
-    assert_eq!(remote_profile.display_name, "Remote Agent Alice");
+    assert_eq!(remote_profile.display_name, "Remote Agent Alice Renamed");
+    assert_eq!(
+        remote_profile.last_profile_fetched_at,
+        Some(1_710_000_120_000)
+    );
+    assert_eq!(remote_profile.updated_at, 1_710_000_120_000);
 
     let thread_items = authed_get_json(
         app.clone(),
@@ -2452,6 +2476,10 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     )
     .await;
     assert_eq!(thread_items.as_array().unwrap().len(), 1);
+    assert_eq!(
+        thread_items[0]["counterpart_display_name"].as_str(),
+        Some("Remote Agent Alice Renamed")
+    );
 
     let message_items = authed_get_json(
         app.clone(),
@@ -2463,6 +2491,10 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     assert_eq!(
         message_items[0]["content"]["text"].as_str(),
         Some("hello inbound")
+    );
+    assert_eq!(
+        message_items[0]["counterpart_display_name"].as_str(),
+        Some("Remote Agent Alice Renamed")
     );
 
     let friend_requests =

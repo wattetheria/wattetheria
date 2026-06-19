@@ -34,8 +34,8 @@ use wattetheria_kernel::swarm_bridge::{
 };
 use wattetheria_social::application::{
     block_service, friend_request_service, friendship_service, message_service,
-    orchestration_service, policy_service, receipt_service, thread_service,
-    transport_binding_service,
+    orchestration_service, policy_service, receipt_service, remote_identity_service,
+    thread_service, transport_binding_service,
 };
 use wattetheria_social::domain::blocks::SocialBlock;
 use wattetheria_social::domain::friend_requests::{
@@ -671,6 +671,41 @@ fn relationship_remote_source_agent_card(
     envelope.source_agent_card.as_ref()
 }
 
+fn dm_remote_source_agent_card<'a>(
+    local_public_id: &str,
+    view: &'a SwarmPeerDmMessageView,
+) -> Option<&'a SwarmSourceAgentCard> {
+    if view.direction != "inbound" {
+        return None;
+    }
+    let envelope = view.agent_envelope.as_ref()?;
+    let source_public_id = envelope
+        .message
+        .get("source_public_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if source_public_id == Some(local_public_id) {
+        return None;
+    }
+    if let Some(target_public_id) = envelope
+        .message
+        .get("target_public_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && target_public_id != local_public_id
+    {
+        return None;
+    }
+    envelope.source_agent_card.as_ref()
+}
+
+fn dm_remote_display_name(local_public_id: &str, view: &SwarmPeerDmMessageView) -> Option<String> {
+    let source_agent_card = dm_remote_source_agent_card(local_public_id, view)?;
+    agent_card_display_name(&source_agent_card.card)
+}
+
 fn agent_card_display_name(card: &Value) -> Option<String> {
     card.get("name")
         .and_then(Value::as_str)
@@ -781,6 +816,11 @@ fn enrich_relationship_payload_from_bridge(
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
+                && object
+                    .get("counterpart_display_name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_none_or(str::is_empty)
             {
                 object.insert(
                     "counterpart_display_name".to_string(),
@@ -1384,8 +1424,9 @@ fn known_identity_from_source_agent_card(
     orchestration_service::KnownIdentitySnapshot {
         public_id: counterpart_public_id.to_string(),
         agent_did: fallback_identity.and_then(|identity| identity.agent_did.clone()),
-        display_name: agent_card_display_name(&source_agent_card.card)
-            .or_else(|| fallback_identity.map(|identity| identity.display_name.clone()))
+        display_name: fallback_identity
+            .map(|identity| identity.display_name.clone())
+            .or_else(|| agent_card_display_name(&source_agent_card.card))
             .unwrap_or_else(|| counterpart_public_id.to_string()),
         active: fallback_identity.is_none_or(|identity| identity.active),
         created_at,
@@ -1554,6 +1595,7 @@ pub(crate) fn reconcile_swarm_dm_messages(
     let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)
         .unwrap_or_default();
     let mut synced = Vec::with_capacity(views.len());
+    let mut display_name_refreshes = Vec::new();
     for view in views {
         let counterpart_public_id = dm_counterpart_public_id(
             local_public_id,
@@ -1568,6 +1610,9 @@ pub(crate) fn reconcile_swarm_dm_messages(
             .get(&counterpart_public_id)
             .and_then(|identity| identity.agent_did.clone())
             .unwrap_or_else(|| counterpart_public_id.clone());
+        if let Some(display_name) = dm_remote_display_name(local_public_id, view) {
+            display_name_refreshes.push((counterpart_public_id.clone(), display_name));
+        }
         synced.push(orchestration_service::DmMessageSyncView {
             counterpart: counterpart_snapshot(
                 identities,
@@ -1601,7 +1646,16 @@ pub(crate) fn reconcile_swarm_dm_messages(
         });
     }
     orchestration_service::reconcile_dm_messages(&*state.social_store, local_public_id, &synced)
-        .map_err(anyhow::Error::msg)
+        .map_err(anyhow::Error::msg)?;
+    for (counterpart_public_id, display_name) in display_name_refreshes {
+        remote_identity_service::refresh_remote_display_name(
+            &*state.social_store,
+            &counterpart_public_id,
+            &display_name,
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
 }
 
 async fn reconcile_bridge_relationships_for_local(

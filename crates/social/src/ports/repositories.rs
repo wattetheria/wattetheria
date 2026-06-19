@@ -12,6 +12,11 @@ use crate::types::SocialResult;
 
 pub trait RemoteIdentityRepository {
     fn upsert_remote_identity(&self, identity: &RemoteIdentityProfile) -> SocialResult<()>;
+    fn update_remote_identity_display_name(
+        &self,
+        public_id: &str,
+        display_name: &str,
+    ) -> SocialResult<()>;
     fn get_remote_identity(&self, public_id: &str) -> SocialResult<Option<RemoteIdentityProfile>>;
     fn list_remote_identities(&self) -> SocialResult<Vec<RemoteIdentityProfile>>;
 }

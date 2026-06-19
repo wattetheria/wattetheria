@@ -13,6 +13,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "reject_agent_payment",
     "cancel_agent_payment",
     "list_hives",
+    "list_private_hives",
     "create_hive",
     "create_private_hive",
     "list_hive_messages",
@@ -2438,6 +2439,19 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`."
         )
     );
+    let list_private_hives = find_tool(tools, "list_private_hives");
+    assert_schema_requires(list_private_hives, &[]);
+    assert!(
+        list_private_hives["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("include_inactive")
+    );
+    assert_eq!(
+        list_private_hives["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/hives")
+    );
+
     let create_private_hive = find_tool(tools, "create_private_hive");
     assert_schema_requires(create_private_hive, &["feed_key", "display_name"]);
     assert_schema_omits(
@@ -3635,6 +3649,115 @@ async fn mcp_list_hives_reads_configured_gateway_hives() {
     )
     .await;
     assert_gateway_hive_topic(&response);
+}
+
+#[tokio::test]
+async fn mcp_list_private_hives_reads_local_private_hives_only() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    {
+        let mut hives = state.hive_registry.lock().await;
+        hives.upsert_hive(test_hive_spec(
+            "private.hive",
+            "group:dm-private-active",
+            "Private Active",
+            true,
+        ));
+        hives.upsert_hive(test_hive_spec(
+            "wattetheria.hives",
+            "group:public-topic",
+            "Public Hive",
+            true,
+        ));
+        hives.upsert_hive(test_hive_spec(
+            "private.hive",
+            "group:dm-private-inactive",
+            "Private Inactive",
+            false,
+        ));
+    }
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "list_private_hives",
+                "arguments": {
+                    "network_id": "mainnet:watt-etheria"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["source"].as_str(),
+        Some("wattetheria.local_hive_registry")
+    );
+    assert_eq!(content["scope"].as_str(), Some("local_private"));
+    assert_eq!(content["known_count"].as_u64(), Some(1));
+    let hives = content["hives"].as_array().unwrap();
+    assert_eq!(hives.len(), 1);
+    assert_eq!(hives[0]["display_name"].as_str(), Some("Private Active"));
+    assert_eq!(hives[0]["feed_key"].as_str(), Some("private.hive"));
+    assert_eq!(
+        hives[0]["scope_hint"].as_str(),
+        Some("group:dm-private-active")
+    );
+    assert!(
+        !serde_json::to_string(content)
+            .unwrap()
+            .contains("shared_secret_b64")
+    );
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_private_hives",
+                "arguments": {
+                    "include_inactive": true
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        response["result"]["structuredContent"]["known_count"].as_u64(),
+        Some(2)
+    );
+}
+
+fn test_hive_spec(
+    feed_key: &str,
+    scope_hint: &str,
+    display_name: &str,
+    active: bool,
+) -> wattetheria_kernel::civilization::topics::TopicCreateSpec {
+    wattetheria_kernel::civilization::topics::TopicCreateSpec {
+        network_id: Some("mainnet:watt-etheria".to_owned()),
+        feed_key: feed_key.to_owned(),
+        scope_hint: scope_hint.to_owned(),
+        display_name: display_name.to_owned(),
+        summary: None,
+        projection_kind: wattetheria_kernel::civilization::topics::TopicProjectionKind::ChatRoom,
+        organization_id: None,
+        mission_id: None,
+        participant_public_ids: Vec::new(),
+        created_by_public_id: "local-public".to_owned(),
+        why_this_exists: None,
+        public_geo: None,
+        active,
+    }
 }
 
 #[tokio::test]

@@ -32,6 +32,34 @@ where
     repository.upsert_remote_identity(identity)
 }
 
+pub fn refresh_remote_display_name<R>(
+    repository: &R,
+    public_id: &str,
+    display_name: &str,
+) -> SocialResult<()>
+where
+    R: RemoteIdentityRepository,
+{
+    if public_id.trim().is_empty() {
+        return Err(SocialError::InvalidInput(
+            "public_id is required".to_owned(),
+        ));
+    }
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        return Err(SocialError::InvalidInput(
+            "display_name is required".to_owned(),
+        ));
+    }
+    let Some(identity) = repository.get_remote_identity(public_id)? else {
+        return Ok(());
+    };
+    if identity.display_name.trim() == display_name {
+        return Ok(());
+    }
+    repository.update_remote_identity_display_name(public_id, display_name)
+}
+
 pub fn list_remote_identities<R>(repository: &R) -> SocialResult<Vec<RemoteIdentityProfile>>
 where
     R: RemoteIdentityRepository,

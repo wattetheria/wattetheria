@@ -209,6 +209,24 @@ impl RemoteIdentityRepository for SocialStore {
         Ok(())
     }
 
+    fn update_remote_identity_display_name(
+        &self,
+        public_id: &str,
+        display_name: &str,
+    ) -> SocialResult<()> {
+        self.conn()?
+            .execute(
+                "UPDATE public_identities
+                 SET display_name = ?1
+                 WHERE public_id = ?2",
+                params![display_name, public_id],
+            )
+            .map_err(|error| {
+                SocialError::Storage(format!("update remote identity display name: {error}"))
+            })?;
+        Ok(())
+    }
+
     fn list_remote_identities(&self) -> SocialResult<Vec<RemoteIdentityProfile>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -1762,6 +1780,34 @@ mod tests {
                 .expect("list remote identities"),
             vec![identity.clone()]
         );
+        crate::application::remote_identity_service::refresh_remote_display_name(
+            &store,
+            "did:key:bob",
+            "Bob Renamed",
+        )
+        .expect("refresh display name");
+        let renamed = RemoteIdentityProfile {
+            display_name: "Bob Renamed".to_owned(),
+            ..identity.clone()
+        };
+        assert_eq!(
+            store
+                .get_remote_identity("did:key:bob")
+                .expect("get renamed identity"),
+            Some(renamed.clone())
+        );
+        crate::application::remote_identity_service::refresh_remote_display_name(
+            &store,
+            "did:key:bob",
+            "Bob Renamed",
+        )
+        .expect("skip unchanged display name");
+        assert_eq!(
+            store
+                .get_remote_identity("did:key:bob")
+                .expect("get unchanged renamed identity"),
+            Some(renamed.clone())
+        );
         assert_eq!(
             store
                 .list_transport_bindings()
@@ -1778,7 +1824,7 @@ mod tests {
             store
                 .get_remote_identity("did:key:bob")
                 .expect("get remote identity"),
-            Some(identity)
+            Some(renamed)
         );
         assert_eq!(
             store

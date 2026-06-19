@@ -303,7 +303,7 @@ fn envelope_author_display_name(
     })
 }
 
-fn hive_profile_payload(topic: &HiveProfile) -> Value {
+pub(crate) fn hive_profile_payload(topic: &HiveProfile) -> Value {
     let mut value = serde_json::to_value(topic).unwrap_or_else(|_| json!({}));
     if let Value::Object(object) = &mut value {
         object

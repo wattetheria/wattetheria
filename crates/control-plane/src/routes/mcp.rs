@@ -303,6 +303,7 @@ async fn direct_mcp_tool_result(
         ),
         "get_servicenet_receipt" => Some(servicenet_receipt_result(state, arguments).await),
         "list_hives" => Some(network_hive_market_result(state, arguments).await),
+        "list_private_hives" => Some(local_private_hives_result(state, arguments).await),
         _ => None,
     }
 }
@@ -535,6 +536,77 @@ async fn network_hive_market_result(state: &ControlPlaneState, arguments: &Value
         Ok(payload) => tool_success(&payload),
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
+}
+
+async fn local_private_hives_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let payload = local_private_hives_payload(state, arguments).await;
+    tool_success(&payload)
+}
+
+async fn local_private_hives_payload(state: &ControlPlaneState, arguments: &Value) -> Value {
+    let limit = numeric_argument(arguments, "limit")
+        .unwrap_or(DEFAULT_GATEWAY_TOPIC_LIMIT)
+        .clamp(1, MAX_GATEWAY_TOPIC_LIMIT);
+    let offset = numeric_argument(arguments, "offset")
+        .unwrap_or(0)
+        .min(MAX_GATEWAY_TOPIC_WINDOW);
+    let include_inactive = bool_argument(arguments, "include_inactive").unwrap_or(false);
+    let hive_id_filter = string_argument(arguments, "hive_id");
+    let network_id_filter = string_argument(arguments, "network_id");
+    let projection_kind_filter = string_argument(arguments, "projection_kind");
+
+    let hives = state.hive_registry.lock().await;
+    let mut all_hives = hives
+        .list()
+        .into_iter()
+        .filter(|hive| include_inactive || hive.active)
+        .filter(|hive| is_local_private_hive(hive.feed_key.as_str(), hive.scope_hint.as_str()))
+        .filter(|hive| {
+            hive_id_filter
+                .as_deref()
+                .is_none_or(|hive_id| hive.topic_id == hive_id)
+        })
+        .filter(|hive| {
+            network_id_filter.as_deref().is_none_or(|network_id| {
+                hive.network_id.as_deref().map(str::trim) == Some(network_id)
+            })
+        })
+        .filter(|hive| {
+            projection_kind_filter
+                .as_deref()
+                .is_none_or(|projection_kind| {
+                    serde_json::to_value(&hive.projection_kind)
+                        .ok()
+                        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                        .is_some_and(|value| value == projection_kind)
+                })
+        })
+        .collect::<Vec<_>>();
+    all_hives.sort_by_key(|hive| std::cmp::Reverse(hive.updated_at));
+    let page = all_hives
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(crate::routes::topics::hive_profile_payload)
+        .collect::<Vec<_>>();
+    let next_offset = offset + page.len();
+    let has_more = next_offset < all_hives.len();
+
+    json!({
+        "source": "wattetheria.local_hive_registry",
+        "scope": "local_private",
+        "pagination": "local_limit_offset",
+        "limit": limit,
+        "offset": offset,
+        "next_offset": if has_more { Some(next_offset) } else { None },
+        "has_more": has_more,
+        "known_count": all_hives.len(),
+        "hives": page,
+    })
+}
+
+fn is_local_private_hive(feed_key: &str, scope_hint: &str) -> bool {
+    feed_key != "wattswarm.dm" && scope_hint.starts_with("group:dm-")
 }
 
 async fn network_hive_market_payload(
@@ -2252,6 +2324,15 @@ fn bool_argument(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
 
+fn string_argument(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn path_vars(path: &str) -> Vec<&'static str> {
     if path.contains("{payment_id}") {
         return vec!["payment_id"];
@@ -2293,7 +2374,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 45] = [
+const AGENT_TOOLS: [AgentTool; 46] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -2305,6 +2386,7 @@ const AGENT_TOOLS: [AgentTool; 45] = [
     AgentTool { name: "reject_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/reject", description: "Reject an inbound payment request.", availability: Availability::Always },
     AgentTool { name: "cancel_agent_payment", method: Method::POST, path: "/v1/wattetheria/payments/agent-payments/{payment_id}/cancel", description: "Cancel an outbound payment request.", availability: Availability::Always },
     AgentTool { name: "list_hives", method: Method::GET, path: "/api/hives", description: "Browse Wattetheria network Hives from the configured gateway.", availability: Availability::Always },
+    AgentTool { name: "list_private_hives", method: Method::GET, path: "/v1/wattetheria/hives", description: "List local private Hives known to this node without exposing Hive shared secrets.", availability: Availability::TopicBridge },
     AgentTool { name: "create_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a Wattetheria Hive and subscribe the local controller.", availability: Availability::TopicBridge },
     AgentTool { name: "create_private_hive", method: Method::POST, path: "/v1/wattetheria/hives", description: "Create a private Wattetheria Hive with an unlisted group DM scope and subscribe the local controller.", availability: Availability::TopicBridge },
     AgentTool { name: "list_hive_messages", method: Method::GET, path: "/v1/wattetheria/hives/{hive_id}/messages", description: "List messages for a Wattetheria Hive.", availability: Availability::TopicBridge },

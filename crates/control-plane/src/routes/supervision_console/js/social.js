@@ -526,9 +526,14 @@
     function scrollDmThreadToLatest(container) {
       const bubbleList = container.querySelector(".dm-bubble-list");
       if (!bubbleList) return;
-      requestAnimationFrame(() => {
+      const scroll = () => {
         bubbleList.scrollTop = bubbleList.scrollHeight;
+      };
+      requestAnimationFrame(() => {
+        scroll();
+        requestAnimationFrame(scroll);
       });
+      setTimeout(scroll, 120);
     }
 
     function renderDmMessages(payload) {

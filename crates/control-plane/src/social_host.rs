@@ -304,12 +304,22 @@ pub(crate) async fn load_social_identity_maps(
     BTreeMap<String, ControllerBinding>,
 ) {
     let mut identities = state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .map(|identity| (identity.public_id.clone(), identity))
+        .collect::<BTreeMap<_, _>>();
+    for identity in state
         .social_store
         .list_remote_identities()
         .unwrap_or_default()
-        .into_iter()
-        .map(|identity| {
-            (
+    {
+        if let Some(existing) = identities.get_mut(&identity.public_id) {
+            existing.display_name = identity.display_name;
+        } else {
+            identities.insert(
                 identity.public_id.clone(),
                 PublicIdentity {
                     public_id: identity.public_id,
@@ -319,18 +329,9 @@ pub(crate) async fn load_social_identity_maps(
                     created_at: identity.created_at,
                     updated_at: identity.updated_at,
                 },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    identities.extend(
-        state
-            .public_identity_registry
-            .lock()
-            .await
-            .list()
-            .into_iter()
-            .map(|identity| (identity.public_id.clone(), identity)),
-    );
+            );
+        }
+    }
     let bindings = state
         .controller_binding_registry
         .lock()

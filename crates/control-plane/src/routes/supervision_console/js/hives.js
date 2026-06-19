@@ -15,6 +15,19 @@
       return valueOrZero(row.recent_message_count || row.message_count || row.messages_count || row.activity_count);
     }
 
+    function scrollHiveMessagesToLatest() {
+      const messageList = qs("hive-messages-list");
+      if (!messageList) return;
+      const scroll = () => {
+        messageList.scrollTop = messageList.scrollHeight;
+      };
+      requestAnimationFrame(() => {
+        scroll();
+        requestAnimationFrame(scroll);
+      });
+      setTimeout(scroll, 120);
+    }
+
     function renderTopics(payload) {
       const rows = safeArray(payload.public_topics);
       const activeRows = rows.filter((row) => row.active !== false);
@@ -52,6 +65,7 @@
           const row = rows[Number(button.dataset.hiveIndex)];
           activeHiveKey = hiveKey(row);
           renderTopics(payload);
+          scrollHiveMessagesToLatest();
           loadHiveMessages(row);
         });
       });
@@ -108,6 +122,7 @@
           </div>
         </div>
       `);
+      scrollHiveMessagesToLatest();
     }
 
     function fallbackHiveMessages(payload, hive) {
