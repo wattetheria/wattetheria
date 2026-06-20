@@ -4,22 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Coordinated Wattetheria/Wattswarm image tag to publish.
+        description: Coordinated Watt stack version tag to publish.
         required: true
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
   publish:
-    name: Publish coordinated GHCR images
+    name: Publish coordinated GHCR images and stack release
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
       RELEASE: ${{ inputs.release }}
       GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
 
     steps:
       - name: Validate release inputs
@@ -34,22 +35,72 @@ jobs:
             echo "release input must be a version tag, not latest" >&2
             exit 1
           fi
+          if ! printf '%s' "${RELEASE}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+            echo "release input must contain only letters, numbers, dots, underscores, and hyphens" >&2
+            exit 1
+          fi
           if [ -z "${CROSS_REPO_TOKEN}" ]; then
             echo "CROSS_REPO_TOKEN is required for cross-repo checkout, GHCR push, and private dependency fetches" >&2
             exit 1
           fi
+          command -v gh >/dev/null 2>&1 || {
+            echo "gh CLI is required to create or update the GitHub release" >&2
+            exit 1
+          }
 
       - name: Checkout Wattetheria
         uses: actions/checkout@v4
         with:
+          repository: wattetheria/wattetheria
+          ref: main
           path: wattetheria
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
 
       - name: Checkout Wattswarm
         uses: actions/checkout@v4
         with:
           repository: wattetheria/wattswarm
+          ref: main
           path: wattswarm
           token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout Watt DID
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          ref: main
+          path: watt-did
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout Watt Wallet
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          ref: main
+          path: watt-wallet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout ServiceNet
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-servicenet
+          ref: main
+          path: watt-servicenet
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout Wattetheria Gateway
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattetheria-gateway
+          ref: main
+          path: wattetheria-gateway
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -84,3 +135,39 @@ jobs:
               -t "${image}:latest" \
               "${image}:${RELEASE}"
           done
+
+      - name: Generate stack release manifest and notes
+        run: node wattetheria/scripts/generate-stack-release.js
+
+      - name: Create or update GitHub release
+        run: |
+          set -euo pipefail
+
+          release_title="Wattetheria Stack ${RELEASE}"
+          release_notes="wattetheria/dist/stack-release/release-notes.md"
+          release_manifest="wattetheria/dist/stack-release/release-manifest.${RELEASE}.json"
+          release_target="$(git -C wattetheria rev-parse HEAD)"
+
+          if gh release view "${RELEASE}" --repo wattetheria/wattetheria >/dev/null 2>&1; then
+            gh release edit "${RELEASE}" \
+              --repo wattetheria/wattetheria \
+              --title "${release_title}" \
+              --notes-file "${release_notes}" \
+              --target "${release_target}" \
+              --latest
+          else
+            gh release create "${RELEASE}" \
+              --repo wattetheria/wattetheria \
+              --target "${release_target}" \
+              --title "${release_title}" \
+              --notes-file "${release_notes}" \
+              --latest
+          fi
+
+          gh release upload "${RELEASE}" \
+            --repo wattetheria/wattetheria \
+            --clobber \
+            "${release_manifest}" \
+            wattetheria/docker-compose.release.yml \
+            wattetheria/.env.release \
+            wattetheria/scripts/deploy-release.ps1
