@@ -185,6 +185,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
         agent_event_callback_base_url: Some(format!("http://{callback_addr}")),
         ..state
     };
+    let expected_agent_did = state.agent_did.clone();
     let app = app(state);
 
     let list_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/servicenet/agents").await;
@@ -224,6 +225,15 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     assert_eq!(
         invoke_json["output"]["echo"].as_str(),
         Some("hello servicenet")
+    );
+    assert_eq!(
+        invoke_json["output"]["agent_envelope_source"].as_str(),
+        Some(expected_agent_did.as_str())
+    );
+    assert!(
+        invoke_json["output"]["caller_public_id"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty())
     );
     assert_eq!(invoke_json["task_id"].as_str(), Some("task-42"));
     assert_eq!(invoke_json["settlement"]["rail"].as_str(), Some("x402"));
@@ -284,12 +294,305 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
         Some("invoke")
     );
     assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["source_agent_id"].as_str(),
+        Some(expected_agent_did.as_str())
+    );
+    assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
+        Some("agent-alpha")
+    );
+    assert!(
+        callback_events[0]["event"]["agent_envelope"]["signature"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty())
+    );
+    assert_eq!(
         callback_events[1]["event"]["payload"]["operation"].as_str(),
         Some("task_get")
     );
     assert_eq!(
         callback_events[1]["event"]["payload"]["task_id"].as_str(),
         Some("task-42")
+    );
+
+    callback_server.abort();
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn servicenet_continue_decision_invokes_agent_again_with_context() {
+    let invoke_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let invoke_bodies_for_route = Arc::clone(&invoke_bodies);
+    let servicenet_app = Router::new().route(
+        "/v1/agents/{agent_id}/invoke",
+        post(move |Path(agent_id): Path<String>, Json(body): Json<Value>| {
+            let invoke_bodies = Arc::clone(&invoke_bodies_for_route);
+            async move {
+                let mut bodies = invoke_bodies.lock().await;
+                let call_index = bodies.len();
+                bodies.push(body.clone());
+                let message = if call_index == 0 {
+                    "need more detail"
+                } else {
+                    "completed after follow-up"
+                };
+                Json(json!({
+                    "agent_id": agent_id,
+                    "status": "completed",
+                    "task_id": "task-42",
+                    "context_id": "ctx-1",
+                    "message": message,
+                    "output": {
+                        "round": call_index + 1,
+                        "echo": body["message"].clone(),
+                        "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
+                    },
+                    "raw": {"kind": "invoke", "round": call_index + 1},
+                }))
+            }
+        }),
+    );
+    let servicenet_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let servicenet_addr = servicenet_listener.local_addr().unwrap();
+    let servicenet_server = tokio::spawn(async move {
+        axum::serve(servicenet_listener, servicenet_app)
+            .await
+            .unwrap();
+    });
+
+    let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let callback_events_for_route = Arc::clone(&callback_events);
+    let callback_app = Router::new().route(
+        "/agent-events",
+        post(move |Json(payload): Json<Value>| {
+            let callback_events = Arc::clone(&callback_events_for_route);
+            async move {
+                let mut events = callback_events.lock().await;
+                let event_index = events.len();
+                events.push(payload);
+                if event_index == 0 {
+                    Json(json!({
+                        "ok": true,
+                        "acked_at": 1,
+                        "decision": {
+                            "decision_id": "decision-continue",
+                            "action": "continue",
+                            "route": "noop",
+                            "reason": "ask the ServiceNet agent for one more detail",
+                            "payload": {
+                                "message": "follow up from caller",
+                                "input": {"requested_detail": "shipping_eta"}
+                            }
+                        }
+                    }))
+                } else {
+                    Json(json!({"ok": true, "acked_at": 2}))
+                }
+            }
+        }),
+    );
+    let callback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let callback_addr = callback_listener.local_addr().unwrap();
+    let callback_server = tokio::spawn(async move {
+        axum::serve(callback_listener, callback_app).await.unwrap();
+    });
+
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        agent_event_callback_base_url: Some(format!("http://{callback_addr}")),
+        ..state
+    };
+    let expected_agent_did = state.agent_did.clone();
+    let app = app(state);
+
+    let invoke_json = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
+        json!({
+            "message": "hello servicenet",
+            "input": {"topic": "order"}
+        }),
+    )
+    .await;
+    assert_eq!(invoke_json["output"]["round"].as_u64(), Some(1));
+
+    let invoke_bodies = invoke_bodies.lock().await;
+    assert_eq!(invoke_bodies.len(), 2);
+    assert_eq!(
+        invoke_bodies[1]["message"].as_str(),
+        Some("follow up from caller")
+    );
+    assert_eq!(invoke_bodies[1]["task_id"].as_str(), Some("task-42"));
+    assert_eq!(invoke_bodies[1]["context_id"].as_str(), Some("ctx-1"));
+    assert_eq!(
+        invoke_bodies[1]["input"]["requested_detail"].as_str(),
+        Some("shipping_eta")
+    );
+    assert_eq!(
+        invoke_bodies[1]["agent_envelope"]["source_agent_id"].as_str(),
+        Some(expected_agent_did.as_str())
+    );
+    assert_eq!(
+        invoke_bodies[1]["agent_envelope"]["target_agent_id"].as_str(),
+        Some("agent-alpha")
+    );
+    assert!(
+        invoke_bodies[1]["agent_envelope"]["signature"]
+            .as_str()
+            .is_some_and(|value| !value.trim().is_empty())
+    );
+    drop(invoke_bodies);
+
+    let callback_events = callback_events.lock().await;
+    assert_eq!(callback_events.len(), 2);
+    assert_eq!(
+        callback_events[0]["event"]["payload"]["operation"].as_str(),
+        Some("invoke")
+    );
+    assert_eq!(
+        callback_events[1]["event"]["payload"]["operation"].as_str(),
+        Some("continue")
+    );
+    assert_eq!(
+        callback_events[1]["event"]["payload"]["continue_hop"].as_u64(),
+        Some(1)
+    );
+
+    callback_server.abort();
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
+    let task_poll_count = Arc::new(AtomicUsize::new(0));
+    let task_poll_count_for_route = Arc::clone(&task_poll_count);
+    let servicenet_app = Router::new()
+        .route(
+            "/v1/agents/{agent_id}/invoke-async",
+            post(
+                |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                    Json(json!({
+                        "agent_id": agent_id,
+                        "status": "running",
+                        "receipt_id": "00000000-0000-0000-0000-000000000077",
+                        "task_id": "task-async",
+                        "context_id": body["context_id"].as_str().unwrap_or("ctx-async"),
+                        "message": "accepted",
+                        "raw": {"kind": "invoke_async"},
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/v1/agents/{agent_id}/tasks/{task_id}/get",
+            post(
+                move |Path((agent_id, task_id)): Path<(String, String)>,
+                      Json(_body): Json<Value>| {
+                    let task_poll_count = Arc::clone(&task_poll_count_for_route);
+                    async move {
+                        task_poll_count.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({
+                            "agent_id": agent_id,
+                            "status": "completed",
+                            "task_id": task_id,
+                            "context_id": "ctx-async",
+                            "message": "async completed",
+                            "output": {"result": "done async"},
+                            "raw": {"kind": "task"},
+                        }))
+                    }
+                },
+            ),
+        );
+    let servicenet_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let servicenet_addr = servicenet_listener.local_addr().unwrap();
+    let servicenet_server = tokio::spawn(async move {
+        axum::serve(servicenet_listener, servicenet_app)
+            .await
+            .unwrap();
+    });
+
+    let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let callback_app = Router::new().route(
+        "/agent-events",
+        post({
+            let callback_events = Arc::clone(&callback_events);
+            move |Json(payload): Json<Value>| {
+                let callback_events = Arc::clone(&callback_events);
+                async move {
+                    callback_events.lock().await.push(payload);
+                    Json(json!({"ok": true, "acked_at": 1}))
+                }
+            }
+        }),
+    );
+    let callback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let callback_addr = callback_listener.local_addr().unwrap();
+    let callback_server = tokio::spawn(async move {
+        axum::serve(callback_listener, callback_app).await.unwrap();
+    });
+
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        agent_event_callback_base_url: Some(format!("http://{callback_addr}")),
+        ..state
+    };
+    let expected_agent_did = state.agent_did.clone();
+    let app = app(state.clone());
+
+    let async_json = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke-async",
+        json!({
+            "message": "start async",
+            "context_id": "ctx-async"
+        }),
+    )
+    .await;
+    assert_eq!(async_json["status"].as_str(), Some("running"));
+    assert_eq!(async_json["task_id"].as_str(), Some("task-async"));
+
+    state
+        .social_store
+        .defer_reliability_task("servicenet_async_invocation", "task-async", 1, 1, None)
+        .expect("defer async poll task to due time");
+    let processed = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run maintenance");
+    assert_eq!(processed, 1);
+    assert_eq!(task_poll_count.load(Ordering::SeqCst), 1);
+
+    let callback_events = callback_events.lock().await;
+    assert_eq!(callback_events.len(), 1);
+    assert_eq!(
+        callback_events[0]["event"]["payload"]["operation"].as_str(),
+        Some("async_result")
+    );
+    assert_eq!(
+        callback_events[0]["event"]["payload"]["task_id"].as_str(),
+        Some("task-async")
+    );
+    assert_eq!(
+        callback_events[0]["event"]["payload"]["response"]["output"]["result"].as_str(),
+        Some("done async")
+    );
+    assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["source_agent_id"].as_str(),
+        Some(expected_agent_did.as_str())
+    );
+    assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
+        Some("agent-alpha")
     );
 
     callback_server.abort();

@@ -1,4 +1,5 @@
 use crate::routes::civilization::reconcile_swarm_relationship_views;
+use crate::routes::servicenet::async_jobs::maintain_servicenet_async_invocations;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, load_social_identity_maps,
     resolve_social_local_context, with_social_defaults,
@@ -42,58 +43,58 @@ pub async fn run_reliability_maintenance_tick_once(
     limit: usize,
 ) -> anyhow::Result<usize> {
     let now = chrono::Utc::now().timestamp();
+    let mut processed = 0;
     let mut due = state
         .social_store
         .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
         .map_err(anyhow::Error::msg)?;
-    if due.is_empty() {
-        return Ok(0);
-    }
-
-    let (identities, bindings) = load_social_identity_maps(state).await;
-    let relationship_views = state
-        .swarm_bridge
-        .list_peer_relationships()
-        .await
-        .unwrap_or_default();
-    let pending_remote_nodes = due
-        .iter()
-        .filter_map(|request| request.remote_node_id.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<BTreeSet<_>>();
-    let pending_relationship_views = relationship_views
-        .iter()
-        .filter(|view| pending_remote_nodes.contains(view.remote_node_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let pending_local_public_ids = due
-        .iter()
-        .map(|request| request.local_public_id.as_str())
-        .collect::<BTreeSet<_>>();
-    for local_public_id in pending_local_public_ids {
-        reconcile_swarm_relationship_views(
-            state,
-            local_public_id,
-            &identities,
-            &bindings,
-            &pending_relationship_views,
-        )?;
-    }
-    due = state
-        .social_store
-        .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
-        .map_err(anyhow::Error::msg)?;
-    if due.is_empty() {
-        return Ok(0);
-    }
-    let mut processed = 0;
-    for request in due {
-        maintain_outbound_friend_request(state, &pending_relationship_views, &request, now)
+    if !due.is_empty() {
+        let (identities, bindings) = load_social_identity_maps(state).await;
+        let relationship_views = state
+            .swarm_bridge
+            .list_peer_relationships()
             .await
-            .with_context(|| format!("maintain friend request {}", request.request_id))?;
-        processed += 1;
+            .unwrap_or_default();
+        let pending_remote_nodes = due
+            .iter()
+            .filter_map(|request| request.remote_node_id.as_deref())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+        let pending_relationship_views = relationship_views
+            .iter()
+            .filter(|view| pending_remote_nodes.contains(view.remote_node_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let pending_local_public_ids = due
+            .iter()
+            .map(|request| request.local_public_id.as_str())
+            .collect::<BTreeSet<_>>();
+        for local_public_id in pending_local_public_ids {
+            reconcile_swarm_relationship_views(
+                state,
+                local_public_id,
+                &identities,
+                &bindings,
+                &pending_relationship_views,
+            )?;
+        }
+        due = state
+            .social_store
+            .due_outbound_pending_friend_requests(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
+            .map_err(anyhow::Error::msg)?;
+        for request in due {
+            if processed >= limit {
+                break;
+            }
+            maintain_outbound_friend_request(state, &pending_relationship_views, &request, now)
+                .await
+                .with_context(|| format!("maintain friend request {}", request.request_id))?;
+            processed += 1;
+        }
     }
+    let remaining = limit.saturating_sub(processed);
+    processed += maintain_servicenet_async_invocations(state, now, remaining).await?;
     Ok(processed)
 }
 

@@ -17,9 +17,7 @@ use crate::routes::identity::resolve_identity_context;
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, record_contribution_event,
 };
-use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, resolve_social_local_context,
-};
+use crate::routes::servicenet::envelope::servicenet_invoke_agent_envelope;
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
@@ -753,6 +751,7 @@ async fn servicenet_invoke_agent_result(
         Ok(envelope) => envelope,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
     };
+    let agent_envelope = envelope.clone();
     if let Some(object) = body.as_object_mut() {
         object.insert("agent_envelope".to_owned(), envelope);
     }
@@ -774,7 +773,35 @@ async fn servicenet_invoke_agent_result(
         ServiceNetInvokeMode::Async => client.invoke_agent_async(&agent_id, &request).await,
     };
     match response {
-        Ok(response) => tool_success(&serde_json::to_value(response).unwrap_or(Value::Null)),
+        Ok(response) => {
+            if matches!(mode, ServiceNetInvokeMode::Async)
+                && let Err(error) =
+                    crate::routes::servicenet::async_jobs::record_servicenet_async_invocation(
+                        state,
+                        &agent_id,
+                        &request,
+                        &response,
+                        agent_envelope.clone(),
+                    )
+            {
+                return tool_error(&json!({"error": error.to_string()}));
+            }
+            let payload = serde_json::to_value(response).unwrap_or(Value::Null);
+            if matches!(mode, ServiceNetInvokeMode::Sync) {
+                Box::pin(
+                    crate::routes::servicenet::notify_local_agent_of_third_party_result(
+                        state,
+                        "invoke",
+                        &agent_id,
+                        None,
+                        &payload,
+                        Some(&agent_envelope),
+                    ),
+                )
+                .await;
+            }
+            tool_success(&payload)
+        }
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
 }
@@ -801,41 +828,6 @@ async fn servicenet_receipt_result(state: &ControlPlaneState, arguments: &Value)
         Ok(response) => tool_success(&response),
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
-}
-
-async fn servicenet_invoke_agent_envelope(
-    state: &ControlPlaneState,
-    agent_id: &str,
-    body: &Value,
-) -> anyhow::Result<Value> {
-    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
-    let local = resolve_social_local_context(state, None).await;
-    let envelope = build_signed_agent_envelope_for_nodes(
-        state,
-        SignedAgentEnvelopeArgs {
-            source_agent_id: state.agent_did.clone(),
-            source_display_name: local.display_name,
-            target_agent_id: Some(agent_id.to_owned()),
-            source_node_id,
-            target_node_id: None,
-            capability: "servicenet.agents.invoke".to_owned(),
-            message: servicenet_invoke_envelope_message(body),
-            extensions: Some(json!({
-                "caller_public_id": local.public_id,
-            })),
-        },
-    )?;
-    Ok(serde_json::to_value(envelope)?)
-}
-
-fn servicenet_invoke_envelope_message(body: &Value) -> Value {
-    let mut message = body.clone();
-    if let Some(object) = message.as_object_mut() {
-        object.remove("auth_token");
-        object.remove("auth_context_id");
-        object.remove("agent_envelope");
-    }
-    message
 }
 
 fn servicenet_agent_requires_auth(agent: &Value) -> bool {

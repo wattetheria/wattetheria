@@ -5,10 +5,10 @@ use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde_json::{Value, json};
 
-use crate::auth::{authorize, internal_error};
-use crate::routes::servicenet_publish::{
+use super::publish::{
     ServiceNetPublisherRegistration, load_publisher_state, registration_matches_identity,
 };
+use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::audit::AuditEntry;
 

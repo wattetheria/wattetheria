@@ -31,9 +31,6 @@ pub mod routes {
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
-    pub(crate) mod servicenet_bridge;
-    pub(crate) mod servicenet_publish;
-    pub(crate) mod servicenet_published;
     pub(crate) mod settlement_delegation;
     pub(crate) mod supervision;
     pub(crate) mod topics;
@@ -89,10 +86,10 @@ fn mcp_router() -> Router<ControlPlaneState> {
 
 fn servicenet_bridge_router() -> Router<ControlPlaneState> {
     Router::new()
-        .route("/a2a", post(routes::servicenet_bridge::a2a_root))
+        .route("/a2a", post(routes::servicenet::bridge::a2a_root))
         .route(
             "/a2a/{agent_id}",
-            post(routes::servicenet_bridge::a2a_agent),
+            post(routes::servicenet::bridge::a2a_agent),
         )
 }
 
@@ -317,15 +314,15 @@ fn servicenet_router() -> Router<ControlPlaneState> {
         )
         .route(
             "/v1/wattetheria/servicenet/agent-card-template",
-            get(routes::servicenet_publish::agent_card_template),
+            get(routes::servicenet::publish::agent_card_template),
         )
         .route(
             "/v1/wattetheria/servicenet/publish",
-            post(routes::servicenet_publish::publish_agent),
+            post(routes::servicenet::publish::publish_agent),
         )
         .route(
             "/v1/wattetheria/servicenet/published-agents",
-            get(routes::servicenet_published::published_agents),
+            get(routes::servicenet::published::published_agents),
         )
         .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}",
@@ -333,7 +330,7 @@ fn servicenet_router() -> Router<ControlPlaneState> {
         )
         .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish",
-            post(routes::servicenet_publish::unpublish_agent),
+            post(routes::servicenet::publish::unpublish_agent),
         )
         .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",

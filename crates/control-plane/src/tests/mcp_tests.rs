@@ -238,7 +238,7 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
         agent_topic_bridge_enabled: false,
         ..state
     };
-    let app = app(state);
+    let app = app(state.clone());
 
     let response = mcp_request(
         app,
@@ -300,7 +300,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
         )),
         ..state
     };
-    let app = app(state);
+    let app = app(state.clone());
 
     let response = mcp_request(
         app.clone(),
@@ -781,6 +781,25 @@ async fn mcp_agent_payments_support_friend_display_name() {
 #[tokio::test]
 async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_agent() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let callback_app = Router::new().route(
+        "/agent-events",
+        post({
+            let callback_events = Arc::clone(&callback_events);
+            move |Json(payload): Json<Value>| {
+                let callback_events = Arc::clone(&callback_events);
+                async move {
+                    callback_events.lock().await.push(payload);
+                    Json(json!({"ok": true, "acked_at": 1}))
+                }
+            }
+        }),
+    );
+    let callback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let callback_addr = callback_listener.local_addr().unwrap();
+    let callback_server = tokio::spawn(async move {
+        axum::serve(callback_listener, callback_app).await.unwrap();
+    });
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let agent_did = state.agent_did.clone();
     let expected_public_id = state
@@ -794,6 +813,7 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
         servicenet_client: Some(Arc::new(
             ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
         )),
+        agent_event_callback_base_url: Some(format!("http://{callback_addr}")),
         ..state
     };
     let app = app(state);
@@ -827,7 +847,22 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
         content["output"]["caller_public_id"].as_str(),
         Some(expected_public_id.as_str())
     );
+    let callback_events = callback_events.lock().await;
+    assert_eq!(callback_events.len(), 1);
+    assert_eq!(
+        callback_events[0]["event"]["payload"]["operation"].as_str(),
+        Some("invoke")
+    );
+    assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["source_agent_id"].as_str(),
+        Some(agent_did.as_str())
+    );
+    assert_eq!(
+        callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
+        Some("agent-alpha")
+    );
 
+    callback_server.abort();
     servicenet_server.abort();
 }
 
@@ -841,7 +876,7 @@ async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
         )),
         ..state
     };
-    let app = app(state);
+    let app = app(state.clone());
 
     let response = mcp_request(
         app,
@@ -867,6 +902,16 @@ async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
     assert_eq!(
         content["receipt_id"].as_str(),
         Some("00000000-0000-0000-0000-000000000099")
+    );
+    let pending: crate::routes::servicenet::async_jobs::ServiceNetAsyncInvocationStore = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::SERVICENET_ASYNC_INVOCATIONS)
+        .expect("load async invocation store")
+        .expect("async invocation store exists");
+    assert!(
+        pending
+            .invocations
+            .contains_key("00000000-0000-0000-0000-000000000099")
     );
 
     servicenet_server.abort();

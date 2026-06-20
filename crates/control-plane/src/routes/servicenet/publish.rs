@@ -11,8 +11,8 @@ use std::net::IpAddr;
 use std::path::{Path as FsPath, PathBuf};
 use uuid::Uuid;
 
+use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
-use crate::routes::servicenet::{servicenet_client, servicenet_error_response};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::ServiceNetClient;
@@ -574,7 +574,7 @@ pub(crate) async fn publish_agent(
         Err(response) => return response,
     };
     let Some(client) = servicenet_client(&state) else {
-        return crate::routes::servicenet::servicenet_unavailable_response();
+        return super::servicenet_unavailable_response();
     };
     if let Err(message) = validate_agent_card(&body.agent_card) {
         return bad_request(message);
@@ -738,7 +738,7 @@ pub(crate) async fn unpublish_agent(
         Err(response) => return response,
     };
     let Some(client) = servicenet_client(&state) else {
-        return crate::routes::servicenet::servicenet_unavailable_response();
+        return super::servicenet_unavailable_response();
     };
     let mut publisher_state = match load_publisher_state(&state.data_dir) {
         Ok(state) => state,

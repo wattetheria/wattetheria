@@ -726,6 +726,10 @@ fn mission_agent_event_action_rule(
             "settle_mission: settle an existing completed mission; include mission_id and agent_did when known."
                 .to_owned(),
         ),
+        ("third_party_result", "continue") => Some(
+            "continue: send a follow-up message to the same ServiceNet agent; payload must include message or input, may include request, and should preserve context_id and task_id when present in payload.response."
+                .to_owned(),
+        ),
         _ => None,
     }
 }
@@ -1223,6 +1227,26 @@ mod tests {
         assert!(prompt.contains("custom_action"));
         assert!(prompt.contains("No event-specific action schema"));
         assert!(!prompt.contains("decide_claim"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_servicenet_continue_payload() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "third_party_result",
+            "allowed_actions": ["continue"],
+            "payload": {
+                "response": {
+                    "task_id": "task-42",
+                    "context_id": "ctx-1"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("continue: send a follow-up message"));
+        assert!(prompt.contains("message or input"));
+        assert!(prompt.contains("context_id and task_id"));
+        assert!(!prompt.contains("publish_mission:"));
     }
 
     #[test]

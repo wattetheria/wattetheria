@@ -54,6 +54,7 @@ pub mod domain {
     pub const CONTRIBUTION_EVENT_LOG: &str = "contribution_event_log";
     pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
     pub const NETWORK_MISSION_CLAIMS: &str = "network_mission_claims";
+    pub const SERVICENET_ASYNC_INVOCATIONS: &str = "servicenet_async_invocations";
 }
 
 const DOMAIN_TABLES: &[(&str, &str)] = &[

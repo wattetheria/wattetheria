@@ -9,19 +9,29 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::agent_events::{
-    AgentEventCallbackRequest, AgentEventCallbackResponse, AgentEventEnvelope,
+    AgentDecisionEnvelope, AgentEventCallbackRequest, AgentEventCallbackResponse,
+    AgentEventEnvelope,
 };
 use crate::state::{
     AgentActionCommitBody, AgentActionCommitEvent, AgentActionDecision, ControlPlaneState,
 };
+use envelope::servicenet_invoke_agent_envelope;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
     ServiceNetClient, ServiceNetClientError, ServiceNetGetAgentTaskRequest, ServiceNetInvokeRequest,
 };
+use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
+
+pub(crate) mod async_jobs;
+pub(crate) mod bridge;
+pub(crate) mod envelope;
+pub(crate) mod publish;
+pub(crate) mod published;
 
 const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
 const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
 const MAX_AGENT_LIST_LIMIT: usize = 100;
+const MAX_SERVICENET_CONTINUE_HOPS: usize = 4;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct AgentListQuery {
@@ -34,6 +44,7 @@ struct ThirdPartyAgentEvent {
     event_id: String,
     event_type: String,
     source_kind: String,
+    agent_envelope: Option<SwarmAgentEnvelope>,
     payload: Value,
     requires_commit: bool,
     allowed_actions: Vec<String>,
@@ -49,6 +60,20 @@ pub(crate) fn servicenet_unavailable_response() -> Response {
         Json(json!({"error": "servicenet is not configured"})),
     )
         .into_response()
+}
+
+async fn ensure_agent_envelope(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    body: &mut ServiceNetInvokeRequest,
+) -> anyhow::Result<Value> {
+    if let Some(agent_envelope) = body.agent_envelope.clone() {
+        return Ok(agent_envelope);
+    }
+    let body_value = serde_json::to_value(&*body)?;
+    let agent_envelope = servicenet_invoke_agent_envelope(state, agent_id, &body_value).await?;
+    body.agent_envelope = Some(agent_envelope.clone());
+    Ok(agent_envelope)
 }
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
@@ -92,7 +117,7 @@ async fn apply_third_party_decision(
                 source_kind: event.source_kind.clone(),
                 source_node_id: None,
                 target_agent_id: None,
-                agent_envelope: None,
+                agent_envelope: event.agent_envelope.clone(),
                 payload: event.payload.clone(),
                 requires_commit: event.requires_commit,
             },
@@ -108,41 +133,114 @@ async fn apply_third_party_decision(
     .await;
 }
 
-async fn notify_local_agent_of_third_party_result(
-    state: &ControlPlaneState,
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn servicenet_continue_request(
+    decision: &AgentDecisionEnvelope,
+    response_payload: &Value,
+) -> Option<ServiceNetInvokeRequest> {
+    if decision.action != "continue" || decision.route != "noop" {
+        return None;
+    }
+    let mut request = if let Some(request) = decision.payload.get("request") {
+        serde_json::from_value::<ServiceNetInvokeRequest>(request.clone()).ok()?
+    } else {
+        ServiceNetInvokeRequest::default()
+    };
+    if request.message.is_none() {
+        request.message = string_field(&decision.payload, "message");
+    }
+    if request.input.is_null()
+        && let Some(input) = decision.payload.get("input")
+    {
+        request.input = input.clone();
+    }
+    if request.task_id.is_none() {
+        request.task_id = string_field(&decision.payload, "task_id")
+            .or_else(|| string_field(response_payload, "task_id"));
+    }
+    if request.context_id.is_none() {
+        request.context_id = string_field(&decision.payload, "context_id")
+            .or_else(|| string_field(response_payload, "context_id"));
+    }
+    if request.skill_id.is_none() {
+        request.skill_id = string_field(&decision.payload, "skill_id");
+    }
+    if request.region.is_none() {
+        request.region = string_field(&decision.payload, "region");
+    }
+    if request.auth_token.is_none() {
+        request.auth_token = string_field(&decision.payload, "auth_token");
+    }
+    if request.max_cost_units.is_none() {
+        request.max_cost_units = decision
+            .payload
+            .get("max_cost_units")
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok());
+    }
+    if request.settlement.is_none() {
+        request.settlement = decision
+            .payload
+            .get("settlement")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+    }
+    let has_continue_content = request.message.is_some()
+        || !request.input.is_null()
+        || decision.payload.get("request").is_some();
+    has_continue_content.then_some(request)
+}
+
+fn third_party_dedupe_key(
     operation: &str,
     agent_id: &str,
     task_id: Option<&str>,
     payload: &Value,
-) {
-    let Some(base_url) = state.agent_event_callback_base_url.as_deref() else {
-        return;
-    };
-    let endpoint = format!("{}/agent-events", base_url.trim_end_matches('/'));
+    hop: usize,
+) -> String {
     let status = payload
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    let dedupe_key = if let Some(task_id) = task_id {
-        format!("servicenet:{operation}:{agent_id}:{task_id}:{status}")
-    } else {
-        format!(
-            "servicenet:{operation}:{agent_id}:{}:{status}",
-            payload
-                .get("receipt_id")
-                .and_then(Value::as_str)
-                .unwrap_or("immediate")
-        )
-    };
-    let event = ThirdPartyAgentEvent {
+    if let Some(task_id) = task_id {
+        return format!("servicenet:{operation}:{agent_id}:{task_id}:{status}:{hop}");
+    }
+    format!(
+        "servicenet:{operation}:{agent_id}:{}:{status}:{hop}",
+        payload
+            .get("receipt_id")
+            .and_then(Value::as_str)
+            .unwrap_or("immediate")
+    )
+}
+
+fn third_party_agent_event(
+    operation: &str,
+    agent_id: &str,
+    task_id: Option<&str>,
+    payload: &Value,
+    agent_envelope: Option<SwarmAgentEnvelope>,
+    hop: usize,
+) -> ThirdPartyAgentEvent {
+    ThirdPartyAgentEvent {
         event_id: Uuid::new_v4().to_string(),
         event_type: "third_party_result".to_string(),
         source_kind: "service_net_result".to_string(),
+        agent_envelope,
         payload: json!({
             "operation": operation,
             "agent_id": agent_id,
             "task_id": task_id,
             "response": payload,
+            "continue_hop": hop,
+            "max_continue_hops": MAX_SERVICENET_CONTINUE_HOPS,
         }),
         requires_commit: false,
         allowed_actions: vec![
@@ -153,8 +251,18 @@ async fn notify_local_agent_of_third_party_result(
             "complete_mission".to_string(),
             "settle_mission".to_string(),
         ],
-    };
-    let callback = reqwest::Client::new()
+    }
+}
+
+async fn post_third_party_event_callback(
+    http: &reqwest::Client,
+    endpoint: &str,
+    event: &ThirdPartyAgentEvent,
+    task_id: Option<&str>,
+    payload: &Value,
+    dedupe_key: String,
+) -> Option<AgentEventCallbackResponse> {
+    let response = http
         .post(endpoint)
         .json(&AgentEventCallbackRequest {
             event: AgentEventEnvelope {
@@ -164,7 +272,7 @@ async fn notify_local_agent_of_third_party_result(
                 source_node_id: None,
                 target_agent_id: None,
                 target_executor: Some(CORE_AGENT_EXECUTOR_NAME.to_owned()),
-                agent_envelope: None,
+                agent_envelope: event.agent_envelope.clone(),
                 payload: event.payload.clone(),
                 requires_commit: event.requires_commit,
                 allowed_actions: event.allowed_actions.clone(),
@@ -180,14 +288,79 @@ async fn notify_local_agent_of_third_party_result(
         })
         .send()
         .await
-        .ok();
-    let callback = if let Some(response) = callback {
-        response.json::<AgentEventCallbackResponse>().await.ok()
-    } else {
-        None
+        .ok()?;
+    response.json::<AgentEventCallbackResponse>().await.ok()
+}
+
+pub(crate) async fn notify_local_agent_of_third_party_result(
+    state: &ControlPlaneState,
+    operation: &str,
+    agent_id: &str,
+    task_id: Option<&str>,
+    payload: &Value,
+    agent_envelope: Option<&Value>,
+) {
+    let Some(base_url) = state.agent_event_callback_base_url.as_deref() else {
+        return;
     };
-    if let Some(callback) = callback {
+    let endpoint = format!("{}/agent-events", base_url.trim_end_matches('/'));
+    let mut operation = operation.to_owned();
+    let mut task_id = task_id.map(ToOwned::to_owned);
+    let mut payload = payload.clone();
+    let mut agent_envelope = agent_envelope
+        .and_then(|value| serde_json::from_value::<SwarmAgentEnvelope>(value.clone()).ok());
+    let http = reqwest::Client::new();
+
+    for hop in 0..=MAX_SERVICENET_CONTINUE_HOPS {
+        let event = third_party_agent_event(
+            &operation,
+            agent_id,
+            task_id.as_deref(),
+            &payload,
+            agent_envelope.clone(),
+            hop,
+        );
+        let dedupe_key =
+            third_party_dedupe_key(&operation, agent_id, task_id.as_deref(), &payload, hop);
+        let callback = post_third_party_event_callback(
+            &http,
+            &endpoint,
+            &event,
+            task_id.as_deref(),
+            &payload,
+            dedupe_key,
+        )
+        .await;
+        let Some(callback) = callback else {
+            return;
+        };
+        let continue_request = callback
+            .decision
+            .as_ref()
+            .and_then(|decision| servicenet_continue_request(decision, &payload));
         Box::pin(apply_third_party_decision(state, &event, callback)).await;
+
+        let Some(mut continue_request) = continue_request else {
+            return;
+        };
+        if hop >= MAX_SERVICENET_CONTINUE_HOPS {
+            return;
+        }
+        let Ok(next_agent_envelope) =
+            ensure_agent_envelope(state, agent_id, &mut continue_request).await
+        else {
+            return;
+        };
+        let Some(client) = servicenet_client(state) else {
+            return;
+        };
+        let Ok(response) = client.invoke_agent(agent_id, &continue_request).await else {
+            return;
+        };
+        payload = serde_json::to_value(&response).unwrap_or(Value::Null);
+        task_id = response.task_id.clone().or(task_id);
+        operation = "continue".to_string();
+        agent_envelope = serde_json::from_value::<SwarmAgentEnvelope>(next_agent_envelope).ok();
     }
 }
 
@@ -261,7 +434,7 @@ pub(crate) async fn invoke_agent(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-    Json(body): Json<ServiceNetInvokeRequest>,
+    Json(mut body): Json<ServiceNetInvokeRequest>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
@@ -270,13 +443,22 @@ pub(crate) async fn invoke_agent(
     let Some(client) = servicenet_client(&state) else {
         return servicenet_unavailable_response();
     };
+    let agent_envelope = match ensure_agent_envelope(&state, &agent_id, &mut body).await {
+        Ok(agent_envelope) => agent_envelope,
+        Err(error) => return internal_error(&error),
+    };
     let response = match client.invoke_agent(&agent_id, &body).await {
         Ok(response) => response,
         Err(error) => return servicenet_error_response(&error),
     };
     let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
     Box::pin(notify_local_agent_of_third_party_result(
-        &state, "invoke", &agent_id, None, &payload,
+        &state,
+        "invoke",
+        &agent_id,
+        None,
+        &payload,
+        Some(&agent_envelope),
     ))
     .await;
     let _ = state.audit_log.append(AuditEntry {
@@ -303,7 +485,7 @@ pub(crate) async fn invoke_agent_async(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-    Json(body): Json<ServiceNetInvokeRequest>,
+    Json(mut body): Json<ServiceNetInvokeRequest>,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
@@ -312,10 +494,23 @@ pub(crate) async fn invoke_agent_async(
     let Some(client) = servicenet_client(&state) else {
         return servicenet_unavailable_response();
     };
+    let agent_envelope = match ensure_agent_envelope(&state, &agent_id, &mut body).await {
+        Ok(agent_envelope) => agent_envelope,
+        Err(error) => return internal_error(&error),
+    };
     let response = match client.invoke_agent_async(&agent_id, &body).await {
         Ok(response) => response,
         Err(error) => return servicenet_error_response(&error),
     };
+    if let Err(error) = async_jobs::record_servicenet_async_invocation(
+        &state,
+        &agent_id,
+        &body,
+        &response,
+        agent_envelope,
+    ) {
+        return internal_error(&error);
+    }
     let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -360,6 +555,7 @@ pub(crate) async fn get_agent_task(
         &agent_id,
         Some(&task_id),
         &payload,
+        None,
     ))
     .await;
     let _ = state.audit_log.append(AuditEntry {
