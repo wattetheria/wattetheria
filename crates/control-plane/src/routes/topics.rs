@@ -151,6 +151,42 @@ fn counterpart_public_id(body: &PrivateHiveInviteBody) -> PrivateHiveInviteResul
     Ok(public_id.to_owned())
 }
 
+fn private_hive_invite_required_text(
+    value: &str,
+    field_name: &str,
+) -> PrivateHiveInviteResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(Box::new(private_hive_invite_json_error(
+            StatusCode::BAD_REQUEST,
+            json!({"error": format!("{field_name} is required")}),
+        )));
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn private_hive_invite_text(display_name: &str, hive_name: &str, message: Option<&str>) -> String {
+    let trimmed_message = message.map(str::trim).filter(|value| !value.is_empty());
+    match trimmed_message {
+        Some(message) => format!(
+            "Hi {display_name}, you are invited to join the private Hive \"{hive_name}\". {message}"
+        ),
+        None => format!(
+            "Hi {display_name}, you are invited to join the private Hive \"{hive_name}\". This encrypted message includes the private Hive key share so your node can unlock the Hive messages."
+        ),
+    }
+}
+
+fn private_hive_invite_fields(
+    body: &PrivateHiveInviteBody,
+) -> PrivateHiveInviteResult<(String, String, String, String)> {
+    let counterpart_public_id = counterpart_public_id(body)?;
+    let display_name = private_hive_invite_required_text(&body.display_name, "display_name")?;
+    let hive_name = private_hive_invite_required_text(&body.hive_name, "hive_name")?;
+    let invite_text = private_hive_invite_text(&display_name, &hive_name, body.message.as_deref());
+    Ok((counterpart_public_id, display_name, hive_name, invite_text))
+}
+
 fn ensure_active_friend(
     state: &ControlPlaneState,
     local_public_id: &str,
@@ -767,10 +803,11 @@ pub(crate) async fn invite_private_hive_participant(
         Ok(hive) => hive,
         Err(response) => return *response,
     };
-    let counterpart_public_id = match counterpart_public_id(&body) {
-        Ok(public_id) => public_id,
-        Err(response) => return *response,
-    };
+    let (counterpart_public_id, display_name, hive_name, invite_text) =
+        match private_hive_invite_fields(&body) {
+            Ok(fields) => fields,
+            Err(response) => return *response,
+        };
     if let Err(response) = ensure_active_friend(&state, &local_public_id, &counterpart_public_id) {
         return *response;
     }
@@ -797,6 +834,9 @@ pub(crate) async fn invite_private_hive_participant(
             remote_node_id: transport_binding.transport_node_id.clone(),
             feed_key: hive.feed_key.clone(),
             scope_hint: hive.scope_hint.clone(),
+            display_name: display_name.clone(),
+            hive_name: hive_name.clone(),
+            invite_text,
             agent_envelope,
         })
         .await
@@ -820,6 +860,8 @@ pub(crate) async fn invite_private_hive_participant(
             "feed_key": hive.feed_key,
             "scope_hint": hive.scope_hint,
             "counterpart_public_id": counterpart_public_id,
+            "display_name": display_name,
+            "hive_name": hive_name,
             "remote_node_id": transport_binding.transport_node_id,
             "shared_secret_b64_redacted": true,
         })),
@@ -830,6 +872,8 @@ pub(crate) async fn invite_private_hive_participant(
         "feed_key": hive.feed_key,
         "scope_hint": hive.scope_hint,
         "counterpart_public_id": counterpart_public_id,
+        "display_name": display_name,
+        "hive_name": hive_name,
         "remote_node_id": response["remote_node_id"],
         "thread_id": response["thread_id"],
         "message_id": response["message_id"],

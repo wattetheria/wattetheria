@@ -1800,7 +1800,9 @@ async fn mcp_invite_private_hive_participant_sends_key_share_without_exposing_se
                 "name": "invite_private_hive_participant",
                 "arguments": {
                     "hive_id": hive_id,
-                    "counterpart_public_id": remote_public_id
+                    "counterpart_public_id": remote_public_id,
+                    "display_name": "Private Hive Peer",
+                    "hive_name": "Private Hive"
                 }
             }
         }),
@@ -1822,8 +1824,24 @@ async fn mcp_invite_private_hive_participant_sends_key_share_without_exposing_se
         Some("group:dm-private-hive-test")
     );
     assert_eq!(
+        result_json["display_name"].as_str(),
+        Some("Private Hive Peer")
+    );
+    assert_eq!(result_json["hive_name"].as_str(), Some("Private Hive"));
+    assert_eq!(
         result_json["shared_secret_b64_redacted"].as_bool(),
         Some(true)
+    );
+    let key_share_commands = bridge.private_hive_key_share_commands.lock().await;
+    assert_eq!(key_share_commands.len(), 1);
+    assert_eq!(
+        key_share_commands[0].display_name.as_str(),
+        "Private Hive Peer"
+    );
+    assert_eq!(key_share_commands[0].hive_name.as_str(), "Private Hive");
+    assert_eq!(
+        key_share_commands[0].invite_text.as_str(),
+        "Hi Private Hive Peer, you are invited to join the private Hive \"Private Hive\". This encrypted message includes the private Hive key share so your node can unlock the Hive messages."
     );
 }
 
@@ -2574,7 +2592,12 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let invite_private_hive_participant = find_tool(tools, "invite_private_hive_participant");
     assert_schema_requires(
         invite_private_hive_participant,
-        &["hive_id", "counterpart_public_id"],
+        &[
+            "hive_id",
+            "counterpart_public_id",
+            "display_name",
+            "hive_name",
+        ],
     );
     assert_schema_omits(
         invite_private_hive_participant,

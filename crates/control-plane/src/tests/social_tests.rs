@@ -68,6 +68,7 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -304,6 +305,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -401,6 +403,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -564,6 +567,7 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -720,6 +724,7 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -912,6 +917,7 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -1031,6 +1037,7 @@ async fn agent_action_commit_payment_authorize_uses_ledger_remote_node_without_c
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -1470,6 +1477,7 @@ async fn agent_friend_request_is_denied_when_counterpart_is_blocked() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -2127,6 +2135,7 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -2327,6 +2336,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
             }],
         )])),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -2601,6 +2611,7 @@ async fn agent_social_reconcile_remote_accept_uses_target_public_id_for_outbound
         }]),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
@@ -2755,6 +2766,7 @@ async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();

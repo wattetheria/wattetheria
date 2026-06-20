@@ -848,6 +848,10 @@ pub struct AgentDmSendBody {
 pub struct PrivateHiveInviteBody {
     pub public_id: Option<String>,
     pub counterpart_public_id: String,
+    pub display_name: String,
+    pub hive_name: String,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

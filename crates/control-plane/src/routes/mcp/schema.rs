@@ -174,7 +174,12 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
         "invite_private_hive_participant" => Some(tool_schema(
             tool,
             &invite_private_hive_participant_fields(),
-            &["hive_id", "counterpart_public_id"],
+            &[
+                "hive_id",
+                "counterpart_public_id",
+                "display_name",
+                "hive_name",
+            ],
             false,
         )),
         _ => None,
@@ -341,6 +346,15 @@ fn invite_private_hive_participant_fields() -> Vec<(&'static str, Value)> {
         string_field(
             "counterpart_public_id",
             "Accepted friend public identity to invite.",
+        ),
+        string_field(
+            "display_name",
+            "Display name of the accepted friend being invited.",
+        ),
+        string_field("hive_name", "Human-readable private Hive name."),
+        string_field(
+            "message",
+            "Optional invitation note appended to the default private Hive invite text.",
         ),
     ]
 }

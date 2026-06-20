@@ -858,6 +858,7 @@ struct MockSwarmBridge {
     dm_threads: Mutex<Vec<SwarmPeerDmThreadView>>,
     dm_messages: Mutex<BTreeMap<String, Vec<SwarmPeerDmMessageView>>>,
     dm_commands: Mutex<Vec<SwarmDirectMessageCommand>>,
+    private_hive_key_share_commands: Mutex<Vec<SwarmPrivateHiveKeyShareCommand>>,
     payment_commands: Mutex<Vec<SwarmAgentPaymentCommand>>,
     fail_accept_and_finalize: bool,
 }
@@ -880,6 +881,7 @@ impl MockSwarmBridge {
             dm_threads: Mutex::new(Vec::new()),
             dm_messages: Mutex::new(BTreeMap::new()),
             dm_commands: Mutex::new(Vec::new()),
+            private_hive_key_share_commands: Mutex::new(Vec::new()),
             payment_commands: Mutex::new(Vec::new()),
             fail_accept_and_finalize: false,
         }
@@ -1090,6 +1092,10 @@ impl SwarmBridge for MockSwarmBridge {
         &self,
         command: SwarmPrivateHiveKeyShareCommand,
     ) -> anyhow::Result<Value> {
+        self.private_hive_key_share_commands
+            .lock()
+            .await
+            .push(command.clone());
         Ok(json!({
             "ok": true,
             "remote_node_id": command.remote_node_id,

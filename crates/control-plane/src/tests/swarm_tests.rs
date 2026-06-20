@@ -126,6 +126,7 @@ async fn network_routes_surface_bridge_read_models() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, _state) =
@@ -580,6 +581,7 @@ fn topic_routes_mock_bridge(identity: &Identity) -> Arc<MockSwarmBridge> {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     })
 }

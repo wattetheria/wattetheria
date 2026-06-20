@@ -261,6 +261,9 @@ pub struct SwarmPrivateHiveKeyShareCommand {
     pub remote_node_id: String,
     pub feed_key: String,
     pub scope_hint: String,
+    pub display_name: String,
+    pub hive_name: String,
+    pub invite_text: String,
     pub agent_envelope: SwarmAgentEnvelope,
 }
 

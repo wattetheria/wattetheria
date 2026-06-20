@@ -111,6 +111,7 @@ async fn client_api_routes_align_with_client_dtos() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, _state) =
@@ -928,6 +929,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, state) =
@@ -1169,6 +1171,7 @@ async fn client_export_excludes_local_friends_and_dm() {
             }],
         )])),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, state) =
@@ -1389,6 +1392,7 @@ async fn client_export_is_public_and_signed() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, _state) =
@@ -1795,6 +1799,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, state, token, _) =
@@ -1878,6 +1883,7 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
         dm_threads: Mutex::new(Vec::new()),
         dm_messages: Mutex::new(BTreeMap::new()),
         dm_commands: Mutex::new(Vec::new()),
+        private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
     });
     let (_dir, state, _token, _) =
