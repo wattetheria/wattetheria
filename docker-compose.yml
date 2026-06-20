@@ -3,8 +3,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      secrets:
-        - github_token
     container_name: wattetheria-kernel
     restart: unless-stopped
     environment:
@@ -25,7 +23,3 @@ services:
 
 volumes:
   wattetheria_state:
-
-secrets:
-  github_token:
-    environment: GITHUB_TOKEN

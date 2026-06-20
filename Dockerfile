@@ -73,14 +73,9 @@ FROM chef AS cacher
 COPY --from=planner /app/recipe.json /app/recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=secret,id=github_token \
-    if [ -f /run/secrets/github_token ]; then \
-      git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
-    fi \
-    && cargo chef cook --release --recipe-path recipe.json \
+    cargo chef cook --release --recipe-path recipe.json \
     -p wattetheria-kernel \
-    -p wattetheria-client-cli \
-    && rm -f /root/.gitconfig
+    -p wattetheria-client-cli
 
 FROM chef AS builder
 
@@ -118,12 +113,7 @@ RUN curl -fsSL \
 ENV WATTSWARM_SYNC_PROTO=/tmp/wattetheria_sync.proto
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
-    --mount=type=secret,id=github_token \
-    if [ -f /run/secrets/github_token ]; then \
-      git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
-    fi \
-    && cargo build --release -p wattetheria-kernel -p wattetheria-client-cli \
-    && rm -f /root/.gitconfig
+    cargo build --release -p wattetheria-kernel -p wattetheria-client-cli
 
 FROM debian:bookworm-slim
 
