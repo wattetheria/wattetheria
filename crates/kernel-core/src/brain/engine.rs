@@ -76,6 +76,11 @@ pub struct BrainEngine {
 pub trait BrainProvider: Send + Sync {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport>;
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>>;
+    async fn generate_text_with_session(
+        &self,
+        prompt: &str,
+        session_context: Option<&RuntimeSessionContext>,
+    ) -> Result<String>;
     async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>>;
     async fn decide_agent_event_with_diagnostics(
         &self,
@@ -124,6 +129,16 @@ impl BrainEngine {
 
     pub async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>> {
         self.provider.propose_actions(state).await
+    }
+
+    pub async fn generate_text_with_session(
+        &self,
+        prompt: &str,
+        session_context: Option<&RuntimeSessionContext>,
+    ) -> Result<String> {
+        self.provider
+            .generate_text_with_session(prompt, session_context)
+            .await
     }
 
     pub async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
@@ -208,6 +223,17 @@ impl BrainProvider for RulesBrain {
         Ok(out)
     }
 
+    async fn generate_text_with_session(
+        &self,
+        prompt: &str,
+        _session_context: Option<&RuntimeSessionContext>,
+    ) -> Result<String> {
+        Ok(serde_json::json!({
+            "message": format!("Rules runtime received ServiceNet bridge prompt: {prompt}")
+        })
+        .to_string())
+    }
+
     async fn decide_agent_event(&self, _event: &Value) -> Result<Option<AgentEventResolution>> {
         Ok(None)
     }
@@ -254,6 +280,14 @@ impl BrainProvider for OllamaBrain {
         parse_proposals_or_fallback(&output, state).await
     }
 
+    async fn generate_text_with_session(
+        &self,
+        prompt: &str,
+        _session_context: Option<&RuntimeSessionContext>,
+    ) -> Result<String> {
+        ollama_generate(&self.base_url, &self.model, prompt).await
+    }
+
     async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {
         let prompt = build_agent_event_prompt(event)?;
         let output = ollama_generate(&self.base_url, &self.model, &prompt).await?;
@@ -292,6 +326,18 @@ impl BrainProvider for OpenAiCompatibleBrain {
         );
         let output = openai_compatible_generate(self, &prompt).await?;
         parse_proposals_or_fallback(&output, state).await
+    }
+
+    async fn generate_text_with_session(
+        &self,
+        prompt: &str,
+        session_context: Option<&RuntimeSessionContext>,
+    ) -> Result<String> {
+        Ok(
+            openai_compatible_generate_response(self, prompt, session_context)
+                .await?
+                .content,
+        )
     }
 
     async fn decide_agent_event(&self, event: &Value) -> Result<Option<AgentEventResolution>> {

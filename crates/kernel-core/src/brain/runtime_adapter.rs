@@ -33,8 +33,23 @@ pub struct AgentRuntimeAdapterMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeSessionContext {
-    agent_did: String,
-    network_id: String,
+    scope: RuntimeSessionScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeSessionScope {
+    Precomputed {
+        session_id: String,
+    },
+    Identity {
+        agent_did: String,
+        network_id: String,
+    },
+    ServiceNet {
+        caller_agent_did: String,
+        published_agent_id: String,
+        network_id: String,
+    },
 }
 
 impl AgentRuntimeAdapter {
@@ -162,9 +177,40 @@ impl AgentRuntimeAdapter {
 impl RuntimeSessionContext {
     #[must_use]
     pub fn new(agent_did: impl Into<String>, network_id: impl Into<String>) -> Self {
+        Self::identity(agent_did, network_id)
+    }
+
+    #[must_use]
+    pub fn identity(agent_did: impl Into<String>, network_id: impl Into<String>) -> Self {
         Self {
-            agent_did: agent_did.into(),
-            network_id: network_id.into(),
+            scope: RuntimeSessionScope::Identity {
+                agent_did: agent_did.into(),
+                network_id: network_id.into(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn precomputed(session_id: impl Into<String>) -> Self {
+        Self {
+            scope: RuntimeSessionScope::Precomputed {
+                session_id: session_id.into(),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn servicenet(
+        caller_agent_did: impl Into<String>,
+        published_agent_id: impl Into<String>,
+        network_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            scope: RuntimeSessionScope::ServiceNet {
+                caller_agent_did: caller_agent_did.into(),
+                published_agent_id: published_agent_id.into(),
+                network_id: network_id.into(),
+            },
         }
     }
 
@@ -186,11 +232,29 @@ impl RuntimeSessionContext {
 
     #[must_use]
     pub fn session_id(&self) -> String {
-        format!(
-            "wattetheria:identity:{}:{}",
-            self.agent_did.trim(),
-            self.network_id.trim()
-        )
+        match &self.scope {
+            RuntimeSessionScope::Precomputed { session_id } => session_id.trim().to_string(),
+            RuntimeSessionScope::Identity {
+                agent_did,
+                network_id,
+            } => {
+                format!(
+                    "wattetheria:identity:{}:{}",
+                    agent_did.trim(),
+                    network_id.trim()
+                )
+            }
+            RuntimeSessionScope::ServiceNet {
+                caller_agent_did,
+                published_agent_id,
+                network_id,
+            } => format!(
+                "wattetheria:servicenet:{}:{}:{}",
+                caller_agent_did.trim(),
+                published_agent_id.trim(),
+                network_id.trim()
+            ),
+        }
     }
 }
 
@@ -240,6 +304,20 @@ mod tests {
         assert_eq!(
             context.session_id(),
             "wattetheria:identity:did:key:zAgent:mainnet:watt-etheria"
+        );
+    }
+
+    #[test]
+    fn runtime_session_context_separates_servicenet_sessions() {
+        let context = RuntimeSessionContext::servicenet(
+            "did:key:zCaller",
+            "stripe-agent",
+            "mainnet:watt-etheria",
+        );
+
+        assert_eq!(
+            context.session_id(),
+            "wattetheria:servicenet:did:key:zCaller:stripe-agent:mainnet:watt-etheria"
         );
     }
 

@@ -760,6 +760,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "output": {
                             "echo": body["message"].clone(),
                             "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
+                            "caller_public_id": body["agent_envelope"]["extensions"]["caller_public_id"].clone(),
                         },
                         "settlement": body["settlement"].clone(),
                         "payment_receipt": {

@@ -809,18 +809,20 @@ async fn servicenet_invoke_agent_envelope(
     body: &Value,
 ) -> anyhow::Result<Value> {
     let source_node_id = state.swarm_bridge.local_node_id().await.ok();
-    let source_display_name = resolve_social_local_context(state, None).await.display_name;
+    let local = resolve_social_local_context(state, None).await;
     let envelope = build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
-            source_display_name,
+            source_display_name: local.display_name,
             target_agent_id: Some(agent_id.to_owned()),
             source_node_id,
             target_node_id: None,
             capability: "servicenet.agents.invoke".to_owned(),
             message: servicenet_invoke_envelope_message(body),
-            extensions: None,
+            extensions: Some(json!({
+                "caller_public_id": local.public_id,
+            })),
         },
     )?;
     Ok(serde_json::to_value(envelope)?)

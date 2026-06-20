@@ -1,6 +1,158 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() {
+    let seen_session = Arc::new(std::sync::Mutex::new(None::<String>));
+    let seen_session_clone = Arc::clone(&seen_session);
+    let runtime_app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |headers: axum::http::HeaderMap| {
+            let seen_session = Arc::clone(&seen_session_clone);
+            async move {
+                *seen_session.lock().expect("session mutex poisoned") = headers
+                    .get("x-hermes-session-id")
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
+                Json(json!({
+                    "choices": [{
+                        "message": {
+                            "content": "{\"message\":\"bridge response\"}"
+                        }
+                    }]
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("runtime listener should bind");
+    let runtime_addr = listener.local_addr().expect("runtime addr");
+    let runtime_server = tokio::spawn(async move {
+        axum::serve(listener, runtime_app)
+            .await
+            .expect("runtime server should run");
+    });
+
+    let (_dir, _router, _token, _, state) = build_test_app(20);
+    let brain_config = BrainProviderConfig::OpenaiCompatible {
+        base_url: format!("http://{runtime_addr}/v1"),
+        model: "hermes-agent".to_owned(),
+        api_key_env: None,
+        runtime_adapter: Some(wattetheria_kernel::brain::AgentRuntimeAdapter::Hermes {
+            session_header_name: None,
+        }),
+    };
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &brain_config,
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(brain_config)),
+        ..state
+    };
+    let caller_agent_id = state.agent_did.clone();
+    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let agent_envelope = crate::social_host::build_signed_agent_envelope_for_nodes(
+        &state,
+        crate::social_host::SignedAgentEnvelopeArgs {
+            source_agent_id: caller_agent_id.clone(),
+            source_display_name: Some("Caller Agent".to_owned()),
+            target_agent_id: Some("stripe-agent".to_owned()),
+            source_node_id,
+            target_node_id: None,
+            capability: "servicenet.agents.invoke".to_owned(),
+            message: json!({"message": "hello service"}),
+            extensions: Some(json!({
+                "caller_public_id": "pub_caller"
+            })),
+        },
+    )
+    .expect("agent envelope should sign");
+    let app = app(state);
+
+    let body = request_json(
+        app,
+        axum::http::Request::post("/a2a/stripe-agent")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "SendMessage",
+                    "params": {
+                        "message": {
+                            "role": "user",
+                            "parts": [
+                                {"kind": "text", "text": "hello service"}
+                            ]
+                        },
+                        "extensions": {
+                            "agent_envelope": agent_envelope
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request should build"),
+    )
+    .await;
+    assert_eq!(
+        body["result"]["task"]["status"]["state"].as_str(),
+        Some("TASK_STATE_COMPLETED")
+    );
+    assert_eq!(
+        body["result"]["task"]["artifacts"][0]["parts"][0]["text"].as_str(),
+        Some("bridge response")
+    );
+    let expected_session =
+        format!("wattetheria:servicenet:{caller_agent_id}:stripe-agent:mainnet:watt-etheria");
+    assert_eq!(
+        seen_session
+            .lock()
+            .expect("session mutex poisoned")
+            .as_deref(),
+        Some(expected_session.as_str())
+    );
+
+    runtime_server.abort();
+}
+
+#[tokio::test]
+async fn servicenet_a2a_bridge_rejects_missing_agent_envelope() {
+    let (_dir, _router, _token, _, state) = build_test_app(20);
+    let app = app(state);
+
+    let body = request_json(
+        app,
+        axum::http::Request::post("/a2a/stripe-agent")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "SendMessage",
+                    "params": {
+                        "message": {
+                            "role": "user",
+                            "parts": [
+                                {"kind": "text", "text": "hello service"}
+                            ]
+                        }
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request should build"),
+    )
+    .await;
+    assert_eq!(body["error"]["code"].as_i64(), Some(-32602));
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some("A2A agent_envelope is required")
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn servicenet_routes_list_agents_and_return_invoke_feedback() {

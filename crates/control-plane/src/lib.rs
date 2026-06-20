@@ -31,6 +31,7 @@ pub mod routes {
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
+    pub(crate) mod servicenet_bridge;
     pub(crate) mod servicenet_publish;
     pub(crate) mod servicenet_published;
     pub(crate) mod settlement_delegation;
@@ -78,11 +79,21 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(payments_router())
         .merge(policy_router())
         .merge(servicenet_router())
+        .merge(servicenet_bridge_router())
         .with_state(state)
 }
 
 fn mcp_router() -> Router<ControlPlaneState> {
     Router::new().route("/mcp", post(routes::mcp::mcp))
+}
+
+fn servicenet_bridge_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/a2a", post(routes::servicenet_bridge::a2a_root))
+        .route(
+            "/a2a/{agent_id}",
+            post(routes::servicenet_bridge::a2a_agent),
+        )
 }
 
 fn network_router() -> Router<ControlPlaneState> {

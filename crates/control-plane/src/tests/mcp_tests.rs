@@ -783,6 +783,13 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let agent_did = state.agent_did.clone();
+    let expected_public_id = state
+        .public_identity_registry
+        .lock()
+        .await
+        .active_for_agent_did(&agent_did)
+        .expect("default public identity should exist")
+        .public_id;
     let state = ControlPlaneState {
         servicenet_client: Some(Arc::new(
             ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
@@ -815,6 +822,10 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
     assert_eq!(
         content["output"]["agent_envelope_source"].as_str(),
         Some(agent_did.as_str())
+    );
+    assert_eq!(
+        content["output"]["caller_public_id"].as_str(),
+        Some(expected_public_id.as_str())
     );
 
     servicenet_server.abort();
