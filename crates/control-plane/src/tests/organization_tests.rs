@@ -530,5 +530,7 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("\"timestamp_sort\""));
     assert!(body.contains("normalized.startsWith(\"timestamp_\")"));
     assert!(body.contains("normalized.endsWith(\"_at\")"));
-    assert!(body.contains("escapeHtml(formatDiagnosticJson(row))"));
+    assert!(body.contains("function renderDiagnosticJsonDetails(details)"));
+    assert!(body.contains("ontoggle=\"renderDiagnosticJsonDetails(this)\""));
+    assert!(body.contains("Open to render formatted JSON."));
 }
