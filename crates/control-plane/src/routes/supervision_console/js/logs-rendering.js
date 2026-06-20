@@ -114,6 +114,8 @@
       "timestamp_sort",
       "updated_at",
     ]);
+    const DIAGNOSTIC_JSON_STRING_PARSE_LIMIT = 200000;
+    const diagnosticJsonRows = new Map();
 
     function diagnosticJsonTimeField(key) {
       const normalized = String(key || "").toLowerCase();
@@ -122,6 +124,23 @@
         || normalized.endsWith("_at_ms")
         || normalized.startsWith("timestamp_")
         || normalized.endsWith("_timestamp");
+    }
+
+    function diagnosticJsonStringLooksStructured(value) {
+      const trimmed = String(value || "").trim();
+      return (trimmed.startsWith("{") && trimmed.endsWith("}"))
+        || (trimmed.startsWith("[") && trimmed.endsWith("]"));
+    }
+
+    function parseDiagnosticJsonString(value) {
+      if (typeof value !== "string") return null;
+      if (value.length > DIAGNOSTIC_JSON_STRING_PARSE_LIMIT) return null;
+      if (!diagnosticJsonStringLooksStructured(value)) return null;
+      try {
+        return JSON.parse(value);
+      } catch (_error) {
+        return null;
+      }
     }
 
     function formatDiagnosticJsonValue(key, value) {
@@ -136,19 +155,36 @@
           ]),
         );
       }
+      if (typeof value === "string") {
+        if (diagnosticJsonTimeField(key) && /^\d{10,13}$/.test(value.trim())) {
+          return formatTime(Number(value));
+        }
+        if (diagnosticJsonTimeField(key) && !Number.isNaN(Date.parse(value))) {
+          return formatTime(value);
+        }
+        const parsed = parseDiagnosticJsonString(value);
+        if (parsed !== null) return formatDiagnosticJsonValue(key, parsed);
+        return value;
+      }
       if (!diagnosticJsonTimeField(key)) return value;
       if (typeof value === "number") return formatTime(value);
-      if (typeof value === "string" && /^\d{10,13}$/.test(value.trim())) {
-        return formatTime(Number(value));
-      }
-      if (typeof value === "string" && !Number.isNaN(Date.parse(value))) {
-        return formatTime(value);
-      }
       return value;
     }
 
     function formatDiagnosticJson(row) {
       return JSON.stringify(formatDiagnosticJsonValue("", row), null, 2);
+    }
+
+    function renderDiagnosticJsonDetails(details) {
+      if (!details || !details.open || details.dataset.rendered === "true") return;
+      const pre = details.querySelector("pre");
+      const row = diagnosticJsonRows.get(details.dataset.diagnosticJsonKey);
+      if (!pre || !row) return;
+      pre.textContent = "Loading...";
+      requestAnimationFrame(() => {
+        pre.textContent = formatDiagnosticJson(row);
+        details.dataset.rendered = "true";
+      });
     }
 
     function renderDiagnostics(payload, entries) {
@@ -171,7 +207,10 @@
       qs("swarm-diag-relay").textContent = homeRelays.length ? homeRelays.join(", ") : "not attached";
       qs("swarm-diag-relay").title = safeArray(snapshot.relay_reservations).join("\n");
       const visibleEntries = filteredDiagnosticEntries(entries);
-      renderList("diagnostic-list", visibleEntries, "No logs recorded for the current filters.", (row) => {
+      diagnosticJsonRows.clear();
+      renderList("diagnostic-list", visibleEntries, "No logs recorded for the current filters.", (row, index) => {
+        const diagnosticJsonKey = String(index);
+        diagnosticJsonRows.set(diagnosticJsonKey, row);
         const details = diagnosticDetails(row);
         const contextSummary = diagnosticContextSummary(row);
         const meta = [
@@ -194,9 +233,9 @@
             </div>
             <div class="row-body">${escapeHtml(formatTime(timestamp))}${contextSummary ? ` | ${escapeHtml(contextSummary)}` : ""}</div>
             <div class="row-meta">${meta.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</div>
-            <details class="row-details">
+            <details class="row-details" data-diagnostic-json-key="${escapeHtml(diagnosticJsonKey)}" ontoggle="renderDiagnosticJsonDetails(this)">
               <summary>JSON</summary>
-              <pre class="code">${escapeHtml(formatDiagnosticJson(row))}</pre>
+              <pre class="code">Open to render formatted JSON.</pre>
             </details>
           </div>
         `;

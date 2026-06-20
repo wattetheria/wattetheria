@@ -100,6 +100,19 @@ fn default_agent_card() -> Value {
     })
 }
 
+fn normalize_agent_card_skills(mut card: Value) -> Value {
+    if let Some(skills) = card.get_mut("skills").and_then(Value::as_array_mut) {
+        for skill in skills {
+            if let Some(skill_object) = skill.as_object_mut() {
+                skill_object
+                    .entry("description")
+                    .or_insert_with(|| Value::String(String::new()));
+            }
+        }
+    }
+    card
+}
+
 fn real_world_domains() -> Vec<&'static str> {
     vec![
         "GENERAL",
@@ -365,18 +378,14 @@ fn validate_agent_card_skills(object: &serde_json::Map<String, Value>) -> Result
         return Err("agent card `skills` must list at least one skill".to_owned());
     }
     for (index, skill) in skills.iter().enumerate() {
-        for field in ["name", "description"] {
-            if skill
-                .get(field)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .unwrap_or_default()
-                .is_empty()
-            {
-                return Err(format!(
-                    "skill[{index}] is missing required field `{field}`"
-                ));
-            }
+        if skill
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(format!("skill[{index}] is missing required field `name`"));
         }
     }
     Ok(())
@@ -556,7 +565,7 @@ pub(crate) async fn agent_card_template(
             {"name": "cost", "label": "Cost", "kind": "number", "required": true, "note": "User-set amount charged for invoking this agent."},
             {"name": "currency", "label": "Currency", "kind": "select", "required": true, "options": ["USDC", "USDT"]},
             {"name": "supportsTask", "label": "Supports Task", "kind": "boolean", "required": true, "note": "True when SendMessage may return a Task that callers poll later."},
-            {"name": "skills", "label": "Skills", "kind": "array", "required": true, "item_fields": ["name", "description"]},
+            {"name": "skills", "label": "Skills", "kind": "array", "required": true, "item_fields": ["name", "description"], "optional_item_fields": ["description"]},
             {"name": "x402", "label": "x402 Payment Discovery", "kind": "optional", "required": false, "note": "Optional static payment discovery. payTo is the callee settlement receiving address."}
         ],
     }))
@@ -576,7 +585,8 @@ pub(crate) async fn publish_agent(
     let Some(client) = servicenet_client(&state) else {
         return super::servicenet_unavailable_response();
     };
-    if let Err(message) = validate_agent_card(&body.agent_card) {
+    let agent_card = normalize_agent_card_skills(body.agent_card.clone());
+    if let Err(message) = validate_agent_card(&agent_card) {
         return bad_request(message);
     }
     let mut publisher_state = match load_publisher_state(&state.data_dir) {
@@ -593,7 +603,7 @@ pub(crate) async fn publish_agent(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map_or_else(
-            || derive_agent_id(&body.agent_card, &provider_id),
+            || derive_agent_id(&agent_card, &provider_id),
             ToOwned::to_owned,
         );
     let version = body
@@ -610,13 +620,12 @@ pub(crate) async fn publish_agent(
         .filter(|value| !value.is_empty())
         .unwrap_or("low")
         .to_owned();
-    let endpoint = body
-        .agent_card
+    let endpoint = agent_card
         .get("url")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let deployment = json!({
-        "runtime": "remote_http",
+        "runtime": "agent",
         "endpoint": {
             "url": endpoint,
             "protocol_binding": "JSONRPC",
@@ -640,7 +649,7 @@ pub(crate) async fn publish_agent(
         "provider_id": provider_id,
         "agent_id": agent_id,
         "version": version,
-        "agent_card": body.agent_card,
+        "agent_card": agent_card,
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,
@@ -665,7 +674,7 @@ pub(crate) async fn publish_agent(
         "provider_id": provider_id,
         "agent_id": agent_id,
         "version": version,
-        "agent_card": body.agent_card,
+        "agent_card": agent_card,
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,

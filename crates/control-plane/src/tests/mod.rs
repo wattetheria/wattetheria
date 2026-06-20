@@ -477,7 +477,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "remote_http",
+                            "runtime": "agent",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -505,7 +505,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "remote_http",
+                            "runtime": "agent",
                             "endpoint": {
                                 "url": "https://example.net/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -667,7 +667,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "remote_http",
+                            "runtime": "agent",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -720,7 +720,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         ]
                     },
                     "deployment": {
-                        "runtime": "remote_http",
+                        "runtime": "agent",
                         "endpoint": {
                             "url": "https://example.com/a2a",
                             "interaction_protocol": "google_a2a",

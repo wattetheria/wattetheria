@@ -22,7 +22,7 @@ use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
 };
-use wattetheria_kernel::servicenet::ServiceNetInvokeRequest;
+use wattetheria_kernel::servicenet::{ServiceNetClient, ServiceNetInvokeRequest};
 use wattetheria_kernel::swarm_bridge::SwarmPeerRelationshipView;
 use wattetheria_social::application::friend_request_service;
 use wattetheria_social::domain::friend_requests::{
@@ -733,12 +733,9 @@ async fn servicenet_invoke_agent_result(
     let Some(client) = state.servicenet_client.as_deref() else {
         return tool_error(&json!({"error": "servicenet is not configured"}));
     };
-    let Some(agent_id) = required_string(arguments, "agent_id") else {
-        return tool_error(&json!({"error": "agent_id is required"}));
-    };
-    let agent = match client.get_agent(&agent_id).await {
-        Ok(item) => item,
-        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    let (agent_id, agent) = match resolve_servicenet_invoke_agent(client, arguments).await {
+        Ok(resolved) => resolved,
+        Err(error) => return tool_error(&json!({"error": error})),
     };
     let mut body = arguments
         .get("body")
@@ -746,6 +743,10 @@ async fn servicenet_invoke_agent_result(
         .unwrap_or_else(|| object_without_path_vars(arguments, servicenet_invoke_tool_path(mode)));
     if !body.is_object() {
         return tool_error(&json!({"error": "invoke body must be a JSON object"}));
+    }
+    if let Some(object) = body.as_object_mut() {
+        object.remove("agent_id");
+        object.remove("agent_name");
     }
     let envelope = match servicenet_invoke_agent_envelope(state, &agent_id, &body).await {
         Ok(envelope) => envelope,
@@ -803,6 +804,63 @@ async fn servicenet_invoke_agent_result(
             tool_success(&payload)
         }
         Err(error) => tool_error(&json!({"error": error.to_string()})),
+    }
+}
+
+async fn resolve_servicenet_invoke_agent(
+    client: &ServiceNetClient,
+    arguments: &Value,
+) -> Result<(String, Value), String> {
+    if let Some(agent_id) = required_string(arguments, "agent_id") {
+        let agent = client
+            .get_agent(&agent_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok((agent_id, agent));
+    }
+    let Some(agent_name) = required_string(arguments, "agent_name") else {
+        return Err("agent_id or agent_name is required".to_owned());
+    };
+    let mut offset = 0;
+    let mut matches = Vec::new();
+    loop {
+        let agents = client
+            .list_agents(MAX_SERVICENET_AGENT_LIMIT, offset)
+            .await
+            .map_err(|error| error.to_string())?;
+        let has_more = agents.has_more;
+        let next_offset = agents.next_offset;
+        matches.extend(agents.items.into_iter().filter(|agent| {
+            field_str(agent, &["agent_card", "name"]) == Some(agent_name.as_str())
+        }));
+        let Some(next_offset) = next_offset else {
+            break;
+        };
+        if !has_more || next_offset <= offset {
+            break;
+        }
+        offset = next_offset;
+    }
+    match matches.as_slice() {
+        [] => Err(format!(
+            "ServiceNet agent name `{agent_name}` was not found"
+        )),
+        [agent] => {
+            let agent_id = field_str(agent, &["agent_id"])
+                .ok_or_else(|| format!("ServiceNet agent name `{agent_name}` has no agent_id"))?
+                .to_owned();
+            Ok((agent_id, agent.clone()))
+        }
+        _ => {
+            let agent_ids = matches
+                .iter()
+                .filter_map(|agent| field_str(agent, &["agent_id"]))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "ServiceNet agent name `{agent_name}` is ambiguous; use agent_id instead: {agent_ids}"
+            ))
+        }
     }
 }
 

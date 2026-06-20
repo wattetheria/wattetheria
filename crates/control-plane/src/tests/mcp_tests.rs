@@ -338,7 +338,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(beta["status"].as_str(), Some("online"));
     assert_eq!(beta["version"].as_str(), Some("0.2.0"));
     assert_eq!(beta["provider_id"].as_str(), Some("provider-two"));
-    assert_eq!(beta["runtime"].as_str(), Some("remote_http"));
+    assert_eq!(beta["runtime"].as_str(), Some("agent"));
     assert_eq!(beta["protocol"].as_str(), Some("google_a2a / JSONRPC"));
     assert!(beta.get("url").is_none());
     assert_eq!(beta["risk_level"].as_str(), Some("medium"));
@@ -388,7 +388,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["status"].as_str(), Some("published"));
     assert_eq!(agent["version"].as_str(), Some("0.1.0"));
     assert_eq!(agent["provider_id"].as_str(), Some("provider-one"));
-    assert_eq!(agent["runtime"].as_str(), Some("remote_http"));
+    assert_eq!(agent["runtime"].as_str(), Some("agent"));
     assert_eq!(agent["protocol"].as_str(), Some("google_a2a / JSONRPC"));
     assert!(agent.get("url").is_none());
     assert_eq!(agent["risk_level"].as_str(), Some("low"));
@@ -863,6 +863,44 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
     );
 
     callback_server.abort();
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_invoke_servicenet_agent_sync_resolves_exact_agent_name() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent_sync",
+                "arguments": {
+                    "agent_name": "Agent Alpha",
+                    "message": "hello by name"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["agent_id"].as_str(), Some("agent-alpha"));
+    assert_eq!(content["output"]["echo"].as_str(), Some("hello by name"));
+
     servicenet_server.abort();
 }
 
@@ -2705,6 +2743,24 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let delete_servicenet_agent = find_tool(tools, "delete_servicenet_agent");
     assert_schema_requires(delete_servicenet_agent, &["agent_id"]);
+
+    let invoke_servicenet_agent = find_tool(tools, "invoke_servicenet_agent_sync");
+    assert_schema_optional(invoke_servicenet_agent, "agent_id");
+    assert_schema_optional(invoke_servicenet_agent, "agent_name");
+    assert!(
+        invoke_servicenet_agent["inputSchema"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|schema| schema["required"][0].as_str() == Some("agent_id"))
+    );
+    assert!(
+        invoke_servicenet_agent["inputSchema"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|schema| schema["required"][0].as_str() == Some("agent_name"))
+    );
 
     for hidden_tool in [
         "send_mailbox_message",

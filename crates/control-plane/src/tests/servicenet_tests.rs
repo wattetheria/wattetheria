@@ -641,12 +641,15 @@ fn assert_servicenet_template(template: &Value) {
         template["defaults"]["preferredTransport"].as_str(),
         Some("JSONRPC")
     );
-    assert!(
-        template["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|field| field["name"].as_str() == Some("skills"))
+    let skills_field = template["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"].as_str() == Some("skills"))
+        .unwrap();
+    assert_eq!(
+        skills_field["optional_item_fields"].as_array().unwrap(),
+        &[json!("description")]
     );
 }
 
@@ -760,18 +763,24 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     .await;
     assert_servicenet_template(&template);
 
+    let mut publish_body = console_agent_publish_body(
+        None,
+        None,
+        "0.1.0",
+        "low",
+        "Published from the console",
+        false,
+    );
+    publish_body["agent_card"]["skills"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("description");
+
     let publish_json = authed_post_json(
         app.clone(),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        console_agent_publish_body(
-            None,
-            None,
-            "0.1.0",
-            "low",
-            "Published from the console",
-            false,
-        ),
+        publish_body,
     )
     .await;
     assert_eq!(publish_json["status"].as_str(), Some("ok"));
@@ -794,6 +803,10 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     )
     .await;
     assert_published_console_agent(&published_json, agent_id, &state.agent_did);
+    assert_eq!(
+        published_json["items"][0]["agent_card"]["skills"][0]["description"].as_str(),
+        Some("")
+    );
 
     let update_json = authed_post_json(
         app.clone(),

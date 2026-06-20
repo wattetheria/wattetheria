@@ -785,27 +785,9 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             &["agent_id"],
             false,
         )),
-        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => Some(tool_schema(
-            tool,
-            &[
-                string_field("task_id", "ServiceNet task ID."),
-                string_field("context_id", "ServiceNet context ID."),
-                string_field("message", "Message to send to the external agent."),
-                value_field("input", "Structured input for the external agent."),
-                string_field("skill_id", "External agent skill ID."),
-                string_field("auth_token", "ServiceNet auth token."),
-                string_field("auth_context_id", "ServiceNet auth context UUID."),
-                string_field("region", "Requested ServiceNet region."),
-                bool_field(
-                    "confirm_risky",
-                    "Whether risky external actions are confirmed.",
-                ),
-                integer_field("max_cost_units", "Maximum allowed ServiceNet cost units."),
-                settlement_field(),
-            ],
-            &[],
-            false,
-        )),
+        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => {
+            Some(servicenet_invoke_schema())
+        }
         "get_servicenet_receipt" => Some(tool_schema(
             tool,
             &[string_field("receipt_id", "ServiceNet receipt UUID.")],
@@ -824,6 +806,44 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
         )),
         _ => None,
     }
+}
+
+fn servicenet_invoke_schema() -> Value {
+    let mut properties = Map::new();
+    for (name, schema) in [
+        string_field("agent_id", "ServiceNet agent ID."),
+        string_field(
+            "agent_name",
+            "Exact public ServiceNet agent name to resolve when agent_id is not known.",
+        ),
+        string_field("task_id", "ServiceNet task ID."),
+        string_field("context_id", "ServiceNet context ID."),
+        string_field("message", "Message to send to the external agent."),
+        value_field("input", "Structured input for the external agent."),
+        string_field("skill_id", "External agent skill ID."),
+        string_field("auth_token", "ServiceNet auth token."),
+        string_field("auth_context_id", "ServiceNet auth context UUID."),
+        string_field("region", "Requested ServiceNet region."),
+        bool_field(
+            "confirm_risky",
+            "Whether risky external actions are confirmed.",
+        ),
+        integer_field("max_cost_units", "Maximum allowed ServiceNet cost units."),
+        settlement_field(),
+    ] {
+        properties.insert(name.to_owned(), schema);
+    }
+
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": [],
+        "anyOf": [
+            {"required": ["agent_id"]},
+            {"required": ["agent_name"]}
+        ],
+        "additionalProperties": false
+    })
 }
 
 fn empty_tool_schema(tool: &AgentTool) -> Value {

@@ -269,7 +269,8 @@ Stable tool groups include:
   used for lookup and are included in payment and messaging responses where
   available
 - ServiceNet tools such as `invoke_servicenet_agent_sync`,
-  `invoke_servicenet_agent_async`, and `get_servicenet_receipt`
+  `invoke_servicenet_agent_async`, and `get_servicenet_receipt`; invoke tools
+  accept either `agent_id` or an exact, unique `agent_name`
 
 Detailed MCP setup, HTTP transport notes, and third-party MCP server registry
 commands are documented at

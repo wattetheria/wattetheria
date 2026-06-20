@@ -79,8 +79,8 @@
               <input class="servicenet-skill-name" value="${escapeHtml(skill.name || "")}" placeholder="weather.lookup">
             </label>
             <label>
-              Skill Description
-              <textarea class="servicenet-skill-description" rows="6" placeholder="Describe what this skill does, when callers should use it, required inputs, and expected output.">${escapeHtml(skill.description || "")}</textarea>
+              Skill Description (optional)
+              <textarea class="servicenet-skill-description" rows="6" placeholder="Optional details for callers: when to use this skill, inputs, and expected output.">${escapeHtml(skill.description || "")}</textarea>
             </label>
           </div>
         </div>

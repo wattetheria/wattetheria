@@ -204,14 +204,12 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
         let skill_obj = skill
             .as_object()
             .ok_or_else(|| anyhow!("skill[{index}] must be an object"))?;
-        for field in ["name", "description"] {
-            let value = skill_obj
-                .get(field)
-                .and_then(Value::as_str)
-                .map_or("", str::trim);
-            if value.is_empty() {
-                bail!("skill[{index}] is missing required field `{field}`");
-            }
+        let name = skill_obj
+            .get("name")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
+        if name.is_empty() {
+            bail!("skill[{index}] is missing required field `name`");
         }
     }
 
@@ -434,15 +432,20 @@ mod tests {
     }
 
     #[test]
-    fn agent_card_requires_skill_description() {
+    fn agent_card_allows_empty_skill_description() {
         let mut card = valid_card();
         card["skills"][0]["description"] = json!("");
-        let error = validate_agent_card(&card).expect_err("empty skill description should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("skill[0] is missing required field `description`")
-        );
+        assert!(validate_agent_card(&card).is_ok());
+    }
+
+    #[test]
+    fn agent_card_allows_missing_skill_description() {
+        let mut card = valid_card();
+        card["skills"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("description");
+        assert!(validate_agent_card(&card).is_ok());
     }
 
     #[test]

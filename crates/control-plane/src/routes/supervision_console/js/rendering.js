@@ -112,5 +112,5 @@
         target.innerHTML = empty(emptyMessage);
         return;
       }
-      target.innerHTML = rows.map(renderRow).join("");
+      target.innerHTML = rows.map((row, index) => renderRow(row, index)).join("");
     }
