@@ -365,7 +365,7 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
         "publish_mission" => Some(tool_schema(
             tool,
             &publish_mission_fields(),
-            &["title", "description", "domain", "reward", "payload"],
+            &["title", "description", "domain", "payload"],
             false,
         )),
         "publish_delegated_mission" => Some(tool_schema(
@@ -375,7 +375,6 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
                 "title",
                 "description",
                 "domain",
-                "reward",
                 "payload",
                 "settlement_delegation",
             ],
@@ -384,7 +383,7 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
         "publish_collective_mission" => Some(tool_schema(
             tool,
             &publish_collective_mission_fields(),
-            &["title", "description", "domain", "reward", "payload"],
+            &["title", "description", "domain", "payload"],
             false,
         )),
         "get_collective_mission_result" => Some(tool_schema(
@@ -463,7 +462,6 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
             "Required faction.",
             &["order", "freeport", "raider"],
         ),
-        reward_field(),
         value_field("payload", "Mission payload."),
     ]
 }
@@ -984,24 +982,6 @@ fn run_agents_field() -> (&'static str, Value) {
                 "additionalProperties": true
             },
             "description": "Wattswarm run agents. Required for committee mode. Omit or leave empty for stigmergy mode."
-        }),
-    )
-}
-
-fn reward_field() -> (&'static str, Value) {
-    (
-        "reward",
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_watt": {"type": "integer"},
-                "reputation": {"type": "integer"},
-                "capacity": {"type": "integer"},
-                "treasury_share_watt": {"type": "integer"}
-            },
-            "required": ["agent_watt", "reputation", "capacity", "treasury_share_watt"],
-            "additionalProperties": false,
-            "description": "Mission reward."
         }),
     )
 }

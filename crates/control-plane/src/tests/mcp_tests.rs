@@ -2393,7 +2393,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let publish_mission = find_tool(tools, "publish_mission");
     assert_schema_requires(
         publish_mission,
-        &["title", "description", "domain", "reward", "payload"],
+        &["title", "description", "domain", "payload"],
     );
     assert_eq!(
         publish_mission["inputSchema"]["properties"]["title"]["type"].as_str(),
@@ -2415,6 +2415,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "lat",
             "lng",
             "coordinate_source",
+            "reward",
         ],
     );
     assert_eq!(
@@ -2437,12 +2438,14 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "title",
             "description",
             "domain",
-            "reward",
             "payload",
             "settlement_delegation",
         ],
     );
-    assert_schema_omits(publish_delegated_mission, &["publisher", "publisher_kind"]);
+    assert_schema_omits(
+        publish_delegated_mission,
+        &["publisher", "publisher_kind", "reward"],
+    );
     assert!(
         publish_delegated_mission["inputSchema"]["properties"]["settlement_delegation"]
             ["description"]
@@ -2453,7 +2456,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let publish_collective_mission = find_tool(tools, "publish_collective_mission");
     assert_schema_requires(
         publish_collective_mission,
-        &["title", "description", "domain", "reward", "payload"],
+        &["title", "description", "domain", "payload"],
     );
     assert_schema_omits(
         publish_collective_mission,
@@ -2463,6 +2466,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "lat",
             "lng",
             "coordinate_source",
+            "reward",
         ],
     );
     let collective_required = publish_collective_mission["inputSchema"]["required"]
