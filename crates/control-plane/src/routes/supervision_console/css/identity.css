@@ -1,108 +1,282 @@
-    .identity-row {
-      display: grid;
+    .identity-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      overflow: hidden;
+      min-width: 0;
+      max-width: 100%;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .identity-card:hover {
+      border-color: var(--line-strong);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ===== Credential header ===== */
+    .identity-cred-head {
+      background: var(--accent-strong);
+      padding: 1rem 1.25rem 1.1rem;
+      color: #fff;
+    }
+
+    .identity-cred-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
       gap: 0.75rem;
     }
 
-    .identity-public-id {
-      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
-      color: var(--ink);
-      font-size: 0.82rem;
-      line-height: 1.45;
-    }
-
-    .identity-protection {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.6rem;
-    }
-
-    .identity-protection-item {
-      display: grid;
-      gap: 0.25rem;
-      min-width: 0;
-      padding: 0.7rem;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface-alt);
-    }
-
-    .identity-protection-item.ready {
-      border-color: transparent;
-      background: var(--green-soft);
-    }
-
-    .identity-protection-item.pending {
-      border-color: transparent;
-      background: var(--amber-soft);
-    }
-
-    .identity-protection-item.blocked {
-      border-color: transparent;
-      background: var(--red-soft);
-    }
-
-    .identity-protection-item span {
-      color: var(--faint);
-      font-size: 0.68rem;
+    .identity-cred-network {
+      font-size: 0.7rem;
       font-weight: 600;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .identity-protection-item strong {
-      color: var(--ink);
-      font-size: 0.86rem;
-      font-weight: 600;
+      color: rgba(255, 255, 255, 0.72);
       overflow-wrap: anywhere;
     }
 
-    .identity-detail-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 0.6rem;
+    .identity-cred-actions {
+      display: flex;
+      gap: 0.4rem;
+      flex: 0 0 auto;
     }
 
-    .identity-detail-section {
-      display: grid;
-      gap: 0.55rem;
+    .identity-cred-btn {
+      padding: 0.32rem 0.7rem;
+      border: 1px solid rgba(255, 255, 255, 0.32);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      font-size: 0.76rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+
+    .identity-cred-btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .identity-cred-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .identity-cred-id {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      margin-top: 0.9rem;
       min-width: 0;
-      padding: 0.75rem;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--surface-inset);
     }
 
-    .identity-detail-title {
+    .identity-cred-avatar {
+      flex: 0 0 auto;
+      width: 52px;
+      height: 52px;
+      border-radius: 15px;
+      background: #fff;
       color: var(--accent-strong);
-      font-size: 0.7rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .identity-field {
-      display: grid;
-      gap: 0.15rem;
-      min-width: 0;
-    }
-
-    .identity-field span {
-      color: var(--faint);
-      font-size: 0.68rem;
-      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.15rem;
+      font-weight: 700;
       letter-spacing: 0.02em;
     }
 
-    .identity-field strong {
-      color: var(--muted);
-      font-size: 0.8rem;
-      font-weight: 500;
-      line-height: 1.35;
+    .identity-cred-meta {
+      min-width: 0;
+    }
+
+    .identity-cred-name-row {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+
+    .identity-cred-name {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #fff;
       overflow-wrap: anywhere;
       word-break: break-word;
     }
 
-    .identity-orgs {
-      margin-top: 0;
+    .identity-cred-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.16rem 0.55rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.16);
+      color: #eafff1;
+      font-size: 0.72rem;
+      font-weight: 600;
+      white-space: nowrap;
     }
 
+    .identity-cred-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4ade80;
+    }
+
+    .identity-cred-status.is-inactive .identity-cred-dot {
+      background: #f87171;
+    }
+
+    .identity-cred-handle {
+      margin-top: 0.3rem;
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      color: rgba(255, 255, 255, 0.85);
+      overflow-wrap: anywhere;
+      word-break: break-all;
+    }
+
+    /* ===== Trust verification bar ===== */
+    .identity-trust {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1.5rem;
+      padding: 0.8rem 1.25rem;
+      background: var(--surface-alt);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .identity-trust-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 0;
+    }
+
+    .identity-trust-mark {
+      flex: 0 0 auto;
+      width: 1.15rem;
+      height: 1.15rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: var(--green-soft);
+      color: var(--green-ink);
+    }
+
+    .identity-trust-item.pending .identity-trust-mark {
+      background: var(--amber-soft);
+      color: var(--amber-ink);
+    }
+
+    .identity-trust-item.blocked .identity-trust-mark {
+      background: var(--red-soft);
+      color: var(--red-ink);
+    }
+
+    .identity-trust-text {
+      display: grid;
+      gap: 0.05rem;
+      min-width: 0;
+    }
+
+    .identity-trust-text strong {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+
+    .identity-trust-text em {
+      font-style: normal;
+      font-size: 0.7rem;
+      color: var(--faint);
+      overflow-wrap: anywhere;
+    }
+
+    /* ===== Spec sheet ===== */
+    .identity-card-body {
+      padding: 1.1rem 1.25rem 1.25rem;
+    }
+
+    .identity-spec-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem 2rem;
+    }
+
+    .identity-spec-section {
+      min-width: 0;
+    }
+
+    .identity-spec-title {
+      color: var(--accent-strong);
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.35rem;
+    }
+
+    .identity-spec-row {
+      display: grid;
+      grid-template-columns: minmax(84px, 38%) 1fr;
+      gap: 0.6rem;
+      padding: 0.32rem 0;
+      border-bottom: 1px solid var(--line-soft);
+      min-width: 0;
+    }
+
+    .identity-spec-section .identity-spec-row:last-child {
+      border-bottom: 0;
+    }
+
+    .identity-spec-k {
+      color: var(--faint);
+      font-size: 0.72rem;
+      overflow-wrap: anywhere;
+    }
+
+    .identity-spec-v {
+      color: var(--ink);
+      font-size: 0.78rem;
+      line-height: 1.4;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .identity-spec-v.mono {
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.74rem;
+      color: var(--muted);
+    }
+
+    /* ===== Guilds ===== */
+    .identity-guilds {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 1rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--line);
+    }
+
+    .identity-guilds span {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.12rem 0.55rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-alt);
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 500;
+      overflow-wrap: anywhere;
+    }

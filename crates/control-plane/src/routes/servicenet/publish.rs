@@ -15,7 +15,9 @@ use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::servicenet::ServiceNetClient;
+use wattetheria_kernel::servicenet::{
+    ServiceNetClient, normalize_service_address, validate_servicenet_agent_name,
+};
 
 const DEFAULT_SERVICENET_VERSION: &str = "0.1.0";
 const DEFAULT_SERVICENET_TTL_MINUTES: u64 = 30;
@@ -26,6 +28,8 @@ pub(crate) struct PublishAgentBody {
     agent_id: Option<String>,
     #[serde(default)]
     provider_id: Option<String>,
+    #[serde(default)]
+    service_address: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -54,6 +58,8 @@ pub(crate) struct ServiceNetPublisherRegistration {
     pub(crate) provider_id: String,
     pub(crate) provider_did: String,
     pub(crate) agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) service_address: Option<String>,
     pub(crate) card_hash: String,
     pub(crate) version: String,
     pub(crate) updated_at: String,
@@ -346,6 +352,13 @@ fn validate_agent_card_strings(object: &serde_json::Map<String, Value>) -> Resul
             return Err(format!("agent card `{field}` must not be empty"));
         }
     }
+    validate_servicenet_agent_name(
+        object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -557,6 +570,7 @@ pub(crate) async fn agent_card_template(
         "defaults": default_agent_card(),
         "fields": [
             {"name": "name", "label": "Name", "kind": "text", "required": true, "note": "Public agent name used in ServiceNet listings."},
+            {"name": "service_address", "label": "Service Address", "kind": "text", "required": false, "note": "Unique ServiceNet alias stored in DID alsoKnownAs. Use <name>@wattetheria."},
             {"name": "description", "label": "Description", "kind": "textarea", "required": true, "note": "Short summary shown before invocation."},
             {"name": "url", "label": "Endpoint URL", "kind": "url", "required": true, "note": "Public HTTPS A2A JSON-RPC endpoint. Do not use localhost or private IPs."},
             {"name": "scope", "label": "Scope", "kind": "select", "required": true, "options": ["real_world", "wattetheria_native"], "note": "real_world is for public services; wattetheria_native is for agents published from a Wattetheria node."},
@@ -606,6 +620,15 @@ pub(crate) async fn publish_agent(
             || derive_agent_id(&agent_card, &provider_id),
             ToOwned::to_owned,
         );
+    let service_address = match body
+        .service_address
+        .as_deref()
+        .map(normalize_service_address)
+        .transpose()
+    {
+        Ok(value) => value.flatten(),
+        Err(error) => return bad_request(error.to_string()),
+    };
     let version = body
         .version
         .as_deref()
@@ -648,6 +671,7 @@ pub(crate) async fn publish_agent(
     let attestation_payload = json!({
         "provider_id": provider_id,
         "agent_id": agent_id,
+        "service_address": service_address.clone(),
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -673,6 +697,7 @@ pub(crate) async fn publish_agent(
     let request = json!({
         "provider_id": provider_id,
         "agent_id": agent_id,
+        "service_address": service_address.clone(),
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -699,6 +724,7 @@ pub(crate) async fn publish_agent(
                 .to_owned(),
             provider_did: state.agent_did.clone(),
             agent_id: request["agent_id"].as_str().unwrap_or_default().to_owned(),
+            service_address: request["service_address"].as_str().map(ToOwned::to_owned),
             card_hash: hash_agent_card(&request["agent_card"]),
             version: request["version"].as_str().unwrap_or_default().to_owned(),
             updated_at: Utc::now().to_rfc3339(),
@@ -729,6 +755,7 @@ pub(crate) async fn publish_agent(
     Json(json!({
         "status": "ok",
         "agent_id": request["agent_id"],
+        "service_address": request["service_address"],
         "provider_id": request["provider_id"],
         "provider_did": state.agent_did,
         "submission": response,

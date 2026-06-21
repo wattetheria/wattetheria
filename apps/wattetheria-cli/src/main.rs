@@ -42,6 +42,7 @@ use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{
     CapabilityRequest, DecisionKind, PolicyEngine, PolicyState,
 };
+use wattetheria_kernel::servicenet::normalize_service_address;
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::{
@@ -671,8 +672,8 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
     let servicenet = resolve_servicenet_base_url();
     let (agent_card, card_raw, card_path) = load_agent_card(card_path)?;
     publish::validate_agent_card(&agent_card)?;
-    let endpoint = agent_card_url(&agent_card)?;
-    publish::validate_endpoint(endpoint)?;
+    let endpoint = agent_card_url(&agent_card)?.to_owned();
+    publish::validate_endpoint(&endpoint)?;
 
     let wallet = publish::open_wallet_or_explain(data_dir)?;
     let identity = wallet
@@ -705,6 +706,7 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
         .unwrap_or(&identity_did)
         .to_owned();
     let agent_id = derive_agent_id(&agent_card, &servicenet_namespace)?;
+    let service_address = agent_card_service_address(&agent_card)?;
     let card_hash = hash_agent_card(&card_raw);
 
     let mut config = config;
@@ -712,6 +714,7 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
         provider_id: servicenet_namespace.clone(),
         provider_did: attester_identity.clone(),
         agent_id: agent_id.clone(),
+        service_address: service_address.clone(),
         card_path: card_path.display().to_string(),
         card_hash: card_hash.clone(),
     };
@@ -728,6 +731,7 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
             "provider_id": &servicenet_namespace,
             "provider_did": &attester_identity,
             "agent_id": &agent_id,
+            "service_address": service_address,
             "card": card_path,
             "card_hash": &card_hash,
         }))?
@@ -759,10 +763,10 @@ async fn run_servicenet_publish(
     let servicenet = resolve_servicenet_base_url();
 
     let card_path = PathBuf::from(&registration.card_path);
-    let (agent_card, card_raw, _) = load_agent_card(&card_path)?;
+    let (mut agent_card, card_raw, _) = load_agent_card(&card_path)?;
     publish::validate_agent_card(&agent_card)?;
-    let endpoint = agent_card_url(&agent_card)?;
-    publish::validate_endpoint(endpoint)?;
+    let endpoint = agent_card_url(&agent_card)?.to_owned();
+    publish::validate_endpoint(&endpoint)?;
     let card_hash = hash_agent_card(&card_raw);
     if card_hash != registration.card_hash {
         bail!(
@@ -770,6 +774,8 @@ async fn run_servicenet_publish(
             card_path.display()
         );
     }
+    let service_address = registration_service_address(registration.service_address.as_deref())?;
+    strip_agent_card_submission_metadata(&mut agent_card);
 
     let wallet = publish::open_wallet_or_explain(data_dir)?;
     let identity = wallet
@@ -803,6 +809,7 @@ async fn run_servicenet_publish(
     let attestation_payload_value = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,
+        "service_address": &service_address,
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -831,6 +838,7 @@ async fn run_servicenet_publish(
     let request = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,
+        "service_address": &service_address,
         "version": version,
         "agent_card": agent_card,
         "deployment": deployment,
@@ -875,9 +883,35 @@ fn load_agent_card(card_path: &Path) -> Result<(Value, String, PathBuf)> {
     Ok((card, raw, path))
 }
 
+fn agent_card_service_address(agent_card: &Value) -> Result<Option<String>> {
+    for field in ["serviceAddress", "service_address"] {
+        if let Some(value) = agent_card.get(field).and_then(Value::as_str) {
+            return normalize_service_address(value);
+        }
+    }
+    Ok(None)
+}
+
+fn registration_service_address(value: Option<&str>) -> Result<Option<String>> {
+    match value {
+        Some(value) => normalize_service_address(value),
+        None => Ok(None),
+    }
+}
+
+fn strip_agent_card_submission_metadata(agent_card: &mut Value) {
+    if let Some(object) = agent_card.as_object_mut() {
+        object.remove("serviceAddress");
+        object.remove("service_address");
+    }
+}
+
 fn agent_card_template_jsonc() -> &'static str {
     r#"{
   "name": "",
+  // Optional unique ServiceNet alias. Use <name>@wattetheria.
+  // This is stored outside agent_card during publish.
+  "serviceAddress": "",
   "description": "",
   "url": "",
   "preferredTransport": "JSONRPC",
@@ -1465,6 +1499,7 @@ mod tests {
         assert_eq!(card["cost"], 18);
         assert_eq!(card["currency"], "USDC");
         assert_eq!(card["supportsTask"], false);
+        assert_eq!(card["serviceAddress"].as_str(), Some(""));
         let skill = card["skills"][0]
             .as_object()
             .expect("template skill object");

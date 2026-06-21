@@ -1,3 +1,6 @@
+    const SERVICE_ADDRESS_SUFFIX = "@wattetheria";
+    const MAX_SERVICE_NET_AGENT_NAME_CHARS = 40;
+
     function serviceNetStatus(message, isError = false) {
       const target = qs("servicenet-status");
       if (!target) return;
@@ -116,6 +119,47 @@
         .find(Boolean) || null;
     }
 
+    function serviceAddressLocalPart(serviceAddress) {
+      const value = String(serviceAddress || "").trim();
+      if (!value) return "";
+      return value.endsWith(SERVICE_ADDRESS_SUFFIX)
+        ? value.slice(0, -SERVICE_ADDRESS_SUFFIX.length)
+        : value;
+    }
+
+    function normalizeServiceAddressLocalPart(localPart) {
+      return String(localPart || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "");
+    }
+
+    function validateServiceAddressLocalPart(localPart) {
+      const value = String(localPart || "").trim();
+      if (!value) return "";
+      if (!/^[a-z0-9-]+$/.test(value)) return "Service Address can only use lowercase letters, numbers, and hyphens.";
+      if (value.startsWith("-") || value.endsWith("-")) return "Service Address cannot start or end with a hyphen.";
+      return "";
+    }
+
+    function validateServiceNetAgentName(name) {
+      const value = String(name || "").trim();
+      if (!value) return "Name is required.";
+      if ([...value].length > MAX_SERVICE_NET_AGENT_NAME_CHARS) {
+        return `Name must be ${MAX_SERVICE_NET_AGENT_NAME_CHARS} characters or less.`;
+      }
+      if (/[\u0000-\u001F\u007F-\u009F]/u.test(value)) {
+        return "Name cannot contain control characters.";
+      }
+      return "";
+    }
+
+    function serviceAddressFromLocalPart(localPart) {
+      const value = String(localPart || "").trim();
+      if (!value) return null;
+      return value.includes("@") ? value : `${value}${SERVICE_ADDRESS_SUFFIX}`;
+    }
+
     async function resetServiceNetForm(card = null, agent = null) {
       await loadServiceNetTemplate();
       const defaults = servicenetTemplate.defaults || {};
@@ -126,6 +170,7 @@
       qs("servicenet-form-mode").textContent = agent ? "update" : "new";
       qs("servicenet-submit").textContent = agent ? "Update" : "Publish";
       qs("servicenet-name").value = nextCard.name || "";
+      qs("servicenet-service-address").value = normalizeServiceAddressLocalPart(serviceAddressLocalPart(agent?.service_address));
       qs("servicenet-description").value = nextCard.description || "";
       qs("servicenet-url").value = nextCard.url || agent?.deployment?.endpoint?.url || "";
       qs("servicenet-scope").value = nextCard.scope || "real_world";
@@ -208,7 +253,7 @@
             </div>
             <div class="row-body">
               ${escapeHtml(card.description || "No description.")}
-              <br>Agent ${escapeHtml(compactId(row.agent_id, 30))} | Provider ${escapeHtml(compactId(row.provider_id, 30))}
+              <br>Agent ${escapeHtml(compactId(row.agent_id, 30))} | Service ${escapeHtml(valueOrDash(row.service_address))} | Provider ${escapeHtml(compactId(row.provider_id, 30))}
             </div>
             <div class="row-meta">
               <span>v ${escapeHtml(valueOrDash(row.version))}</span>
@@ -245,9 +290,25 @@
     async function publishServiceNetAgent(event) {
       event?.preventDefault();
       serviceNetStatus("Submitting ServiceNet publication...");
+      const agentNameError = validateServiceNetAgentName(qs("servicenet-name").value);
+      if (agentNameError) {
+        serviceNetStatus(agentNameError, true);
+        return;
+      }
+      const serviceAddressName = qs("servicenet-service-address").value.trim();
+      if (serviceAddressName.includes("@")) {
+        serviceNetStatus("Service Address only needs the name before @wattetheria.", true);
+        return;
+      }
+      const serviceAddressError = validateServiceAddressLocalPart(serviceAddressName);
+      if (serviceAddressError) {
+        serviceNetStatus(serviceAddressError, true);
+        return;
+      }
       const body = {
         agent_id: qs("servicenet-agent-id").value.trim() || null,
         provider_id: qs("servicenet-provider-id").value.trim() || null,
+        service_address: serviceAddressFromLocalPart(serviceAddressName),
         version: qs("servicenet-version").value.trim() || "0.1.0",
         risk_level: qs("servicenet-risk").value,
         agent_card: serviceNetAgentCardFromForm(),
@@ -258,7 +319,7 @@
         body: JSON.stringify(body),
         auth: true,
       });
-      serviceNetStatus(`Published ${compactId(response.agent_id, 28)}.`);
+      serviceNetStatus(`Published ${compactId(response.agent_id, 28)}${response.service_address ? ` as ${response.service_address}` : ""}.`);
       await refreshServiceNetAgents();
       showServiceNetList();
     }
@@ -280,6 +341,12 @@
         resetServiceNetForm().catch((error) => serviceNetStatus(error.message, true));
       });
       qs("servicenet-scope")?.addEventListener("change", syncServiceNetClassification);
+      qs("servicenet-service-address")?.addEventListener("input", (event) => {
+        const normalized = normalizeServiceAddressLocalPart(event.target.value);
+        if (event.target.value !== normalized) {
+          event.target.value = normalized;
+        }
+      });
       qs("servicenet-x402-enabled")?.addEventListener("change", (event) => {
         qs("servicenet-x402-fields").hidden = !event.target.checked;
       });

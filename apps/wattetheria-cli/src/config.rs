@@ -40,6 +40,8 @@ pub(crate) struct ServicenetRegistrationConfig {
     pub(crate) provider_id: String,
     pub(crate) provider_did: String,
     pub(crate) agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) service_address: Option<String>,
     pub(crate) card_path: String,
     pub(crate) card_hash: String,
 }

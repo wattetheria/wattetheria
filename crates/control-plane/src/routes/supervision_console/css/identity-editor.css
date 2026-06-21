@@ -1,45 +1,56 @@
     .identity-editor {
       display: grid;
-      gap: 0.75rem;
-      padding: 0 0 1.25rem;
-      margin-bottom: 1.25rem;
-      border-bottom: 1px solid var(--line);
+      gap: 0.6rem;
     }
 
-    .identity-display-view,
+    .identity-editor.is-editing {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+      background: rgba(15, 23, 42, 0.45);
+    }
+
     .identity-display-form {
       display: grid;
-      grid-template-columns: minmax(16rem, 1fr) auto;
-      gap: 0.75rem;
-      align-items: end;
+      gap: 0.85rem;
+      width: min(30rem, 100%);
+      padding: 1.4rem;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+    }
+
+    .identity-edit-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .identity-display-form label {
+      display: grid;
+      gap: 0.4rem;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .identity-display-form input {
+      width: 100%;
     }
 
     .identity-editor-actions {
       display: flex;
       gap: 0.5rem;
-      align-items: center;
+      justify-content: flex-end;
     }
 
-    .identity-editor-label {
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
+    .identity-editor .status-text:empty {
+      display: none;
     }
-
-    .identity-display-value {
-      min-height: 2.4rem;
-      display: flex;
-      align-items: center;
-      padding: 0.55rem 0;
-      font-size: 1rem;
-      font-weight: 700;
-      color: var(--ink);
-      overflow-wrap: anywhere;
-    }
-
-    .identity-editor .status-text {
-      min-height: 1rem;
-    }
-

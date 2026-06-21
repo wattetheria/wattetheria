@@ -349,6 +349,17 @@ async fn build_client_self_payload(
         || public_id.clone(),
         |identity| identity.display_name.clone(),
     );
+    let wallet_agent_did = context
+        .public_memory_owner
+        .agent_did
+        .clone()
+        .or_else(|| {
+            context
+                .public_identity
+                .as_ref()
+                .and_then(|identity| identity.agent_did.clone())
+        })
+        .unwrap_or_else(|| state.agent_did.clone());
     let balance =
         wallet_bound_balance_for_identity(state, &controller_id, Some(&public_id)).await?;
     let payment_account = active_wallet_payment_account_payload(state);
@@ -359,9 +370,10 @@ async fn build_client_self_payload(
     Ok(json!({
         "id": public_id,
         "display_name": display_name,
+        "agent_did": wallet_agent_did.clone(),
         "watt_balance": balance.watt,
         "reward_policy_version": balance.policy_version,
-        "wallet_bound_agent_did": controller_id,
+        "wallet_bound_agent_did": wallet_agent_did,
         "wallet_identities": wallet_identities,
         "active_payment_account": payment_account,
         "payment_accounts": payment_accounts,

@@ -126,25 +126,19 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <section class="view-page" data-page="identity" hidden>
           <article class="panel">
             <h2>Agent Identities</h2>
-            <div id="identity-display-editor" class="identity-editor">
-              <div id="identity-display-view" class="identity-display-view">
-                <div>
-                  <div class="identity-editor-label">Display Name</div>
-                  <div id="identity-display-value" class="identity-display-value">-</div>
-                </div>
-                <button id="identity-display-edit" type="button" class="secondary">Edit</button>
-              </div>
+            <div id="identity-display-editor" class="identity-editor" onclick="if(event.target===this)cancelIdentityDisplayNameEdit()">
               <form id="identity-display-form" class="identity-display-form" hidden>
+                <div class="identity-edit-title">Edit display name</div>
                 <label>
                   Display Name
-                  <input id="identity-display-name" placeholder="Agent nickname" autocomplete="off">
+                  <input id="identity-display-name" placeholder="Agent nickname" autocomplete="off" maxlength="40">
                 </label>
+                <div id="identity-display-status" class="status-text"></div>
                 <div class="identity-editor-actions">
-                  <button id="identity-display-save" type="submit">Save</button>
                   <button id="identity-display-cancel" type="button" class="secondary">Cancel</button>
+                  <button id="identity-display-save" type="submit">Save</button>
                 </div>
               </form>
-              <div id="identity-display-status" class="status-text"></div>
             </div>
             <div id="identities-list" class="list"></div>
           </article>
@@ -280,8 +274,16 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                 <div class="form-grid">
                   <label>
                     Name
-                    <input id="servicenet-name" required placeholder="Acme Support Agent">
+                    <input id="servicenet-name" required maxlength="40" placeholder="Acme Support Agent">
                     <span class="field-note">Public name shown in ServiceNet listings.</span>
+                  </label>
+                  <label>
+                    Service Address
+                    <span class="input-suffix">
+                      <input id="servicenet-service-address" placeholder="agent-name" maxlength="64" pattern="[a-z0-9-]+">
+                      <span>@wattetheria</span>
+                    </span>
+                    <span class="field-note">Use lowercase letters, numbers, and hyphens.</span>
                   </label>
                   <label>
                     Endpoint URL

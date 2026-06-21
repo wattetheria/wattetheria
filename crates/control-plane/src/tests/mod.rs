@@ -436,6 +436,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                 let agents = vec![
                     json!({
                         "agent_id": "agent-alpha",
+                        "service_address": "alpha@wattetheria",
                         "provider_id": "provider-one",
                         "version": "0.1.0",
                         "status": "approved",
@@ -488,6 +489,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     }),
                     json!({
                         "agent_id": "agent-beta",
+                        "service_address": "beta@wattetheria",
                         "provider_id": "provider-two",
                         "version": "0.2.0",
                         "status": "approved",
@@ -513,6 +515,58 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             }
                         },
                         "review": {"risk_level": "medium"},
+                    }),
+                    json!({
+                        "agent_id": "agent-oauth",
+                        "service_address": "oauth@wattetheria",
+                        "provider_id": "provider-oauth",
+                        "version": "0.1.0",
+                        "status": "approved",
+                        "agent_card": {
+                            "name": "OAuth Agent",
+                            "description": "Agent requiring OAuth consent",
+                            "cost": 21,
+                            "currency": "USDC",
+                            "supportsTask": false,
+                            "securitySchemes": {
+                                "oauth2": {
+                                    "oauth2SecurityScheme": {
+                                        "flows": {
+                                            "authorizationCode": {
+                                                "authorizationUrl": "https://auth.example.com/oauth/authorize",
+                                                "tokenUrl": "https://auth.example.com/oauth/token",
+                                                "refreshUrl": "https://auth.example.com/oauth/token",
+                                                "scopes": {
+                                                    "rides:request": "Request rides"
+                                                },
+                                                "pkceRequired": true
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "security": [
+                                {
+                                    "oauth2": ["rides:request"]
+                                }
+                            ],
+                            "skills": [
+                                {
+                                    "id": "rides.request",
+                                    "name": "Request ride",
+                                    "description": "Requests a ride"
+                                }
+                            ]
+                        },
+                        "deployment": {
+                            "runtime": "agent",
+                            "endpoint": {
+                                "url": "https://example.com/a2a",
+                                "interaction_protocol": "google_a2a",
+                                "protocol_binding": "JSONRPC"
+                            }
+                        },
+                        "review": {"risk_level": "low"},
                     }),
                 ];
                 let known_count = agents.len();
@@ -609,6 +663,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     "submission_id": "00000000-0000-0000-0000-000000000456",
                     "provider_id": body["provider_id"],
                     "agent_id": body["agent_id"],
+                    "service_address": body["service_address"],
                     "version": body["version"],
                     "status": "approved",
                     "agent_card": body["agent_card"],
@@ -627,6 +682,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                 if agent_id == "agent-oauth" {
                     return Json(json!({
                         "agent_id": agent_id,
+                        "service_address": "oauth@wattetheria",
                         "provider_id": "provider-oauth",
                         "version": "0.1.0",
                         "status": "approved",
@@ -679,6 +735,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                 }
                 Json(json!({
                     "agent_id": agent_id,
+                    "service_address": "alpha@wattetheria",
                     "provider_id": "provider-one",
                     "version": "0.1.0",
                     "status": "approved",

@@ -77,6 +77,35 @@
       font-weight: 400;
     }
 
+    .input-suffix {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: stretch;
+      min-width: 0;
+    }
+
+    .input-suffix input {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    .input-suffix span {
+      display: inline-flex;
+      align-items: center;
+      padding: 0 0.8rem;
+      border: 1px solid var(--line);
+      border-left: 0;
+      border-top-right-radius: var(--radius);
+      border-bottom-right-radius: var(--radius);
+      background: var(--surface-inset);
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+      white-space: nowrap;
+    }
+
     .skill-card {
       display: grid;
       gap: 0.8rem;

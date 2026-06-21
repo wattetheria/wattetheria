@@ -69,7 +69,8 @@ pub(super) async fn publish_collective_mission_result(
     {
         Ok(response) => response,
         Err(response) => {
-            return response_to_tool_result("publish_collective_mission", response).await;
+            return response_to_tool_result("publish_collective_mission", &Value::Null, response)
+                .await;
         }
     };
     let (status, mission) = match response_json(mission_response).await {

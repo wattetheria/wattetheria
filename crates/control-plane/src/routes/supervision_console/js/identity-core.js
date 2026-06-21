@@ -1,3 +1,6 @@
+    const IDENTITY_NETWORK_ID = "mainnet.watt-etheria";
+    const MAX_DISPLAY_NAME_CHARS = 40;
+
     function identityContext(record) {
       return record?.identity || record || {};
     }
@@ -30,24 +33,20 @@
     function syncIdentityDisplayForm() {
       selectedIdentityRecord = identitiesByPublicId.get(publicIdEl.value) || null;
       if (!selectedIdentityRecord) identityDisplayEditing = false;
-      const view = qs("identity-display-view");
+      const editor = qs("identity-display-editor");
       const form = qs("identity-display-form");
-      const value = qs("identity-display-value");
       const input = qs("identity-display-name");
-      const editButton = qs("identity-display-edit");
       const button = qs("identity-display-save");
       const cancelButton = qs("identity-display-cancel");
-      if (!view || !form || !value || !input || !editButton || !button || !cancelButton) return;
+      if (!form || !input || !button || !cancelButton) return;
       const identity = identityRecordPublicIdentity(selectedIdentityRecord) || {};
-      const displayName = identity.display_name || "";
-      value.textContent = displayName || "-";
-      input.value = displayName;
-      view.hidden = identityDisplayEditing;
-      form.hidden = !identityDisplayEditing;
-      editButton.disabled = !selectedIdentityRecord;
-      input.disabled = !selectedIdentityRecord || !identityDisplayEditing;
-      button.disabled = !selectedIdentityRecord || !identityDisplayEditing;
-      cancelButton.disabled = !selectedIdentityRecord || !identityDisplayEditing;
+      const editing = identityDisplayEditing && !!selectedIdentityRecord;
+      input.value = identity.display_name || "";
+      form.hidden = !editing;
+      if (editor) editor.classList.toggle("is-editing", editing);
+      input.disabled = !editing;
+      button.disabled = !editing;
+      cancelButton.disabled = !editing;
       identityDisplayStatus(selectedIdentityRecord ? "" : "Load an identity before editing the display name.");
     }
 
@@ -57,6 +56,14 @@
         public_id: identity.public_id || identityRecordPublicId(selectedIdentityRecord),
         display_name: displayName,
       };
+    }
+
+    function validateIdentityDisplayName(displayName) {
+      const normalized = String(displayName || "").trim();
+      if (!normalized) return "Display name is required.";
+      if ([...normalized].length > MAX_DISPLAY_NAME_CHARS) return `Display name must be ${MAX_DISPLAY_NAME_CHARS} characters or fewer.`;
+      if (/[\u0000-\u001F\u007F-\u009F]/u.test(normalized)) return "Display name must not contain control characters.";
+      return "";
     }
 
     function editIdentityDisplayName() {
@@ -72,6 +79,37 @@
     function cancelIdentityDisplayNameEdit() {
       identityDisplayEditing = false;
       syncIdentityDisplayForm();
+    }
+
+    function editIdentityFromCard(publicId) {
+      if (publicId && identitiesByPublicId.has(publicId)) {
+        publicIdEl.value = publicId;
+        publicIdEl.dataset.savedPublicId = publicId;
+        publicIdEl.dispatchEvent(new Event("change"));
+      }
+      editIdentityDisplayName();
+    }
+
+    function flashButtonLabel(button, label) {
+      if (!button) return;
+      if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent;
+      button.textContent = label;
+      if (button._flashTimer) clearTimeout(button._flashTimer);
+      button._flashTimer = setTimeout(() => {
+        button.textContent = button.dataset.originalLabel || label;
+      }, 1500);
+    }
+
+    function copyIdentityId(identityId, button) {
+      const value = String(identityId || "").trim();
+      if (!value || !navigator.clipboard?.writeText) {
+        flashButtonLabel(button, "Unavailable");
+        return;
+      }
+      navigator.clipboard.writeText(value).then(
+        () => flashButtonLabel(button, "Copied!"),
+        () => flashButtonLabel(button, "Failed"),
+      );
     }
 
     function isAgentIdentityRecord(record) {
@@ -98,6 +136,14 @@
     function publicIdFingerprint(publicId) {
       const match = String(publicId || "").match(/\.([0-9a-fA-F]{16})$/);
       return match ? match[1].toLowerCase() : "";
+    }
+
+    function identityAlias(publicId) {
+      return publicId ? `@${publicId}` : "";
+    }
+
+    function identityAddress(agentDid) {
+      return agentDid ? `wattetheria://${IDENTITY_NETWORK_ID}/identity/${agentDid}` : "";
     }
 
     function didMethod(agentDid) {
@@ -130,13 +176,28 @@
       ];
     }
 
-    function identityFieldRows(rows) {
-      return rows.map(([label, value]) => `
-        <div class="identity-field">
-          <span>${escapeHtml(label)}</span>
-          <strong>${escapeHtml(valueOrDash(value))}</strong>
+    function identitySpecRows(rows) {
+      return rows.map(([label, value, mono]) => `
+        <div class="identity-spec-row">
+          <span class="identity-spec-k">${escapeHtml(label)}</span>
+          <span class="identity-spec-v${mono ? " mono" : ""}">${escapeHtml(valueOrDash(value))}</span>
         </div>
       `).join("");
+    }
+
+    function identitySpecSection(title, rowsHtml) {
+      return `
+        <section class="identity-spec-section">
+          <div class="identity-spec-title">${escapeHtml(title)}</div>
+          ${rowsHtml}
+        </section>
+      `;
+    }
+
+    function identityMonogram(name) {
+      const stripped = String(name || "").replace(/^agent[-_ ]?/i, "").replace(/[^a-z0-9]/gi, "");
+      const base = stripped || String(name || "").replace(/[^a-z0-9]/gi, "");
+      return (base.slice(0, 2) || "?").toUpperCase();
     }
 
     function identityCompactList(items, getLabel, emptyLabel) {
@@ -160,4 +221,3 @@
         publicIdEl.dataset.savedPublicId = firstPublicId;
       }
     }
-

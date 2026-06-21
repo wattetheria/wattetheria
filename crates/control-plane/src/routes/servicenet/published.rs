@@ -17,6 +17,7 @@ fn published_registration_json(registration: &ServiceNetPublisherRegistration) -
         "agent_id": registration.agent_id,
         "provider_id": registration.provider_id,
         "provider_did": registration.provider_did,
+        "service_address": registration.service_address,
         "version": registration.version,
         "card_hash": registration.card_hash,
         "updated_at": registration.updated_at,

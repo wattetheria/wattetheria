@@ -17,7 +17,7 @@ use crate::state::{
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::{
-    ControllerBinding, ControllerKind, OwnershipScope, PublicIdentity,
+    ControllerBinding, ControllerKind, OwnershipScope, PublicIdentity, normalize_display_name,
 };
 use wattetheria_kernel::map::state::resolve_anchor_position;
 use wattetheria_kernel::profiles::{Faction, RolePath, StrategyProfile};
@@ -131,9 +131,7 @@ fn plan_bootstrap_identity(
     state_agent_did: &str,
 ) -> Result<BootstrapIdentityPlan, String> {
     let display_name = body.display_name.trim();
-    if display_name.is_empty() {
-        return Err("display_name is required".to_string());
-    }
+    normalize_display_name(display_name).map_err(|error| format!("{error:#}"))?;
     let controller_kind = body
         .controller_kind
         .clone()

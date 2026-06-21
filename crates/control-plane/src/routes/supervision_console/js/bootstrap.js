@@ -1,7 +1,6 @@
     document.getElementById("load-identities").addEventListener("click", loadIdentities);
     document.getElementById("refresh").addEventListener("click", refreshConsole);
     document.getElementById("save-settings").addEventListener("click", saveSettings);
-    qs("identity-display-edit")?.addEventListener("click", editIdentityDisplayName);
     qs("identity-display-cancel")?.addEventListener("click", cancelIdentityDisplayNameEdit);
     qs("identity-display-form")?.addEventListener("submit", saveIdentityDisplayName);
     publicIdEl.addEventListener("change", () => {

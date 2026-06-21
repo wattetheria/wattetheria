@@ -217,6 +217,10 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(self_json["watt_balance"].as_i64(), Some(0));
     assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
     assert_eq!(
+        self_json["agent_did"].as_str(),
+        Some(identity.agent_did.as_str())
+    );
+    assert_eq!(
         self_json["wallet_bound_agent_did"].as_str(),
         Some(identity.agent_did.as_str())
     );

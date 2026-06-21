@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 use uuid::Uuid;
+use wattetheria_kernel::servicenet::validate_servicenet_agent_name;
 use wattetheria_kernel::wallet_identity::{LocalWalletState, open_local_wallet};
 
 /// Minimal client for a watt-servicenet node. Only covers the routes the
@@ -154,6 +155,11 @@ pub(crate) fn validate_agent_card(card: &Value) -> Result<()> {
             bail!("agent card is missing required field `{field}`");
         }
     }
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("agent card `name` must be a string"))?;
+    validate_servicenet_agent_name(name)?;
 
     let url = object
         .get("url")
@@ -428,6 +434,30 @@ mod tests {
             error
                 .to_string()
                 .contains("skill[0] is missing required field `name`")
+        );
+    }
+
+    #[test]
+    fn agent_card_rejects_unsafe_name() {
+        let mut card = valid_card();
+        card["name"] = json!("Bad\u{0007}Name");
+        let error = validate_agent_card(&card).expect_err("unsafe name should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `name` must not contain control characters")
+        );
+    }
+
+    #[test]
+    fn agent_card_rejects_overlong_name() {
+        let mut card = valid_card();
+        card["name"] = json!("名".repeat(41));
+        let error = validate_agent_card(&card).expect_err("overlong name should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("agent card `name` must be 40 characters or less")
         );
     }
 

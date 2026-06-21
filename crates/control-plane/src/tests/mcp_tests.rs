@@ -160,7 +160,7 @@ async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
             "params": {
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
-                    "agent_id": "agent-alpha",
+                    "service_address": "alpha@wattetheria",
                     "message": "hello servicenet",
                     "auth_token": "servicenet-secret-token",
                     "auth_context_id": "00000000-0000-0000-0000-00000000abcd",
@@ -326,13 +326,13 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(content["count"].as_u64(), Some(1));
     assert_eq!(content["limit"].as_u64(), Some(1));
     assert_eq!(content["offset"].as_u64(), Some(1));
-    assert_eq!(content["next_offset"], Value::Null);
-    assert_eq!(content["has_more"].as_bool(), Some(false));
-    assert_eq!(content["known_count"].as_u64(), Some(2));
+    assert_eq!(content["next_offset"].as_u64(), Some(2));
+    assert_eq!(content["has_more"].as_bool(), Some(true));
+    assert_eq!(content["known_count"].as_u64(), Some(3));
     let agents = content["items"].as_array().unwrap();
     assert_eq!(agents.len(), 1);
     let beta = &agents[0];
-    assert_eq!(beta["agent_id"].as_str(), Some("agent-beta"));
+    assert_eq!(beta["service_address"].as_str(), Some("beta@wattetheria"));
     assert_eq!(beta["name"].as_str(), Some("Agent Beta"));
     assert_eq!(beta["description"].as_str(), Some("Beta test agent"));
     assert_eq!(beta["status"].as_str(), Some("online"));
@@ -372,7 +372,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
             "params": {
                 "name": "get_servicenet_agent",
                 "arguments": {
-                    "agent_id": "agent-alpha"
+                    "service_address": "alpha@wattetheria"
                 }
             }
         }),
@@ -382,7 +382,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     let agent = &response["result"]["structuredContent"];
-    assert_eq!(agent["agent_id"].as_str(), Some("agent-alpha"));
+    assert_eq!(agent["service_address"].as_str(), Some("alpha@wattetheria"));
     assert_eq!(agent["name"].as_str(), Some("Agent Alpha"));
     assert_eq!(agent["description"].as_str(), Some("Alpha test agent"));
     assert_eq!(agent["status"].as_str(), Some("published"));
@@ -415,7 +415,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
+async fn mcp_propose_agent_payment_accepts_servicenet_service_address() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let sender_address = seed_active_payment_account(&state);
@@ -437,7 +437,8 @@ async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
             "params": {
                 "name": "propose_agent_payment",
                 "arguments": {
-                    "agent_id": "agent-alpha",
+                    "target_kind": "service_agent",
+                    "target_address": "alpha@wattetheria",
                     "amount": "0.18",
                     "currency": "USDC",
                     "rail": "x402",
@@ -529,6 +530,84 @@ async fn mcp_propose_agent_payment_accepts_servicenet_agent_id() {
 }
 
 #[tokio::test]
+async fn mcp_propose_agent_payment_accepts_payment_address_target() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let recipient_address = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "propose_agent_payment",
+                "arguments": {
+                    "target_kind": "payment_address",
+                    "target_address": recipient_address,
+                    "amount": "2",
+                    "currency": "USDC",
+                    "rail": "x402",
+                    "layer": "web3",
+                    "network": "base"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["ok"].as_bool(), Some(true));
+    assert_eq!(
+        content["payment"]["recipient_public_id"].as_str(),
+        Some(recipient_address)
+    );
+    assert_eq!(
+        content["payment"]["recipient_address"].as_str(),
+        Some(recipient_address)
+    );
+    assert_eq!(
+        content["transport"]["mode"].as_str(),
+        Some("payment_address")
+    );
+    assert_eq!(
+        content["transport"]["recipient_address"].as_str(),
+        Some(recipient_address)
+    );
+
+    let listed = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_agent_payments",
+                "arguments": {
+                    "target_kind": "payment_address",
+                    "target_address": recipient_address
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(listed["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        listed["result"]["structuredContent"]["count"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["items"][0]["recipient_address"].as_str(),
+        Some(recipient_address)
+    );
+}
+
+#[tokio::test]
 async fn mcp_propose_agent_payment_normalizes_stablecoin_amount_for_counterpart() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -574,7 +653,8 @@ async fn mcp_propose_agent_payment_normalizes_stablecoin_amount_for_counterpart(
             "params": {
                 "name": "propose_agent_payment",
                 "arguments": {
-                    "counterpart_public_id": remote_public_id,
+                    "target_kind": "network_agent",
+                    "target_address": remote_public_id,
                     "amount": "1",
                     "currency": "USDT",
                     "rail": "x402",
@@ -599,7 +679,7 @@ async fn mcp_propose_agent_payment_normalizes_stablecoin_amount_for_counterpart(
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn mcp_agent_payments_support_friend_display_name() {
+async fn mcp_agent_payments_support_network_agent_target_address() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity = Identity::new_random();
@@ -697,7 +777,8 @@ async fn mcp_agent_payments_support_friend_display_name() {
             "params": {
                 "name": "propose_agent_payment",
                 "arguments": {
-                    "display_name": "Broker Payments",
+                    "target_kind": "network_agent",
+                    "target_address": remote_public_id,
                     "amount": "2.50",
                     "currency": "USDC",
                     "rail": "x402",
@@ -739,7 +820,8 @@ async fn mcp_agent_payments_support_friend_display_name() {
             "params": {
                 "name": "list_agent_payments",
                 "arguments": {
-                    "display_name": "Broker Payments"
+                    "target_kind": "network_agent",
+                    "target_address": remote_public_id
                 }
             }
         }),
@@ -828,7 +910,7 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
             "params": {
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
-                    "agent_id": "agent-alpha",
+                    "service_address": "alpha@wattetheria",
                     "message": "hello servicenet"
                 }
             }
@@ -867,7 +949,7 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_resolves_exact_agent_name() {
+async fn mcp_invoke_servicenet_agent_sync_resolves_service_address() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -888,8 +970,8 @@ async fn mcp_invoke_servicenet_agent_sync_resolves_exact_agent_name() {
             "params": {
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
-                    "agent_name": "Agent Alpha",
-                    "message": "hello by name"
+                    "service_address": "alpha@wattetheria",
+                    "message": "hello by service address"
                 }
             }
         }),
@@ -898,8 +980,14 @@ async fn mcp_invoke_servicenet_agent_sync_resolves_exact_agent_name() {
 
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     let content = &response["result"]["structuredContent"];
-    assert_eq!(content["agent_id"].as_str(), Some("agent-alpha"));
-    assert_eq!(content["output"]["echo"].as_str(), Some("hello by name"));
+    assert_eq!(
+        content["service_address"].as_str(),
+        Some("alpha@wattetheria")
+    );
+    assert_eq!(
+        content["output"]["echo"].as_str(),
+        Some("hello by service address")
+    );
 
     servicenet_server.abort();
 }
@@ -926,7 +1014,7 @@ async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
             "params": {
                 "name": "invoke_servicenet_agent_async",
                 "arguments": {
-                    "agent_id": "agent-alpha",
+                    "service_address": "alpha@wattetheria",
                     "message": "hello servicenet"
                 }
             }
@@ -991,6 +1079,124 @@ async fn mcp_get_servicenet_receipt_returns_receipt_status() {
         content["receipt"]["receipt_id"].as_str(),
         Some("00000000-0000-0000-0000-000000000099")
     );
+    assert_eq!(
+        content["receipt"]["service_address"].as_str(),
+        Some("alpha@wattetheria")
+    );
+    assert!(content["receipt"].get("agent_id").is_none());
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_delete_servicenet_agent_resolves_service_address() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    crate::routes::servicenet::publish::save_publisher_state(
+        &state.data_dir,
+        &crate::routes::servicenet::publish::ServiceNetPublisherState {
+            registrations: vec![
+                crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
+                    provider_id: "provider-one".to_string(),
+                    provider_did: state.agent_did.clone(),
+                    agent_id: "agent-alpha".to_string(),
+                    service_address: Some("alpha@wattetheria".to_string()),
+                    card_hash: "sha256:agent-alpha".to_string(),
+                    version: "0.1.0".to_string(),
+                    updated_at: "2026-06-04T00:00:00Z".to_string(),
+                    agent_card: json!({}),
+                    deployment: json!({}),
+                    review: json!({}),
+                },
+            ],
+        },
+    )
+    .expect("save publisher state");
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "delete_servicenet_agent",
+                "arguments": {
+                    "service_address": "alpha@wattetheria",
+                    "reason": "retired"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["status"].as_str(), Some("ok"));
+    assert_eq!(
+        content["service_address"].as_str(),
+        Some("alpha@wattetheria")
+    );
+    assert!(content.get("agent_id").is_none());
+    assert_eq!(content["unpublished"]["status"].as_str(), Some("revoked"));
+    assert_eq!(
+        content["unpublished"]["service_address"].as_str(),
+        Some("alpha@wattetheria")
+    );
+    assert!(content["unpublished"].get("agent_id").is_none());
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_get_servicenet_agent_task_resolves_service_address() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_servicenet_agent_task",
+                "arguments": {
+                    "service_address": "alpha@wattetheria",
+                    "task_id": "task-42",
+                    "history_length": 3
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["status"].as_str(), Some("completed"));
+    assert_eq!(content["task_id"].as_str(), Some("task-42"));
+    assert_eq!(content["output"]["history_length"].as_u64(), Some(3));
+    assert_eq!(
+        content["service_address"].as_str(),
+        Some("alpha@wattetheria")
+    );
+    assert!(content.get("agent_id").is_none());
 
     servicenet_server.abort();
 }
@@ -1017,7 +1223,7 @@ async fn mcp_invoke_servicenet_agent_sync_returns_authorization_url_when_oauth_i
             "params": {
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
-                    "agent_id": "agent-oauth",
+                    "service_address": "oauth@wattetheria",
                     "message": "request ride"
                 }
             }
@@ -1028,6 +1234,10 @@ async fn mcp_invoke_servicenet_agent_sync_returns_authorization_url_when_oauth_i
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
     let content = &response["result"]["structuredContent"];
     assert_eq!(content["status"].as_str(), Some("auth_required"));
+    assert_eq!(
+        content["service_address"].as_str(),
+        Some("oauth@wattetheria")
+    );
     assert_eq!(
         content["authorizationUrl"].as_str(),
         Some("https://auth.example.com/oauth/authorize")
@@ -2518,20 +2728,39 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let list_payments = find_tool(tools, "list_agent_payments");
     assert_eq!(
-        list_payments["inputSchema"]["properties"]["display_name"]["type"].as_str(),
+        list_payments["inputSchema"]["properties"]["target_kind"]["enum"][0].as_str(),
+        Some("network_agent")
+    );
+    assert_eq!(
+        list_payments["inputSchema"]["properties"]["target_address"]["type"].as_str(),
         Some("string")
     );
+    assert_schema_omits(list_payments, &["counterpart_public_id", "display_name"]);
 
     let propose_payment = find_tool(tools, "propose_agent_payment");
-    assert_schema_requires(propose_payment, &["amount", "currency", "rail"]);
-    assert_schema_omits(propose_payment, &["public_id"]);
-    assert_eq!(
-        propose_payment["inputSchema"]["properties"]["display_name"]["type"].as_str(),
-        Some("string")
+    assert_schema_requires(
+        propose_payment,
+        &[
+            "target_kind",
+            "target_address",
+            "amount",
+            "currency",
+            "rail",
+        ],
+    );
+    assert_schema_omits(
+        propose_payment,
+        &[
+            "public_id",
+            "display_name",
+            "counterpart_public_id",
+            "agent_id",
+            "recipient_address",
+        ],
     );
     assert_eq!(
-        propose_payment["inputSchema"]["properties"]["agent_id"]["type"].as_str(),
-        Some("string")
+        propose_payment["inputSchema"]["properties"]["target_kind"]["enum"][1].as_str(),
+        Some("service_agent")
     );
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["layer"]["enum"][1].as_str(),
@@ -2748,6 +2977,10 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
 
     let settle_payment = find_tool(tools, "settle_agent_payment");
     assert_schema_requires(settle_payment, &["payment_id", "settlement_receipt"]);
+    assert_schema_omits(
+        settle_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
 
     let submit_payment = find_tool(tools, "submit_agent_payment");
     assert_schema_requires(submit_payment, &["payment_id"]);
@@ -2764,29 +2997,92 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .iter()
             .any(|field| field.as_str() == Some("settlement_receipt"))
     );
+    assert_schema_omits(
+        submit_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
+
+    let get_payment = find_tool(tools, "get_agent_payment");
+    assert_schema_requires(get_payment, &["payment_id"]);
+    assert_schema_omits(
+        get_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
+
+    let authorize_payment = find_tool(tools, "authorize_agent_payment");
+    assert_schema_requires(authorize_payment, &["payment_id"]);
+    assert_schema_optional(authorize_payment, "sender_address");
+    assert_schema_omits(
+        authorize_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
+
+    let reject_payment = find_tool(tools, "reject_agent_payment");
+    assert_schema_requires(reject_payment, &["payment_id", "reject_reason"]);
+    assert_schema_omits(
+        reject_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
+
+    let cancel_payment = find_tool(tools, "cancel_agent_payment");
+    assert_schema_requires(cancel_payment, &["payment_id"]);
+    assert_schema_omits(
+        cancel_payment,
+        &["target_kind", "target_address", "recipient_address"],
+    );
 
     let get_servicenet_receipt = find_tool(tools, "get_servicenet_receipt");
     assert_schema_requires(get_servicenet_receipt, &["receipt_id"]);
 
+    let get_servicenet_agent = find_tool(tools, "get_servicenet_agent");
+    assert_schema_requires(get_servicenet_agent, &["service_address"]);
+    assert_schema_omits(get_servicenet_agent, &["agent_id"]);
+    assert_eq!(
+        get_servicenet_agent["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}")
+    );
+
     let delete_servicenet_agent = find_tool(tools, "delete_servicenet_agent");
-    assert_schema_requires(delete_servicenet_agent, &["agent_id"]);
+    assert_schema_requires(delete_servicenet_agent, &["service_address"]);
+    assert_schema_omits(delete_servicenet_agent, &["agent_id"]);
+    assert_eq!(
+        delete_servicenet_agent["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}/unpublish")
+    );
 
     let invoke_servicenet_agent = find_tool(tools, "invoke_servicenet_agent_sync");
-    assert_schema_optional(invoke_servicenet_agent, "agent_id");
-    assert_schema_optional(invoke_servicenet_agent, "agent_name");
+    assert_schema_requires(invoke_servicenet_agent, &["service_address"]);
     assert!(
-        invoke_servicenet_agent["inputSchema"]["anyOf"]
-            .as_array()
+        !invoke_servicenet_agent["inputSchema"]["properties"]
+            .as_object()
             .unwrap()
-            .iter()
-            .any(|schema| schema["required"][0].as_str() == Some("agent_id"))
+            .contains_key("agent_id")
     );
     assert!(
-        invoke_servicenet_agent["inputSchema"]["anyOf"]
-            .as_array()
+        !invoke_servicenet_agent["inputSchema"]["properties"]
+            .as_object()
             .unwrap()
-            .iter()
-            .any(|schema| schema["required"][0].as_str() == Some("agent_name"))
+            .contains_key("agent_name")
+    );
+    assert_eq!(
+        invoke_servicenet_agent["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}/invoke")
+    );
+
+    let invoke_servicenet_agent_async = find_tool(tools, "invoke_servicenet_agent_async");
+    assert_schema_requires(invoke_servicenet_agent_async, &["service_address"]);
+    assert_schema_omits(invoke_servicenet_agent_async, &["agent_id", "agent_name"]);
+    assert_eq!(
+        invoke_servicenet_agent_async["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}/invoke-async")
+    );
+
+    let get_servicenet_agent_task = find_tool(tools, "get_servicenet_agent_task");
+    assert_schema_requires(get_servicenet_agent_task, &["service_address", "task_id"]);
+    assert_schema_omits(get_servicenet_agent_task, &["agent_id"]);
+    assert_eq!(
+        get_servicenet_agent_task["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/get")
     );
 
     for hidden_tool in [

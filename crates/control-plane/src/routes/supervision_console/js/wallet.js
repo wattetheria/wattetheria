@@ -73,7 +73,7 @@
           </div>
           ${walletSummaryRows([
             ["Active Identity", identity?.identity_id || "none"],
-            ["DID", identity?.did || operator.wallet_bound_agent_did],
+            ["DID", identity?.did || operator.agent_did || operator.wallet_bound_agent_did],
             ["Status", identity?.status || (identity ? "active" : "none")],
             ["Created", formatTime(identity?.created_at_ms)],
           ])}
@@ -142,7 +142,7 @@
 
     function renderWalletBinding(operator, selectedPayment) {
       const { binding, proofAvailable, status, pillClass, pillText } = walletBindingStatus(operator, selectedPayment);
-      const agentDid = binding.agent_did || operator.wallet_bound_agent_did;
+      const agentDid = binding.agent_did || operator.agent_did || operator.wallet_bound_agent_did;
       const paymentAddress = binding.payment_address || selectedPayment?.address;
       return `
         <section class="wallet-section binding">
@@ -309,7 +309,7 @@
           ${walletSummaryRows([
             ["WATT", operator.watt_balance],
             ["Reward Policy", operator.reward_policy_version],
-            ["Wallet Agent DID", operator.wallet_bound_agent_did],
+            ["Wallet Agent DID", operator.agent_did || operator.wallet_bound_agent_did],
             ["Controller", operator.controller_id],
           ])}
         </section>

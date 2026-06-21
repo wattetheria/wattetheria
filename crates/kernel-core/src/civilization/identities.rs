@@ -9,6 +9,8 @@ use crate::identity::{
     build_scoped_public_id, fingerprint_from_did_key, verify_public_id_ownership,
 };
 
+const MAX_DISPLAY_NAME_CHARS: usize = 40;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ControllerKind {
@@ -83,6 +85,7 @@ impl PublicIdentityRegistry {
     /// When `agent_did` is provided, the `public_id` must be self-certifying:
     /// either a `did:key:` that matches, or a scoped slug ending with the
     /// correct fingerprint (e.g. `captain-aurora.a3f7b2c1d9e04f68`).
+    #[allow(clippy::needless_pass_by_value)]
     pub fn upsert(
         &mut self,
         public_id: &str,
@@ -90,6 +93,7 @@ impl PublicIdentityRegistry {
         agent_did: Option<String>,
         active: bool,
     ) -> Result<PublicIdentity> {
+        let display_name = normalize_display_name(&display_name)?;
         if let Some(ref did) = agent_did
             && !verify_public_id_ownership(public_id, did).context("verify public_id ownership")?
         {
@@ -120,14 +124,11 @@ impl PublicIdentityRegistry {
         public_id: &str,
         display_name: &str,
     ) -> Result<PublicIdentity> {
-        let display_name = display_name.trim();
-        if display_name.is_empty() {
-            bail!("display_name is required");
-        }
+        let display_name = normalize_display_name(display_name)?;
         let Some(identity) = self.identities.get_mut(public_id) else {
             bail!("public identity '{public_id}' not found");
         };
-        display_name.clone_into(&mut identity.display_name);
+        identity.display_name = display_name;
         identity.updated_at = Utc::now().timestamp();
         Ok(identity.clone())
     }
@@ -277,6 +278,20 @@ impl ControllerBindingRegistry {
     }
 }
 
+pub fn normalize_display_name(display_name: &str) -> Result<String> {
+    let display_name = display_name.trim();
+    if display_name.is_empty() {
+        bail!("display_name is required");
+    }
+    if display_name.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        bail!("display_name must be {MAX_DISPLAY_NAME_CHARS} characters or fewer");
+    }
+    if display_name.chars().any(char::is_control) {
+        bail!("display_name must not contain control characters");
+    }
+    Ok(display_name.to_string())
+}
+
 /// Derive a readable slug while keeping the fingerprinted `public_id` globally unique.
 fn default_public_slug(agent_did: &str) -> String {
     format!("agent-{}", did_suffix(agent_did, 12))
@@ -404,6 +419,39 @@ mod tests {
         assert_eq!(updated.active, original.active);
         assert_eq!(updated.created_at, original.created_at);
         assert!(updated.updated_at >= original.updated_at);
+    }
+
+    #[test]
+    fn update_display_name_accepts_unicode_symbols_and_trims() {
+        let mut registry = PublicIdentityRegistry::default();
+        registry
+            .upsert("any-slug", "Test".to_string(), None, true)
+            .unwrap();
+
+        let updated = registry
+            .update_display_name("any-slug", "  饺子 Agent ✨  ")
+            .unwrap();
+
+        assert_eq!(updated.display_name, "饺子 Agent ✨");
+    }
+
+    #[test]
+    fn update_display_name_rejects_control_characters_and_overlong_names() {
+        let mut registry = PublicIdentityRegistry::default();
+        registry
+            .upsert("any-slug", "Test".to_string(), None, true)
+            .unwrap();
+
+        assert!(
+            registry
+                .update_display_name("any-slug", "Bad\nName")
+                .is_err()
+        );
+        assert!(
+            registry
+                .update_display_name("any-slug", &"a".repeat(65))
+                .is_err()
+        );
     }
 
     #[test]

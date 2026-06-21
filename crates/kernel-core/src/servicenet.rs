@@ -7,6 +7,66 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const DEFAULT_TIMEOUT_SEC: u64 = 120;
+pub const MAX_SERVICENET_AGENT_NAME_CHARS: usize = 40;
+
+pub fn validate_servicenet_agent_name(name: &str) -> Result<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        bail!("agent card `name` must not be empty");
+    }
+    if trimmed.chars().count() > MAX_SERVICENET_AGENT_NAME_CHARS {
+        bail!("agent card `name` must be {MAX_SERVICENET_AGENT_NAME_CHARS} characters or less");
+    }
+    if trimmed.chars().any(char::is_control) {
+        bail!("agent card `name` must not contain control characters");
+    }
+    Ok(())
+}
+
+pub fn normalize_service_address(raw: &str) -> Result<Option<String>> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    validate_service_address(&normalized)?;
+    Ok(Some(normalized))
+}
+
+fn validate_service_address(service_address: &str) -> Result<()> {
+    if service_address.len() > 128 {
+        bail!("service_address must be 128 characters or less");
+    }
+    if service_address != service_address.to_ascii_lowercase() {
+        bail!("service_address must be lowercase");
+    }
+    let (local, namespace) = service_address
+        .split_once('@')
+        .ok_or_else(|| anyhow!("service_address must use local@namespace format"))?;
+    if namespace.contains('@') {
+        bail!("service_address must contain exactly one @");
+    }
+    validate_service_address_label(local, "local")?;
+    for segment in namespace.split('.') {
+        validate_service_address_label(segment, "namespace")?;
+    }
+    Ok(())
+}
+
+fn validate_service_address_label(label: &str, field: &str) -> Result<()> {
+    if label.is_empty() {
+        bail!("service_address {field} segment must not be empty");
+    }
+    if label.starts_with('-') || label.ends_with('-') {
+        bail!("service_address {field} segment must not start or end with -");
+    }
+    if !label
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        bail!("service_address {field} segment must contain only lowercase letters, digits, and -");
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -449,6 +509,36 @@ mod tests {
                 .and_then(|value| value.request.get("payment_account_ref"))
                 .and_then(Value::as_str),
             Some("payment-account-123")
+        );
+    }
+
+    #[test]
+    fn normalize_service_address_trims_and_lowercases() {
+        assert_eq!(
+            normalize_service_address("  Agent-Name@Wattetheria  ")
+                .unwrap()
+                .as_deref(),
+            Some("agent-name@wattetheria")
+        );
+        assert_eq!(normalize_service_address("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn normalize_service_address_rejects_invalid_labels() {
+        assert!(normalize_service_address("-bad@wattetheria").is_err());
+        assert!(normalize_service_address("bad@wat..etheria").is_err());
+        assert!(normalize_service_address("bad name@wattetheria").is_err());
+    }
+
+    #[test]
+    fn validate_servicenet_agent_name_rejects_unsafe_names() {
+        assert!(validate_servicenet_agent_name("Console Agent").is_ok());
+        assert!(validate_servicenet_agent_name("饺子 Agent").is_ok());
+        assert!(validate_servicenet_agent_name("   ").is_err());
+        assert!(validate_servicenet_agent_name("Bad\u{0007}Name").is_err());
+        assert!(
+            validate_servicenet_agent_name(&"名".repeat(MAX_SERVICENET_AGENT_NAME_CHARS + 1))
+                .is_err()
         );
     }
 }

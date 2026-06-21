@@ -45,6 +45,11 @@
         identityDisplayStatus("Display name is required.", true);
         return;
       }
+      const validationError = validateIdentityDisplayName(displayName);
+      if (validationError) {
+        identityDisplayStatus(validationError, true);
+        return;
+      }
       const payload = identityDisplayPayload(displayName);
       if (!payload.public_id) {
         identityDisplayStatus("Selected identity is missing public_id.", true);

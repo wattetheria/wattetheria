@@ -859,6 +859,7 @@ pub struct AgentPaymentsQuery {
     pub public_id: Option<String>,
     pub counterpart_public_id: Option<String>,
     pub display_name: Option<String>,
+    pub recipient_address: Option<String>,
     pub status: Option<wattetheria_kernel::payments::PaymentStatus>,
     pub role: Option<String>,
     pub rail: Option<String>,

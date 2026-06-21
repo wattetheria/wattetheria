@@ -189,7 +189,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     let app = app(state);
 
     let list_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/servicenet/agents").await;
-    assert_eq!(list_json["count"].as_u64(), Some(2));
+    assert_eq!(list_json["count"].as_u64(), Some(3));
     assert_eq!(
         list_json["items"][0]["agent_id"].as_str(),
         Some("agent-alpha")
@@ -602,6 +602,7 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
 fn console_agent_publish_body(
     agent_id: Option<&str>,
     provider_id: Option<&str>,
+    service_address: Option<&str>,
     version: &str,
     risk_level: &str,
     description: &str,
@@ -633,6 +634,9 @@ fn console_agent_publish_body(
     if let Some(provider_id) = provider_id {
         body["provider_id"] = json!(provider_id);
     }
+    if let Some(service_address) = service_address {
+        body["service_address"] = json!(service_address);
+    }
     body
 }
 
@@ -663,6 +667,10 @@ fn assert_published_console_agent(published_json: &Value, target_agent_id: &str,
     assert_eq!(
         published_json["items"][0]["agent_card"]["name"].as_str(),
         Some("Console Agent")
+    );
+    assert_eq!(
+        published_json["items"][0]["service_address"].as_str(),
+        Some("console@wattetheria")
     );
 }
 
@@ -766,6 +774,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     let mut publish_body = console_agent_publish_body(
         None,
         None,
+        Some("Console@Wattetheria"),
         "0.1.0",
         "low",
         "Published from the console",
@@ -785,6 +794,10 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     .await;
     assert_eq!(publish_json["status"].as_str(), Some("ok"));
     assert_eq!(publish_json["provider_id"].as_str(), Some("provider-ui"));
+    assert_eq!(
+        publish_json["service_address"].as_str(),
+        Some("console@wattetheria")
+    );
     assert_eq!(
         publish_json["provider_did"].as_str(),
         Some(state.agent_did.as_str())
@@ -815,6 +828,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         console_agent_publish_body(
             Some(agent_id),
             Some("provider-ui"),
+            Some("console@wattetheria"),
             "0.1.1",
             "medium",
             "Updated from the console",
@@ -834,6 +848,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         console_agent_publish_body(
             Some(agent_id),
             Some("provider-other"),
+            Some("console@wattetheria"),
             "0.1.2",
             "medium",
             "Rejected update",
@@ -868,6 +883,40 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         authed_get_json(app, &token, "/v1/wattetheria/servicenet/published-agents").await;
     assert_eq!(published_after_unpublish["count"].as_u64(), Some(0));
 
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn servicenet_publish_rejects_unsafe_agent_name() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+    let mut publish_body = console_agent_publish_body(
+        None,
+        None,
+        Some("unsafe-name@wattetheria"),
+        "0.1.0",
+        "low",
+        "Published from the console",
+        false,
+    );
+    publish_body["agent_card"]["name"] = json!("Bad\u{0007}Name");
+
+    let status = authed_post(
+        app,
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        publish_body,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     servicenet_server.abort();
 }
 

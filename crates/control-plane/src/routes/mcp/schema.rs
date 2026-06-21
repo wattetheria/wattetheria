@@ -54,60 +54,17 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
-        "list_agent_payments" => Some(tool_schema(
-            tool,
-            &[
-                string_field("public_id", "Local public identity filter."),
-                string_field(
-                    "counterpart_public_id",
-                    "Counterpart public identity filter.",
-                ),
-                string_field("display_name", "Counterpart agent display name filter."),
-                enum_field(
-                    "status",
-                    "Payment status filter.",
-                    &[
-                        "proposed",
-                        "authorized",
-                        "submitted",
-                        "settled",
-                        "rejected",
-                        "expired",
-                        "cancelled",
-                    ],
-                ),
-                string_field("role", "Payment role filter, such as sender or receiver."),
-                string_field("rail", "Settlement rail filter."),
-                integer_field("limit", "Maximum number of payment sessions to return."),
-            ],
-            &[],
-            false,
-        )),
+        "list_agent_payments" => Some(tool_schema(tool, &list_payment_fields(), &[], false)),
         "propose_agent_payment" => Some(tool_schema(
             tool,
+            &propose_payment_fields(),
             &[
-                string_field("counterpart_public_id", "Recipient public identity."),
-                string_field(
-                    "display_name",
-                    "Accepted friend display name. Use this instead of counterpart_public_id when the display name uniquely identifies the recipient.",
-                ),
-                string_field("agent_id", "ServiceNet agent ID."),
-                string_field(
-                    "amount",
-                    "Payment amount as a human unit string; x402 USDC and USDT amounts are converted to token base units internally.",
-                ),
-                string_field("currency", "Payment currency."),
-                string_field("rail", "Settlement rail."),
-                enum_field("layer", "Settlement layer.", &["web2", "web3"]),
-                string_field("network", "Settlement network."),
-                string_field("recipient_address", "Recipient settlement address."),
-                string_field("mission_id", "Related mission ID."),
-                string_field("task_id", "Related task ID."),
-                string_field("description", "Payment description."),
-                value_field("metadata", "Optional payment metadata."),
-                integer_field("expires_at", "Unix timestamp expiry."),
+                "target_kind",
+                "target_address",
+                "amount",
+                "currency",
+                "rail",
             ],
-            &["amount", "currency", "rail"],
             false,
         )),
         "authorize_agent_payment" => Some(tool_schema(
@@ -136,6 +93,66 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
         )),
         _ => None,
     }
+}
+
+fn payment_target_fields(target_kind_description: &'static str) -> [(&'static str, Value); 2] {
+    [
+        enum_field(
+            "target_kind",
+            target_kind_description,
+            &["network_agent", "service_agent", "payment_address"],
+        ),
+        string_field(
+            "target_address",
+            "Unique payment target address. Use a network public ID, ServiceNet address, or wallet address depending on target_kind.",
+        ),
+    ]
+}
+
+fn list_payment_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = vec![string_field("public_id", "Local public identity filter.")];
+    fields.extend(payment_target_fields(
+        "Payment target kind for target_address filtering.",
+    ));
+    fields.extend([
+        enum_field(
+            "status",
+            "Payment status filter.",
+            &[
+                "proposed",
+                "authorized",
+                "submitted",
+                "settled",
+                "rejected",
+                "expired",
+                "cancelled",
+            ],
+        ),
+        string_field("role", "Payment role filter, such as sender or receiver."),
+        string_field("rail", "Settlement rail filter."),
+        integer_field("limit", "Maximum number of payment sessions to return."),
+    ]);
+    fields
+}
+
+fn propose_payment_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = Vec::from(payment_target_fields("Payment target kind."));
+    fields.extend([
+        string_field(
+            "amount",
+            "Payment amount as a human unit string; x402 USDC and USDT amounts are converted to token base units internally.",
+        ),
+        string_field("currency", "Payment currency."),
+        string_field("rail", "Settlement rail."),
+        enum_field("layer", "Settlement layer.", &["web2", "web3"]),
+        string_field("network", "Settlement network."),
+        string_field("mission_id", "Related mission ID."),
+        string_field("task_id", "Related task ID."),
+        string_field("description", "Payment description."),
+        value_field("metadata", "Optional payment metadata."),
+        integer_field("expires_at", "Unix timestamp expiry."),
+    ]);
+    fields
 }
 
 fn topic_schema(tool: &AgentTool) -> Option<Value> {
@@ -793,15 +810,25 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
-        "get_servicenet_agent" => Some(empty_tool_schema(tool)),
-        "delete_servicenet_agent" => Some(tool_schema(
-            tool,
+        "get_servicenet_agent" => Some(servicenet_address_schema(
             &[string_field(
-                "reason",
-                "Optional reason for unpublishing the ServiceNet agent.",
+                "service_address",
+                "Unique ServiceNet service address, for example <name>@wattetheria.",
             )],
-            &["agent_id"],
-            false,
+            &["service_address"],
+        )),
+        "delete_servicenet_agent" => Some(servicenet_address_schema(
+            &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field(
+                    "reason",
+                    "Optional reason for unpublishing the ServiceNet agent.",
+                ),
+            ],
+            &["service_address"],
         )),
         "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => {
             Some(servicenet_invoke_schema())
@@ -812,15 +839,18 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             &["receipt_id"],
             false,
         )),
-        "get_servicenet_agent_task" => Some(tool_schema(
-            tool,
+        "get_servicenet_agent_task" => Some(servicenet_address_schema(
             &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field("task_id", "ServiceNet task ID."),
                 integer_field("history_length", "Task history length to retrieve."),
                 string_field("auth_token", "ServiceNet auth token."),
                 string_field("auth_context_id", "ServiceNet auth context UUID."),
             ],
-            &[],
-            false,
+            &["service_address", "task_id"],
         )),
         _ => None,
     }
@@ -829,10 +859,9 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
 fn servicenet_invoke_schema() -> Value {
     let mut properties = Map::new();
     for (name, schema) in [
-        string_field("agent_id", "ServiceNet agent ID."),
         string_field(
-            "agent_name",
-            "Exact public ServiceNet agent name to resolve when agent_id is not known.",
+            "service_address",
+            "Unique ServiceNet service address, for example <name>@wattetheria.",
         ),
         string_field("task_id", "ServiceNet task ID."),
         string_field("context_id", "ServiceNet context ID."),
@@ -855,11 +884,20 @@ fn servicenet_invoke_schema() -> Value {
     json!({
         "type": "object",
         "properties": properties,
-        "required": [],
-        "anyOf": [
-            {"required": ["agent_id"]},
-            {"required": ["agent_name"]}
-        ],
+        "required": ["service_address"],
+        "additionalProperties": false
+    })
+}
+
+fn servicenet_address_schema(fields: &[(&str, Value)], required: &[&str]) -> Value {
+    let mut properties = Map::new();
+    for (name, schema) in fields {
+        properties.insert((*name).to_string(), schema.clone());
+    }
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
         "additionalProperties": false
     })
 }

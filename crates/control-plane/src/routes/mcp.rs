@@ -22,7 +22,9 @@ use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
 };
-use wattetheria_kernel::servicenet::{ServiceNetClient, ServiceNetInvokeRequest};
+use wattetheria_kernel::servicenet::{
+    ServiceNetClient, ServiceNetInvokeRequest, normalize_service_address,
+};
 use wattetheria_kernel::swarm_bridge::SwarmPeerRelationshipView;
 use wattetheria_social::application::friend_request_service;
 use wattetheria_social::domain::friend_requests::{
@@ -272,7 +274,7 @@ async fn call_tool(
             return Err(response);
         }
     };
-    let result = response_to_tool_result(tool.name, response).await;
+    let result = response_to_tool_result(tool.name, &arguments, response).await;
     record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
     Ok(result)
 }
@@ -808,9 +810,11 @@ async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -
     let Some(client) = state.servicenet_client.as_deref() else {
         return tool_error(&json!({"error": "servicenet is not configured"}));
     };
-    let Some(agent_id) = required_string(arguments, "agent_id") else {
-        return tool_error(&json!({"error": "agent_id is required"}));
-    };
+    let (agent_id, service_address) =
+        match resolve_servicenet_agent_address(client, arguments).await {
+            Ok(resolved) => resolved,
+            Err(error) => return tool_error(&json!({"error": error})),
+        };
     let agent = match client.get_agent(&agent_id).await {
         Ok(item) => item,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
@@ -825,11 +829,9 @@ async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -
     };
     let health_by_agent = servicenet_records_by_agent_id(health);
     let trust_by_agent = servicenet_records_by_agent_id(trust);
-    tool_success(&servicenet_agent_detail_summary(
-        &agent,
-        &health_by_agent,
-        &trust_by_agent,
-    ))
+    let mut summary = servicenet_agent_detail_summary(&agent, &health_by_agent, &trust_by_agent);
+    insert_service_address(&mut summary, &service_address);
+    tool_success(&summary)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -846,10 +848,11 @@ async fn servicenet_invoke_agent_result(
     let Some(client) = state.servicenet_client.as_deref() else {
         return tool_error(&json!({"error": "servicenet is not configured"}));
     };
-    let (agent_id, agent) = match resolve_servicenet_invoke_agent(client, arguments).await {
-        Ok(resolved) => resolved,
-        Err(error) => return tool_error(&json!({"error": error})),
-    };
+    let (agent_id, service_address, agent) =
+        match resolve_servicenet_agent_by_service_address(client, arguments).await {
+            Ok(resolved) => resolved,
+            Err(error) => return tool_error(&json!({"error": error})),
+        };
     let mut body = arguments
         .get("body")
         .cloned()
@@ -860,6 +863,7 @@ async fn servicenet_invoke_agent_result(
     if let Some(object) = body.as_object_mut() {
         object.remove("agent_id");
         object.remove("agent_name");
+        object.remove("service_address");
     }
     let envelope = match servicenet_invoke_agent_envelope(state, &agent_id, &body).await {
         Ok(envelope) => envelope,
@@ -876,7 +880,7 @@ async fn servicenet_invoke_agent_result(
             .is_none_or(|value| value.trim().is_empty())
         && body.get("auth_context_id").is_none()
     {
-        return tool_success(&servicenet_auth_consent_payload(&agent_id, &agent));
+        return tool_success(&servicenet_auth_consent_payload(&service_address, &agent));
     }
     let request = match serde_json::from_value::<ServiceNetInvokeRequest>(body) {
         Ok(request) => request,
@@ -900,7 +904,8 @@ async fn servicenet_invoke_agent_result(
             {
                 return tool_error(&json!({"error": error.to_string()}));
             }
-            let payload = serde_json::to_value(response).unwrap_or(Value::Null);
+            let mut payload = serde_json::to_value(response).unwrap_or(Value::Null);
+            externalize_servicenet_agent_payload(&mut payload, &service_address);
             if matches!(mode, ServiceNetInvokeMode::Sync) {
                 Box::pin(
                     crate::routes::servicenet::notify_local_agent_of_third_party_result(
@@ -920,20 +925,40 @@ async fn servicenet_invoke_agent_result(
     }
 }
 
-async fn resolve_servicenet_invoke_agent(
+async fn resolve_servicenet_agent_address(
     client: &ServiceNetClient,
     arguments: &Value,
-) -> Result<(String, Value), String> {
-    if let Some(agent_id) = required_string(arguments, "agent_id") {
-        let agent = client
-            .get_agent(&agent_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        return Ok((agent_id, agent));
-    }
-    let Some(agent_name) = required_string(arguments, "agent_name") else {
-        return Err("agent_id or agent_name is required".to_owned());
+) -> Result<(String, String), String> {
+    let (agent_id, service_address, _) =
+        resolve_servicenet_agent_by_service_address(client, arguments).await?;
+    Ok((agent_id, service_address))
+}
+
+async fn resolve_servicenet_agent_by_service_address(
+    client: &ServiceNetClient,
+    arguments: &Value,
+) -> Result<(String, String, Value), String> {
+    let service_address = required_service_address(arguments)?;
+    let agent = find_servicenet_agent_by_service_address(client, &service_address).await?;
+    let agent_id = field_str(&agent, &["agent_id"])
+        .ok_or_else(|| format!("ServiceNet agent `{service_address}` has no internal agent_id"))?
+        .to_owned();
+    Ok((agent_id, service_address, agent))
+}
+
+fn required_service_address(arguments: &Value) -> Result<String, String> {
+    let Some(raw) = required_string(arguments, "service_address") else {
+        return Err("service_address is required".to_owned());
     };
+    normalize_service_address(&raw)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "service_address is required".to_owned())
+}
+
+async fn find_servicenet_agent_by_service_address(
+    client: &ServiceNetClient,
+    service_address: &str,
+) -> Result<Value, String> {
     let mut offset = 0;
     let mut matches = Vec::new();
     loop {
@@ -944,7 +969,7 @@ async fn resolve_servicenet_invoke_agent(
         let has_more = agents.has_more;
         let next_offset = agents.next_offset;
         matches.extend(agents.items.into_iter().filter(|agent| {
-            field_str(agent, &["agent_card", "name"]) == Some(agent_name.as_str())
+            servicenet_agent_service_address(agent).as_deref() == Some(service_address)
         }));
         let Some(next_offset) = next_offset else {
             break;
@@ -956,14 +981,9 @@ async fn resolve_servicenet_invoke_agent(
     }
     match matches.as_slice() {
         [] => Err(format!(
-            "ServiceNet agent name `{agent_name}` was not found"
+            "ServiceNet agent service_address `{service_address}` was not found"
         )),
-        [agent] => {
-            let agent_id = field_str(agent, &["agent_id"])
-                .ok_or_else(|| format!("ServiceNet agent name `{agent_name}` has no agent_id"))?
-                .to_owned();
-            Ok((agent_id, agent.clone()))
-        }
+        [agent] => Ok(agent.clone()),
         _ => {
             let agent_ids = matches
                 .iter()
@@ -971,9 +991,45 @@ async fn resolve_servicenet_invoke_agent(
                 .collect::<Vec<_>>()
                 .join(", ");
             Err(format!(
-                "ServiceNet agent name `{agent_name}` is ambiguous; use agent_id instead: {agent_ids}"
+                "ServiceNet service_address `{service_address}` matched multiple agents: {agent_ids}"
             ))
         }
+    }
+}
+
+fn servicenet_agent_service_address(agent: &Value) -> Option<String> {
+    field_str(agent, &["service_address"])
+        .or_else(|| {
+            value_at(agent, &["alsoKnownAs"])
+                .and_then(Value::as_array)
+                .and_then(|aliases| {
+                    aliases
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .find(|alias| alias.contains('@'))
+                })
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn insert_service_address(payload: &mut Value, service_address: &str) {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "service_address".to_owned(),
+            Value::String(service_address.to_owned()),
+        );
+    }
+}
+
+fn externalize_servicenet_agent_payload(payload: &mut Value, service_address: &str) {
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("agent_id");
+        object.insert(
+            "service_address".to_owned(),
+            Value::String(service_address.to_owned()),
+        );
     }
 }
 
@@ -996,9 +1052,58 @@ async fn servicenet_receipt_result(state: &ControlPlaneState, arguments: &Value)
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
     };
     match client.get_receipt(&receipt_id).await {
-        Ok(response) => tool_success(&response),
+        Ok(mut response) => {
+            externalize_servicenet_receipt(client, &mut response).await;
+            tool_success(&response)
+        }
         Err(error) => tool_error(&json!({"error": error.to_string()})),
     }
+}
+
+async fn externalize_servicenet_receipt(client: &ServiceNetClient, response: &mut Value) {
+    let Some(agent_id) = value_at(response, &["receipt", "agent_id"])
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
+    let Some(service_address) =
+        find_servicenet_service_address_by_agent_id(client, &agent_id).await
+    else {
+        return;
+    };
+    if let Some(receipt) = response.get_mut("receipt").and_then(Value::as_object_mut) {
+        receipt.remove("agent_id");
+        receipt.insert("service_address".to_owned(), Value::String(service_address));
+    }
+}
+
+async fn find_servicenet_service_address_by_agent_id(
+    client: &ServiceNetClient,
+    agent_id: &str,
+) -> Option<String> {
+    let mut offset = 0;
+    loop {
+        let agents = client
+            .list_agents(MAX_SERVICENET_AGENT_LIMIT, offset)
+            .await
+            .ok()?;
+        if let Some(service_address) = agents.items.iter().find_map(|agent| {
+            (field_str(agent, &["agent_id"]) == Some(agent_id))
+                .then(|| servicenet_agent_service_address(agent))
+                .flatten()
+        }) {
+            return Some(service_address);
+        }
+        let Some(next_offset) = agents.next_offset else {
+            break;
+        };
+        if !agents.has_more || next_offset <= offset {
+            break;
+        }
+        offset = next_offset;
+    }
+    None
 }
 
 fn servicenet_agent_requires_auth(agent: &Value) -> bool {
@@ -1033,11 +1138,11 @@ fn security_schemes_require_auth(agent_card: &Value) -> bool {
         })
 }
 
-fn servicenet_auth_consent_payload(agent_id: &str, agent: &Value) -> Value {
+fn servicenet_auth_consent_payload(service_address: &str, agent: &Value) -> Value {
     let agent_card = value_at(agent, &["agent_card"]).unwrap_or(&Value::Null);
     json!({
         "status": "auth_required",
-        "agent_id": agent_id,
+        "service_address": service_address,
         "authorizationUrl": oauth_flow_field(agent_card, "authorizationUrl").cloned().unwrap_or(Value::Null),
         "tokenUrl": oauth_flow_field(agent_card, "tokenUrl").cloned().unwrap_or(Value::Null),
         "refreshUrl": oauth_flow_field(agent_card, "refreshUrl").cloned().unwrap_or(Value::Null),
@@ -1138,7 +1243,7 @@ fn servicenet_agent_list_summary(
     let health = health_by_agent.get(agent_id);
     let trust = trust_by_agent.get(agent_id);
     json!({
-        "agent_id": value_at(agent, &["agent_id"]).cloned().unwrap_or(Value::Null),
+        "service_address": servicenet_agent_service_address(agent).map_or(Value::Null, Value::String),
         "name": value_at(agent, &["agent_card", "name"]).cloned().unwrap_or(Value::Null),
         "description": value_at(agent, &["agent_card", "description"]).cloned().unwrap_or(Value::Null),
         "status": servicenet_agent_status(health),
@@ -1928,6 +2033,21 @@ async fn tool_arguments_with_resolved_path_vars(
     arguments: &Value,
 ) -> Result<Value, String> {
     let mut arguments = arguments.clone();
+    normalize_mcp_payment_target_arguments(state, tool, &mut arguments).await?;
+    if matches!(
+        tool.name,
+        "delete_servicenet_agent" | "get_servicenet_agent_task"
+    ) && required_string(&arguments, "agent_id").is_none()
+    {
+        let Some(client) = state.servicenet_client.as_deref() else {
+            return Err("servicenet is not configured".to_string());
+        };
+        let (agent_id, _) = resolve_servicenet_agent_address(client, &arguments).await?;
+        let Some(object) = arguments.as_object_mut() else {
+            return Err("tool arguments must be a JSON object".to_string());
+        };
+        object.insert("agent_id".to_string(), Value::String(agent_id));
+    }
     if matches!(
         tool.name,
         "get_friend_request" | "accept_friend_request" | "reject_friend_request"
@@ -1948,6 +2068,66 @@ async fn tool_arguments_with_resolved_path_vars(
         object.insert("request_id".to_string(), Value::String(request_id));
     }
     Ok(arguments)
+}
+
+async fn normalize_mcp_payment_target_arguments(
+    state: &ControlPlaneState,
+    tool: &AgentTool,
+    arguments: &mut Value,
+) -> Result<(), String> {
+    if !matches!(tool.name, "list_agent_payments" | "propose_agent_payment") {
+        return Ok(());
+    }
+    let Some(target_address) = required_string(arguments, "target_address") else {
+        if tool.name == "propose_agent_payment" {
+            return Err("target_address is required".to_string());
+        }
+        return Ok(());
+    };
+    let Some(target_kind) = required_string(arguments, "target_kind") else {
+        return Err("target_kind is required when target_address is provided".to_string());
+    };
+    let Some(object) = arguments.as_object_mut() else {
+        return Err("tool arguments must be a JSON object".to_string());
+    };
+    object.remove("target_kind");
+    object.remove("target_address");
+    match target_kind.as_str() {
+        "network_agent" => {
+            object.insert(
+                "counterpart_public_id".to_string(),
+                Value::String(target_address),
+            );
+        }
+        "service_agent" => {
+            let Some(client) = state.servicenet_client.as_deref() else {
+                return Err("servicenet is not configured".to_string());
+            };
+            let (agent_id, _) = resolve_servicenet_agent_address(
+                client,
+                &json!({"service_address": target_address}),
+            )
+            .await?;
+            let field = if tool.name == "list_agent_payments" {
+                "counterpart_public_id"
+            } else {
+                "agent_id"
+            };
+            object.insert(field.to_string(), Value::String(agent_id));
+        }
+        "payment_address" => {
+            object.insert(
+                "recipient_address".to_string(),
+                Value::String(target_address),
+            );
+        }
+        _ => {
+            return Err(
+                "target_kind must be network_agent, service_agent, or payment_address".to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn resolve_friend_request_id_by_display_name(
@@ -2087,7 +2267,7 @@ fn relationship_view_agent_display_name(view: &SwarmPeerRelationshipView) -> Opt
         .map(ToOwned::to_owned)
 }
 
-async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
+async fn response_to_tool_result(tool_name: &str, arguments: &Value, response: Response) -> Value {
     let status = response.status();
     let body = response.into_body();
     let bytes = match to_bytes(body, LOOPBACK_BODY_LIMIT).await {
@@ -2100,7 +2280,7 @@ async fn response_to_tool_result(tool_name: &str, response: Response) -> Value {
         serde_json::from_slice(&bytes)
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
     };
-    let payload = present_tool_response_payload(tool_name, payload);
+    let payload = present_tool_response_payload(tool_name, arguments, payload);
     let structured_content = structured_content_payload(&payload);
     let text = serde_json::to_string_pretty(&structured_content)
         .unwrap_or_else(|_| structured_content.to_string());
@@ -2186,12 +2366,31 @@ fn mcp_tool(tool: &AgentTool, available: bool) -> McpTool {
             "wattetheria": {
                 "toolName": tool.name,
                 "method": tool.method.as_str(),
-                "path": tool.path,
+                "path": mcp_tool_display_path(tool),
                 "available": available,
                 "readOnly": read_only,
                 "source": "wattetheria.mcp.tools.v1"
             }
         }),
+    }
+}
+
+fn mcp_tool_display_path(tool: &AgentTool) -> &'static str {
+    match tool.name {
+        "get_servicenet_agent" => "/v1/wattetheria/servicenet/agents/{service_address}",
+        "delete_servicenet_agent" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/unpublish"
+        }
+        "invoke_servicenet_agent_sync" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/invoke"
+        }
+        "invoke_servicenet_agent_async" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/invoke-async"
+        }
+        "get_servicenet_agent_task" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/get"
+        }
+        _ => tool.path,
     }
 }
 
@@ -2311,9 +2510,21 @@ fn normalize_mcp_payment_request_amount(body: &mut Value) -> Result<(), String> 
     Ok(())
 }
 
-fn present_tool_response_payload(tool_name: &str, mut payload: Value) -> Value {
+fn present_tool_response_payload(tool_name: &str, arguments: &Value, mut payload: Value) -> Value {
     if is_agent_payment_tool(tool_name) {
         present_payment_amounts(&mut payload, None);
+    }
+    if matches!(
+        tool_name,
+        "delete_servicenet_agent" | "get_servicenet_agent_task"
+    ) && let Some(service_address) = required_string(arguments, "service_address")
+    {
+        externalize_servicenet_agent_payload(&mut payload, &service_address);
+        if tool_name == "delete_servicenet_agent"
+            && let Some(unpublished) = payload.get_mut("unpublished")
+        {
+            externalize_servicenet_agent_payload(unpublished, &service_address);
+        }
     }
     payload
 }

@@ -348,6 +348,12 @@ pub(crate) async fn list_agent_payments(
                 return payment.sender_public_id == counterpart_public_id
                     || payment.recipient_public_id == counterpart_public_id;
             }
+            if let Some(recipient_address) = query.recipient_address.as_deref() {
+                return payment
+                    .recipient_address
+                    .as_deref()
+                    .is_some_and(|address| address.eq_ignore_ascii_case(recipient_address));
+            }
             true
         })
         .cloned()
@@ -445,6 +451,8 @@ async fn resolve_payment_proposal_target(
         trimmed_optional(body.counterpart_public_id.as_deref()).map(ToOwned::to_owned);
     let display_name = trimmed_optional(body.display_name.as_deref()).map(ToOwned::to_owned);
     let agent_id = trimmed_optional(body.agent_id.as_deref()).map(ToOwned::to_owned);
+    let recipient_address =
+        trimmed_optional(body.recipient_address.as_deref()).map(ToOwned::to_owned);
     let target_count = [
         counterpart_public_id.is_some(),
         display_name.is_some(),
@@ -491,12 +499,22 @@ async fn resolve_payment_proposal_target(
                 social_counterpart: Some(counterpart),
             })
         }
-        (None, None, Some(agent_id)) => {
-            resolve_servicenet_payment_target(state, agent_id, body).await
-        }
-        (None, None, None) => Err(
-            "display_name, counterpart_public_id, or agent_id is required for payment target"
-                .to_string(),
+        (None, None, Some(agent_id)) => resolve_servicenet_payment_target(state, agent_id, body).await,
+        (None, None, None) => recipient_address.map_or_else(
+            || {
+                Err(
+                    "display_name, counterpart_public_id, agent_id, or recipient_address is required for payment target"
+                        .to_string(),
+                )
+            },
+            |recipient_address| {
+                Ok(PaymentProposalTarget {
+                    recipient_public_id: recipient_address.clone(),
+                    recipient_did: recipient_address.clone(),
+                    remote_node_id: format!("payment:{recipient_address}"),
+                    social_counterpart: None,
+                })
+            },
         ),
         _ => unreachable!("payment target count already validated"),
     }
@@ -755,11 +773,21 @@ async fn dispatch_payment_proposal_message(
     if let Some(counterpart) = target.social_counterpart.as_ref() {
         return send_payment_message(state, counterpart, message).await;
     }
-    Ok(json!({
-        "ok": true,
-        "mode": "servicenet",
-        "agent_id": target.recipient_did.clone(),
-    }))
+    if let Some(agent_id) = target.remote_node_id.strip_prefix("servicenet:") {
+        return Ok(json!({
+            "ok": true,
+            "mode": "servicenet",
+            "agent_id": agent_id,
+        }));
+    }
+    if let Some(address) = target.remote_node_id.strip_prefix("payment:") {
+        return Ok(json!({
+            "ok": true,
+            "mode": "payment_address",
+            "recipient_address": address,
+        }));
+    }
+    Ok(json!({"ok": true, "mode": "unknown"}))
 }
 
 fn append_payment_proposed_event(
