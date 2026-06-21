@@ -1252,33 +1252,25 @@ async fn agent_action_commit_requires_local_hive_subscription_for_topic_reply() 
 }
 
 #[tokio::test]
-async fn agent_action_commit_replays_mcp_topic_reply_execution() {
+async fn agent_action_commit_skips_duplicate_topic_reply_by_reply_to_message_id() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
-    let (_dir, app, token, _, state) =
-        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
-    state
-        .local_db
-        .append_agent_action_commit(&wattetheria_kernel::local_db::AgentActionCommitLogEntry {
-            commit_id: "commit-mcp-topic-reply".to_string(),
-            event_id: "evt-hive-topic-replayed".to_string(),
-            decision_id: "mcp:post_hive_message".to_string(),
-            action_type: "hive.message.reply".to_string(),
-            domain: "hive".to_string(),
-            target_id: Some("local:test@crew.chat@group:crew-7".to_string()),
-            expected_state: None,
-            result_state: None,
-            request_json: "{}".to_string(),
-            result_json: "{\"ok\":true,\"source\":\"mcp_tool\"}".to_string(),
-            status: "accepted".to_string(),
-            actor_public_id: None,
-            actor_agent_did: Some(state.agent_did.clone()),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-        })
-        .expect("append mcp execution");
+    let (_dir, app, token, _, _state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    bridge.messages.lock().await.push(SwarmTopicMessageView {
+        message_id: "msg-existing-reply".to_string(),
+        network_id: "local:test".to_string(),
+        feed_key: "crew.chat".to_string(),
+        scope_hint: "group:crew-7".to_string(),
+        author_node_id: identity.agent_did.clone(),
+        agent_envelope: None,
+        content: json!({"text": "already replied through MCP"}),
+        reply_to_message_id: Some("msg-remote-1".to_string()),
+        created_at: 1,
+    });
 
     let committed = authed_post_json_with_headers(
         app.clone(),
@@ -1315,8 +1307,8 @@ async fn agent_action_commit_replays_mcp_topic_reply_execution() {
     .await;
 
     assert_eq!(committed["ok"].as_bool(), Some(true));
-    assert_eq!(committed["source"].as_str(), Some("mcp_tool"));
-    assert!(bridge.messages.lock().await.is_empty());
+    assert_eq!(committed["source"].as_str(), Some("topic_reply_dedupe"));
+    assert_eq!(bridge.messages.lock().await.len(), 1);
 }
 
 #[tokio::test]
@@ -1575,6 +1567,10 @@ async fn agent_action_commit_routes_private_topic_reply_through_signed_dm() {
         dm_commands[0].agent_envelope.message["target_public_id"].as_str(),
         Some(remote_public_id.as_str())
     );
+    assert_eq!(
+        dm_commands[0].agent_envelope.message["reply_to_message_id"].as_str(),
+        Some("remote-msg-1")
+    );
     assert_eq!(dm_commands[0].content.as_str(), Some("auto signed reply"));
     assert_envelope_signature_valid(&dm_commands[0].agent_envelope, &state.identity.public_key);
     let thread_id = dm_commands[0].agent_envelope.message["thread_id"]
@@ -1591,6 +1587,69 @@ async fn agent_action_commit_routes_private_topic_reply_through_signed_dm() {
         messages[0].direction,
         wattetheria_social::domain::messages::MessageDirection::Outbound
     );
+
+    let deduped = authed_post_json_with_headers(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-topic-dm-commit-2",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": remote_node_id,
+                "agent_envelope": {
+                    "protocol": "google_a2a",
+                    "source_agent_id": remote_identity.agent_did,
+                    "target_agent_id": identity.agent_did,
+                    "source_node_id": "12D3KooRemotePeer",
+                    "capability": "social.dm.send",
+                    "message": {
+                        "source_public_id": remote_public_id,
+                        "target_public_id": local_public_id,
+                        "thread_id": "dm:test-thread",
+                        "message_id": "remote-msg-1",
+                        "content": "hello"
+                    }
+                },
+                "payload": {
+                    "network_id": "mainnet:watt-etheria",
+                    "feed_key": "wattswarm.dm",
+                    "scope_hint": "group:dm-test-thread",
+                    "message_id": "topic-msg-2",
+                    "topic_content": {
+                        "kind": "direct_message"
+                    }
+                },
+                "requires_commit": false
+            },
+            "decision": {
+                "decision_id": "dec-topic-dm-2",
+                "action": "reply",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "content": "auto signed reply"
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-topic-dm-commit-2"),
+            ("x-agent-decision-id", "dec-topic-dm-2"),
+        ],
+    )
+    .await;
+
+    assert_eq!(deduped["source"].as_str(), Some("agent_dm_reply_dedupe"));
+    assert_eq!(
+        deduped["reply_to_message_id"].as_str(),
+        Some("remote-msg-1")
+    );
+    let dm_commands = bridge.dm_commands.lock().await;
+    assert_eq!(dm_commands.len(), 1);
+    drop(dm_commands);
+    let messages = message_service::list_thread_messages(&*state.social_store, &thread_id)
+        .expect("list persisted dm messages after dedupe");
+    assert_eq!(messages.len(), 1);
 }
 
 #[tokio::test]

@@ -84,6 +84,7 @@ struct FinalizeDmArgs {
     message_id: String,
     request_counterpart_public_id: String,
     content: Value,
+    reply_to_message_id: Option<String>,
     agent_envelope_json: Value,
     agent_signature: Option<String>,
     response_json: Value,
@@ -266,6 +267,7 @@ async fn finalize_agent_dm_message(
             request_json: &json!({
                 "counterpart_public_id": args.request_counterpart_public_id,
                 "content": args.content,
+                "reply_to_message_id": args.reply_to_message_id,
             }),
             response_json: &args.response_json,
         },
@@ -2417,18 +2419,129 @@ fn dm_thread_id_for_counterpart(
         )
 }
 
+fn normalized_reply_to_message_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn dm_message_reply_to_message_id(message: &DirectMessage) -> Option<&str> {
+    message
+        .agent_envelope_json
+        .as_ref()
+        .and_then(|envelope| {
+            envelope
+                .pointer("/message/reply_to_message_id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            message.agent_envelope_json.as_ref().and_then(|envelope| {
+                envelope
+                    .pointer("/message_json/reply_to_message_id")
+                    .and_then(Value::as_str)
+            })
+        })
+        .or_else(|| {
+            message
+                .content_json
+                .get("reply_to_message_id")
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn outbound_dm_reply_already_sent(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    counterpart_public_id: &str,
+    thread_id: &str,
+    reply_to_message_id: Option<&str>,
+) -> anyhow::Result<Option<DirectMessage>> {
+    let Some(reply_to_message_id) = normalized_reply_to_message_id(reply_to_message_id) else {
+        return Ok(None);
+    };
+    let messages = message_service::list_thread_messages(&*state.social_store, thread_id)
+        .map_err(anyhow::Error::msg)?;
+    Ok(messages.into_iter().find(|message| {
+        message.direction == MessageDirection::Outbound
+            && message.local_public_id == local_public_id
+            && message.remote_public_id == counterpart_public_id
+            && dm_message_reply_to_message_id(message) == Some(reply_to_message_id.as_str())
+    }))
+}
+
+#[derive(Clone, Copy)]
+struct DmReplyDedupeResponseArgs<'a> {
+    local_public_id: &'a str,
+    counterpart_public_id: &'a str,
+    request_counterpart_public_id: &'a str,
+    thread_id: &'a str,
+    content: &'a Value,
+    reply_to_message_id: Option<&'a str>,
+}
+
+fn outbound_dm_reply_dedupe_response(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    args: DmReplyDedupeResponseArgs<'_>,
+) -> anyhow::Result<Option<Response>> {
+    let Some(message) = outbound_dm_reply_already_sent(
+        state,
+        args.local_public_id,
+        args.counterpart_public_id,
+        args.thread_id,
+        args.reply_to_message_id,
+    )?
+    else {
+        return Ok(None);
+    };
+    let reply_to_message_id = normalized_reply_to_message_id(args.reply_to_message_id);
+    let response_json = json!({
+        "ok": true,
+        "source": "agent_dm_reply_dedupe",
+        "message_id": message.message_id,
+        "thread_id": args.thread_id,
+        "reply_to_message_id": reply_to_message_id.clone(),
+    });
+    append_commit_response(
+        state,
+        headers,
+        CommitResponseArgs {
+            action_type: "social.agent_dm_send",
+            target_id: Some(args.counterpart_public_id.to_owned()),
+            actor_public_id: Some(args.local_public_id.to_owned()),
+            request_json: &json!({
+                "counterpart_public_id": args.request_counterpart_public_id,
+                "content": args.content,
+                "reply_to_message_id": reply_to_message_id,
+            }),
+            response_json: &response_json,
+        },
+    )?;
+    Ok(Some(
+        (StatusCode::ACCEPTED, Json(response_json)).into_response(),
+    ))
+}
+
 fn build_outbound_dm_message(
     local_public_id: &str,
     counterpart_public_id: &str,
     thread_id: &str,
     content: &Value,
+    reply_to_message_id: Option<&str>,
     now: i64,
 ) -> (String, Value) {
     let message_id = Uuid::new_v4().to_string();
+    let mut base_message = json!({
+        "content": content.clone(),
+    });
+    if let Some(reply_to_message_id) = normalized_reply_to_message_id(reply_to_message_id) {
+        base_message["reply_to_message_id"] = Value::String(reply_to_message_id);
+    }
     let message = with_social_defaults(
-        json!({
-            "content": content.clone(),
-        }),
+        base_message,
         [
             (
                 "source_public_id",
@@ -3464,29 +3577,41 @@ async fn handle_send_agent_dm_message(
     body: AgentDmSendBody,
     auth: String,
 ) -> Response {
+    let (local, dm_counterpart_public_id, counterpart) =
+        match resolve_agent_dm_send_context(&state, &body).await {
+            Ok(context) => context,
+            Err(response) => return response,
+        };
     let SocialLocalContext {
         public_id: local_public_id,
         agent_id: local_agent_id,
         display_name: local_display_name,
-    } = resolve_social_local_context(&state, body.public_id.as_deref()).await;
-    let dm_counterpart_public_id =
-        match resolve_dm_counterpart_public_id(&state, &local_public_id, &body).await {
-            Ok(counterpart_public_id) => counterpart_public_id,
-            Err(error) => {
-                return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-            }
-        };
+    } = local;
     let SocialCounterpartTarget {
         counterpart_public_id,
         remote_node,
         target_agent,
-    } = match resolve_dm_counterpart_target(&state, &dm_counterpart_public_id).await {
-        Ok(counterpart) => counterpart,
-        Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
-        }
-    };
+    } = counterpart;
     let now = Utc::now().timestamp();
+    let content = body.content.clone();
+    let reply_to_message_id = normalized_reply_to_message_id(body.reply_to_message_id.as_deref());
+    let thread_id = dm_thread_id_for_counterpart(&state, &local_public_id, &counterpart_public_id);
+    match outbound_dm_reply_dedupe_response(
+        &state,
+        &headers,
+        DmReplyDedupeResponseArgs {
+            local_public_id: &local_public_id,
+            counterpart_public_id: &counterpart_public_id,
+            request_counterpart_public_id: &dm_counterpart_public_id,
+            thread_id: &thread_id,
+            content: &content,
+            reply_to_message_id: reply_to_message_id.as_deref(),
+        },
+    ) {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(error) => return internal_error(&error),
+    }
     match ensure_outbound_dm_allowed(
         &state,
         &local_public_id,
@@ -3498,13 +3623,12 @@ async fn handle_send_agent_dm_message(
         Ok(None) => {}
         Err(error) => return internal_error(&error),
     }
-    let content = body.content.clone();
-    let thread_id = dm_thread_id_for_counterpart(&state, &local_public_id, &counterpart_public_id);
     let (message_id, message) = build_outbound_dm_message(
         &local_public_id,
         &counterpart_public_id,
         &thread_id,
         &content,
+        reply_to_message_id.as_deref(),
         now,
     );
     let (response, agent_envelope_json, agent_signature) = match send_signed_direct_message_command(
@@ -3538,10 +3662,29 @@ async fn handle_send_agent_dm_message(
             message_id,
             request_counterpart_public_id: dm_counterpart_public_id,
             content,
+            reply_to_message_id,
             agent_envelope_json,
             agent_signature,
             response_json: response,
         },
     )
     .await
+}
+
+async fn resolve_agent_dm_send_context(
+    state: &ControlPlaneState,
+    body: &AgentDmSendBody,
+) -> Result<(SocialLocalContext, String, SocialCounterpartTarget), Response> {
+    let local = resolve_social_local_context(state, body.public_id.as_deref()).await;
+    let dm_counterpart_public_id = resolve_dm_counterpart_public_id(state, &local.public_id, body)
+        .await
+        .map_err(|error| {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+        })?;
+    let counterpart = resolve_dm_counterpart_target(state, &dm_counterpart_public_id)
+        .await
+        .map_err(|error| {
+            (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
+        })?;
+    Ok((local, dm_counterpart_public_id, counterpart))
 }

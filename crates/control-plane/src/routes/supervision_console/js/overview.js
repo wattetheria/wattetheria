@@ -213,7 +213,6 @@
       const status = nearbyStatus(row);
       const fullId = row.node_id || "";
       const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
-      const publicKey = node.public_key || metadata.public_key || at(node, ["metadata", "public_key"]);
       const agentId = sourceAgentCard.agent_id || metadata.agent_id || node.agent_id;
       const publicAddress = agentPublicAddress(
         sourceAgentCard.public_id,
@@ -226,8 +225,6 @@
         at(node, ["discovery", "public_id"])
       );
       const publicAddressLabel = agentPublicAddressLabel(publicAddress);
-      const sourceCardHash = sourceAgentCard.card_hash;
-      const sourceCardIssued = sourceAgentCard.issued_at ? formatTime(sourceAgentCard.issued_at) : "";
       const lastSeen = nearbyLastSeenLabel(row.last_seen_age_ms) || "-";
       const updatedAt = row.updated_at ? formatTime(row.updated_at) : "-";
       const connection = row.connected ? "connected" : (row.stale ? "stale" : "not connected");
@@ -246,12 +243,6 @@
             { label: "Agent", value: compactId(agentId, 52) },
             { label: "Node", value: compactId(fullId, 52) },
             { label: "Endpoint", value: compactId(endpoint, 52) },
-            { label: "Public Key", value: compactId(publicKey, 52) },
-          ] },
-          { title: "Agent Card", fields: [
-            { label: "Name", value: displayName },
-            { label: "Hash", value: compactId(sourceCardHash, 52) },
-            { label: "Issued", value: sourceCardIssued },
           ] },
           { title: "Network", fields: [
             { label: "Connection", value: connection },

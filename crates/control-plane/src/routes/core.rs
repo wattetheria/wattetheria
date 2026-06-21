@@ -28,7 +28,7 @@ use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::MissionStatus;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmRelationshipAction, SwarmTaskClaimDecisionCommand,
-    SwarmTaskCompletionDecisionCommand,
+    SwarmTaskCompletionDecisionCommand, SwarmTopicMessageView,
 };
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
@@ -80,6 +80,35 @@ fn agent_action_execution_matches_decision(request_json: &str, action: &str) -> 
         .is_none_or(|recorded| recorded == action)
 }
 
+fn topic_message_authored_by_local_agent(message: &SwarmTopicMessageView, agent_did: &str) -> bool {
+    message.author_node_id == agent_did
+        || message
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.source_agent_id.as_deref())
+            .is_some_and(|source_agent_id| source_agent_id == agent_did)
+}
+
+async fn topic_reply_already_posted(
+    state: &ControlPlaneState,
+    network_id: Option<&str>,
+    feed_key: &str,
+    scope_hint: &str,
+    reply_to_message_id: Option<&str>,
+) -> anyhow::Result<bool> {
+    let Some(reply_to_message_id) = reply_to_message_id else {
+        return Ok(false);
+    };
+    let messages = state
+        .swarm_bridge
+        .list_topic_messages(network_id, feed_key, scope_hint, 200, None, None)
+        .await?;
+    Ok(messages.iter().any(|message| {
+        message.reply_to_message_id.as_deref() == Some(reply_to_message_id)
+            && topic_message_authored_by_local_agent(message, &state.agent_did)
+    }))
+}
+
 fn append_agent_action_execution(
     state: &ControlPlaneState,
     headers: &HeaderMap,
@@ -116,6 +145,53 @@ struct AgentActionExecutionArgs<'a> {
     actor_agent_did: Option<String>,
     request_json: &'a Value,
     response_json: &'a Value,
+}
+
+fn append_topic_reply_execution(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    requested_hive_id: Option<String>,
+    request_json: &Value,
+    response_json: &Value,
+) -> anyhow::Result<()> {
+    append_agent_action_execution(
+        state,
+        headers,
+        AgentActionExecutionArgs {
+            action_type: "hive.message.reply",
+            domain: agent_action_execution_domain("hive.message.reply"),
+            target_id: requested_hive_id,
+            actor_public_id: None,
+            actor_agent_did: Some(state.agent_did.clone()),
+            request_json,
+            response_json,
+        },
+    )
+}
+
+async fn commit_topic_direct_message_reply(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+    content: Value,
+) -> Response {
+    let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
+        return bad_request("topic dm reply missing source_public_id");
+    };
+    let reply_to_message_id = event_message_id(&body);
+    crate::routes::civilization::send_agent_dm_message(
+        State(state),
+        commit_headers,
+        Json(AgentDmSendBody {
+            public_id: event_message_public_id(&body, "target_public_id"),
+            counterpart_public_id: Some(counterpart_public_id),
+            display_name: None,
+            content,
+            reply_to_message_id,
+            extensions: body.decision.payload.get("extensions").cloned(),
+        }),
+    )
+    .await
 }
 
 fn agent_action_execution_type(
@@ -216,6 +292,46 @@ fn event_message_public_id(
                 .event
                 .payload
                 .pointer(&format!("/topic_content/agent_envelope/message/{key}"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn event_message_id(event: &crate::state::AgentActionCommitBody) -> Option<String> {
+    event
+        .decision
+        .payload
+        .get("reply_to_message_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            event
+                .event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.message.get("message_id"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer("/agent_envelope/message/message_id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .pointer("/topic_content/agent_envelope/message/message_id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            event
+                .event
+                .payload
+                .get("message_id")
                 .and_then(Value::as_str)
         })
         .map(str::trim)
@@ -651,21 +767,7 @@ async fn commit_topic_reply(
         return bad_request("topic reply requires content");
     };
     if topic_reply_is_direct_message(&body.event) {
-        let Some(counterpart_public_id) = event_message_public_id(&body, "source_public_id") else {
-            return bad_request("topic dm reply missing source_public_id");
-        };
-        return crate::routes::civilization::send_agent_dm_message(
-            State(state),
-            commit_headers,
-            Json(AgentDmSendBody {
-                public_id: event_message_public_id(&body, "target_public_id"),
-                counterpart_public_id: Some(counterpart_public_id),
-                display_name: None,
-                content,
-                extensions: body.decision.payload.get("extensions").cloned(),
-            }),
-        )
-        .await;
+        return commit_topic_direct_message_reply(state, commit_headers, body, content).await;
     }
     let Some(feed_key) = required_payload_string(&body.event.payload, "/feed_key") else {
         return bad_request("missing feed_key");
@@ -674,6 +776,21 @@ async fn commit_topic_reply(
         return bad_request("missing scope_hint");
     };
     let requested_hive_id = topic_reply_hive_id(&body);
+    let network_id = payload_string(&body.decision.payload, "/network_id")
+        .or_else(|| payload_string(&body.event.payload, "/network_id"));
+    let reply_to_message_id = body
+        .decision
+        .payload
+        .get("reply_to_message_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            body.event
+                .payload
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        });
     let request_json = json!({
         "event_id": body.event.event_id.clone(),
         "event_type": body.event.event_type.clone(),
@@ -682,48 +799,60 @@ async fn commit_topic_reply(
         "feed_key": feed_key.clone(),
         "scope_hint": scope_hint.clone(),
         "hive_id": requested_hive_id.clone(),
+        "reply_to_message_id": reply_to_message_id.clone(),
     });
+    match topic_reply_already_posted(
+        &state,
+        network_id.as_deref(),
+        &feed_key,
+        &scope_hint,
+        reply_to_message_id.as_deref(),
+    )
+    .await
+    {
+        Ok(true) => {
+            let response_json = json!({
+                "ok": true,
+                "source": "topic_reply_dedupe",
+                "action_type": "hive.message.reply",
+                "reply_to_message_id": reply_to_message_id,
+            });
+            if let Err(error) = append_topic_reply_execution(
+                &state,
+                &commit_headers,
+                requested_hive_id,
+                &request_json,
+                &response_json,
+            ) {
+                return internal_error(&error);
+            }
+            return Json(response_json).into_response();
+        }
+        Ok(false) => {}
+        Err(error) => return internal_error(&error),
+    }
     let response = crate::routes::topics::post_hive_topic_message(
         state.clone(),
         commit_headers.clone(),
         requested_hive_id.clone(),
         HiveMessageBody {
             public_id: payload_string(&body.decision.payload, "/public_id"),
-            network_id: payload_string(&body.decision.payload, "/network_id")
-                .or_else(|| payload_string(&body.event.payload, "/network_id")),
+            network_id,
             feed_key: Some(feed_key),
             scope_hint: Some(scope_hint),
             content,
-            reply_to_message_id: body
-                .decision
-                .payload
-                .get("reply_to_message_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    body.event
-                        .payload
-                        .get("message_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                }),
+            reply_to_message_id,
         },
     )
     .await;
     if response.status().is_success() {
         let response_json = json!({"ok": true});
-        if let Err(error) = append_agent_action_execution(
+        if let Err(error) = append_topic_reply_execution(
             &state,
             &commit_headers,
-            AgentActionExecutionArgs {
-                action_type: "hive.message.reply",
-                domain: agent_action_execution_domain("hive.message.reply"),
-                target_id: requested_hive_id,
-                actor_public_id: None,
-                actor_agent_did: Some(state.agent_did.clone()),
-                request_json: &request_json,
-                response_json: &response_json,
-            },
+            requested_hive_id,
+            &request_json,
+            &response_json,
         ) {
             return internal_error(&error);
         }

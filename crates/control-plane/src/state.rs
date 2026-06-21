@@ -841,6 +841,8 @@ pub struct AgentDmSendBody {
     pub display_name: Option<String>,
     pub content: Value,
     #[serde(default)]
+    pub reply_to_message_id: Option<String>,
+    #[serde(default)]
     pub extensions: Option<Value>,
 }
 

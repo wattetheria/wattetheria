@@ -1,4 +1,3 @@
-use axum::http::Method;
 use serde_json::{Map, Value, json};
 
 use super::{AgentTool, path_vars};
@@ -693,6 +692,10 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
                 string_field("display_name", "Preferred accepted friend display name."),
                 string_field("counterpart_public_id", "Accepted friend public identity."),
                 value_field("content", "Direct message content payload."),
+                string_field(
+                    "reply_to_message_id",
+                    "Original direct message ID this message replies to; include it when responding to an agent event.",
+                ),
                 value_field("extensions", "Optional signed envelope extension payload."),
             ],
             &["content"],
@@ -724,11 +727,6 @@ fn friend_request_lookup_schema(tool: &AgentTool, fields: &[(&str, Value)]) -> V
     let mut properties = Map::new();
     for (name, schema) in fields {
         properties.insert((*name).to_string(), schema.clone());
-    }
-    if tool.method != Method::GET {
-        for (name, schema) in agent_event_execution_fields() {
-            properties.insert(name.to_string(), schema);
-        }
     }
     json!({
         "type": "object",
@@ -968,23 +966,6 @@ fn tool_schema(
 
 fn string_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) {
     (name, json!({"type": "string", "description": description}))
-}
-
-fn agent_event_execution_fields() -> Vec<(&'static str, Value)> {
-    vec![
-        string_field(
-            "agent_event_id",
-            "Optional Wattetheria agent event id when this write completes a current agent event.",
-        ),
-        string_field(
-            "agent_event_type",
-            "Optional Wattetheria agent event type from the current agent event.",
-        ),
-        string_field(
-            "agent_event_action",
-            "Optional allowed action this write completes for the current agent event.",
-        ),
-    ]
 }
 
 fn integer_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) {
