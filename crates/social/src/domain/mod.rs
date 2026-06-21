@@ -1,3 +1,4 @@
+pub mod agent_skills;
 pub mod blocks;
 pub mod deferred_agent_events;
 pub mod friend_requests;

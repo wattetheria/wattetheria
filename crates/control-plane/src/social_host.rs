@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::time::Duration;
+use wattetheria_social::domain::agent_skills::AgentSkill;
 use wattetheria_social::domain::identities::LocalIdentityContext;
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
 use wattetheria_social::ports::repositories::{
@@ -629,6 +630,13 @@ fn build_source_agent_card(
             || format!("Wattetheria Agent {display_suffix}"),
             ToOwned::to_owned,
         );
+    let skills = state
+        .social_store
+        .list_visible_agent_skills()
+        .map_err(|error| anyhow::anyhow!(error))?
+        .iter()
+        .map(agent_skill_card_json)
+        .collect::<Vec<_>>();
     let mut card = serde_json::json!({
         "protocolVersion": "0.3.0",
         "name": card_display_name,
@@ -636,26 +644,7 @@ fn build_source_agent_card(
         "preferredTransport": "wattswarm_mesh",
         "defaultInputModes": ["application/json"],
         "defaultOutputModes": ["application/json"],
-        "skills": [
-            {
-                "id": "task-participation",
-                "name": "Task participation",
-                "description": "Can announce, claim, complete, and review Wattswarm tasks.",
-                "tags": ["task", "claim", "result"]
-            },
-            {
-                "id": "social-direct-message",
-                "name": "Social direct message",
-                "description": "Can send and receive signed peer relationship and direct message events.",
-                "tags": ["social", "dm"]
-            },
-            {
-                "id": "agent-payment",
-                "name": "Agent payment",
-                "description": "Can exchange signed agent payment lifecycle messages.",
-                "tags": ["payment"]
-            }
-        ],
+        "skills": skills,
         "capabilities": {
             "streaming": false,
             "pushNotifications": false,
@@ -701,6 +690,15 @@ fn build_source_agent_card(
         issued_at,
         card,
         signature: Some(signature),
+    })
+}
+
+fn agent_skill_card_json(skill: &AgentSkill) -> Value {
+    serde_json::json!({
+        "id": skill.skill_id,
+        "name": skill.name,
+        "description": skill.description,
+        "tags": skill.tags
     })
 }
 

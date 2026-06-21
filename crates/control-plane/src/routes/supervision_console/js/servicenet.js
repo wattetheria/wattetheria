@@ -1,4 +1,5 @@
     const SERVICE_ADDRESS_SUFFIX = "@wattetheria";
+    const SERVICENET_SKILL_CHIP_CAP = 6;
     const MAX_SERVICE_NET_AGENT_NAME_CHARS = 40;
 
     function serviceNetStatus(message, isError = false) {
@@ -160,6 +161,25 @@
       return value.includes("@") ? value : `${value}${SERVICE_ADDRESS_SUFFIX}`;
     }
 
+    function serviceNetCardServiceAddress(row = {}) {
+      const card = row.agent_card || {};
+      const candidates = [
+        row.service_address,
+        card.serviceAddress,
+        card.service_address,
+        ...safeArray(card.didDocument?.alsoKnownAs),
+      ];
+      const serviceEndpoint = safeArray(card.didDocument?.service)
+        .map((service) => service?.serviceEndpoint)
+        .find((endpoint) => String(endpoint || "").startsWith("wattetheria://servicenet/"));
+      if (serviceEndpoint) {
+        candidates.push(String(serviceEndpoint).replace("wattetheria://servicenet/", ""));
+      }
+      return candidates
+        .map((value) => String(value || "").trim())
+        .find((value) => value.includes("@")) || "";
+    }
+
     async function resetServiceNetForm(card = null, agent = null) {
       await loadServiceNetTemplate();
       const defaults = servicenetTemplate.defaults || {};
@@ -241,33 +261,55 @@
     }
 
     function renderServiceNetList() {
+      const target = qs("servicenet-list");
+      if (!target) return;
       const rows = servicenetAgents;
-      renderList("servicenet-list", rows, "No locally published ServiceNet agents.", (row) => {
+      const countEl = qs("servicenet-count");
+      if (countEl) countEl.textContent = rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "";
+      const cards = rows.map((row) => {
         const card = row.agent_card || {};
-        const skills = skillTags(card.skills);
+        const name = card.name || row.agent_id;
+        const description = String(card.description || "").trim();
+        const serviceAddress = serviceNetCardServiceAddress(row);
+        const skills = skillLabels(card.skills);
+        const shownSkills = skills.slice(0, SERVICENET_SKILL_CHIP_CAP);
+        const extraSkills = skills.length - shownSkills.length;
+        const chipValues = [
+          row.version ? `v ${row.version}` : "",
+          card.domain || "",
+          card.currency ? `${card.currency} ${valueOrDash(card.cost)}` : "",
+          ...shownSkills,
+        ];
+        const chipHtml = chipValues
+          .map((chip) => String(chip || "").trim())
+          .filter(Boolean)
+          .map((chip) => `<span class="snet-chip">${escapeHtml(chip)}</span>`)
+          .join("")
+          + (extraSkills > 0 ? `<span class="snet-chip snet-chip-more">+${extraSkills}</span>` : "");
         return `
-          <div class="row">
-            <div class="row-head">
-              <div class="row-title">${escapeHtml(card.name || row.agent_id)}</div>
-              ${pill(row.status || "published", row.status || "ready")}
+          <div class="snet-card">
+            <div class="snet-card-head">
+              <div class="snet-tile">${escapeHtml(skillMonogram(name))}</div>
+              <div class="snet-card-meta">
+                <div class="snet-card-titlerow">
+                  <span class="snet-card-name">${escapeHtml(name)}</span>
+                  ${pill(row.status || "published", row.status || "ready")}
+                </div>
+                ${serviceAddress ? `<div class="snet-card-id">${escapeHtml(serviceAddress)}</div>` : ""}
+              </div>
             </div>
-            <div class="row-body">
-              ${escapeHtml(card.description || "No description.")}
-              <br>Agent ${escapeHtml(compactId(row.agent_id, 30))} | Service ${escapeHtml(valueOrDash(row.service_address))} | Provider ${escapeHtml(compactId(row.provider_id, 30))}
-            </div>
-            <div class="row-meta">
-              <span>v ${escapeHtml(valueOrDash(row.version))}</span>
-              <span>${escapeHtml(valueOrDash(card.domain))}</span>
-              <span>${escapeHtml(valueOrDash(card.currency))} ${escapeHtml(valueOrDash(card.cost))}</span>
-              ${skills}
-            </div>
-            <div class="row-actions">
+            ${description ? `<div class="snet-card-desc">${escapeHtml(description)}</div>` : ""}
+            ${chipHtml ? `<div class="snet-chips">${chipHtml}</div>` : ""}
+            <div class="snet-card-foot">
+              <span class="snet-card-provider">${row.provider_id ? `prv ${escapeHtml(compactId(row.provider_id, 28))}` : ""}</span>
               <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Update</button>
             </div>
           </div>
         `;
       });
-      document.querySelectorAll("[data-servicenet-update]").forEach((button) => {
+      const newCard = `<button type="button" class="snet-card snet-card-new" data-servicenet-new>+ Publish new</button>`;
+      target.innerHTML = (cards.length ? cards.join("") : "") + newCard;
+      target.querySelectorAll("[data-servicenet-update]").forEach((button) => {
         button.addEventListener("click", () => {
           const agent = servicenetAgents.find((item) => item.agent_id === button.dataset.servicenetUpdate);
           if (agent) {
@@ -276,6 +318,9 @@
               .catch((error) => serviceNetStatus(error.message, true));
           }
         });
+      });
+      target.querySelector("[data-servicenet-new]")?.addEventListener("click", () => {
+        qs("servicenet-new")?.click();
       });
     }
 

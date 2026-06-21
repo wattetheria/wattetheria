@@ -1409,6 +1409,7 @@ fn counterpart_snapshot(
             public_id: identity.public_id.clone(),
             agent_did: identity.agent_did.clone(),
             display_name: identity.display_name.clone(),
+            skills: Vec::new(),
             active: identity.active,
             created_at: identity.created_at,
         }
@@ -1449,6 +1450,7 @@ fn known_identity_from_source_agent_card(
             .map(|identity| identity.display_name.clone())
             .or_else(|| agent_card_display_name(&source_agent_card.card))
             .unwrap_or_else(|| counterpart_public_id.to_string()),
+        skills: agent_card_skills(&source_agent_card.card),
         active: fallback_identity.is_none_or(|identity| identity.active),
         created_at,
     }

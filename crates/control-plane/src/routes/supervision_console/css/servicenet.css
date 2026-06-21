@@ -142,3 +142,161 @@
       resize: vertical;
       line-height: 1.4;
     }
+
+    /* ===== ServiceNet published-agent grid ===== */
+    .servicenet-panel .section-head {
+      flex-wrap: wrap;
+    }
+
+    .servicenet-head-title {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      min-width: 0;
+    }
+
+    .servicenet-count {
+      font-size: 0.78rem;
+      color: var(--faint);
+    }
+
+    .servicenet-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 0.75rem;
+      min-width: 0;
+    }
+
+    .snet-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      padding: 0.85rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      min-width: 0;
+      transition: border-color 0.12s ease, box-shadow 0.12s ease;
+    }
+
+    .snet-card:hover {
+      border-color: var(--line-strong);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .snet-card-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.7rem;
+      min-width: 0;
+    }
+
+    .snet-tile {
+      flex: 0 0 auto;
+      width: 40px;
+      height: 40px;
+      border-radius: 11px;
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+
+    .snet-card-meta {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .snet-card-titlerow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+    }
+
+    .snet-card-name {
+      font-size: 0.96rem;
+      font-weight: 600;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .snet-card-id {
+      margin-top: 0.2rem;
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.74rem;
+      color: var(--faint);
+      overflow-wrap: anywhere;
+      word-break: break-all;
+    }
+
+    .snet-card-desc {
+      color: var(--muted);
+      font-size: 0.84rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .snet-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+
+    .snet-chip {
+      font-size: 0.72rem;
+      padding: 0.12rem 0.5rem;
+      border-radius: 999px;
+      background: var(--surface-alt);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      overflow-wrap: anywhere;
+    }
+
+    .snet-chip-more {
+      background: var(--accent-soft);
+      border-color: transparent;
+      color: var(--accent-strong);
+      font-weight: 600;
+    }
+
+    .snet-card-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-top: auto;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .snet-card-provider {
+      font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 0.7rem;
+      color: var(--faint);
+      overflow-wrap: anywhere;
+      word-break: break-all;
+      min-width: 0;
+    }
+
+    .snet-card-new {
+      align-items: center;
+      justify-content: center;
+      border-style: dashed;
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      min-height: 7rem;
+    }
+
+    .snet-card-new:hover {
+      border-color: var(--accent);
+      color: var(--accent-strong);
+      background: var(--accent-soft);
+    }

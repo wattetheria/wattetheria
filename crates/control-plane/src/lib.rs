@@ -8,6 +8,7 @@ pub mod social_host;
 mod swarm_sync;
 pub mod routes {
     pub(crate) mod agent_events;
+    pub(crate) mod agent_skills;
     pub(crate) mod civilization;
     pub(crate) mod client;
     pub(crate) mod client_api;
@@ -237,6 +238,11 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             get(routes::client_api::client_export),
         )
         .route("/v1/client/export", get(routes::client_api::client_export))
+        .route(
+            "/v1/wattetheria/agent-skills",
+            get(routes::agent_skills::list_agent_skills)
+                .post(routes::agent_skills::upsert_agent_skill),
+        )
 }
 
 fn game_router() -> Router<ControlPlaneState> {

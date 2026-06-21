@@ -1,7 +1,7 @@
 use crate::types::{SocialError, SocialResult};
 use rusqlite::{Connection, OptionalExtension};
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
 const SCHEMA_VERSION_TABLE: &str = "social_schema_version";
 const CREATE_PUBLIC_IDENTITIES_TABLE: &str = "CREATE TABLE IF NOT EXISTS public_identities (
     public_id TEXT PRIMARY KEY,
@@ -13,6 +13,17 @@ const CREATE_PUBLIC_IDENTITIES_TABLE: &str = "CREATE TABLE IF NOT EXISTS public_
     did_document_json TEXT,
     identity_state TEXT NOT NULL DEFAULT 'active',
     last_profile_fetched_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);";
+const CREATE_AGENT_SKILLS_TABLE: &str = "CREATE TABLE IF NOT EXISTS agent_skills (
+    skill_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    visible INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'manual',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );";
@@ -28,6 +39,8 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
         .map_err(|error| {
             SocialError::Storage(format!("migrate public identities table: {error}"))
         })?;
+    conn.execute_batch(CREATE_AGENT_SKILLS_TABLE)
+        .map_err(|error| SocialError::Storage(format!("migrate agent skills table: {error}")))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS public_transport_bindings (
             public_id TEXT NOT NULL,
@@ -248,6 +261,8 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
             .map_err(|error| SocialError::Storage(format!("add display_name column: {error}")))?;
     }
 
+    remove_network_default_agent_skills(conn)?;
+
     if version.is_none() {
         conn.execute(
             &format!("INSERT INTO {SCHEMA_VERSION_TABLE} (version) VALUES (?1)"),
@@ -262,6 +277,17 @@ pub fn migrate(conn: &Connection) -> SocialResult<()> {
         .map_err(|error| SocialError::Storage(format!("update schema version: {error}")))?;
     }
 
+    Ok(())
+}
+
+fn remove_network_default_agent_skills(conn: &Connection) -> SocialResult<()> {
+    conn.execute(
+        "DELETE FROM agent_skills
+         WHERE source = 'default'
+           AND skill_id IN ('task-participation', 'social-direct-message', 'agent-payment')",
+        [],
+    )
+    .map_err(|error| SocialError::Storage(format!("remove default network skills: {error}")))?;
     Ok(())
 }
 

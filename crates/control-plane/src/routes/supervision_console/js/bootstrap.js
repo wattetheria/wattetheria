@@ -66,6 +66,7 @@
     });
 
     bindServiceNetControls();
+    bindSkillControls();
     initThemePicker();
     enhanceAllSelects();
     observeDynamicSelects();

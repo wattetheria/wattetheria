@@ -39,15 +39,16 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <a class="side-link" href="#overview" data-view="overview"><span>Overview</span><span class="hint">01</span></a>
         <a class="side-link" href="#identity" data-view="identity"><span>Identity</span><span class="hint">02</span></a>
         <a class="side-link" href="#wallet" data-view="wallet"><span>Wallet</span><span class="hint">03</span></a>
-        <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">04</span></a>
-        <a class="side-link" href="#swarm" data-view="swarm"><span>Hives</span><span class="hint">05</span></a>
-        <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">06</span></a>
-        <a class="side-link" href="#organizations" data-view="organizations"><span>Guilds</span><span class="hint">07</span></a>
-        <a class="side-link" href="#servicenet" data-view="servicenet"><span>ServiceNet</span><span class="hint">08</span></a>
-        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">09</span></a>
-        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">10</span></a>
-        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">11</span></a>
-        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">12</span></a>
+        <a class="side-link" href="#skills" data-view="skills"><span>Skills</span><span class="hint">04</span></a>
+        <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">05</span></a>
+        <a class="side-link" href="#swarm" data-view="swarm"><span>Hives</span><span class="hint">06</span></a>
+        <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">07</span></a>
+        <a class="side-link" href="#organizations" data-view="organizations"><span>Guilds</span><span class="hint">08</span></a>
+        <a class="side-link" href="#servicenet" data-view="servicenet"><span>ServiceNet</span><span class="hint">09</span></a>
+        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">10</span></a>
+        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">11</span></a>
+        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">12</span></a>
+        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">13</span></a>
       </nav>
 
       <div class="theme-picker" aria-label="Accent color theme">
@@ -151,6 +152,60 @@ __SUPERVISION_CONSOLE_CSS__  </style>
           </article>
         </section>
 
+        <section class="view-page" data-page="skills" hidden>
+          <article class="panel skills-panel">
+            <div class="section-head">
+              <div class="skills-head-title">
+                <h2>Skills</h2>
+                <span id="skills-count" class="skills-count"></span>
+              </div>
+              <div class="section-actions">
+                <button id="skills-refresh" class="secondary" type="button">Refresh</button>
+                <button id="skills-new" type="button">New Skill</button>
+              </div>
+            </div>
+            <div id="skills-status" class="status-text"></div>
+            <div id="skills-list" class="skills-grid"></div>
+            <div id="skills-modal" class="skills-modal" hidden>
+              <div class="skills-modal-panel" role="dialog" aria-modal="true" aria-labelledby="skills-form-title">
+                <div class="section-head">
+                  <h2 id="skills-form-title">New Skill</h2>
+                  <button id="skills-modal-close" class="secondary" type="button">Close</button>
+                </div>
+                <form id="skills-form" class="skills-form">
+                  <input id="skills-id" type="hidden">
+                  <label>
+                    Name
+                    <input id="skills-name" required maxlength="80" placeholder="Task participation" autocomplete="off">
+                  </label>
+                  <label>
+                    Description
+                    <textarea id="skills-description" rows="4" maxlength="500" placeholder="What this agent can do."></textarea>
+                  </label>
+                  <label>
+                    Tags
+                    <input id="skills-tags" maxlength="240" placeholder="task, claim, result" autocomplete="off">
+                  </label>
+                  <div class="skills-form-row">
+                    <label>
+                      Sort
+                      <input id="skills-sort-order" type="number" step="1" value="100">
+                    </label>
+                    <label class="skills-visible-toggle">
+                      Advertise
+                      <input id="skills-visible" type="checkbox" checked>
+                    </label>
+                  </div>
+                  <div class="skills-form-actions">
+                    <button id="skills-reset" class="secondary" type="button">Cancel</button>
+                    <button type="submit">Save Skill</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </article>
+        </section>
+
         <section class="view-page" data-page="missions" hidden>
           <article class="panel">
             <h2>Missions</h2>
@@ -247,14 +302,17 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <section class="view-page" data-page="servicenet" hidden>
           <article id="servicenet-list-view" class="panel servicenet-panel">
             <div class="section-head">
-              <h2>ServiceNet</h2>
+              <div class="servicenet-head-title">
+                <h2>ServiceNet</h2>
+                <span id="servicenet-count" class="servicenet-count"></span>
+              </div>
               <div class="section-actions">
                 <button id="servicenet-refresh" class="secondary" type="button">Refresh</button>
                 <button id="servicenet-new" type="button">Publish New</button>
               </div>
             </div>
             <div id="servicenet-list-status" class="status-text"></div>
-            <div id="servicenet-list" class="list"></div>
+            <div id="servicenet-list" class="servicenet-grid"></div>
           </article>
 
           <article id="servicenet-detail-view" class="panel servicenet-panel" hidden>

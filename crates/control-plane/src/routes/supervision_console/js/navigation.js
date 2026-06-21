@@ -6,6 +6,7 @@
       "overview",
       "identity",
       "wallet",
+      "skills",
       "missions",
       "swarm",
       "social",
@@ -41,6 +42,9 @@
         if (!servicenetAgents.length) {
           refreshServiceNetAgents().catch((error) => setStatus(error.message, true));
         }
+      }
+      if (nextPage === "skills" && !agentSkills.length) {
+        loadAgentSkills().catch((error) => setStatus(error.message, true));
       }
     }
 

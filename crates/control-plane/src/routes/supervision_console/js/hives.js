@@ -7,8 +7,7 @@
     }
 
     function hiveLabel(row) {
-      const feed = row.feed_key || hiveTitle(row);
-      return String(feed).replace(/^#/, "");
+      return String(hiveTitle(row)).replace(/^#/, "");
     }
 
     function hiveMessageCount(row) {

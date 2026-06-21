@@ -25,6 +25,7 @@ pub struct KnownIdentitySnapshot {
     pub public_id: String,
     pub agent_did: Option<String>,
     pub display_name: String,
+    pub skills: Vec<String>,
     pub active: bool,
     pub created_at: i64,
 }
@@ -157,13 +158,14 @@ where
     let agent_did = counterpart_agent_did(snapshot);
     if let Some(agent_did) = agent_did.clone() {
         let existing_identity = repository.get_remote_identity(&snapshot.counterpart_public_id)?;
-        let (public_id, display_name, active, created_at) = snapshot
+        let (public_id, display_name, incoming_skills, active, created_at) = snapshot
             .known_identity
             .as_ref()
             .map(|identity| {
                 (
                     identity.public_id.clone(),
                     identity.display_name.clone(),
+                    identity.skills.clone(),
                     identity.active,
                     identity.created_at,
                 )
@@ -172,10 +174,19 @@ where
                 (
                     snapshot.counterpart_public_id.clone(),
                     snapshot.counterpart_public_id.clone(),
+                    Vec::new(),
                     true,
                     snapshot.observed_at,
                 )
             });
+        let skills = if incoming_skills.is_empty() {
+            existing_identity
+                .as_ref()
+                .map(|identity| identity.skills.clone())
+                .unwrap_or_default()
+        } else {
+            incoming_skills
+        };
         let active = existing_identity
             .as_ref()
             .map_or(active, |existing| existing.active && active);
@@ -188,7 +199,7 @@ where
                 display_name,
                 description: None,
                 capabilities: Vec::new(),
-                skills: Vec::new(),
+                skills,
                 did_document_json: None,
                 active,
                 last_profile_fetched_at: Some(identity_updated_at),
@@ -1428,6 +1439,7 @@ mod tests {
                 public_id: "agent-remote.fingerprint".to_string(),
                 agent_did: Some("wattswarm-agent-remote".to_string()),
                 display_name: "Remote".to_string(),
+                skills: Vec::new(),
                 active: true,
                 created_at: 1,
             }),
@@ -1458,6 +1470,7 @@ mod tests {
                 public_id: "agent-remote.fingerprint".to_string(),
                 agent_did: Some("did:key:zRemote".to_string()),
                 display_name: "Remote".to_string(),
+                skills: vec!["social-direct-message".to_string()],
                 active: true,
                 created_at: 1,
             }),
@@ -1471,6 +1484,31 @@ mod tests {
             remote_identity_service::list_remote_identities(&store).expect("remote identities");
         assert_eq!(identities.len(), 1);
         assert_eq!(identities[0].agent_did, "did:key:zRemote");
+        assert_eq!(identities[0].skills, vec!["social-direct-message"]);
+
+        let snapshot_without_skills = CounterpartSnapshot {
+            counterpart_public_id: "agent-remote.fingerprint".to_string(),
+            target_agent: "did:key:zRemote".to_string(),
+            remote_node_id: "node-remote".to_string(),
+            known_identity: Some(KnownIdentitySnapshot {
+                public_id: "agent-remote.fingerprint".to_string(),
+                agent_did: Some("did:key:zRemote".to_string()),
+                display_name: "Remote".to_string(),
+                skills: Vec::new(),
+                active: true,
+                created_at: 1,
+            }),
+            known_binding: None,
+            observed_at: 3,
+        };
+
+        cache_counterpart(&store, &snapshot_without_skills).expect("cache without skills");
+
+        let identities =
+            remote_identity_service::list_remote_identities(&store).expect("remote identities");
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].skills, vec!["social-direct-message"]);
+
         let bindings =
             transport_binding_service::list_transport_bindings(&store).expect("bindings");
         assert_eq!(bindings.len(), 1);

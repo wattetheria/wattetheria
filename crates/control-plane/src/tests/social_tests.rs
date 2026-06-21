@@ -43,6 +43,31 @@ async fn public_source_agent_card_builds_signed_discovery_card() {
         card.card["metadata"]["public_id"].as_str(),
         Some(active_public_id.as_str())
     );
+    let skills = card.card["skills"]
+        .as_array()
+        .expect("agent card skills array");
+    assert!(skills.is_empty());
+    state
+        .social_store
+        .upsert_agent_skill(&wattetheria_social::domain::agent_skills::AgentSkill {
+            skill_id: "custom-research".to_string(),
+            name: "Custom research".to_string(),
+            description: "Can run configured research workflows.".to_string(),
+            tags: vec!["research".to_string()],
+            visible: true,
+            source: "manual".to_string(),
+            sort_order: 5,
+            created_at: 10,
+            updated_at: 10,
+        })
+        .expect("save custom advertised skill");
+    let updated_card = crate::social_host::public_source_agent_card(&state)
+        .await
+        .expect("rebuild source agent card");
+    assert_eq!(
+        updated_card.card["skills"][0]["id"].as_str(),
+        Some("custom-research")
+    );
     let card_payload = ExpectedSignedSourceAgentCardPayload {
         agent_id: &card.agent_id,
         node_id: card.node_id.as_ref(),
@@ -99,6 +124,41 @@ async fn public_source_agent_card_route_uses_current_display_name() {
         original["card_hash"].as_str(),
         updated["card_hash"].as_str(),
         "display name changes must produce a fresh signed card hash"
+    );
+}
+
+#[tokio::test]
+async fn agent_skills_api_updates_public_source_agent_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for("wattswarm-node-1".to_owned()));
+    let (_dir, app, token, _, _state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+    let skills = authed_get_json(app.clone(), &token, "/v1/wattetheria/agent-skills").await;
+    assert!(skills["items"].as_array().unwrap().is_empty());
+
+    let saved = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/agent-skills",
+        json!({
+            "name": "Custom research",
+            "description": "Can run configured research workflows.",
+            "tags": ["research"],
+            "visible": true,
+            "sort_order": 5
+        }),
+    )
+    .await;
+    assert_eq!(saved["item"]["skill_id"].as_str(), Some("custom-research"));
+
+    let card = authed_get_json(app, &token, "/v1/wattetheria/source-agent-card").await;
+    assert_eq!(
+        card["card"]["skills"][0]["id"].as_str(),
+        Some("custom-research")
     );
 }
 
@@ -2715,6 +2775,10 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
         Some(1_710_000_120_000)
     );
     assert_eq!(remote_profile.updated_at, 1_710_000_120_000);
+    assert_eq!(
+        remote_profile.skills,
+        vec!["Social direct message", "Task participation"]
+    );
 
     let thread_items = authed_get_json(
         app.clone(),

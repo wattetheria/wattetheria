@@ -1,3 +1,4 @@
+mod agent_skills;
 mod deferred_agent_events;
 mod reliability_tasks;
 mod schema;
@@ -1832,6 +1833,76 @@ mod tests {
                 .expect("list transport bindings by public_id"),
             vec![binding]
         );
+    }
+
+    #[test]
+    fn store_persists_agent_skills_for_public_agent_card() {
+        let store = SocialStore::open_in_memory().expect("open store");
+        let default_skills = store.list_agent_skills().expect("list seeded skills");
+        assert!(default_skills.is_empty());
+
+        let custom = crate::domain::agent_skills::AgentSkill {
+            skill_id: "custom-research".to_owned(),
+            name: "Custom research".to_owned(),
+            description: "Can run configured research workflows.".to_owned(),
+            tags: vec!["research".to_owned(), "workflow".to_owned()],
+            visible: false,
+            source: "manual".to_owned(),
+            sort_order: 40,
+            created_at: 10,
+            updated_at: 10,
+        };
+        store
+            .upsert_agent_skill(&custom)
+            .expect("save custom skill");
+
+        let all_skills = store.list_agent_skills().expect("list all skills");
+        assert_eq!(all_skills.len(), 1);
+        assert!(all_skills.iter().any(|skill| skill == &custom));
+
+        let visible = store
+            .list_visible_agent_skills()
+            .expect("list visible skills");
+        assert!(visible.is_empty());
+        assert!(
+            !visible
+                .iter()
+                .any(|skill| skill.skill_id == "custom-research")
+        );
+    }
+
+    #[test]
+    fn store_migration_removes_network_default_agent_skills() {
+        let path = unique_test_db_path("agent-skills-default-cleanup");
+        {
+            let conn = Connection::open(&path).expect("open sqlite");
+            conn.execute_batch(
+                "CREATE TABLE agent_skills (
+                    skill_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    visible INTEGER NOT NULL DEFAULT 1,
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO agent_skills (
+                    skill_id, name, description, tags_json, visible, source, sort_order, created_at, updated_at
+                ) VALUES
+                ('task-participation', 'Task participation', '', '[]', 1, 'default', 10, 0, 0),
+                ('manual-skill', 'Manual skill', '', '[]', 1, 'manual', 20, 0, 0);",
+            )
+            .expect("seed legacy default skills");
+        }
+
+        let store = SocialStore::open(&path).expect("migrate store");
+        let skills = store.list_agent_skills().expect("list migrated skills");
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].skill_id, "manual-skill");
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
