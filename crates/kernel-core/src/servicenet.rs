@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{Client, Method, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -50,6 +50,76 @@ fn validate_service_address(service_address: &str) -> Result<()> {
         validate_service_address_label(segment, "namespace")?;
     }
     Ok(())
+}
+
+#[must_use]
+pub fn servicenet_payment_account_bindings(payment_account_binding: Option<&Value>) -> Vec<Value> {
+    payment_account_binding
+        .filter(|value| !value.is_null())
+        .map(|value| vec![value.clone()])
+        .unwrap_or_default()
+}
+
+#[must_use]
+pub fn servicenet_agent_did_document(
+    provider_did: &str,
+    agent_id: &str,
+    service_address: Option<&str>,
+    payment_account_binding: Option<&Value>,
+) -> Value {
+    let document_id = payment_account_binding_agent_did(payment_account_binding)
+        .unwrap_or(provider_did.to_owned());
+    let mut aliases = Vec::new();
+    if let Some(service_address) = service_address {
+        aliases.push(Value::String(service_address.to_owned()));
+    }
+    let service_endpoint = service_address.map_or_else(
+        || format!("wattetheria://servicenet/agents/{agent_id}"),
+        |service_address| format!("wattetheria://servicenet/{service_address}"),
+    );
+    json!({
+        "id": document_id,
+        "alsoKnownAs": aliases,
+        "service": [{
+            "id": "#servicenet-agent",
+            "type": "WattetheriaServiceNetAgent",
+            "serviceEndpoint": service_endpoint,
+        }],
+        "payment_account_bindings": servicenet_payment_account_bindings(payment_account_binding),
+    })
+}
+
+fn payment_account_binding_agent_did(payment_account_binding: Option<&Value>) -> Option<String> {
+    let agent_did = payment_account_binding.and_then(|value| value.get("agent_did"))?;
+    if let Some(agent_did) = agent_did.as_str() {
+        return Some(agent_did.to_owned());
+    }
+    let method = agent_did.get("method").and_then(Value::as_str)?;
+    let id = agent_did.get("id").and_then(Value::as_str)?;
+    Some(format!("did:{method}:{id}"))
+}
+
+pub fn attach_servicenet_agent_did_document(
+    agent_card: &mut Value,
+    provider_did: &str,
+    agent_id: &str,
+    service_address: Option<&str>,
+    payment_account_binding: Option<&Value>,
+) {
+    let payment_account_bindings = servicenet_payment_account_bindings(payment_account_binding);
+    let did_document = servicenet_agent_did_document(
+        provider_did,
+        agent_id,
+        service_address,
+        payment_account_binding,
+    );
+    if let Some(object) = agent_card.as_object_mut() {
+        object.insert(
+            "payment_account_bindings".to_owned(),
+            Value::Array(payment_account_bindings),
+        );
+        object.insert("didDocument".to_owned(), did_document);
+    }
 }
 
 fn validate_service_address_label(label: &str, field: &str) -> Result<()> {
@@ -528,6 +598,33 @@ mod tests {
         assert!(normalize_service_address("-bad@wattetheria").is_err());
         assert!(normalize_service_address("bad@wat..etheria").is_err());
         assert!(normalize_service_address("bad name@wattetheria").is_err());
+    }
+
+    #[test]
+    fn servicenet_agent_did_document_uses_servicenet_address_not_runtime_endpoint() {
+        let binding = json!({
+            "agent_did": "did:key:z6MkWallet",
+            "rail": "x402",
+            "network": "base",
+            "payment_address": "0x1111111111111111111111111111111111111111",
+        });
+        let document = servicenet_agent_did_document(
+            "did:key:z6MkProvider",
+            "agent-one",
+            Some("dumpling@wattetheria"),
+            Some(&binding),
+        );
+
+        assert_eq!(document["id"].as_str(), Some("did:key:z6MkWallet"));
+        assert_eq!(
+            document["alsoKnownAs"].as_array().unwrap(),
+            &[json!("dumpling@wattetheria")]
+        );
+        assert_eq!(
+            document["service"][0]["serviceEndpoint"].as_str(),
+            Some("wattetheria://servicenet/dumpling@wattetheria")
+        );
+        assert_eq!(document["payment_account_bindings"][0], binding);
     }
 
     #[test]

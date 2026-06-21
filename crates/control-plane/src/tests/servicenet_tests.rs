@@ -655,6 +655,16 @@ fn assert_servicenet_template(template: &Value) {
         skills_field["optional_item_fields"].as_array().unwrap(),
         &[json!("description")]
     );
+    assert!(
+        template["defaults"]["payment_account_bindings"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
+    assert!(
+        template["defaults"]["didDocument"]["payment_account_bindings"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+    );
 }
 
 fn assert_published_console_agent(published_json: &Value, target_agent_id: &str, owner_did: &str) {
@@ -762,6 +772,17 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         ..state
     };
     let app = app(state.clone());
+    let created_payment = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wallet/payment-account/create",
+        json!({
+            "network": "base",
+            "rail": "x402",
+            "label": "servicenet-receiver"
+        }),
+    )
+    .await;
 
     let template = authed_get_json(
         app.clone(),
@@ -807,6 +828,46 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     assert_eq!(
         publish_json["submission"]["attestations"]["provider_attester_did"].as_str(),
         Some(state.agent_did.as_str())
+    );
+    let payment_binding = &publish_json["submission"]["payment_account_binding"];
+    let payment_address = created_payment["active_payment_account"]["address"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        payment_binding["payment_address"].as_str(),
+        Some(payment_address)
+    );
+    assert_eq!(payment_binding["rail"].as_str(), Some("x402"));
+    assert_eq!(payment_binding["network"].as_str(), Some("base"));
+    let submitted_card = &publish_json["submission"]["agent_card"];
+    assert_eq!(
+        submitted_card["payment_account_bindings"][0]["payment_address"].as_str(),
+        Some(payment_address)
+    );
+    let binding_agent_did = payment_binding["agent_did"].as_object().map(|agent_did| {
+        format!(
+            "did:{}:{}",
+            agent_did["method"].as_str().unwrap(),
+            agent_did["id"].as_str().unwrap()
+        )
+    });
+    assert_eq!(
+        submitted_card["didDocument"]["id"].as_str(),
+        binding_agent_did.as_deref()
+    );
+    assert_eq!(
+        submitted_card["didDocument"]["alsoKnownAs"]
+            .as_array()
+            .unwrap(),
+        &[json!("console@wattetheria")]
+    );
+    assert_eq!(
+        submitted_card["didDocument"]["service"][0]["serviceEndpoint"].as_str(),
+        Some("wattetheria://servicenet/console@wattetheria")
+    );
+    assert_eq!(
+        submitted_card["didDocument"]["payment_account_bindings"][0]["payment_address"].as_str(),
+        Some(payment_address)
     );
 
     let published_json = authed_get_json(

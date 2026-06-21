@@ -349,6 +349,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
             "rail": "x402",
             "layer": "web3",
             "network": "base-sepolia",
+            "recipient_address": TEST_X402_RECIPIENT,
             "description": "task reward",
         }),
     )
@@ -520,6 +521,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
             "rail": "x402",
             "layer": "web3",
             "network": "base-sepolia",
+            "recipient_address": TEST_X402_RECIPIENT,
         }),
     )
     .await;
@@ -961,6 +963,7 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
             "rail": "x402",
             "layer": "web3",
             "network": "base-sepolia",
+            "recipient_address": TEST_X402_RECIPIENT,
         }),
     )
     .await;

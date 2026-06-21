@@ -20,22 +20,20 @@ use crate::state::{
     StreamEvent, WalletBindWeb3PaymentAccountBody, WalletCreatePaymentAccountBody,
     agent_commit_context_from_headers,
 };
-use watt_did::PaymentAccountCustody;
-use watt_wallet::{
-    PaymentAccountBindingProofOptions, PaymentAccountKind, PaymentAccountSigner,
-    build_payment_account_binding_proof,
-};
+use watt_did::PaymentAccountBindingProof;
+use watt_wallet::{PaymentAccountKind, verify_payment_account_binding_proof};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::PublicIdentity;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     AuthorizePaymentRequest, PaymentAgentMessage, PaymentLedger, PaymentMessageKind, PaymentQuery,
     PaymentStatus, PaymentTransaction, ProposePaymentRequest, RejectPaymentRequest,
-    SettlePaymentRequest, authorization_payload_bytes, source_payment_account_binding_required,
+    SettlePaymentRequest, SettlementLayer, authorization_payload_bytes,
+    source_payment_account_binding_required,
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
 use wattetheria_kernel::wallet_identity::{
-    load_or_create_wallet_backed_identity, open_local_wallet,
+    active_payment_account_binding_proof, load_or_create_wallet_backed_identity, open_local_wallet,
 };
 use wattetheria_social::application::friendship_service;
 use wattetheria_social::domain::friendships::{Friendship, FriendshipState};
@@ -475,6 +473,7 @@ async fn resolve_payment_proposal_target(
         (Some(counterpart_public_id), None, None) => {
             let counterpart =
                 resolve_social_counterpart_target(state, counterpart_public_id).await?;
+            resolve_network_agent_recipient_address(state, &counterpart, body)?;
             Ok(PaymentProposalTarget {
                 recipient_public_id: counterpart.counterpart_public_id.clone(),
                 recipient_did: counterpart.target_agent.clone(),
@@ -491,6 +490,7 @@ async fn resolve_payment_proposal_target(
             .await?;
             let counterpart =
                 resolve_social_counterpart_target(state, &counterpart_public_id).await?;
+            resolve_network_agent_recipient_address(state, &counterpart, body)?;
             body.counterpart_public_id = Some(counterpart.counterpart_public_id.clone());
             Ok(PaymentProposalTarget {
                 recipient_public_id: counterpart.counterpart_public_id.clone(),
@@ -520,6 +520,146 @@ async fn resolve_payment_proposal_target(
     }
 }
 
+fn resolve_network_agent_recipient_address(
+    state: &ControlPlaneState,
+    counterpart: &SocialCounterpartTarget,
+    body: &mut AgentPaymentProposeBody,
+) -> Result<(), String> {
+    if trimmed_optional(body.recipient_address.as_deref()).is_some() {
+        return Ok(());
+    }
+    let Some(address) = verified_network_agent_payment_address(
+        state,
+        counterpart,
+        &body.rail,
+        body.network.as_deref(),
+    )?
+    else {
+        if requires_recipient_payment_address(body) {
+            return Err(format!(
+                "network agent {} has no verified payment address for {}{}",
+                counterpart.counterpart_public_id,
+                body.rail,
+                body.network
+                    .as_deref()
+                    .map(|network| format!("/{network}"))
+                    .unwrap_or_default()
+            ));
+        }
+        return Ok(());
+    };
+    body.recipient_address = Some(address);
+    Ok(())
+}
+
+fn requires_recipient_payment_address(body: &AgentPaymentProposeBody) -> bool {
+    body.rail.trim().eq_ignore_ascii_case("x402") && matches!(body.layer, SettlementLayer::Web3)
+}
+
+fn verified_network_agent_payment_address(
+    state: &ControlPlaneState,
+    counterpart: &SocialCounterpartTarget,
+    rail: &str,
+    network: Option<&str>,
+) -> Result<Option<String>, String> {
+    let remote_identity = state
+        .social_store
+        .get_remote_identity(&counterpart.counterpart_public_id)
+        .map_err(|error| error.to_string())?;
+    let Some(remote_identity) = remote_identity else {
+        return Ok(None);
+    };
+    let Some(document) = remote_identity.did_document_json.as_ref() else {
+        return Ok(None);
+    };
+    verified_payment_address_from_document(document, &counterpart.target_agent, rail, network)
+}
+
+fn verified_payment_address_from_document(
+    document: &Value,
+    expected_agent_did: &str,
+    rail: &str,
+    network: Option<&str>,
+) -> Result<Option<String>, String> {
+    for candidate in payment_binding_candidates(document) {
+        let proof = serde_json::from_value::<PaymentAccountBindingProof>(candidate.clone())
+            .map_err(|error| format!("invalid payment_account_binding: {error}"))?;
+        verify_payment_binding_identity(&proof, expected_agent_did)?;
+        verify_payment_account_binding_proof(&proof)
+            .map_err(|error| format!("payment_account_binding: {error}"))?;
+        if payment_binding_matches_request(&proof, rail, network) {
+            return Ok(Some(proof.payment_address.trim().to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn payment_binding_candidates(document: &Value) -> Vec<&Value> {
+    let mut candidates = Vec::new();
+    push_optional_payment_binding(&mut candidates, document, "payment_account_binding");
+    push_optional_payment_binding(&mut candidates, document, "paymentAccountBinding");
+    push_optional_payment_bindings(&mut candidates, document, "payment_account_bindings");
+    push_optional_payment_bindings(&mut candidates, document, "paymentAccountBindings");
+    if let Some(payment) = document.get("payment") {
+        push_optional_payment_binding(&mut candidates, payment, "account_binding");
+        push_optional_payment_binding(&mut candidates, payment, "payment_account_binding");
+        push_optional_payment_bindings(&mut candidates, payment, "account_bindings");
+        push_optional_payment_bindings(&mut candidates, payment, "payment_account_bindings");
+    }
+    candidates
+}
+
+fn push_optional_payment_binding<'a>(
+    candidates: &mut Vec<&'a Value>,
+    document: &'a Value,
+    key: &str,
+) {
+    if let Some(value) = document.get(key) {
+        candidates.push(value);
+    }
+}
+
+fn push_optional_payment_bindings<'a>(
+    candidates: &mut Vec<&'a Value>,
+    document: &'a Value,
+    key: &str,
+) {
+    if let Some(values) = document.get(key).and_then(Value::as_array) {
+        candidates.extend(values);
+    }
+}
+
+fn verify_payment_binding_identity(
+    proof: &PaymentAccountBindingProof,
+    expected_agent_did: &str,
+) -> Result<(), String> {
+    if proof.agent_did.to_string() != expected_agent_did {
+        return Err(
+            "payment_account_binding agent_did does not match target agent DID".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn payment_binding_matches_request(
+    proof: &PaymentAccountBindingProof,
+    rail: &str,
+    network: Option<&str>,
+) -> bool {
+    if !proof.rail.trim().eq_ignore_ascii_case(rail.trim()) {
+        return false;
+    }
+    if let Some(network) = trimmed_optional(network) {
+        let Some(proof_network) = trimmed_optional(proof.network.as_deref()) else {
+            return false;
+        };
+        if !proof_network.eq_ignore_ascii_case(network) {
+            return false;
+        }
+    }
+    true
+}
+
 async fn resolve_servicenet_payment_target(
     state: &ControlPlaneState,
     agent_id: &str,
@@ -533,8 +673,10 @@ async fn resolve_servicenet_payment_target(
         .get_agent(agent_id)
         .await
         .map_err(|error| error.to_string())?;
-    let accept = servicenet_x402_accept(&agent)
-        .ok_or_else(|| format!("servicenet agent {agent_id} does not expose x402 payTo"))?;
+    let accept = servicenet_payment_accept(&agent, &body.rail, body.network.as_deref())?
+        .ok_or_else(|| {
+            format!("servicenet agent {agent_id} does not expose x402 payment address")
+        })?;
     if body.recipient_address.is_none() {
         body.recipient_address = string_at(&accept, &["payTo"]);
     }
@@ -746,6 +888,77 @@ fn servicenet_x402_accept(agent: &Value) -> Option<Value> {
                 })
                 .cloned()
         })
+}
+
+fn servicenet_payment_accept(
+    agent: &Value,
+    rail: &str,
+    network: Option<&str>,
+) -> Result<Option<Value>, String> {
+    if let Some(accept) = servicenet_payment_binding_accept(agent, rail, network)? {
+        return Ok(Some(accept));
+    }
+    Ok(servicenet_x402_accept(agent))
+}
+
+fn servicenet_payment_binding_accept(
+    agent: &Value,
+    rail: &str,
+    network: Option<&str>,
+) -> Result<Option<Value>, String> {
+    for document in servicenet_did_document_candidates(agent) {
+        for candidate in payment_binding_candidates(document) {
+            let proof = serde_json::from_value::<PaymentAccountBindingProof>(candidate.clone())
+                .map_err(|error| format!("invalid payment_account_binding: {error}"))?;
+            verify_servicenet_payment_binding_identity(document, &proof)?;
+            verify_payment_account_binding_proof(&proof)
+                .map_err(|error| format!("payment_account_binding: {error}"))?;
+            if payment_binding_matches_request(&proof, rail, network) {
+                return Ok(Some(payment_binding_accept_value(&proof)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn servicenet_did_document_candidates(agent: &Value) -> Vec<&Value> {
+    let mut candidates = Vec::new();
+    if let Some(document) = value_at(agent, &["agent_card", "didDocument"]) {
+        candidates.push(document);
+    }
+    if let Some(document) = value_at(agent, &["agent_card", "did_document"]) {
+        candidates.push(document);
+    }
+    if let Some(card) = value_at(agent, &["agent_card"]) {
+        candidates.push(card);
+    }
+    candidates
+}
+
+fn verify_servicenet_payment_binding_identity(
+    document: &Value,
+    proof: &PaymentAccountBindingProof,
+) -> Result<(), String> {
+    let Some(document_id) = string_at(document, &["id"]) else {
+        return Ok(());
+    };
+    if proof.agent_did.to_string() != document_id {
+        return Err(
+            "payment_account_binding agent_did does not match ServiceNet DID document id"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn payment_binding_accept_value(proof: &PaymentAccountBindingProof) -> Value {
+    json!({
+        "scheme": "exact",
+        "rail": proof.rail,
+        "network": proof.network,
+        "payTo": proof.payment_address,
+        "source": "payment_account_binding",
+    })
 }
 
 fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -1543,60 +1756,9 @@ async fn send_payment_message(
 /// return `Ok(None)` for backwards compatibility. Callers decide when the proof
 /// is required for a payment state transition.
 fn try_build_payment_account_binding(state: &ControlPlaneState) -> anyhow::Result<Option<Value>> {
-    let Ok(wallet_state) = open_local_wallet(&state.data_dir) else {
+    let Some(proof) = active_payment_account_binding_proof(&state.data_dir)? else {
         return Ok(None);
     };
-    let agent_key_info = wallet_state
-        .wallet
-        .active_identity_key_info(&wallet_state.profile)
-        .ok();
-    let Some(agent_key_info) = agent_key_info else {
-        return Ok(None);
-    };
-    let active_account = wallet_state
-        .wallet
-        .active_payment_account(&wallet_state.profile)
-        .ok()
-        .cloned();
-    let Some(active_account) = active_account else {
-        return Ok(None);
-    };
-    if active_account.key_handle.is_none() {
-        return Ok(None);
-    }
-    let payment_key_info = wallet_state
-        .wallet
-        .active_payment_account_key_info(&wallet_state.profile)
-        .context("load active payment account key")?
-        .clone();
-    let issued_at_ms = Utc::now()
-        .timestamp_millis()
-        .max(0)
-        .try_into()
-        .unwrap_or(u64::MAX);
-    let proof = build_payment_account_binding_proof(
-        wallet_state.wallet.keystore(),
-        PaymentAccountBindingProofOptions {
-            agent_did: agent_key_info.did.clone(),
-            agent_key_handle: &agent_key_info.key_handle,
-            agent_public_key_multibase: agent_key_info.public_key_multibase.clone(),
-            rail: active_account.rail.clone(),
-            network: active_account.network.clone(),
-            custody: PaymentAccountCustody::LocalGenerated,
-            receive_only: false,
-            can_sign: true,
-            capabilities: active_account.capabilities.clone(),
-            issued_at_ms,
-            expires_at_ms: None,
-            nonce: None,
-            payment_signer: Some(PaymentAccountSigner {
-                key_handle: &payment_key_info.key_handle,
-                public_key_multibase: payment_key_info.public_key_multibase.clone(),
-            }),
-            watch_only_payment_address: None,
-        },
-    )
-    .context("build active payment account binding proof")?;
     serde_json::to_value(&proof)
         .context("serialize active payment account binding proof")
         .map(Some)

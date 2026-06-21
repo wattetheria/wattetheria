@@ -16,8 +16,10 @@ use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
-    ServiceNetClient, normalize_service_address, validate_servicenet_agent_name,
+    ServiceNetClient, attach_servicenet_agent_did_document, normalize_service_address,
+    validate_servicenet_agent_name,
 };
+use wattetheria_kernel::wallet_identity::active_payment_account_binding_proof;
 
 const DEFAULT_SERVICENET_VERSION: &str = "0.1.0";
 const DEFAULT_SERVICENET_TTL_MINUTES: u64 = 30;
@@ -100,6 +102,10 @@ fn default_agent_card() -> Value {
         "cost": 0,
         "currency": "USDC",
         "supportsTask": false,
+        "payment_account_bindings": [],
+        "didDocument": {
+            "payment_account_bindings": [],
+        },
         "skills": [{"name": "", "description": ""}],
         "securitySchemes": {"none": {"type": "none"}},
         "security": [{"none": []}],
@@ -599,7 +605,7 @@ pub(crate) async fn publish_agent(
     let Some(client) = servicenet_client(&state) else {
         return super::servicenet_unavailable_response();
     };
-    let agent_card = normalize_agent_card_skills(body.agent_card.clone());
+    let mut agent_card = normalize_agent_card_skills(body.agent_card.clone());
     if let Err(message) = validate_agent_card(&agent_card) {
         return bad_request(message);
     }
@@ -643,6 +649,21 @@ pub(crate) async fn publish_agent(
         .filter(|value| !value.is_empty())
         .unwrap_or("low")
         .to_owned();
+    let payment_account_binding = match active_payment_account_binding_proof(&state.data_dir) {
+        Ok(Some(proof)) => match serde_json::to_value(proof) {
+            Ok(value) => value,
+            Err(error) => return internal_error(&anyhow::anyhow!(error)),
+        },
+        Ok(None) => Value::Null,
+        Err(error) => return internal_error(&error),
+    };
+    attach_servicenet_agent_did_document(
+        &mut agent_card,
+        &state.agent_did,
+        &agent_id,
+        service_address.as_deref(),
+        Some(&payment_account_binding),
+    );
     let endpoint = agent_card
         .get("url")
         .and_then(Value::as_str)
@@ -681,7 +702,7 @@ pub(crate) async fn publish_agent(
         "delegation_token": Value::Null,
         "source_commit": Value::Null,
         "build_digest": Value::Null,
-        "payment_account_binding": Value::Null,
+        "payment_account_binding": payment_account_binding.clone(),
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -703,6 +724,7 @@ pub(crate) async fn publish_agent(
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,
+        "payment_account_binding": payment_account_binding,
         "attestations": {
             "attestation_signature": signature,
             "provider_attester_did": state.agent_did,

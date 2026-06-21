@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Run builds and npm publish dry-runs without publishing packages.
+        description: Set true to run builds and npm publish dry-runs without publishing packages.
         type: boolean
-        default: true
+        default: false
       version:
         description: Optional npm version to publish. Leave blank to bump the latest published wattetheria version.
         required: false

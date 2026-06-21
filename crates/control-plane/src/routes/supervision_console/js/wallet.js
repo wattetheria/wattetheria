@@ -62,6 +62,18 @@
       return `<div class="wallet-tags">${labels.map((label) => `<span>${escapeHtml(label)}</span>`).join("")}</div>`;
     }
 
+    function walletTrustItem(ok, label, sub) {
+      return `
+        <div class="wallet-trust-item ${ok ? "ready" : "pending"}">
+          <span class="wallet-trust-mark" aria-hidden="true">${ok ? "&#10003;" : "!"}</span>
+          <span class="wallet-trust-text">
+            <strong>${escapeHtml(label)}</strong>
+            <em>${escapeHtml(sub)}</em>
+          </span>
+        </div>
+      `;
+    }
+
     function renderWalletIdentity(operator) {
       const identity = walletActiveIdentity(operator);
       const identities = safeArray(operator?.wallet_identities);
@@ -300,7 +312,34 @@
       const selectedPayment = walletPaymentAccountFor(activeNetwork, fallbackRail, operator);
       const activeAddress = selectedPayment?.address || "";
       const hasSigningAccount = Boolean(selectedPayment?.can_sign);
+      const walletIdentity = walletActiveIdentity(operator);
+      const railValue = selectedPayment?.rail || fallbackRail;
+      const publicAlias = operator.id ? `@${operator.id}` : "";
+      const headerHandle = publicAlias || valueOrDash(operator.agent_did || operator.wallet_bound_agent_did);
       qs("wallet-list").innerHTML = `
+        <div class="wallet-cred-head">
+          <div class="wallet-cred-top">
+            <span class="wallet-cred-eyebrow">WATT wallet · ${escapeHtml(activeNetwork)}</span>
+            <button id="refresh-web3-balances" type="button" class="wallet-cred-btn">Refresh balances</button>
+          </div>
+          <div class="wallet-cred-balances">
+            <div class="wallet-cred-metric">
+              <div class="wallet-cred-metric-value">${escapeHtml(valueOrDash(operator.watt_balance))}<span>WATT</span></div>
+              <div class="wallet-cred-metric-label">internal ledger</div>
+            </div>
+            <div class="wallet-cred-divider"></div>
+            <div id="web3-token-balances" class="wallet-onchain"></div>
+          </div>
+          <div class="wallet-cred-id">
+            <span class="wallet-cred-handle">${escapeHtml(headerHandle)}</span>
+            ${publicAlias ? `<button type="button" class="wallet-cred-copy" onclick="copyIdentityId('${escapeHtml(publicAlias)}', this)">Copy</button>` : ""}
+          </div>
+          <div class="wallet-cred-trust">
+            ${walletTrustItem(true, "Local ledger", `${valueOrDash(operator.watt_balance)} WATT`)}
+            ${walletTrustItem(Boolean(walletIdentity), "DID backed", walletIdentity ? "active identity" : "no identity")}
+            ${walletTrustItem(Boolean(selectedPayment), "Payment bound", selectedPayment ? `${activeNetwork} · ${railValue}` : "unbound")}
+          </div>
+        </div>
         <section class="wallet-section">
           <div class="wallet-section-head">
             <div class="wallet-section-title">WATT Internal Ledger</div>
@@ -345,10 +384,8 @@
           </div>
           <div class="wallet-actions">
             <button id="create-agent-wallet" type="button" ${hasSigningAccount ? "disabled" : ""}>Create Agent Wallet</button>
-            <button id="refresh-web3-balances" class="secondary" type="button">Refresh Balances</button>
           </div>
           <div id="web3-wallet-status" class="subtle">${escapeHtml(activeAddress ? compactId(activeAddress, 28) : "No agent payment account created.")}</div>
-          <div id="web3-token-balances" class="wallet-token-grid"></div>
         </section>
         <section class="wallet-section accounts">
           <div class="wallet-section-head">

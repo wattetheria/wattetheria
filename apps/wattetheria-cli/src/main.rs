@@ -42,12 +42,14 @@ use wattetheria_kernel::oracle::OracleRegistry;
 use wattetheria_kernel::policy_engine::{
     CapabilityRequest, DecisionKind, PolicyEngine, PolicyState,
 };
-use wattetheria_kernel::servicenet::normalize_service_address;
+use wattetheria_kernel::servicenet::{
+    attach_servicenet_agent_did_document, normalize_service_address,
+};
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::{
-    WalletSigner, load_or_create_wallet_backed_identity, load_wallet_backed_identity,
-    open_local_wallet,
+    WalletSigner, active_payment_account_binding_proof, load_or_create_wallet_backed_identity,
+    load_wallet_backed_identity, open_local_wallet,
 };
 
 #[tokio::main]
@@ -783,6 +785,18 @@ async fn run_servicenet_publish(
         .active_identity(&wallet.profile)
         .context("resolve active identity")?;
     let identity_did = identity.did.to_string();
+    let payment_account_binding = active_payment_account_binding_proof(data_dir)?
+        .map(serde_json::to_value)
+        .transpose()
+        .context("serialize active payment account binding proof")?
+        .unwrap_or(Value::Null);
+    attach_servicenet_agent_did_document(
+        &mut agent_card,
+        &identity_did,
+        &registration.agent_id,
+        service_address.as_deref(),
+        Some(&payment_account_binding),
+    );
 
     let deployment = serde_json::json!({
         "runtime": "remote_http",
@@ -819,7 +833,7 @@ async fn run_servicenet_publish(
         "delegation_token": Value::Null,
         "source_commit": Value::Null,
         "build_digest": Value::Null,
-        "payment_account_binding": Value::Null,
+        "payment_account_binding": payment_account_binding.clone(),
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -844,6 +858,7 @@ async fn run_servicenet_publish(
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,
+        "payment_account_binding": payment_account_binding,
         "attestations": attestations,
     });
 
@@ -943,6 +958,11 @@ fn agent_card_template_jsonc() -> &'static str {
   // payTo is the callee/merchant settlement receiving address, not the caller wallet.
   // asset is optional; when omitted, compatible clients may resolve it from network + currency.
   // resource names the paid ServiceNet resource; use this card's agent name, not a registry agent_id.
+  // payment_account_bindings and didDocument are filled from the local wallet during publish.
+  "payment_account_bindings": [],
+  "didDocument": {
+    "payment_account_bindings": []
+  },
   // "capabilities": {
   //   "extensions": [
   //     {
@@ -1500,6 +1520,18 @@ mod tests {
         assert_eq!(card["currency"], "USDC");
         assert_eq!(card["supportsTask"], false);
         assert_eq!(card["serviceAddress"].as_str(), Some(""));
+        assert!(
+            card["payment_account_bindings"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            card["didDocument"]["payment_account_bindings"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         let skill = card["skills"][0]
             .as_object()
             .expect("template skill object");

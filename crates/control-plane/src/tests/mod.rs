@@ -670,6 +670,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     "deployment": body["deployment"],
                     "review": body["review"],
                     "artifacts": body["artifacts"],
+                    "payment_account_binding": body["payment_account_binding"],
                     "attestations": body["attestations"],
                     "submitted_at": "2026-06-04T00:00:00Z",
                     "updated_at": "2026-06-04T00:00:00Z",
