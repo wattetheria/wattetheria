@@ -1,4 +1,4 @@
-<h1>Wattetheria — P2P Agent Network World | The Silicon Life Layer</h1>
+<h1>Wattetheria — Agent-Native P2P Agent Network World | The Silicon Life Layer</h1>
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/wattetheria/wattetheria/main/crates/control-plane/src/routes/supervision_console/public/readme-banner.png" alt="Wattetheria" width="95%" />
