@@ -343,7 +343,117 @@ async fn record_mcp_tool_result(
     {
         return Err(internal_error(&error));
     }
+    if !is_error
+        && let Err(error) = record_mcp_agent_action_execution(state, tool_name, arguments).await
+    {
+        return Err(internal_error(&error));
+    }
     Ok(())
+}
+
+async fn record_mcp_agent_action_execution(
+    state: &ControlPlaneState,
+    tool_name: &str,
+    arguments: &Value,
+) -> anyhow::Result<()> {
+    let Some(event_id) = mcp_agent_event_field(arguments, "agent_event_id")
+        .or_else(|| mcp_agent_event_field(arguments, "source_event_id"))
+    else {
+        return Ok(());
+    };
+    let Some(action_type) = mcp_agent_action_execution_type(tool_name, arguments) else {
+        return Ok(());
+    };
+    if state
+        .local_db
+        .load_agent_action_commit_for_event_action(&event_id, action_type)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let public_id = arguments.get("public_id").and_then(Value::as_str);
+    let context = resolve_identity_context(state, public_id, None).await;
+    let (_controller_id, actor_public_id, _agent_identity) = contribution_actor(state, &context);
+    let (_, target_id) = mcp_tool_object(arguments);
+    state.local_db.append_agent_action_commit(
+        &wattetheria_kernel::local_db::AgentActionCommitLogEntry {
+            commit_id: Uuid::new_v4().to_string(),
+            event_id: event_id.clone(),
+            decision_id: format!("mcp:{tool_name}"),
+            action_type: action_type.to_owned(),
+            domain: mcp_agent_action_domain(action_type).to_owned(),
+            target_id,
+            expected_state: None,
+            result_state: None,
+            request_json: serde_json::to_string(&json!({
+                "source": "mcp_tool",
+                "tool_name": tool_name,
+                "agent_event_id": event_id,
+                "agent_event_type": mcp_agent_event_field(arguments, "agent_event_type"),
+                "agent_event_action": mcp_agent_event_field(arguments, "agent_event_action"),
+                "arguments": redact_mcp_receipt_value(arguments),
+            }))?,
+            result_json: serde_json::to_string(&json!({
+                "ok": true,
+                "source": "mcp_tool",
+                "tool_name": tool_name,
+                "action_type": action_type,
+            }))?,
+            status: "accepted".to_owned(),
+            actor_public_id: actor_public_id.map(str::to_owned),
+            actor_agent_did: Some(state.agent_did.clone()),
+            created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        },
+    )?;
+    Ok(())
+}
+
+fn mcp_agent_event_field(arguments: &Value, key: &str) -> Option<String> {
+    arguments
+        .get(key)
+        .or_else(|| arguments.get("body").and_then(|body| body.get(key)))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn mcp_agent_action_execution_type(tool_name: &str, arguments: &Value) -> Option<&'static str> {
+    match tool_name {
+        "post_hive_message" => {
+            if mcp_agent_event_field(arguments, "agent_event_action").as_deref() == Some("reply")
+                || arguments.get("reply_to_message_id").is_some()
+                || arguments
+                    .get("body")
+                    .is_some_and(|body| body.get("reply_to_message_id").is_some())
+            {
+                Some("hive.message.reply")
+            } else {
+                Some("hive.message.post")
+            }
+        }
+        "send_agent_dm_message" => Some("social.agent_dm_send"),
+        "accept_friend_request"
+        | "reject_friend_request"
+        | "request_agent_friend"
+        | "remove_agent_friend" => Some("social.agent_relationship_action"),
+        "authorize_agent_payment" => Some("payments.authorize"),
+        "reject_agent_payment" => Some("payments.reject"),
+        "submit_agent_payment" => Some("payments.submit"),
+        "settle_agent_payment" => Some("payments.settle"),
+        "cancel_agent_payment" => Some("payments.cancel"),
+        "publish_mission" | "publish_delegated_mission" | "publish_collective_mission" => {
+            Some("missions.publish")
+        }
+        "claim_mission" => Some("missions.claim"),
+        "complete_mission" => Some("missions.complete"),
+        "settle_mission" => Some("missions.settle"),
+        _ => None,
+    }
+}
+
+fn mcp_agent_action_domain(action_type: &str) -> &str {
+    action_type.split('.').next().unwrap_or("mcp")
 }
 
 async fn record_mcp_success_contribution(
@@ -521,6 +631,9 @@ fn mcp_argument_identifiers(arguments: &Value) -> Map<String, Value> {
         "remote_node_id",
         "subnet_id",
         "agent_did",
+        "agent_event_id",
+        "agent_event_type",
+        "agent_event_action",
     ] {
         if let Some(value) = arguments.get(key) {
             identifiers.insert(key.to_owned(), value.clone());

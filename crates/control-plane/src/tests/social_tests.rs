@@ -1181,6 +1181,74 @@ async fn agent_action_commit_requires_local_hive_subscription_for_topic_reply() 
 }
 
 #[tokio::test]
+async fn agent_action_commit_replays_mcp_topic_reply_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+    state
+        .local_db
+        .append_agent_action_commit(&wattetheria_kernel::local_db::AgentActionCommitLogEntry {
+            commit_id: "commit-mcp-topic-reply".to_string(),
+            event_id: "evt-hive-topic-replayed".to_string(),
+            decision_id: "mcp:post_hive_message".to_string(),
+            action_type: "hive.message.reply".to_string(),
+            domain: "hive".to_string(),
+            target_id: Some("local:test@crew.chat@group:crew-7".to_string()),
+            expected_state: None,
+            result_state: None,
+            request_json: "{}".to_string(),
+            result_json: "{\"ok\":true,\"source\":\"mcp_tool\"}".to_string(),
+            status: "accepted".to_string(),
+            actor_public_id: None,
+            actor_agent_did: Some(state.agent_did.clone()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        })
+        .expect("append mcp execution");
+
+    let committed = authed_post_json_with_headers(
+        app.clone(),
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-hive-topic-replayed",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "12D3KooRemotePeer",
+                "payload": {
+                    "network_id": "local:test",
+                    "feed_key": "crew.chat",
+                    "scope_hint": "group:crew-7",
+                    "message_id": "msg-remote-1"
+                },
+                "requires_commit": false
+            },
+            "decision": {
+                "decision_id": "dec-hive-topic-replayed",
+                "action": "reply",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "content": "this should not be posted again"
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-hive-topic-replayed"),
+            ("x-agent-decision-id", "dec-hive-topic-replayed"),
+        ],
+    )
+    .await;
+
+    assert_eq!(committed["ok"].as_bool(), Some(true));
+    assert_eq!(committed["source"].as_str(), Some("mcp_tool"));
+    assert!(bridge.messages.lock().await.is_empty());
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn agent_action_commit_routes_registered_hive_topic_reply_with_signed_envelope() {
     let dir = tempfile::tempdir().unwrap();

@@ -565,6 +565,7 @@ fn build_agent_event_prompt(event: &Value) -> Result<String> {
             "3. Preserve IDs from the input payload when known. ",
             "4. If more context is needed and MCP tools are available, you can use tools marked readOnly=true. ",
             "5. MCP tool use is optional; do not call tools when the input already contains enough context. ",
+            "6. If you use a write MCP tool to complete this event, pass agent_event_id, agent_event_type, and agent_event_action when the tool schema supports them. ",
             "Event type: {}. ",
             "Relevant action schema: {}. ",
             "Input: {}"

@@ -412,6 +412,58 @@ impl LocalDb {
         }
     }
 
+    pub fn load_agent_action_commit_for_event_action(
+        &self,
+        event_id: &str,
+        action_type: &str,
+    ) -> Result<Option<AgentActionCommitLogEntry>> {
+        let conn = self.conn();
+        let row = conn.query_row(
+            "SELECT commit_id,
+                    event_id,
+                    decision_id,
+                    action_type,
+                    domain,
+                    target_id,
+                    expected_state,
+                    result_state,
+                    request_json,
+                    result_json,
+                    status,
+                    actor_public_id,
+                    actor_agent_did,
+                    created_at
+             FROM agent_action_commit_log
+             WHERE event_id = ?1 AND action_type = ?2 AND status = 'accepted'
+             ORDER BY created_at DESC, commit_id DESC
+             LIMIT 1",
+            params![event_id, action_type],
+            |row| {
+                Ok(AgentActionCommitLogEntry {
+                    commit_id: row.get(0)?,
+                    event_id: row.get(1)?,
+                    decision_id: row.get(2)?,
+                    action_type: row.get(3)?,
+                    domain: row.get(4)?,
+                    target_id: row.get(5)?,
+                    expected_state: row.get(6)?,
+                    result_state: row.get(7)?,
+                    request_json: row.get(8)?,
+                    result_json: row.get(9)?,
+                    status: row.get(10)?,
+                    actor_public_id: row.get(11)?,
+                    actor_agent_did: row.get(12)?,
+                    created_at: row.get(13)?,
+                })
+            },
+        );
+        match row {
+            Ok(entry) => Ok(Some(entry)),
+            Err(QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error).context("query agent action commit log by event action"),
+        }
+    }
+
     pub fn append_agent_action_commit(&self, entry: &AgentActionCommitLogEntry) -> Result<()> {
         self.conn()
             .execute(
@@ -717,6 +769,40 @@ mod tests {
             .expect("load commit log")
             .expect("commit exists");
         assert_eq!(loaded, entry);
+    }
+
+    #[test]
+    fn agent_action_commit_log_loads_by_event_action() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let entry = AgentActionCommitLogEntry {
+            commit_id: "commit-1".to_string(),
+            event_id: "evt-1".to_string(),
+            decision_id: "mcp:post_hive_message".to_string(),
+            action_type: "hive.message.reply".to_string(),
+            domain: "hive".to_string(),
+            target_id: Some("hive-1".to_string()),
+            expected_state: None,
+            result_state: None,
+            request_json: "{}".to_string(),
+            result_json: "{\"ok\":true}".to_string(),
+            status: "accepted".to_string(),
+            actor_public_id: None,
+            actor_agent_did: Some("did:key:zAgent".to_string()),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        db.append_agent_action_commit(&entry)
+            .expect("append commit log");
+
+        let loaded = db
+            .load_agent_action_commit_for_event_action("evt-1", "hive.message.reply")
+            .expect("load commit log by event action")
+            .expect("commit exists");
+        assert_eq!(loaded, entry);
+        assert!(
+            db.load_agent_action_commit_for_event_action("evt-1", "hive.message.post")
+                .expect("load missing commit")
+                .is_none()
+        );
     }
 
     #[test]

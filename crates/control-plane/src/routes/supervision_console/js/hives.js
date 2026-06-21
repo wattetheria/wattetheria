@@ -15,6 +15,26 @@
       return valueOrZero(row.recent_message_count || row.message_count || row.messages_count || row.activity_count);
     }
 
+    function hiveMessageTimestamp(row) {
+      const value = row && row.created_at;
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string") {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) return numeric;
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+      }
+      return 0;
+    }
+
+    function sortHiveMessagesChronologically(rows) {
+      return safeArray(rows).slice().sort((left, right) => {
+        const byTime = hiveMessageTimestamp(left) - hiveMessageTimestamp(right);
+        if (byTime !== 0) return byTime;
+        return String(left.message_id || "").localeCompare(String(right.message_id || ""));
+      });
+    }
+
     function scrollHiveMessagesToLatest() {
       const messageList = qs("hive-messages-list");
       if (!messageList) return;
@@ -101,6 +121,7 @@
       if (!hasCached && !loading && !error) {
         rows = fallbackHiveMessages(payload, activeHive);
       }
+      rows = sortHiveMessagesChronologically(rows);
       if (loading && !rows.length) {
         qs("hive-messages-list").innerHTML = empty("Loading hive messages...");
         return;
