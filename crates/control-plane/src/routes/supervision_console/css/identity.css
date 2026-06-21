@@ -140,14 +140,14 @@
       word-break: break-all;
     }
 
-    /* ===== Trust verification bar ===== */
+    /* ===== Trust verification bar (inside credential header) ===== */
     .identity-trust {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.75rem 1.5rem;
-      padding: 0.8rem 1.25rem;
-      background: var(--surface-alt);
-      border-bottom: 1px solid var(--line);
+      gap: 0.7rem 1.4rem;
+      margin-top: 0.9rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.18);
     }
 
     .identity-trust-item {
@@ -167,18 +167,14 @@
       justify-content: center;
       font-size: 0.72rem;
       font-weight: 700;
-      background: var(--green-soft);
-      color: var(--green-ink);
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
     }
 
-    .identity-trust-item.pending .identity-trust-mark {
-      background: var(--amber-soft);
-      color: var(--amber-ink);
-    }
-
+    .identity-trust-item.pending .identity-trust-mark,
     .identity-trust-item.blocked .identity-trust-mark {
-      background: var(--red-soft);
-      color: var(--red-ink);
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
     }
 
     .identity-trust-text {
@@ -190,14 +186,14 @@
     .identity-trust-text strong {
       font-size: 0.8rem;
       font-weight: 600;
-      color: var(--ink);
+      color: #fff;
       overflow-wrap: anywhere;
     }
 
     .identity-trust-text em {
       font-style: normal;
       font-size: 0.7rem;
-      color: var(--faint);
+      color: rgba(255, 255, 255, 0.6);
       overflow-wrap: anywhere;
     }
 

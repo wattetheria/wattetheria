@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::auth::{authorize, internal_error};
 use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, build_signed_agent_envelope_for_nodes,
-    resolve_social_counterpart_target, resolve_social_local_context,
+    public_agent_id, resolve_social_counterpart_target, resolve_social_local_context,
 };
 use crate::state::{
     AgentPaymentAuthorizeBody, AgentPaymentProposeBody, AgentPaymentRejectBody,
@@ -1730,6 +1730,7 @@ async fn send_payment_message(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: local.agent_id,
+            source_public_id: public_agent_id(&local.public_id),
             source_display_name: local.display_name,
             target_agent_id: Some(counterpart.target_agent.clone()),
             source_node_id: local_node_id,

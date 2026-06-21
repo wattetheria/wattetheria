@@ -13,7 +13,7 @@ use crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
-    counterpart_public_id_for_remote_node, load_social_identity_maps,
+    counterpart_public_id_for_remote_node, load_social_identity_maps, public_agent_id,
     resolve_dm_counterpart_target, resolve_social_counterpart_target,
     resolve_social_counterpart_target_by_agent_did,
     resolve_social_counterpart_target_by_remote_node, resolve_social_local_context,
@@ -629,18 +629,24 @@ fn source_agent_card_is_remote(
 
 fn relationship_remote_public_id(view: &SwarmPeerRelationshipView) -> Option<String> {
     let envelope = view.agent_envelope.as_ref()?;
-    let key = if source_agent_card_is_remote(view, envelope) {
+    let source_card_is_remote = source_agent_card_is_remote(view, envelope);
+    let key = if source_card_is_remote {
         "source_public_id"
     } else {
         "target_public_id"
     };
-    envelope
+    let message_public_id = envelope
         .message
         .get(key)
         .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+        .and_then(public_agent_id);
+    if source_card_is_remote {
+        relationship_remote_source_agent_card(view)
+            .and_then(source_agent_card_public_id)
+            .or(message_public_id)
+    } else {
+        message_public_id
+    }
 }
 
 fn relationship_remote_agent_id(view: &SwarmPeerRelationshipView) -> Option<String> {
@@ -669,6 +675,15 @@ fn relationship_remote_source_agent_card(
         return None;
     }
     envelope.source_agent_card.as_ref()
+}
+
+fn source_agent_card_public_id(source_agent_card: &SwarmSourceAgentCard) -> Option<String> {
+    source_agent_card
+        .card
+        .get("metadata")
+        .and_then(|metadata| metadata.get("public_id"))
+        .and_then(Value::as_str)
+        .and_then(public_agent_id)
 }
 
 fn dm_remote_source_agent_card<'a>(
@@ -1421,9 +1436,13 @@ fn known_identity_from_source_agent_card(
     observed_at: i64,
 ) -> orchestration_service::KnownIdentitySnapshot {
     let created_at = i64::try_from(source_agent_card.issued_at).unwrap_or(observed_at);
+    let public_id = source_agent_card_public_id(source_agent_card)
+        .unwrap_or_else(|| counterpart_public_id.to_string());
     orchestration_service::KnownIdentitySnapshot {
-        public_id: counterpart_public_id.to_string(),
-        agent_did: fallback_identity.and_then(|identity| identity.agent_did.clone()),
+        public_id,
+        agent_did: fallback_identity
+            .and_then(|identity| identity.agent_did.clone())
+            .or_else(|| Some(source_agent_card.agent_id.clone())),
         display_name: fallback_identity
             .map(|identity| identity.display_name.clone())
             .or_else(|| agent_card_display_name(&source_agent_card.card))
@@ -1859,6 +1878,7 @@ fn friend_request_message_error(message: Option<&Value>) -> Option<Response> {
 
 struct SignedRelationshipActionArgs {
     local_agent_id: String,
+    local_public_id: String,
     local_display_name: Option<String>,
     target_agent_id: String,
     remote_node_id: String,
@@ -1870,6 +1890,7 @@ struct SignedRelationshipActionArgs {
 
 struct SignedDirectMessageArgs {
     local_agent_id: String,
+    local_public_id: String,
     local_display_name: Option<String>,
     target_agent_id: String,
     remote_node_id: String,
@@ -1888,6 +1909,7 @@ async fn send_signed_relationship_action_command(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: args.local_agent_id,
+            source_public_id: public_agent_id(&args.local_public_id),
             source_display_name: args.local_display_name,
             target_agent_id: Some(args.target_agent_id),
             source_node_id: local_node_id,
@@ -1917,6 +1939,7 @@ async fn send_signed_direct_message_command(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: args.local_agent_id,
+            source_public_id: public_agent_id(&args.local_public_id),
             source_display_name: args.local_display_name,
             target_agent_id: Some(args.target_agent_id),
             source_node_id: local_node_id,
@@ -2850,6 +2873,7 @@ async fn decide_friend_request(
         &state,
         SignedRelationshipActionArgs {
             local_agent_id: local.agent_id,
+            local_public_id: local.public_id.clone(),
             local_display_name: local.display_name,
             target_agent_id: counterpart.target_agent.clone(),
             remote_node_id: counterpart.remote_node.clone(),
@@ -3236,6 +3260,7 @@ async fn handle_agent_relationship_action(
         &state,
         SignedRelationshipActionArgs {
             local_agent_id,
+            local_public_id: local_public_id.clone(),
             local_display_name,
             target_agent_id: target_agent.clone(),
             remote_node_id: remote_node.clone(),
@@ -3486,6 +3511,7 @@ async fn handle_send_agent_dm_message(
         &state,
         SignedDirectMessageArgs {
             local_agent_id,
+            local_public_id: local_public_id.clone(),
             local_display_name,
             target_agent_id: target_agent.clone(),
             remote_node_id: remote_node.clone(),

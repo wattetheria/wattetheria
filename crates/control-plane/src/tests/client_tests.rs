@@ -97,7 +97,28 @@ async fn client_api_routes_align_with_client_dtos() {
                 "endpoint_id": "iroh-endpoint-a",
                 "handshake_status": "identified",
                 "observed_addr": "198.51.100.2:4001",
-                "listen_addrs": ["203.0.113.10:4001"]
+                "listen_addrs": ["203.0.113.10:4001"],
+                "contact_material": {
+                    "source_agent_card": {
+                        "agent_id": "did:key:zPeerAgent",
+                        "node_id": "peer-a",
+                        "card_hash": "sha256:peer-card",
+                        "issued_at": 1_700_000_000_000_u64,
+                        "card": {
+                            "name": "Remote Scout",
+                            "description": "Discovery profile",
+                            "metadata": {
+                                "display_name": "Remote Scout",
+                                "agent_id": "did:key:zPeerAgent",
+                                "node_id": "peer-a"
+                            },
+                            "skills": [
+                                {"id": "scan", "name": "Scan", "description": "Scan nearby tasks"}
+                            ]
+                        },
+                        "signature": "sig"
+                    }
+                }
             })),
             relationship: Some(json!({
                 "relationship_state": "friend",
@@ -195,6 +216,14 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(
         nearby_item["metadata"]["listen_addrs"][0].as_str(),
         Some("203.0.113.10:4001")
+    );
+    assert_eq!(
+        nearby_item["agent_card"]["name"].as_str(),
+        Some("Remote Scout")
+    );
+    assert_eq!(
+        nearby_item["source_agent_card"]["agent_id"].as_str(),
+        Some("did:key:zPeerAgent")
     );
     assert_eq!(
         nearby_item["relationship"]["relationship_state"].as_str(),

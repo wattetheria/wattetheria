@@ -60,6 +60,28 @@
       `;
     }
 
+    function isAgentDidAddress(value) {
+      return /^did:[a-z0-9]+:/i.test(String(value || "").trim());
+    }
+
+    function isNodeAddress(value) {
+      return /^[a-f0-9]{64}$/i.test(String(value || "").trim());
+    }
+
+    function agentPublicAddress(...candidates) {
+      for (const candidate of candidates) {
+        const value = String(candidate || "").trim();
+        if (!value || isAgentDidAddress(value) || isNodeAddress(value)) continue;
+        return value;
+      }
+      return "";
+    }
+
+    function agentPublicAddressLabel(value) {
+      const publicId = agentPublicAddress(value);
+      return publicId ? `@${publicId}` : "";
+    }
+
     function renderKpis(payload) {
       const tasks = safeArray(payload.tasks);
       const relationships = safeArray(payload.friend_relationships);

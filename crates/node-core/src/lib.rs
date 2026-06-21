@@ -22,7 +22,7 @@ use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
     NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
-    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
+    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane, social_host,
     spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
@@ -225,6 +225,9 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         stream_tx,
     )
     .await;
+    if let Err(error) = social_host::export_public_source_agent_card(&control_state).await {
+        warn!("export public source agent card failed: {error:#}");
+    }
 
     Ok(RuntimeState {
         control_bind,

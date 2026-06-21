@@ -12,7 +12,9 @@ use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::identity_context_value;
-use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
+use crate::social_host::{
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+};
 use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
     AgentPaymentRejectBody, AgentPaymentSettleBody, AgentPaymentSubmitBody,
@@ -165,10 +167,17 @@ async fn task_lifecycle_envelope_for_commit(
     target_node_id: Option<String>,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_public_id = state
+        .public_identity_registry
+        .lock()
+        .await
+        .active_for_agent_did(&state.agent_did)
+        .and_then(|identity| public_agent_id(&identity.public_id));
     build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
+            source_public_id,
             source_display_name: None,
             target_agent_id: target_agent_id.or_else(|| {
                 body.event

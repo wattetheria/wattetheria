@@ -20,7 +20,9 @@ use crate::routes::identity::{
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, message_action_type, record_contribution_event,
 };
-use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
+use crate::social_host::{
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+};
 use crate::state::{
     ControlPlaneState, HiveMessageBody, HiveMessagesQuery, HiveSubscriptionBody,
     PrivateHiveInviteBody, StreamEvent, TopicCreateBody, TopicsQuery,
@@ -80,6 +82,13 @@ pub(crate) fn context_agent_display_name(
     )
 }
 
+fn context_public_id(context: &IdentityContextView) -> Option<String> {
+    context
+        .public_identity
+        .as_ref()
+        .and_then(|identity| public_agent_id(&identity.public_id))
+}
+
 async fn hive_agent_envelope(
     state: &ControlPlaneState,
     context: &IdentityContextView,
@@ -90,6 +99,7 @@ async fn hive_agent_envelope(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: context_agent_did(state, context),
+            source_public_id: context_public_id(context),
             source_display_name: Some(context_agent_display_name(state, context)),
             target_agent_id: None,
             source_node_id: state.swarm_bridge.local_node_id().await.ok(),
@@ -253,6 +263,7 @@ async fn build_private_hive_invite_envelope(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: context_agent_did(state, context),
+            source_public_id: public_agent_id(local_public_id),
             source_display_name: Some(context_agent_display_name(state, context)),
             target_agent_id: Some(target_agent_id),
             source_node_id: state.swarm_bridge.local_node_id().await.ok(),

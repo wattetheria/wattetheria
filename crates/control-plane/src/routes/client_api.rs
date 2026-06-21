@@ -259,6 +259,15 @@ fn insert_if_some(object: &mut Map<String, Value>, key: &str, value: Option<Valu
 }
 
 fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
+    let source_agent_card = peer_source_agent_card(
+        peer.relationship.as_ref(),
+        peer.metadata.as_ref(),
+        peer.discovery.as_ref(),
+    );
+    let agent_card = source_agent_card
+        .as_ref()
+        .and_then(|card| card.get("card"))
+        .cloned();
     let node_id = peer.node_id;
     let connected = peer.connected.unwrap_or(true);
     let recently_seen = peer.recently_seen.unwrap_or(connected);
@@ -302,7 +311,23 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
     insert_if_some(&mut object, "discovery", peer.discovery);
     insert_if_some(&mut object, "metadata", peer.metadata);
     insert_if_some(&mut object, "relationship", peer.relationship);
+    insert_if_some(&mut object, "source_agent_card", source_agent_card);
+    insert_if_some(&mut object, "agent_card", agent_card);
     Value::Object(object)
+}
+
+fn peer_source_agent_card(
+    relationship: Option<&Value>,
+    metadata: Option<&Value>,
+    discovery: Option<&Value>,
+) -> Option<Value> {
+    relationship
+        .and_then(|value| value.pointer("/agent_envelope/source_agent_card"))
+        .or_else(|| relationship.and_then(|value| value.get("source_agent_card")))
+        .or_else(|| metadata.and_then(|value| value.pointer("/contact_material/source_agent_card")))
+        .or_else(|| metadata.and_then(|value| value.get("source_agent_card")))
+        .or_else(|| discovery.and_then(|value| value.get("source_agent_card")))
+        .cloned()
 }
 
 fn iroh_endpoint_id(value: &Value) -> Option<&str> {

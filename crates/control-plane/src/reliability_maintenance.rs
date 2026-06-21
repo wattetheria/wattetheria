@@ -2,7 +2,7 @@ use crate::routes::civilization::reconcile_swarm_relationship_views;
 use crate::routes::servicenet::async_jobs::maintain_servicenet_async_invocations;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, load_social_identity_maps,
-    resolve_social_local_context, with_social_defaults,
+    public_agent_id, resolve_social_local_context, with_social_defaults,
 };
 use crate::state::ControlPlaneState;
 use anyhow::Context;
@@ -203,6 +203,7 @@ async fn build_retry_friend_request_envelope(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: local.agent_id,
+            source_public_id: public_agent_id(&request.local_public_id),
             source_display_name: local.display_name,
             target_agent_id: Some(target_agent_id),
             source_node_id: local_node_id,

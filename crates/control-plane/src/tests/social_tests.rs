@@ -7,6 +7,66 @@ const TEST_X402_BASE_SEPOLIA_USDC: &str = "0x036CbD53842c5426634e7929541eC2318f3
 const TEST_X402_TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
+#[tokio::test]
+async fn public_source_agent_card_export_writes_signed_discovery_card() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for("wattswarm-node-1".to_owned()));
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+    let _captain_public_id = bootstrap_broker_identity(app, &token, &identity.agent_did).await;
+    let card = crate::social_host::export_public_source_agent_card(&state)
+        .await
+        .expect("export source agent card");
+    let active_public_id = state
+        .public_identity_registry
+        .lock()
+        .await
+        .active_for_agent_did(&identity.agent_did)
+        .expect("active identity")
+        .public_id;
+
+    let path = state
+        .data_dir
+        .join(crate::social_host::PUBLIC_SOURCE_AGENT_CARD_DIR)
+        .join(crate::social_host::PUBLIC_SOURCE_AGENT_CARD_FILE);
+    let exported: SwarmSourceAgentCard =
+        serde_json::from_slice(&fs::read(path).expect("read exported card")).unwrap();
+    assert_eq!(exported, card);
+    assert_eq!(exported.agent_id, identity.agent_did);
+    assert_eq!(exported.node_id.as_deref(), Some("wattswarm-node-1"));
+    assert_eq!(
+        exported.card["metadata"]["display_name"].as_str(),
+        exported.card["name"].as_str()
+    );
+    assert_eq!(
+        exported.card["metadata"]["agent_id"].as_str(),
+        Some(identity.agent_did.as_str())
+    );
+    assert_eq!(
+        exported.card["metadata"]["public_id"].as_str(),
+        Some(active_public_id.as_str())
+    );
+    let card_payload = ExpectedSignedSourceAgentCardPayload {
+        agent_id: &exported.agent_id,
+        node_id: exported.node_id.as_ref(),
+        card_hash: &exported.card_hash,
+        issued_at: exported.issued_at,
+    };
+    assert!(
+        verify_payload(
+            &card_payload,
+            exported.signature.as_deref().expect("missing signature"),
+            &state.identity.public_key
+        )
+        .unwrap(),
+        "exported source agent card signature must verify"
+    );
+}
+
 async fn mock_x402_settle_rpc(
     axum::extract::State(sender_address): axum::extract::State<String>,
     Json(payload): Json<Value>,
@@ -150,6 +210,14 @@ async fn agent_social_routes_sign_and_forward_friend_and_dm_commands() {
             .as_ref()
             .and_then(|card| card.card["metadata"]["agent_id"].as_str()),
         Some(identity.agent_did.as_str())
+    );
+    assert_eq!(
+        relationship_command
+            .agent_envelope
+            .source_agent_card
+            .as_ref()
+            .and_then(|card| card.card["metadata"]["public_id"].as_str()),
+        Some(local_public_id.as_str())
     );
     assert_eq!(
         relationship_command
@@ -2328,6 +2396,9 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                     card: json!({
                         "name": "Remote Agent Alice",
                         "description": "Remote agent profile from the accepted relationship action.",
+                        "metadata": {
+                            "public_id": remote_public_id.clone()
+                        },
                         "skills": [
                             {"id": "social-direct-message", "name": "Social direct message"},
                             {"id": "task-participation", "name": "Task participation"}
@@ -2338,7 +2409,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                 message: json!({
                     "request_id": "req-inbound-1",
                     "correlation_id": "corr-inbound-1",
-                    "source_public_id": remote_public_id.clone()
+                    "source_public_id": remote_identity.agent_did.clone()
                 }),
                 extensions: None,
                 signature: Some("sig-1".to_string()),
@@ -2386,6 +2457,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                         card: json!({
                             "name": "Remote Agent Alice Renamed",
                             "metadata": {
+                                "public_id": remote_public_id.clone(),
                                 "display_name": "Remote Agent Alice Renamed"
                             }
                         }),
@@ -2394,7 +2466,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
                     message: json!({
                         "thread_id": transport_thread_id,
                         "message_id": "dm-msg-1",
-                        "source_public_id": remote_public_id.clone()
+                        "source_public_id": remote_identity.agent_did.clone()
                     }),
                     extensions: None,
                     signature: Some("sig-2".to_string()),

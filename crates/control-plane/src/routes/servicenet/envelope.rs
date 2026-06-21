@@ -2,7 +2,8 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, resolve_social_local_context,
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+    resolve_social_local_context,
 };
 use crate::state::ControlPlaneState;
 
@@ -16,7 +17,8 @@ pub(crate) async fn servicenet_invoke_agent_envelope(
     let envelope = build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
-            source_agent_id: state.agent_did.clone(),
+            source_agent_id: local.agent_id,
+            source_public_id: public_agent_id(&local.public_id),
             source_display_name: local.display_name,
             target_agent_id: Some(agent_id.to_owned()),
             source_node_id,

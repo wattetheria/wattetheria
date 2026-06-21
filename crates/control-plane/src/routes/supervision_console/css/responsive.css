@@ -48,9 +48,7 @@
         max-height: 18rem;
       }
 
-      .dm-detail-hero,
-      .dm-detail-grid,
-      .dm-detail-field {
+      .dm-detail-hero {
         grid-template-columns: 1fr;
       }
 
@@ -65,5 +63,18 @@
       header {
         align-items: flex-start;
         flex-direction: column;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .dm-detail-card,
+      .dm-agent-detail-card {
+        width: calc(100vw - 1.5rem);
+        max-height: calc(100dvh - 1.5rem);
+      }
+
+      .dm-detail-grid,
+      .dm-detail-field {
+        grid-template-columns: 1fr;
       }
     }

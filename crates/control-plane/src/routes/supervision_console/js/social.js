@@ -8,24 +8,28 @@
       if (!qs("friends-list")) return;
       const rows = safeArray(payload.friend_relationships)
         .filter((row) => !row.pending_inbound && !row.pending_outbound && row.relationship_state !== "blocked");
-      renderList("friends-list", rows, "No friends recorded.", (row) => `
-        <div class="row">
-          <div class="row-head">
-            <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_agent_name || row.counterpart_agent_did || row.counterpart_public_id || row.remote_node_id)}</div>
-            ${pill(row.relationship_state || row.relationship_kind || "friend", row.status || row.relationship_state || row.relationship_kind)}
+      renderList("friends-list", rows, "No friends recorded.", (row) => {
+        const publicId = agentPublicAddress(row.counterpart_agent_public_id, row.counterpart_public_id, row.public_id);
+        const publicLabel = agentPublicAddressLabel(publicId);
+        return `
+          <div class="row">
+            <div class="row-head">
+              <div class="row-title">${escapeHtml(row.counterpart_display_name || row.counterpart_agent_name || publicId || row.counterpart_agent_did || row.remote_node_id)}</div>
+              ${pill(row.relationship_state || row.relationship_kind || "friend", row.status || row.relationship_state || row.relationship_kind)}
+            </div>
+            <div class="row-body">
+              Public ${escapeHtml(compactId(publicLabel, 30))}
+              | Agent ${escapeHtml(compactId(row.counterpart_agent_did, 30))}
+              | Node ${escapeHtml(compactId(row.remote_node_id, 30))}
+            </div>
+            <div class="row-meta">
+              <span>${escapeHtml(valueOrDash(row.status))}</span>
+              <span>${escapeHtml(valueOrDash(row.network_id))}</span>
+              ${skillPreview(row.counterpart_skills) ? `<span>Skills ${escapeHtml(skillPreview(row.counterpart_skills))}</span>` : ""}
+            </div>
           </div>
-          <div class="row-body">
-            Public ${escapeHtml(compactId(row.counterpart_agent_public_id || row.counterpart_public_id || row.public_id, 30))}
-            | Agent ${escapeHtml(compactId(row.counterpart_agent_did, 30))}
-            | Node ${escapeHtml(compactId(row.remote_node_id, 30))}
-          </div>
-          <div class="row-meta">
-            <span>${escapeHtml(valueOrDash(row.status))}</span>
-            <span>${escapeHtml(valueOrDash(row.network_id))}</span>
-            ${skillPreview(row.counterpart_skills) ? `<span>Skills ${escapeHtml(skillPreview(row.counterpart_skills))}</span>` : ""}
-          </div>
-        </div>
-      `);
+        `;
+      });
     }
 
     function matchingFriendForConversation(payload, conversation) {
@@ -110,7 +114,14 @@
 
     function friendRequestPublicId(row) {
       const agent = friendRequestAgent(row);
-      return row.counterpart_agent_public_id || row.counterpart_public_id || agent.public_id;
+      const card = friendRequestAgentCard(row);
+      const metadata = card.metadata || {};
+      return agentPublicAddress(
+        metadata.public_id,
+        row.counterpart_agent_public_id,
+        row.counterpart_public_id,
+        agent.public_id
+      );
     }
 
     function friendRequestAgentDid(row) {
@@ -149,6 +160,7 @@
       const network = row.network || {};
       const displayName = friendRequestDisplayName(row);
       const publicId = friendRequestPublicId(row);
+      const publicLabel = agentPublicAddressLabel(publicId);
       const agentDid = friendRequestAgentDid(row);
       const remoteNodeId = friendRequestRemoteNode(row);
       const status = network.status || row.state || "pending";
@@ -161,12 +173,12 @@
         title: displayName,
         statusLabel: row.direction || "inbound",
         statusClass: row.state || "pending",
-        subtitle: compactId(publicId, 42),
+        subtitle: compactId(publicLabel, 42),
         meta: [valueOrDash(status), valueOrDash(networkLabel)],
         description: description,
         sections: [
           { title: "Public Identity", fields: [
-            { label: "Public", value: compactId(publicId, 52) },
+            { label: "Public", value: compactId(publicLabel, 52) },
             { label: "Agent", value: compactId(agentDid, 52) },
             { label: "Node", value: compactId(remoteNodeId, 52) },
           ] },
@@ -261,13 +273,15 @@
     function dmCounterpartPublicId(friend, row) {
       const message = dmMessageEnvelope(row);
       const localPublicId = publicIdEl.value;
-      return friend.counterpart_agent_public_id
-        || friend.counterpart_public_id
-        || friend.public_id
-        || [row.counterpart_public_id, message.source_public_id, message.target_public_id]
-          .find((value) => value && value !== localPublicId && !isNodeId(value))
-        || row.counterpart_public_id
-        || row.remote_node_id;
+      return agentPublicAddress(
+        friend.counterpart_agent_public_id,
+        friend.counterpart_public_id,
+        friend.public_id
+      )
+        || agentPublicAddress(
+          ...[row.counterpart_public_id, message.source_public_id, message.target_public_id]
+            .filter((value) => value && value !== localPublicId)
+        );
     }
 
     function dmRemoteNodeId(friend, row) {
@@ -447,7 +461,15 @@
         || detail.counterpart_public_id
         || detail.remote_node_id
         || conversation.label);
-      const publicId = conversation.counterpartPublicId || detail.counterpart_agent_public_id || detail.counterpart_public_id;
+      const publicId = agentPublicAddress(
+        detail.agent_card?.metadata?.public_id,
+        detail.source_agent_card?.card?.metadata?.public_id,
+        conversation.counterpartPublicId,
+        detail.counterpart_agent_public_id,
+        detail.counterpart_public_id,
+        detail.public_id
+      );
+      const publicLabel = agentPublicAddressLabel(publicId);
       const agentDid = detail.counterpart_agent_did || detail.counterpart_agent_name || "-";
       const remoteNodeId = conversation.remoteNodeId || detail.remote_node_id;
       const status = detail.status || detail.relationship_state || detail.relationship_kind || "friend";
@@ -461,12 +483,12 @@
         title: displayName,
         statusLabel: relationshipLabel,
         statusClass: relationshipClass,
-        subtitle: compactId(publicId, 42),
+        subtitle: compactId(publicLabel, 42),
         meta: [valueOrDash(status), valueOrDash(network)],
         description: description,
         sections: [
           { title: "Public Identity", fields: [
-            { label: "Public", value: compactId(publicId, 52) },
+            { label: "Public", value: compactId(publicLabel, 52) },
             { label: "Agent", value: compactId(agentDid, 52) },
             { label: "Node", value: compactId(remoteNodeId, 52) },
           ] },
@@ -494,7 +516,7 @@
             <span>
               <span class="row-title">${escapeHtml(displayName)}</span>
               <span class="row-body">
-                Public ${escapeHtml(compactId(publicId, 38))}
+                Public ${escapeHtml(compactId(publicLabel, 38))}
                 | Node ${escapeHtml(compactId(remoteNodeId, 34))}
               </span>
             </span>

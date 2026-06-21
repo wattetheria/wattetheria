@@ -40,8 +40,7 @@
                   <div class="identity-cred-handle">${escapeHtml(agentAlias || publicId || "-")}</div>
                 </div>
               </div>
-            </div>
-            <div class="identity-trust" aria-label="Identity protection">
+              <div class="identity-trust" aria-label="Identity protection">
               ${protectionBadges.map((badge) => `
                 <div class="identity-trust-item ${escapeHtml(badge.className)}">
                   <span class="identity-trust-mark" aria-hidden="true">${badge.className === "ready" ? "&#10003;" : "!"}</span>
@@ -51,6 +50,7 @@
                   </span>
                 </div>
               `).join("")}
+              </div>
             </div>
             <div class="identity-card-body">
               <div class="identity-spec-grid">

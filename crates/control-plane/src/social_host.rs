@@ -3,6 +3,8 @@ use chrono::Utc;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fs;
+use std::time::Duration;
 use wattetheria_social::domain::identities::LocalIdentityContext;
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
 use wattetheria_social::ports::repositories::{
@@ -18,6 +20,10 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmRelationshipAction,
     SwarmRelationshipActionCommand, SwarmSourceAgentCard,
 };
+
+pub const PUBLIC_SOURCE_AGENT_CARD_DIR: &str = ".agent-participation";
+pub const PUBLIC_SOURCE_AGENT_CARD_FILE: &str = "agent-card.json";
+const PUBLIC_SOURCE_AGENT_CARD_NODE_ID_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub(crate) struct SocialLocalContext {
@@ -66,6 +72,7 @@ struct SignedSourceAgentCardPayload<'a> {
 
 pub(crate) struct SignedAgentEnvelopeArgs {
     pub source_agent_id: String,
+    pub source_public_id: Option<String>,
     pub source_display_name: Option<String>,
     pub target_agent_id: Option<String>,
     pub source_node_id: Option<String>,
@@ -161,6 +168,7 @@ impl WattetheriaTransportAdapter {
             &self.state,
             SignedAgentEnvelopeArgs {
                 source_agent_id: local.agent_id,
+                source_public_id: public_agent_id(&local.public_id),
                 source_display_name: local.display_name,
                 target_agent_id: Some(target_agent),
                 source_node_id: local_node_id,
@@ -249,6 +257,7 @@ impl TransportPort for WattetheriaTransportAdapter {
             &self.state,
             SignedAgentEnvelopeArgs {
                 source_agent_id: local.agent_id,
+                source_public_id: public_agent_id(&local.public_id),
                 source_display_name: local.display_name,
                 target_agent_id: Some(target_agent),
                 source_node_id: local_node_id,
@@ -277,10 +286,11 @@ pub(crate) async fn resolve_social_local_context(
     public_id: Option<&str>,
 ) -> SocialLocalContext {
     let context = resolve_identity_context(state, public_id, None).await;
-    let public_id = context.public_identity.as_ref().map_or_else(
-        || context.public_memory_owner.controller.clone(),
-        |identity| identity.public_id.clone(),
-    );
+    let public_id = context
+        .public_identity
+        .as_ref()
+        .and_then(|identity| public_agent_id(&identity.public_id))
+        .unwrap_or_default();
     let agent_id = context
         .public_identity
         .as_ref()
@@ -534,6 +544,7 @@ pub(crate) fn build_signed_agent_envelope_with_optional_target(
             build_source_agent_card(
                 state,
                 agent_id,
+                args.source_public_id.as_deref(),
                 args.source_display_name.as_deref(),
                 args.source_node_id.as_ref(),
             )
@@ -574,9 +585,46 @@ pub(crate) fn build_signed_agent_envelope_for_nodes(
     build_signed_agent_envelope_with_optional_target(state, args)
 }
 
+pub async fn export_public_source_agent_card(
+    state: &ControlPlaneState,
+) -> anyhow::Result<SwarmSourceAgentCard> {
+    let local = resolve_social_local_context(state, None).await;
+    let source_node_id = tokio::time::timeout(
+        PUBLIC_SOURCE_AGENT_CARD_NODE_ID_TIMEOUT,
+        state.swarm_bridge.local_node_id(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
+    let card = build_source_agent_card(
+        state,
+        &local.agent_id,
+        public_agent_id(&local.public_id).as_deref(),
+        local.display_name.as_deref(),
+        source_node_id.as_ref(),
+    )?;
+    write_public_source_agent_card(state, &card)?;
+    Ok(card)
+}
+
+fn write_public_source_agent_card(
+    state: &ControlPlaneState,
+    card: &SwarmSourceAgentCard,
+) -> anyhow::Result<()> {
+    let dir = state.data_dir.join(PUBLIC_SOURCE_AGENT_CARD_DIR);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(PUBLIC_SOURCE_AGENT_CARD_FILE);
+    let nonce = Utc::now().timestamp_millis().max(0);
+    let tmp_path = dir.join(format!(".{PUBLIC_SOURCE_AGENT_CARD_FILE}.{nonce}.tmp"));
+    fs::write(&tmp_path, serde_json::to_vec_pretty(card)?)?;
+    fs::rename(tmp_path, path)?;
+    Ok(())
+}
+
 fn build_source_agent_card(
     state: &ControlPlaneState,
     agent_id: &str,
+    public_id: Option<&str>,
     display_name: Option<&str>,
     node_id: Option<&String>,
 ) -> anyhow::Result<SwarmSourceAgentCard> {
@@ -638,6 +686,11 @@ fn build_source_agent_card(
             "public_key": state.identity.public_key
         }
     });
+    if let Some(public_id) = public_id.and_then(public_agent_id)
+        && let Some(metadata) = card.get_mut("metadata").and_then(Value::as_object_mut)
+    {
+        metadata.insert("public_id".to_string(), Value::String(public_id));
+    }
     if let Some(display_name) = display_name
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -697,4 +750,22 @@ pub(crate) fn with_social_defaults<const N: usize>(
         object.entry(key.to_owned()).or_insert(value);
     }
     Value::Object(object)
+}
+
+pub(crate) fn public_agent_id(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || is_did(value) || is_node_id(value) {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn is_did(value: &str) -> bool {
+    value
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("did:"))
+}
+
+fn is_node_id(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }

@@ -57,6 +57,7 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
         &state,
         crate::social_host::SignedAgentEnvelopeArgs {
             source_agent_id: caller_agent_id.clone(),
+            source_public_id: Some("pub_caller".to_owned()),
             source_display_name: Some("Caller Agent".to_owned()),
             target_agent_id: Some("stripe-agent".to_owned()),
             source_node_id,

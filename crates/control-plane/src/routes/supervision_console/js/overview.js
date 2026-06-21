@@ -41,6 +41,35 @@
         || at(node, ["relationship", "last_action"]);
     }
 
+    function nearbySourceAgentCard(node) {
+      return node.source_agent_card
+        || at(node, ["relationship", "agent_envelope", "source_agent_card"])
+        || at(node, ["metadata", "contact_material", "source_agent_card"])
+        || at(node, ["discovery", "source_agent_card"])
+        || {};
+    }
+
+    function nearbyAgentCard(node) {
+      const sourceAgentCard = nearbySourceAgentCard(node);
+      return node.agent_card || sourceAgentCard.card || {};
+    }
+
+    function nearbyAgentDisplayName(node, fallback) {
+      const card = nearbyAgentCard(node);
+      const metadata = card.metadata || {};
+      return card.name
+        || metadata.display_name
+        || node.display_name
+        || node.name
+        || fallback;
+    }
+
+    function nearbySkillLabels(card) {
+      return safeArray(card.skills)
+        .map((skill) => skill.name || skill.id || skill.description)
+        .filter((value) => value != null && value !== "");
+    }
+
     function buildNearbyRows(payload) {
       const rows = [];
       const seen = new Set();
@@ -57,6 +86,9 @@
         const lastSeenLabel = nearbyLastSeenLabel(node.last_seen_age_ms);
         const sourceKind = node.source_kind || at(node, ["discovery", "source_kind"]);
         const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
+        const sourceAgentCard = nearbySourceAgentCard(node);
+        const agentCard = nearbyAgentCard(node);
+        const displayName = nearbyAgentDisplayName(node, nodeId);
         const connectionLabel = connected ? "online" : (stale ? "stale" : "not connected");
         const sourceLabel = sourceKind ? `last source: ${sourceKind}` : "";
         const metaLines = [connectionLabel];
@@ -67,7 +99,9 @@
           node_id: nodeId,
           raw: node,
           kind: "node",
-          name: node.display_name || node.name || nodeId,
+          name: displayName,
+          agent_card: agentCard,
+          source_agent_card: sourceAgentCard,
           status: node.status || relationshipState || (connected ? "online" : (stale ? "stale" : "discovered")),
           connected,
           recently_seen: recentlySeen,
@@ -157,10 +191,11 @@
       return rows.map((row) => {
         const status = nearbyStatus(row);
         const fullId = row.node_id || row.name || "";
+        const displayName = row.name || fullId;
         return `
           <tr class="nearby-row" data-nearby-node="${escapeHtml(fullId)}" tabindex="0" role="button" title="View agent card">
             <td>${pill(status, status)}</td>
-            <td class="nearby-cell-id" title="${escapeHtml(fullId)}">${escapeHtml(compactId(fullId, 22))}</td>
+            <td class="nearby-cell-id" title="${escapeHtml(fullId)}">${escapeHtml(compactId(displayName, 22))}</td>
             <td class="nearby-cell-kind">${escapeHtml(row.kind || "node")}</td>
             <td class="nearby-cell-age">${escapeHtml(nearbyAgeShort(row.last_seen_age_ms))}</td>
             <td class="nearby-cell-source">${escapeHtml(valueOrDash(row.source_kind))}</td>
@@ -171,14 +206,32 @@
 
     function nearbyDetailCardHtml(row) {
       const node = row.raw || {};
-      const displayName = row.name || row.node_id || "agent";
+      const card = row.agent_card || nearbyAgentCard(node);
+      const sourceAgentCard = row.source_agent_card || nearbySourceAgentCard(node);
+      const metadata = card.metadata || {};
+      const displayName = row.name || nearbyAgentDisplayName(node, row.node_id || "agent");
       const status = nearbyStatus(row);
       const fullId = row.node_id || "";
       const endpoint = node.endpoint || at(node, ["metadata", "endpoint_id"]) || at(node, ["discovery", "endpoint_id"]);
-      const publicKey = node.public_key || at(node, ["metadata", "public_key"]);
+      const publicKey = node.public_key || metadata.public_key || at(node, ["metadata", "public_key"]);
+      const agentId = sourceAgentCard.agent_id || metadata.agent_id || node.agent_id;
+      const publicAddress = agentPublicAddress(
+        sourceAgentCard.public_id,
+        at(sourceAgentCard, ["card", "metadata", "public_id"]),
+        metadata.public_id,
+        node.public_id,
+        at(node, ["relationship", "counterpart_agent_public_id"]),
+        at(node, ["relationship", "counterpart_public_id"]),
+        at(node, ["metadata", "public_id"]),
+        at(node, ["discovery", "public_id"])
+      );
+      const publicAddressLabel = agentPublicAddressLabel(publicAddress);
+      const sourceCardHash = sourceAgentCard.card_hash;
+      const sourceCardIssued = sourceAgentCard.issued_at ? formatTime(sourceAgentCard.issued_at) : "";
       const lastSeen = nearbyLastSeenLabel(row.last_seen_age_ms) || "-";
       const updatedAt = row.updated_at ? formatTime(row.updated_at) : "-";
       const connection = row.connected ? "connected" : (row.stale ? "stale" : "not connected");
+      const skills = nearbySkillLabels(card);
       return renderAgentDetailCard({
         avatarSeed: displayName,
         title: compactId(displayName, 28),
@@ -186,11 +239,19 @@
         statusClass: status,
         subtitle: compactId(fullId, 48),
         meta: [connection, lastSeen, row.source_kind],
+        description: card.description,
         sections: [
           { title: "Identity", fields: [
+            { label: "Public", value: compactId(publicAddressLabel, 52) },
+            { label: "Agent", value: compactId(agentId, 52) },
             { label: "Node", value: compactId(fullId, 52) },
             { label: "Endpoint", value: compactId(endpoint, 52) },
             { label: "Public Key", value: compactId(publicKey, 52) },
+          ] },
+          { title: "Agent Card", fields: [
+            { label: "Name", value: displayName },
+            { label: "Hash", value: compactId(sourceCardHash, 52) },
+            { label: "Issued", value: sourceCardIssued },
           ] },
           { title: "Network", fields: [
             { label: "Connection", value: connection },
@@ -200,6 +261,16 @@
             { label: "Updated", value: updatedAt },
           ] },
         ],
+        extra: `
+          <section class="dm-detail-section dm-detail-skills">
+            <h4>Skills</h4>
+            <div class="dm-detail-skill-list">
+              ${skills.length
+                ? skills.map((skill) => `<span>${escapeHtml(skill)}</span>`).join("")
+                : "<span>-</span>"}
+            </div>
+          </section>
+        `,
         modalAttr: "data-nearby-detail-modal",
         closeAttr: "data-nearby-detail-close",
       });

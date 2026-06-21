@@ -139,17 +139,18 @@
       z-index: 50;
       display: grid;
       place-items: center;
-      padding: 1.5rem;
+      overflow: hidden;
+      padding: clamp(0.75rem, 2vw, 1.5rem);
       background: rgba(17, 24, 39, 0.45);
     }
 
     .dm-detail-card {
       display: grid;
-      gap: 0.95rem;
-      width: min(50rem, 100%);
-      max-height: min(34rem, 86vh);
-      overflow: auto;
-      padding: 1.5rem;
+      gap: clamp(0.7rem, 1.4vh, 0.95rem);
+      width: min(72rem, calc(100vw - 3rem));
+      max-height: calc(100dvh - 3rem);
+      overflow: hidden;
+      padding: clamp(1rem, 2vh, 1.5rem);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
       background: var(--surface);
@@ -157,8 +158,8 @@
     }
 
     .dm-agent-detail-card {
-      max-height: none;
-      overflow: visible;
+      max-height: calc(100dvh - 3rem);
+      overflow: hidden;
     }
 
     .dm-detail-hero {
@@ -237,15 +238,16 @@
 
     .dm-detail-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.95rem;
+      grid-template-columns: repeat(auto-fit, minmax(min(18rem, 100%), 1fr));
+      gap: clamp(0.7rem, 1.4vh, 0.95rem);
+      align-items: start;
     }
 
     .dm-detail-section {
       display: grid;
-      gap: 0.6rem;
+      gap: clamp(0.45rem, 1vh, 0.6rem);
       min-width: 0;
-      padding: 1rem;
+      padding: clamp(0.75rem, 1.5vh, 1rem);
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--surface-inset);
@@ -263,9 +265,9 @@
     .dm-detail-field {
       display: grid;
       grid-template-columns: minmax(5.5rem, 0.42fr) minmax(0, 1fr);
-      gap: 0.7rem;
+      gap: clamp(0.45rem, 1vh, 0.7rem);
       align-items: baseline;
-      padding-top: 0.55rem;
+      padding-top: clamp(0.35rem, 1vh, 0.55rem);
       border-top: 1px solid var(--line-soft);
     }
 
@@ -303,6 +305,31 @@
       min-height: 2rem;
       padding: 0.3rem 0.7rem;
       font-size: 0.78rem;
+    }
+
+    @media (max-height: 760px) {
+      .dm-detail-avatar {
+        width: 3.25rem;
+      }
+
+      .dm-detail-title-row h3 {
+        font-size: 1.08rem;
+      }
+
+      .dm-detail-title-block p,
+      .dm-detail-description {
+        font-size: 0.82rem;
+        line-height: 1.28;
+      }
+
+      .dm-detail-section h4,
+      .dm-detail-field span {
+        font-size: 0.68rem;
+      }
+
+      .dm-detail-field strong {
+        font-size: 0.9rem;
+      }
     }
 
     .friend-request-card {

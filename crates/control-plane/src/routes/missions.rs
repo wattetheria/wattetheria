@@ -17,7 +17,9 @@ use crate::routes::settlement_delegation::{
     normalize_publish_delegation, payload_with_settlement_delegation,
     settlement_delegation_from_payload,
 };
-use crate::social_host::{SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes};
+use crate::social_host::{
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+};
 use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
     StreamEvent, agent_commit_context_from_headers,
@@ -313,6 +315,7 @@ fn non_empty_string(value: Option<&String>) -> Option<String> {
 
 struct TaskAgentEnvelopeArgs {
     source_agent_id: String,
+    source_public_id: Option<String>,
     source_display_name: Option<String>,
     target_agent_id: Option<String>,
     source_node_id: Option<String>,
@@ -328,6 +331,7 @@ struct MissionLifecycleEnvelopeArgs {
     mission_feed_key: String,
     mission_scope_hint: String,
     source_agent_id: String,
+    source_public_id: Option<String>,
     source_display_name: Option<String>,
     target_agent_id: Option<String>,
     target_node_id: Option<String>,
@@ -350,6 +354,7 @@ fn task_agent_envelope(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: args.source_agent_id,
+            source_public_id: args.source_public_id,
             source_display_name: args.source_display_name,
             target_agent_id: args.target_agent_id,
             source_node_id: args.source_node_id,
@@ -388,6 +393,7 @@ async fn build_mission_lifecycle_envelope(
         state,
         TaskAgentEnvelopeArgs {
             source_agent_id: args.source_agent_id.clone(),
+            source_public_id: args.source_public_id,
             source_display_name: args.source_display_name,
             target_agent_id: args.target_agent_id.clone(),
             source_node_id: Some(source_node_id.clone()),
@@ -437,6 +443,21 @@ async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) 
         .into_iter()
         .find(|identity| identity.active && identity.agent_did.as_deref() == Some(agent_did))
         .map(|identity| identity.display_name)
+}
+
+async fn agent_public_id_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {
+    let agent_did = agent_did.trim();
+    if agent_did.is_empty() {
+        return None;
+    }
+    state
+        .public_identity_registry
+        .lock()
+        .await
+        .list()
+        .into_iter()
+        .find(|identity| identity.active && identity.agent_did.as_deref() == Some(agent_did))
+        .and_then(|identity| public_agent_id(&identity.public_id))
 }
 
 fn publisher_agent_did_from_claim(body: &MissionClaimBody) -> Option<String> {
@@ -1333,6 +1354,7 @@ async fn publish_mission_task_to_swarm(
     mission: &CivilMission,
 ) -> Result<TaskContract, Response> {
     let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
+    let publisher_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let publisher_wattswarm_node_id = state
         .swarm_bridge
         .local_node_id()
@@ -1361,6 +1383,7 @@ async fn publish_mission_task_to_swarm(
         state,
         TaskAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
+            source_public_id: publisher_public_id,
             source_display_name: publisher_display_name.clone(),
             target_agent_id: None,
             source_node_id: Some(publisher_wattswarm_node_id.clone()),
@@ -1395,6 +1418,7 @@ fn network_claim_agent_envelope(
     route: &NetworkMissionClaimRoute,
     body: &MissionClaimBody,
     execution_id: &str,
+    source_public_id: Option<String>,
     source_display_name: Option<String>,
     source_node_id: Option<String>,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
@@ -1402,6 +1426,7 @@ fn network_claim_agent_envelope(
         state,
         TaskAgentEnvelopeArgs {
             source_agent_id: body.agent_did.clone(),
+            source_public_id,
             source_display_name,
             target_agent_id: publisher_agent_did_from_claim(body),
             source_node_id,
@@ -1449,6 +1474,7 @@ async fn publish_claim_approved_lifecycle_notice(
     };
     let execution_id = claim_route_execution_id(body)
         .unwrap_or_else(|| mission_execution_id(&mission.mission_id, agent_did));
+    let source_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let envelope = build_mission_lifecycle_envelope(
         state,
@@ -1459,6 +1485,7 @@ async fn publish_claim_approved_lifecycle_notice(
             mission_feed_key: mission_feed_key.clone(),
             mission_scope_hint: mission_scope_hint.clone(),
             source_agent_id: state.agent_did.clone(),
+            source_public_id,
             source_display_name,
             target_agent_id: Some(agent_did.to_owned()),
             target_node_id: target_node_id.clone(),
@@ -1535,6 +1562,7 @@ async fn publish_mission_completed_lifecycle_notice(
     state: &ControlPlaneState,
     args: MissionCompletedLifecycleArgs,
 ) -> anyhow::Result<Value> {
+    let source_public_id = agent_public_id_for_did(state, &args.agent_did).await;
     let source_display_name = agent_display_name_for_did(state, &args.agent_did).await;
     let execution_id = args
         .execution_id
@@ -1549,6 +1577,7 @@ async fn publish_mission_completed_lifecycle_notice(
             mission_feed_key: args.mission_feed_key.clone(),
             mission_scope_hint: args.mission_scope_hint.clone(),
             source_agent_id: args.agent_did.clone(),
+            source_public_id,
             source_display_name,
             target_agent_id: args.publisher_agent_did.clone(),
             target_node_id: args.publisher_wattswarm_node_id.clone(),
@@ -1639,6 +1668,7 @@ async fn publish_settled_lifecycle_notice(
         })
         .unwrap_or_else(|| mission_execution_id(&mission.mission_id, "unknown"));
     let target_node_id = mission_lifecycle_target_node_id_from_settle(body);
+    let source_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let envelope = build_mission_lifecycle_envelope(
         state,
@@ -1649,6 +1679,7 @@ async fn publish_settled_lifecycle_notice(
             mission_feed_key: mission_feed_key.clone(),
             mission_scope_hint: mission_scope_hint.clone(),
             source_agent_id: state.agent_did.clone(),
+            source_public_id,
             source_display_name,
             target_agent_id: target_agent_id.clone(),
             target_node_id: target_node_id.clone(),
@@ -1753,11 +1784,13 @@ async fn finalize_mission_task_before_settle(
         .or(mission.completed_by.as_deref())
         .map(ToOwned::to_owned);
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
     let agent_envelope = match task_agent_envelope(
         state,
         TaskAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
+            source_public_id,
             source_display_name,
             target_agent_id: target_agent_did.clone(),
             source_node_id: local_node_id,
@@ -2152,12 +2185,14 @@ async fn claim_network_mission(
             Ok(value) => value,
             Err(response) => return response,
         };
+    let source_public_id = agent_public_id_for_did(&state, &body.agent_did).await;
     let source_display_name = agent_display_name_for_did(&state, &body.agent_did).await;
     let agent_envelope = match network_claim_agent_envelope(
         &state,
         &route,
         &body,
         &execution_id,
+        source_public_id,
         source_display_name,
         Some(subscriber_node_id.clone()),
     ) {
@@ -2337,6 +2372,7 @@ async fn dispatch_local_mission_transition_to_swarm(
     agent_did: &str,
 ) -> anyhow::Result<Value> {
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let source_public_id = agent_public_id_for_did(state, agent_did).await;
     let source_display_name = agent_display_name_for_did(state, agent_did).await;
     match action {
         "claim" => {
@@ -2344,6 +2380,7 @@ async fn dispatch_local_mission_transition_to_swarm(
                 state,
                 TaskAgentEnvelopeArgs {
                     source_agent_id: agent_did.to_owned(),
+                    source_public_id: source_public_id.clone(),
                     source_display_name: source_display_name.clone(),
                     target_agent_id: Some(state.agent_did.clone()),
                     source_node_id: local_node_id.clone(),
