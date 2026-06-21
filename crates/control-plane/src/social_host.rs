@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs;
 use std::time::Duration;
 use wattetheria_social::domain::identities::LocalIdentityContext;
 use wattetheria_social::ports::local_identity_provider::LocalIdentityProvider;
@@ -21,8 +20,6 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmRelationshipActionCommand, SwarmSourceAgentCard,
 };
 
-pub const PUBLIC_SOURCE_AGENT_CARD_DIR: &str = ".agent-participation";
-pub const PUBLIC_SOURCE_AGENT_CARD_FILE: &str = "agent-card.json";
 const PUBLIC_SOURCE_AGENT_CARD_NODE_ID_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
@@ -585,7 +582,7 @@ pub(crate) fn build_signed_agent_envelope_for_nodes(
     build_signed_agent_envelope_with_optional_target(state, args)
 }
 
-pub async fn export_public_source_agent_card(
+pub async fn public_source_agent_card(
     state: &ControlPlaneState,
 ) -> anyhow::Result<SwarmSourceAgentCard> {
     let local = resolve_social_local_context(state, None).await;
@@ -603,22 +600,7 @@ pub async fn export_public_source_agent_card(
         local.display_name.as_deref(),
         source_node_id.as_ref(),
     )?;
-    write_public_source_agent_card(state, &card)?;
     Ok(card)
-}
-
-fn write_public_source_agent_card(
-    state: &ControlPlaneState,
-    card: &SwarmSourceAgentCard,
-) -> anyhow::Result<()> {
-    let dir = state.data_dir.join(PUBLIC_SOURCE_AGENT_CARD_DIR);
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(PUBLIC_SOURCE_AGENT_CARD_FILE);
-    let nonce = Utc::now().timestamp_millis().max(0);
-    let tmp_path = dir.join(format!(".{PUBLIC_SOURCE_AGENT_CARD_FILE}.{nonce}.tmp"));
-    fs::write(&tmp_path, serde_json::to_vec_pretty(card)?)?;
-    fs::rename(tmp_path, path)?;
-    Ok(())
 }
 
 fn build_source_agent_card(

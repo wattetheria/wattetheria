@@ -97,6 +97,10 @@ fn network_router() -> Router<ControlPlaneState> {
     Router::new()
         .route("/v1/network/status", get(routes::network::network_status))
         .route("/v1/network/peers", get(routes::network::network_peers))
+        .route(
+            "/v1/wattetheria/source-agent-card",
+            get(routes::network::source_agent_card),
+        )
 }
 
 fn console_router() -> Router<ControlPlaneState> {

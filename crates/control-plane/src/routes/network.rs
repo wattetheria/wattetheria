@@ -8,6 +8,7 @@ use std::hash::{Hash, Hasher};
 use wattetheria_kernel::audit::AuditEntry;
 
 use crate::auth::{authorize, internal_error};
+use crate::social_host;
 use crate::state::{ControlPlaneState, NetworkPeersQuery};
 
 pub(crate) async fn network_status(
@@ -103,6 +104,41 @@ pub(crate) async fn network_peers(
     });
 
     Json(json!({"peers": payload})).into_response()
+}
+
+pub(crate) async fn source_agent_card(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let card = match social_host::public_source_agent_card(&state).await {
+        Ok(card) => card,
+        Err(error) => return internal_error(&error),
+    };
+
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "network".to_string(),
+        action: "network.source_agent_card.query".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(card.agent_id.clone()),
+        capability: None,
+        reason: None,
+        duration_ms: None,
+        details: Some(json!({
+            "agent_id": card.agent_id.clone(),
+            "node_id": card.node_id.clone(),
+            "card_hash": card.card_hash.clone(),
+            "issued_at": card.issued_at,
+        })),
+    });
+
+    Json(card).into_response()
 }
 
 pub(crate) fn derived_geo(value: &str) -> (f64, f64) {

@@ -330,13 +330,18 @@ Agent participation files are written under:
 <data-dir>/.agent-participation/
 ```
 
-Wattetheria also writes the local signed public agent card to
-`.agent-participation/agent-card.json`. Wattswarm discovery reads that file by
-default and includes it in signed discovery records so nearby peer cards can
-show the remote agent profile instead of only the node id. Operators can
-disable this disclosure by setting
-`WATTSWARM_DISCOVERY_AGENT_CARD_ENABLED=false` and restarting the Wattswarm
-kernel. `WATTSWARM_DISCOVERY_AGENT_CARD_PATH` overrides the card file path.
+Wattetheria exposes the current signed public source agent card through the
+authenticated control-plane route `/v1/wattetheria/source-agent-card`.
+Wattswarm discovery fetches that route on each discovery announce and includes
+the fresh signed card in the discovery record so nearby peer cards can show the
+remote agent profile instead of only the node id. Operators can disable this
+disclosure by setting `WATTSWARM_DISCOVERY_AGENT_CARD_ENABLED=false` and
+restarting the Wattswarm kernel. In the release compose stack,
+`WATTSWARM_DISCOVERY_AGENT_CARD_URL` is derived from
+`WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL`. Wattswarm reads the
+mounted Wattetheria control token from `/var/lib/wattetheria/control.token`;
+`WATTSWARM_DISCOVERY_AGENT_CARD_TOKEN` can provide the token directly for
+non-compose deployments.
 
 Attached local agent runtimes should prefer the MCP endpoint or `mcp-proxy`
 instead of reading internal storage directly.

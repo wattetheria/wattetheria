@@ -8,7 +8,7 @@ const TEST_X402_TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 #[tokio::test]
-async fn public_source_agent_card_export_writes_signed_discovery_card() {
+async fn public_source_agent_card_builds_signed_discovery_card() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
@@ -18,9 +18,9 @@ async fn public_source_agent_card_export_writes_signed_discovery_card() {
         build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
 
     let _captain_public_id = bootstrap_broker_identity(app, &token, &identity.agent_did).await;
-    let card = crate::social_host::export_public_source_agent_card(&state)
+    let card = crate::social_host::public_source_agent_card(&state)
         .await
-        .expect("export source agent card");
+        .expect("build source agent card");
     let active_public_id = state
         .public_identity_registry
         .lock()
@@ -29,41 +29,76 @@ async fn public_source_agent_card_export_writes_signed_discovery_card() {
         .expect("active identity")
         .public_id;
 
-    let path = state
-        .data_dir
-        .join(crate::social_host::PUBLIC_SOURCE_AGENT_CARD_DIR)
-        .join(crate::social_host::PUBLIC_SOURCE_AGENT_CARD_FILE);
-    let exported: SwarmSourceAgentCard =
-        serde_json::from_slice(&fs::read(path).expect("read exported card")).unwrap();
-    assert_eq!(exported, card);
-    assert_eq!(exported.agent_id, identity.agent_did);
-    assert_eq!(exported.node_id.as_deref(), Some("wattswarm-node-1"));
+    assert_eq!(card.agent_id, identity.agent_did);
+    assert_eq!(card.node_id.as_deref(), Some("wattswarm-node-1"));
     assert_eq!(
-        exported.card["metadata"]["display_name"].as_str(),
-        exported.card["name"].as_str()
+        card.card["metadata"]["display_name"].as_str(),
+        card.card["name"].as_str()
     );
     assert_eq!(
-        exported.card["metadata"]["agent_id"].as_str(),
+        card.card["metadata"]["agent_id"].as_str(),
         Some(identity.agent_did.as_str())
     );
     assert_eq!(
-        exported.card["metadata"]["public_id"].as_str(),
+        card.card["metadata"]["public_id"].as_str(),
         Some(active_public_id.as_str())
     );
     let card_payload = ExpectedSignedSourceAgentCardPayload {
-        agent_id: &exported.agent_id,
-        node_id: exported.node_id.as_ref(),
-        card_hash: &exported.card_hash,
-        issued_at: exported.issued_at,
+        agent_id: &card.agent_id,
+        node_id: card.node_id.as_ref(),
+        card_hash: &card.card_hash,
+        issued_at: card.issued_at,
     };
     assert!(
         verify_payload(
             &card_payload,
-            exported.signature.as_deref().expect("missing signature"),
+            card.signature.as_deref().expect("missing signature"),
             &state.identity.public_key
         )
         .unwrap(),
         "exported source agent card signature must verify"
+    );
+}
+
+#[tokio::test]
+async fn public_source_agent_card_route_uses_current_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for("wattswarm-node-1".to_owned()));
+    let (_dir, app, token, _, _state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
+
+    let _captain_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let original = authed_get_json(app.clone(), &token, "/v1/wattetheria/source-agent-card").await;
+    let public_id = original["card"]["metadata"]["public_id"]
+        .as_str()
+        .expect("current public id")
+        .to_owned();
+
+    authed_patch_json(
+        app.clone(),
+        &token,
+        "/v1/civilization/public-identity",
+        json!({
+            "public_id": public_id,
+            "display_name": "AXT2222222",
+        }),
+    )
+    .await;
+    let updated = authed_get_json(app, &token, "/v1/wattetheria/source-agent-card").await;
+
+    assert_eq!(updated["card"]["name"].as_str(), Some("AXT2222222"));
+    assert_eq!(
+        updated["card"]["metadata"]["display_name"].as_str(),
+        Some("AXT2222222")
+    );
+    assert_ne!(
+        original["card_hash"].as_str(),
+        updated["card_hash"].as_str(),
+        "display name changes must produce a fresh signed card hash"
     );
 }
 
