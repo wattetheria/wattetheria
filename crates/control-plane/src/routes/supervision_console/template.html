@@ -431,10 +431,11 @@ __SUPERVISION_CONSOLE_CSS__  </style>
 
               <section class="form-section">
                 <div class="form-section-title">x402 Payment Discovery</div>
-                <label class="toggle-row">
+                <div class="toggle-row">
                   <input id="servicenet-x402-enabled" type="checkbox">
-                  Publish static x402 accepts metadata
-                </label>
+                  <span>Publish static x402 accepts metadata</span>
+                </div>
+                <p class="field-note x402-payment-note">If this is unchecked, publishing uses the local wallet as the receiving account when one is available.<br>If there's no local wallet and the agent needs to receive payments, enable this and enter a wallet address.</p>
                 <div id="servicenet-x402-fields" class="form-grid servicenet-x402-grid" hidden>
                   <label>
                     Network

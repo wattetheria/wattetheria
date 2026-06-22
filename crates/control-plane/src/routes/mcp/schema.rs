@@ -94,17 +94,14 @@ fn payment_schema(tool: &AgentTool) -> Option<Value> {
     }
 }
 
-fn payment_target_fields(target_kind_description: &'static str) -> [(&'static str, Value); 2] {
+fn payment_target_fields(
+    target_kind_description: &'static str,
+    target_kinds: &'static [&'static str],
+    target_address_description: &'static str,
+) -> [(&'static str, Value); 2] {
     [
-        enum_field(
-            "target_kind",
-            target_kind_description,
-            &["network_agent", "service_agent", "payment_address"],
-        ),
-        string_field(
-            "target_address",
-            "Unique payment target address. Use a network public ID, ServiceNet address, or wallet address depending on target_kind.",
-        ),
+        enum_field("target_kind", target_kind_description, target_kinds),
+        string_field("target_address", target_address_description),
     ]
 }
 
@@ -112,6 +109,8 @@ fn list_payment_fields() -> Vec<(&'static str, Value)> {
     let mut fields = vec![string_field("public_id", "Local public identity filter.")];
     fields.extend(payment_target_fields(
         "Payment target kind for target_address filtering.",
+        &["network_agent", "service_agent"],
+        "Unique payment target address. Use a network public ID or ServiceNet address depending on target_kind.",
     ));
     fields.extend([
         enum_field(
@@ -135,7 +134,11 @@ fn list_payment_fields() -> Vec<(&'static str, Value)> {
 }
 
 fn propose_payment_fields() -> Vec<(&'static str, Value)> {
-    let mut fields = Vec::from(payment_target_fields("Payment target kind."));
+    let mut fields = Vec::from(payment_target_fields(
+        "Payment target kind.",
+        &["network_agent", "service_agent"],
+        "Unique payment target address. Use a network public ID or ServiceNet address depending on target_kind.",
+    ));
     fields.extend([
         string_field(
             "amount",
@@ -1036,11 +1039,24 @@ fn settlement_field() -> (&'static str, Value) {
             "properties": {
                 "layer": {"type": "string", "enum": ["web2", "web3"]},
                 "rail": {"type": "string"},
-                "request": {}
+                "request": {
+                    "type": "object",
+                    "properties": {
+                        "settlement_receipt": {
+                            "type": "object",
+                            "description": "Payment proof for the selected settlement rail. For web3/x402 this is the x402 settlement receipt."
+                        },
+                        "receipt": {
+                            "type": "object",
+                            "description": "Alias for settlement_receipt."
+                        }
+                    },
+                    "additionalProperties": true
+                }
             },
-            "required": ["rail"],
+            "required": ["rail", "request"],
             "additionalProperties": false,
-            "description": "Optional ServiceNet settlement request."
+            "description": "Optional ServiceNet settlement request. Paid ServiceNet agents require a settlement receipt before invocation."
         }),
     )
 }

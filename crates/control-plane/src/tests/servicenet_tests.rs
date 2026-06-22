@@ -623,6 +623,27 @@ fn console_agent_publish_body(
             "domain": "GENERAL",
             "cost": if supports_task { 20 } else { 18 },
             "currency": "USDC",
+            "capabilities": {
+                "extensions": [
+                    {
+                        "uri": "https://github.com/google-a2a/a2a-x402/v0.1",
+                        "required": false,
+                        "params": {
+                            "accepts": [
+                                {
+                                    "scheme": "exact",
+                                    "network": "base",
+                                    "payTo": "0x0000000000000000000000000000000000000000",
+                                    "maxAmountRequired": "0",
+                                    "resource": "servicenet:agent:console-agent",
+                                    "description": "ServiceNet agent invocation",
+                                    "maxTimeoutSeconds": 600
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
             "supportsTask": supports_task,
             "skills": [{"name": "Lookup", "description": "Looks up records"}],
             "securitySchemes": {"none": {"type": "none"}},
@@ -657,15 +678,11 @@ fn assert_servicenet_template(template: &Value) {
         &[json!("description")]
     );
     assert!(
-        template["defaults"]["payment_account_bindings"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
+        template["defaults"]
+            .get("payment_account_bindings")
+            .is_none()
     );
-    assert!(
-        template["defaults"]["didDocument"]["payment_account_bindings"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-    );
+    assert!(template["defaults"].get("didDocument").is_none());
 }
 
 fn assert_published_console_agent(published_json: &Value, target_agent_id: &str, owner_did: &str) {
@@ -830,22 +847,25 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         publish_json["submission"]["attestations"]["provider_attester_did"].as_str(),
         Some(state.agent_did.as_str())
     );
-    let payment_binding = &publish_json["submission"]["payment_account_binding"];
     let payment_address = created_payment["active_payment_account"]["address"]
         .as_str()
         .unwrap();
-    assert_eq!(
-        payment_binding["payment_address"].as_str(),
-        Some(payment_address)
-    );
-    assert_eq!(payment_binding["rail"].as_str(), Some("x402"));
-    assert_eq!(payment_binding["network"].as_str(), Some("base"));
     let submitted_card = &publish_json["submission"]["agent_card"];
+    assert!(
+        publish_json["submission"]
+            .get("payment_account_binding")
+            .is_none()
+    );
+    assert!(submitted_card.get("payment_account_bindings").is_none());
+    let extension_binding =
+        &submitted_card["capabilities"]["extensions"][0]["params"]["payment_account_bindings"][0];
     assert_eq!(
-        submitted_card["payment_account_bindings"][0]["payment_address"].as_str(),
+        extension_binding["payment_address"].as_str(),
         Some(payment_address)
     );
-    let binding_agent_did = payment_binding["agent_did"].as_object().map(|agent_did| {
+    assert_eq!(extension_binding["rail"].as_str(), Some("x402"));
+    assert_eq!(extension_binding["network"].as_str(), Some("base"));
+    let binding_agent_did = extension_binding["agent_did"].as_object().map(|agent_did| {
         format!(
             "did:{}:{}",
             agent_did["method"].as_str().unwrap(),
@@ -944,6 +964,84 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     let published_after_unpublish =
         authed_get_json(app, &token, "/v1/wattetheria/servicenet/published-agents").await;
     assert_eq!(published_after_unpublish["count"].as_u64(), Some(0));
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn servicenet_unpublish_cleans_local_state_when_remote_agent_is_missing() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    crate::routes::servicenet::publish::save_publisher_state(
+        &state.data_dir,
+        &crate::routes::servicenet::publish::ServiceNetPublisherState {
+            registrations: vec![
+                crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
+                    provider_id: "provider-ui".to_owned(),
+                    provider_did: state.agent_did.clone(),
+                    agent_id: "missing-remote-agent".to_owned(),
+                    service_address: Some("missing@wattetheria".to_owned()),
+                    card_hash: "sha256:missing-remote-agent".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    updated_at: "2026-06-04T00:00:00Z".to_owned(),
+                    agent_card: json!({
+                        "name": "Missing Remote Agent",
+                        "description": "Previously removed from ServiceNet",
+                        "skills": [],
+                    }),
+                    deployment: json!({}),
+                    review: json!({}),
+                },
+            ],
+        },
+    )
+    .expect("save publisher state");
+    let app = app(state.clone());
+
+    let published_before_unpublish = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/published-agents",
+    )
+    .await;
+    assert_eq!(published_before_unpublish["count"].as_u64(), Some(1));
+
+    let unpublish_json = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/agents/missing-remote-agent/unpublish",
+        json!({
+            "reason": "remote already deleted"
+        }),
+    )
+    .await;
+    assert_eq!(unpublish_json["status"].as_str(), Some("ok"));
+    assert_eq!(
+        unpublish_json["agent_id"].as_str(),
+        Some("missing-remote-agent")
+    );
+    assert_eq!(unpublish_json["provider_id"].as_str(), Some("provider-ui"));
+    assert_eq!(
+        unpublish_json["unpublished"]["status"].as_str(),
+        Some("remote_missing")
+    );
+    assert_eq!(
+        unpublish_json["unpublished"]["service_address"].as_str(),
+        Some("missing@wattetheria")
+    );
+
+    let published_after_unpublish =
+        authed_get_json(app, &token, "/v1/wattetheria/servicenet/published-agents").await;
+    assert_eq!(published_after_unpublish["count"].as_u64(), Some(0));
+    let publisher_state = crate::routes::servicenet::publish::load_publisher_state(&state.data_dir)
+        .expect("load publisher state");
+    assert!(publisher_state.registrations.is_empty());
 
     servicenet_server.abort();
 }

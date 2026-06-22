@@ -15,6 +15,27 @@ struct PaymentBindingFixture {
     binding: Value,
 }
 
+fn alpha_servicenet_settlement() -> Value {
+    json!({
+        "layer": "web3",
+        "rail": "x402",
+        "request": {
+            "settlement_receipt": alpha_x402_settlement_receipt()
+        }
+    })
+}
+
+fn alpha_x402_settlement_receipt() -> Value {
+    json!({
+        "success": true,
+        "payer": "0x1111111111111111111111111111111111111111",
+        "transaction": "0x89c91c789e57059b17285e7ba1716a1f5ff4c5dace0ea5a5135f26158d0421b9",
+        "network": "base",
+        "amount": "180000",
+        "payTo": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
+    })
+}
+
 fn build_payment_binding_fixture(network: &str) -> PaymentBindingFixture {
     let mut keystore = InMemoryKeyStore::new();
     let agent_info = keystore.generate_ed25519().expect("ed25519 key");
@@ -308,6 +329,7 @@ async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
                         "layer": "web3",
                         "rail": "x402",
                         "request": {
+                            "settlement_receipt": alpha_x402_settlement_receipt(),
                             "client_secret": "settlement-client-secret",
                             "payment_account_ref": "payment-account-123"
                         }
@@ -716,7 +738,7 @@ async fn mcp_propose_agent_payment_prefers_servicenet_binding_over_static_pay_to
 }
 
 #[tokio::test]
-async fn mcp_propose_agent_payment_accepts_payment_address_target() {
+async fn mcp_propose_agent_payment_rejects_payment_address_target_kind() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
     let recipient_address = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
 
@@ -744,52 +766,39 @@ async fn mcp_propose_agent_payment_accepts_payment_address_target() {
     .await;
 
     assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
-    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    let content = &response["result"]["structuredContent"];
-    assert_eq!(content["ok"].as_bool(), Some(true));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
     assert_eq!(
-        content["payment"]["recipient_public_id"].as_str(),
-        Some(recipient_address)
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("target_kind must be network_agent or service_agent")
     );
-    assert_eq!(
-        content["payment"]["recipient_address"].as_str(),
-        Some(recipient_address)
-    );
-    assert_eq!(
-        content["transport"]["mode"].as_str(),
-        Some("payment_address")
-    );
-    assert_eq!(
-        content["transport"]["recipient_address"].as_str(),
-        Some(recipient_address)
-    );
+}
 
-    let listed = mcp_request(
+#[tokio::test]
+async fn mcp_list_agent_payments_rejects_payment_address_target_kind() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
         app,
         &token,
         json!({
             "jsonrpc": "2.0",
-            "id": 2,
+            "id": 1,
             "method": "tools/call",
             "params": {
                 "name": "list_agent_payments",
                 "arguments": {
                     "target_kind": "payment_address",
-                    "target_address": recipient_address
+                    "target_address": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e"
                 }
             }
         }),
     )
     .await;
 
-    assert_eq!(listed["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
     assert_eq!(
-        listed["result"]["structuredContent"]["count"].as_u64(),
-        Some(1)
-    );
-    assert_eq!(
-        listed["result"]["structuredContent"]["items"][0]["recipient_address"].as_str(),
-        Some(recipient_address)
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("target_kind must be network_agent or service_agent")
     );
 }
 
@@ -1147,6 +1156,47 @@ async fn mcp_agent_payments_support_network_agent_target_address() {
 }
 
 #[tokio::test]
+async fn mcp_invoke_servicenet_agent_sync_rejects_paid_agent_without_settlement_receipt() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent_sync",
+                "arguments": {
+                    "service_address": "alpha@wattetheria",
+                    "message": "hello without payment proof"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        response["result"]["structuredContent"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires x402 settlement_receipt")
+    );
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_agent() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -1197,7 +1247,8 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
-                    "message": "hello servicenet"
+                    "message": "hello servicenet",
+                    "settlement": alpha_servicenet_settlement()
                 }
             }
         }),
@@ -1257,7 +1308,8 @@ async fn mcp_invoke_servicenet_agent_sync_resolves_service_address() {
                 "name": "invoke_servicenet_agent_sync",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
-                    "message": "hello by service address"
+                    "message": "hello by service address",
+                    "settlement": alpha_servicenet_settlement()
                 }
             }
         }),
@@ -1301,7 +1353,8 @@ async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
                 "name": "invoke_servicenet_agent_async",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
-                    "message": "hello servicenet"
+                    "message": "hello servicenet",
+                    "settlement": alpha_servicenet_settlement()
                 }
             }
         }),
@@ -3018,6 +3071,17 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         Some("network_agent")
     );
     assert_eq!(
+        list_payments["inputSchema"]["properties"]["target_kind"]["enum"][1].as_str(),
+        Some("service_agent")
+    );
+    assert_eq!(
+        list_payments["inputSchema"]["properties"]["target_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
         list_payments["inputSchema"]["properties"]["target_address"]["type"].as_str(),
         Some("string")
     );
@@ -3047,6 +3111,13 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["target_kind"]["enum"][1].as_str(),
         Some("service_agent")
+    );
+    assert_eq!(
+        propose_payment["inputSchema"]["properties"]["target_kind"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
     assert_eq!(
         propose_payment["inputSchema"]["properties"]["layer"]["enum"][1].as_str(),
@@ -3530,12 +3601,6 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
                     "publisher": "wrong-manual-value",
                     "publisher_kind": "system",
                     "domain": "trade",
-                    "reward": {
-                        "agent_watt": 10,
-                        "reputation": 0,
-                        "capacity": 0,
-                        "treasury_share_watt": 0
-                    },
                     "payload": {"objective": "identity-default"}
                 }
             }
@@ -3575,6 +3640,8 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
         mission["task_contract"]["inputs"]["scope"].as_str(),
         Some("real_world")
     );
+    assert!(mission.get("reward").is_none());
+    assert!(mission["task_contract"]["inputs"].get("reward").is_none());
     assert_public_geo_projection(mission);
     assert_public_geo_projection(&mission["task_contract"]["inputs"]);
 }
@@ -3595,12 +3662,6 @@ async fn mcp_publish_delegated_mission_surfaces_servicenet_settlement_details() 
                     "title": "Funded ServiceNet escrow task",
                     "description": "Publish a real reward mission with third-party settlement metadata.",
                     "domain": "trade",
-                    "reward": {
-                        "agent_watt": 0,
-                        "reputation": 0,
-                        "capacity": 0,
-                        "treasury_share_watt": 0
-                    },
                     "payload": {"objective": "escrow-backed"},
                     "settlement_delegation": {
                         "enabled": true,
@@ -3668,6 +3729,8 @@ async fn mcp_publish_delegated_mission_surfaces_servicenet_settlement_details() 
         mission["task_contract"]["inputs"]["mission_id"].as_str(),
         Some(mission_id)
     );
+    assert!(mission.get("reward").is_none());
+    assert!(mission["task_contract"]["inputs"].get("reward").is_none());
 }
 
 fn collective_mission_request() -> Value {
@@ -3685,12 +3748,6 @@ fn collective_mission_request() -> Value {
                 "publisher_kind": "system",
                 "domain": "trade",
                 "scope": "in_world",
-                "reward": {
-                    "agent_watt": 10,
-                    "reputation": 0,
-                    "capacity": 0,
-                    "treasury_share_watt": 0
-                },
                 "payload": {"objective": "collective-intel"},
                 "agents": [
                     {
@@ -3722,12 +3779,6 @@ fn collective_stigmergy_mission_request() -> Value {
                 "title": "Open collective MCP mission",
                 "description": "Let subscribed agents decide whether to contribute.",
                 "domain": "trade",
-                "reward": {
-                    "agent_watt": 10,
-                    "reputation": 0,
-                    "capacity": 0,
-                    "treasury_share_watt": 0
-                },
                 "payload": {"objective": "open-collective-intel"},
                 "min_participants": 2,
                 "threshold_percent": 60,

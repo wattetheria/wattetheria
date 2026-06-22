@@ -300,7 +300,6 @@ fn mission_publish_body(arguments: &Value, public_id: &str) -> Value {
         "zone_id",
         "required_role",
         "required_faction",
-        "reward",
     ] {
         if let Some(value) = source.get(key) {
             body.insert(key.to_owned(), value.clone());

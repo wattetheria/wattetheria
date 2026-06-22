@@ -381,13 +381,14 @@ fn collect_mission_deltas(
 
     if mission.status == MissionStatus::Settled
         && mission.completed_by.as_deref() == Some(controller_id)
+        && let Some(reward) = mission.reward.as_ref()
     {
         deltas.push(RewardDelta {
             timestamp: mission.settled_at.unwrap_or(mission.created_at),
             source_id: format!("mission.settle.executor:{}", mission.mission_id),
-            watt: mission.reward.agent_watt,
-            reputation: mission.reward.reputation,
-            capacity: mission.reward.capacity,
+            watt: reward.agent_watt,
+            reputation: reward.reputation,
+            capacity: reward.capacity,
         });
     }
 }

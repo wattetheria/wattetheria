@@ -155,3 +155,63 @@
         });
       }).observe(document.body, { childList: true, subtree: true });
     }
+
+    // ===== Themed confirmation dialog =====
+    // Drop-in replacement for window.confirm(): returns a Promise<boolean> and
+    // renders a styled <dialog> instead of the unstyleable native prompt.
+    function confirmDialog(options) {
+      const opts = options || {};
+      const title = opts.title || "Confirm";
+      const message = opts.message || "";
+      const confirmText = opts.confirmText || "Confirm";
+      const cancelText = opts.cancelText || "Cancel";
+      const danger = Boolean(opts.danger);
+
+      let dialog = document.getElementById("app-confirm-dialog");
+      if (!dialog) {
+        dialog = document.createElement("dialog");
+        dialog.id = "app-confirm-dialog";
+        dialog.className = "confirm-dialog";
+        dialog.innerHTML =
+          '<div class="confirm-dialog-body">' +
+            '<h3 class="confirm-dialog-title"></h3>' +
+            '<p class="confirm-dialog-message"></p>' +
+          '</div>' +
+          '<div class="confirm-dialog-actions">' +
+            '<button type="button" class="secondary" data-confirm-cancel></button>' +
+            '<button type="button" data-confirm-ok></button>' +
+          '</div>';
+        document.body.appendChild(dialog);
+      }
+
+      const okBtn = dialog.querySelector("[data-confirm-ok]");
+      const cancelBtn = dialog.querySelector("[data-confirm-cancel]");
+      dialog.querySelector(".confirm-dialog-title").textContent = title;
+      dialog.querySelector(".confirm-dialog-message").textContent = message;
+      okBtn.textContent = confirmText;
+      cancelBtn.textContent = cancelText;
+      okBtn.className = danger ? "danger-solid" : "";
+
+      return new Promise((resolve) => {
+        let settled = false;
+        const close = (result) => {
+          if (settled) return;
+          settled = true;
+          okBtn.removeEventListener("click", onOk);
+          cancelBtn.removeEventListener("click", onCancel);
+          dialog.removeEventListener("cancel", onCancel);
+          dialog.removeEventListener("click", onBackdrop);
+          if (dialog.open) dialog.close();
+          resolve(result);
+        };
+        const onOk = () => close(true);
+        const onCancel = (event) => { if (event && event.preventDefault) event.preventDefault(); close(false); };
+        const onBackdrop = (event) => { if (event.target === dialog) close(false); };
+        okBtn.addEventListener("click", onOk);
+        cancelBtn.addEventListener("click", onCancel);
+        dialog.addEventListener("cancel", onCancel);
+        dialog.addEventListener("click", onBackdrop);
+        dialog.showModal();
+        okBtn.focus();
+      });
+    }

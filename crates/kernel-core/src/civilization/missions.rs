@@ -68,7 +68,8 @@ pub struct CivilMission {
     pub zone_id: Option<String>,
     pub required_role: Option<RolePath>,
     pub required_faction: Option<Faction>,
-    pub reward: MissionReward,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward: Option<MissionReward>,
     pub payload: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lat: Option<f64>,
@@ -297,7 +298,7 @@ impl MissionBoard {
             zone_id,
             required_role,
             required_faction,
-            reward,
+            Some(reward),
             payload,
             None,
         )
@@ -316,7 +317,7 @@ impl MissionBoard {
         zone_id: Option<String>,
         required_role: Option<RolePath>,
         required_faction: Option<Faction>,
-        reward: MissionReward,
+        reward: Option<MissionReward>,
         payload: Value,
         public_geo: Option<PublicGeoPayload>,
     ) -> CivilMission {

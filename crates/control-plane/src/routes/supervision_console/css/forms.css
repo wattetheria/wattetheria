@@ -86,6 +86,30 @@
       box-shadow: 0 0 0 3px var(--accent-soft);
     }
 
+    /* The generic input rule above is meant for text-style fields. Keep
+       checkboxes/radios at their native size — applying width:100% to them
+       inside an auto-sized grid column makes the column width re-resolve on
+       click/focus, which jitters the whole row. */
+    input[type="checkbox"], input[type="radio"] {
+      width: auto;
+      min-width: 0;
+      min-height: 0;
+      padding: 0;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      box-shadow: none;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+    input[type="checkbox"]:focus, input[type="radio"]:focus {
+      box-shadow: none;
+    }
+    input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
     button {
       display: inline-flex;
       align-items: center;

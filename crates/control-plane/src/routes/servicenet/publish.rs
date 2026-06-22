@@ -102,10 +102,6 @@ fn default_agent_card() -> Value {
         "cost": 0,
         "currency": "USDC",
         "supportsTask": false,
-        "payment_account_bindings": [],
-        "didDocument": {
-            "payment_account_bindings": [],
-        },
         "skills": [{"name": "", "description": ""}],
         "securitySchemes": {"none": {"type": "none"}},
         "security": [{"none": []}],
@@ -702,7 +698,6 @@ pub(crate) async fn publish_agent(
         "delegation_token": Value::Null,
         "source_commit": Value::Null,
         "build_digest": Value::Null,
-        "payment_account_binding": payment_account_binding.clone(),
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -724,7 +719,6 @@ pub(crate) async fn publish_agent(
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,
-        "payment_account_binding": payment_account_binding,
         "attestations": {
             "attestation_signature": signature,
             "provider_attester_did": state.agent_did,
@@ -785,6 +779,7 @@ pub(crate) async fn publish_agent(
     .into_response()
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn unpublish_agent(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -855,6 +850,18 @@ pub(crate) async fn unpublish_agent(
     });
     let response = match client.unpublish_agent(&agent_id, &request).await {
         Ok(response) => response,
+        Err(error)
+            if error
+                .status()
+                .is_some_and(|status| status == StatusCode::NOT_FOUND) =>
+        {
+            json!({
+                "status": "remote_missing",
+                "agent_id": agent_id.clone(),
+                "service_address": registration.service_address.clone(),
+                "error": error.to_string(),
+            })
+        }
         Err(error) => return servicenet_error_response(&error),
     };
     remove_registration(&mut publisher_state, &agent_id, &state.agent_did);

@@ -20,10 +20,13 @@ use crate::routes::reward_events::{
 use crate::routes::servicenet::envelope::servicenet_invoke_agent_envelope;
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
+    PaymentStatus, PaymentTransaction, SettlementLayer as PaymentSettlementLayer,
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
+    validate_x402_settlement_receipt,
 };
 use wattetheria_kernel::servicenet::{
-    ServiceNetClient, ServiceNetInvokeRequest, normalize_service_address,
+    ServiceNetClient, ServiceNetInvokeRequest, SettlementLayer as ServiceNetSettlementLayer,
+    normalize_service_address,
 };
 use wattetheria_kernel::swarm_bridge::SwarmPeerRelationshipView;
 use wattetheria_social::application::friend_request_service;
@@ -773,6 +776,11 @@ async fn servicenet_invoke_agent_result(
         Ok(request) => request,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),
     };
+    if let Err(error) =
+        validate_servicenet_invoke_settlement(&agent_id, &service_address, &agent, &request)
+    {
+        return tool_error(&json!({"error": error}));
+    }
     let response = match mode {
         ServiceNetInvokeMode::Sync => client.invoke_agent(&agent_id, &request).await,
         ServiceNetInvokeMode::Async => client.invoke_agent_async(&agent_id, &request).await,
@@ -1097,6 +1105,148 @@ fn servicenet_agent_payment(agent: &Value) -> Option<Value> {
                 && x402_extension_has_pay_to(extension)
         })
         .cloned()
+}
+
+fn validate_servicenet_invoke_settlement(
+    agent_id: &str,
+    service_address: &str,
+    agent: &Value,
+    request: &ServiceNetInvokeRequest,
+) -> Result<(), String> {
+    if !servicenet_agent_requires_settlement(agent) {
+        return Ok(());
+    }
+    let accept = servicenet_x402_accept_for_settlement(agent).ok_or_else(|| {
+        format!("servicenet agent {service_address} requires settlement but has no x402 accept")
+    })?;
+    let settlement = request.settlement.as_ref().ok_or_else(|| {
+        format!(
+            "servicenet agent {service_address} requires x402 settlement_receipt before invocation"
+        )
+    })?;
+    if !settlement.rail.trim().eq_ignore_ascii_case("x402") {
+        return Err(format!(
+            "servicenet agent {service_address} requires x402 settlement rail"
+        ));
+    }
+    if !matches!(settlement.layer, ServiceNetSettlementLayer::Web3) {
+        return Err("servicenet x402 settlement currently requires layer web3".to_owned());
+    }
+    let receipt = settlement_receipt(&settlement.request).ok_or_else(|| {
+        format!("servicenet agent {service_address} requires settlement.request.settlement_receipt")
+    })?;
+    let transaction =
+        servicenet_x402_payment_transaction(agent_id, service_address, agent, &accept, receipt)?;
+    validate_x402_settlement_receipt(&transaction, receipt)
+        .map_err(|error| format!("servicenet x402 settlement_receipt invalid: {error}"))
+}
+
+fn servicenet_agent_requires_settlement(agent: &Value) -> bool {
+    value_as_positive_number(value_at(agent, &["agent_card", "cost"]))
+}
+
+fn servicenet_x402_accept_for_settlement(agent: &Value) -> Option<Value> {
+    value_at(agent, &["agent_card", "capabilities", "extensions"])?
+        .as_array()?
+        .iter()
+        .filter(|extension| {
+            value_at(extension, &["uri"]).and_then(Value::as_str) == Some(A2A_X402_EXTENSION_URI)
+        })
+        .find_map(|extension| {
+            value_at(extension, &["params", "accepts"])?
+                .as_array()?
+                .iter()
+                .find(|accept| x402_accept_can_settle(accept))
+                .cloned()
+        })
+}
+
+fn x402_accept_can_settle(accept: &Value) -> bool {
+    value_as_amount(value_at(accept, &["maxAmountRequired"])).is_some()
+        && field_str(accept, &["payTo"]).is_some_and(|pay_to| !pay_to.trim().is_empty())
+}
+
+fn value_as_positive_number(value: Option<&Value>) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    match value {
+        Value::Number(value) => value.as_f64().is_some_and(|amount| amount > 0.0),
+        Value::String(value) => value.trim().parse::<f64>().is_ok_and(|amount| amount > 0.0),
+        _ => false,
+    }
+}
+
+fn value_as_amount(value: Option<&Value>) -> Option<String> {
+    let amount = match value? {
+        Value::String(value) => value.trim().to_owned(),
+        Value::Number(value) => value.to_string(),
+        _ => return None,
+    };
+    (!amount.is_empty()).then_some(amount)
+}
+
+fn settlement_receipt(request: &Value) -> Option<&Value> {
+    value_at(request, &["settlement_receipt"])
+        .or_else(|| value_at(request, &["receipt"]))
+        .filter(|receipt| receipt.is_object())
+}
+
+fn servicenet_x402_payment_transaction(
+    agent_id: &str,
+    service_address: &str,
+    agent: &Value,
+    accept: &Value,
+    receipt: &Value,
+) -> Result<PaymentTransaction, String> {
+    let amount = value_as_amount(value_at(accept, &["maxAmountRequired"])).ok_or_else(|| {
+        "x402 accept maxAmountRequired is required for receipt validation".to_owned()
+    })?;
+    let recipient_address = required_trimmed_field(accept, &["payTo"], "x402 accept payTo")?;
+    let sender_address = required_trimmed_field(receipt, &["payer"], "x402 settlement payer")?;
+    let network = field_str(receipt, &["network"])
+        .or_else(|| field_str(accept, &["network"]))
+        .map(str::trim)
+        .filter(|network| !network.is_empty())
+        .map(ToOwned::to_owned);
+    Ok(PaymentTransaction {
+        payment_id: format!("servicenet-invoke:{agent_id}"),
+        sender_did: String::new(),
+        recipient_did: agent_id.to_owned(),
+        sender_public_id: String::new(),
+        recipient_public_id: agent_id.to_owned(),
+        remote_node_id: format!("servicenet:{agent_id}"),
+        amount,
+        currency: field_str(agent, &["agent_card", "currency"])
+            .unwrap_or("USDC")
+            .to_owned(),
+        rail: "x402".to_owned(),
+        layer: PaymentSettlementLayer::Web3,
+        network,
+        sender_address: Some(sender_address),
+        recipient_address: Some(recipient_address),
+        mission_id: None,
+        task_id: None,
+        description: Some(format!("ServiceNet invocation for {service_address}")),
+        metadata: Some(json!({"servicenet_agent_id": agent_id, "x402_accept": accept})),
+        status: PaymentStatus::Authorized,
+        authorization_signature: None,
+        authorization_public_key: None,
+        settlement_receipt: None,
+        reject_reason: None,
+        proposed_at: 0,
+        authorized_at: Some(0),
+        settled_at: None,
+        expires_at: None,
+    })
+}
+
+fn required_trimmed_field(value: &Value, path: &[&str], label: &str) -> Result<String, String> {
+    field_str(value, path)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| format!("{label} is required"))
 }
 
 fn x402_extension_has_pay_to(extension: &Value) -> bool {
@@ -2002,16 +2152,8 @@ async fn normalize_mcp_payment_target_arguments(
             };
             object.insert(field.to_string(), Value::String(agent_id));
         }
-        "payment_address" => {
-            object.insert(
-                "recipient_address".to_string(),
-                Value::String(target_address),
-            );
-        }
         _ => {
-            return Err(
-                "target_kind must be network_agent, service_agent, or payment_address".to_string(),
-            );
+            return Err("target_kind must be network_agent or service_agent".to_string());
         }
     }
     Ok(())

@@ -1641,9 +1641,11 @@ fn load_agent_stats_from_mission_board(
         .into_iter()
         .filter(|mission| mission.completed_by.as_deref() == Some(agent_did))
     {
-        stats.watt += mission.reward.agent_watt;
-        stats.reputation += mission.reward.reputation;
-        stats.capacity += mission.reward.capacity;
+        if let Some(reward) = mission.reward.as_ref() {
+            stats.watt += reward.agent_watt;
+            stats.reputation += reward.reputation;
+            stats.capacity += reward.capacity;
+        }
     }
 
     if stats.watt != 0 || stats.reputation != 0 || stats.capacity != 0 {

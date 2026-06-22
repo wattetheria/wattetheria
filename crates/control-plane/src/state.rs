@@ -690,7 +690,8 @@ pub struct MissionPublishBody {
     pub zone_id: Option<String>,
     pub required_role: Option<RolePath>,
     pub required_faction: Option<Faction>,
-    pub reward: MissionReward,
+    #[serde(default)]
+    pub reward: Option<MissionReward>,
     pub payload: Value,
     #[serde(default)]
     pub settlement_delegation: Option<Value>,

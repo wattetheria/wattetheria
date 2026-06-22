@@ -40,7 +40,7 @@ mod state;
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use std::net::SocketAddr;
 
 pub use autonomy::run_autonomy_tick_once;
@@ -242,6 +242,10 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/agent-skills",
             get(routes::agent_skills::list_agent_skills)
                 .post(routes::agent_skills::upsert_agent_skill),
+        )
+        .route(
+            "/v1/wattetheria/agent-skills/{skill_id}",
+            delete(routes::agent_skills::delete_agent_skill),
         )
 }
 

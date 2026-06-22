@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
@@ -81,6 +81,36 @@ pub(crate) async fn upsert_agent_skill(
         return social_internal_error(&error);
     }
     Json(json!({"ok": true, "item": skill})).into_response()
+}
+
+pub(crate) async fn delete_agent_skill(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(skill_id): Path<String>,
+) -> Response {
+    let _auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let skill_id = skill_id.trim();
+    if skill_id.is_empty() {
+        return bad_request("skill_id is required");
+    }
+    let existing = match state.social_store.list_agent_skills() {
+        Ok(items) => items,
+        Err(error) => return social_internal_error(&error),
+    };
+    if !existing.iter().any(|skill| skill.skill_id == skill_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "agent skill not found"})),
+        )
+            .into_response();
+    }
+    if let Err(error) = state.social_store.delete_agent_skill(skill_id) {
+        return social_internal_error(&error);
+    }
+    Json(json!({"ok": true, "skill_id": skill_id})).into_response()
 }
 
 fn normalize_agent_skill(

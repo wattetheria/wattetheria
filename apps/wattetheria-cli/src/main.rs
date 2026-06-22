@@ -833,7 +833,6 @@ async fn run_servicenet_publish(
         "delegation_token": Value::Null,
         "source_commit": Value::Null,
         "build_digest": Value::Null,
-        "payment_account_binding": payment_account_binding.clone(),
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
         "expires_at_ms": expires_at_ms,
@@ -858,7 +857,6 @@ async fn run_servicenet_publish(
         "deployment": deployment,
         "review": review,
         "artifacts": artifacts,
-        "payment_account_binding": payment_account_binding,
         "attestations": attestations,
     });
 
@@ -958,11 +956,6 @@ fn agent_card_template_jsonc() -> &'static str {
   // payTo is the callee/merchant settlement receiving address, not the caller wallet.
   // asset is optional; when omitted, compatible clients may resolve it from network + currency.
   // resource names the paid ServiceNet resource; use this card's agent name, not a registry agent_id.
-  // payment_account_bindings and didDocument are filled from the local wallet during publish.
-  "payment_account_bindings": [],
-  "didDocument": {
-    "payment_account_bindings": []
-  },
   // "capabilities": {
   //   "extensions": [
   //     {
@@ -1520,18 +1513,8 @@ mod tests {
         assert_eq!(card["currency"], "USDC");
         assert_eq!(card["supportsTask"], false);
         assert_eq!(card["serviceAddress"].as_str(), Some(""));
-        assert!(
-            card["payment_account_bindings"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            card["didDocument"]["payment_account_bindings"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(card.get("payment_account_bindings").is_none());
+        assert!(card.get("didDocument").is_none());
         let skill = card["skills"][0]
             .as_object()
             .expect("template skill object");

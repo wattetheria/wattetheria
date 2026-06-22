@@ -788,7 +788,6 @@ fn mission_task_inputs(
         "mission_scope_hint": mission_scope_hint,
         "domain": mission.domain,
         "scope": mission.scope,
-        "reward": mission.reward,
         "required_role": mission.required_role,
         "required_faction": mission.required_faction,
         "subnet_id": mission.subnet_id,
@@ -802,6 +801,11 @@ fn mission_task_inputs(
         && let Some(object) = inputs.as_object_mut()
     {
         object.insert("settlement_delegation".to_owned(), delegation.clone());
+    }
+    if let Some(reward) = mission.reward.as_ref()
+        && let Some(object) = inputs.as_object_mut()
+    {
+        object.insert("reward".to_owned(), json!(reward));
     }
     inputs
 }
@@ -841,7 +845,6 @@ fn mission_announce_command(
         "description": mission.description,
         "domain": mission.domain,
         "scope": mission.scope,
-        "reward": mission.reward,
         "publisher": mission.publisher,
         "publisher_agent_did": publisher_agent_did,
         "publisher_display_name": publisher_display_name,
@@ -856,6 +859,11 @@ fn mission_announce_command(
         && let Some(object) = summary.as_object_mut()
     {
         object.insert("settlement_delegation".to_owned(), delegation.clone());
+    }
+    if let Some(reward) = mission.reward.as_ref()
+        && let Some(object) = summary.as_object_mut()
+    {
+        object.insert("reward".to_owned(), json!(reward));
     }
     SwarmTaskAnnounceCommand {
         task_id: mission.mission_id.clone(),
@@ -1857,11 +1865,12 @@ async fn fund_mission_treasury(
     mission: &CivilMission,
 ) -> Result<(), Response> {
     if let Some(subnet_id) = mission.subnet_id.clone()
-        && mission.reward.treasury_share_watt > 0
+        && let Some(reward) = mission.reward.as_ref()
+        && reward.treasury_share_watt > 0
     {
         let mut governance = state.governance_engine.lock().await;
         governance
-            .fund_treasury(&subnet_id, mission.reward.treasury_share_watt)
+            .fund_treasury(&subnet_id, reward.treasury_share_watt)
             .map_err(|error| internal_error(&error))?;
         state
             .local_db

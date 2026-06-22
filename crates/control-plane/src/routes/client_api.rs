@@ -501,9 +501,6 @@ async fn build_published_client_task_payload(
         "title": mission.title,
         "domain": mission_domain_label(&mission.domain),
         "scope": mission.scope,
-        "reward_watt": mission.reward.agent_watt,
-        "task_bounty_watt": mission.reward.agent_watt,
-        "executor_bounty_watt": mission.reward.agent_watt,
         "network_publish_reward_watt": policy.rewards.mission_publish_watt,
         "network_settle_publisher_reward_watt": policy.rewards.mission_settle_publisher_watt,
         "publisher_network_reward_watt": publisher_network_reward_watt,
@@ -521,6 +518,11 @@ async fn build_published_client_task_payload(
             identity_for_participant(public_identities, Some(&mission.publisher))
         {
             insert_identity_projection(object, "created_by", identity);
+        }
+        if let Some(reward) = mission.reward.as_ref() {
+            object.insert("reward_watt".to_owned(), json!(reward.agent_watt));
+            object.insert("task_bounty_watt".to_owned(), json!(reward.agent_watt));
+            object.insert("executor_bounty_watt".to_owned(), json!(reward.agent_watt));
         }
         if let Some(identity) =
             identity_for_participant(public_identities, mission.claimed_by.as_deref())

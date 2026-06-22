@@ -137,6 +137,30 @@
       display: flex;
       gap: 0.4rem;
       flex: 0 0 auto;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .askill-card-actions .danger {
+      color: var(--red);
+      border-color: var(--red-soft);
+      background: var(--red-soft);
+    }
+
+    .askill-card-actions .danger:hover {
+      color: #fff;
+      border-color: var(--red);
+      background: var(--red);
+      filter: none;
+    }
+
+    .askill-card-actions .danger:active {
+      transform: translateY(0.5px);
+    }
+
+    .askill-card-actions .danger:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.22);
     }
 
     .askill-card-new {

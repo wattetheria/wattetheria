@@ -155,11 +155,29 @@ async fn agent_skills_api_updates_public_source_agent_card() {
     .await;
     assert_eq!(saved["item"]["skill_id"].as_str(), Some("custom-research"));
 
-    let card = authed_get_json(app, &token, "/v1/wattetheria/source-agent-card").await;
+    let card = authed_get_json(app.clone(), &token, "/v1/wattetheria/source-agent-card").await;
     assert_eq!(
         card["card"]["skills"][0]["id"].as_str(),
         Some("custom-research")
     );
+
+    let deleted = request_json(
+        app.clone(),
+        axum::http::Request::builder()
+            .method("DELETE")
+            .uri("/v1/wattetheria/agent-skills/custom-research")
+            .header("authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(deleted["ok"].as_bool(), Some(true));
+    assert_eq!(deleted["skill_id"].as_str(), Some("custom-research"));
+
+    let skills = authed_get_json(app.clone(), &token, "/v1/wattetheria/agent-skills").await;
+    assert!(skills["items"].as_array().unwrap().is_empty());
+    let card = authed_get_json(app, &token, "/v1/wattetheria/source-agent-card").await;
+    assert!(card["card"]["skills"].as_array().unwrap().is_empty());
 }
 
 async fn mock_x402_settle_rpc(

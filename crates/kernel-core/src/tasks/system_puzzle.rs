@@ -372,12 +372,12 @@ mod tests {
             zone_id: None,
             required_role: None,
             required_faction: None,
-            reward: MissionReward {
+            reward: Some(MissionReward {
                 agent_watt: 0,
                 reputation: 0,
                 capacity: 0,
                 treasury_share_watt: 0,
-            },
+            }),
             payload: serde_json::to_value(SystemPuzzleVerificationMissionPayload {
                 task_kind: SYSTEM_PUZZLE_VERIFICATION_TASK_KIND.to_string(),
                 challenge,

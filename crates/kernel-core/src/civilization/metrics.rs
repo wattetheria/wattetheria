@@ -35,7 +35,8 @@ pub fn compute_scores(
         by_agent
             .iter()
             .filter(|mission| mission.domain == domain)
-            .map(|mission| mission.reward.agent_watt + mission.reward.reputation * 2)
+            .filter_map(|mission| mission.reward.as_ref())
+            .map(|reward| reward.agent_watt + reward.reputation * 2)
             .sum()
     };
 

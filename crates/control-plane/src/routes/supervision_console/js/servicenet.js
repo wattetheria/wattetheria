@@ -287,7 +287,10 @@
             ${chipHtml ? `<div class="snet-chips">${chipHtml}</div>` : ""}
             <div class="snet-card-foot">
               <span class="snet-card-provider">${row.provider_id ? `prv ${escapeHtml(compactId(row.provider_id, 28))}` : ""}</span>
-              <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Edit</button>
+              <span class="snet-card-actions">
+                <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Edit</button>
+                <button class="secondary danger" type="button" data-servicenet-delete="${escapeHtml(row.agent_id)}">Delete</button>
+              </span>
             </div>
           </div>
         `;
@@ -304,9 +307,39 @@
           }
         });
       });
+      target.querySelectorAll("[data-servicenet-delete]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const agent = servicenetAgents.find((item) => item.agent_id === button.dataset.servicenetDelete);
+          if (agent) {
+            unpublishServiceNetAgent(agent).catch((error) => serviceNetListStatus(error.message, true));
+          }
+        });
+      });
       target.querySelector("[data-servicenet-new]")?.addEventListener("click", () => {
         qs("servicenet-new")?.click();
       });
+    }
+
+    async function unpublishServiceNetAgent(agent) {
+      const name = agent?.agent_card?.name || agent?.agent_id || "this ServiceNet agent";
+      const confirmed = await confirmDialog({
+        title: "Delete agent",
+        message: `Delete ${name}? This unpublishes it from ServiceNet and removes the local publisher record.`,
+        confirmText: "Delete",
+        cancelText: "Cancel",
+        danger: true,
+      });
+      if (!confirmed) return;
+      serviceNetListStatus(`Deleting ${name}...`);
+      const response = await fetchJson(`/v1/wattetheria/servicenet/agents/${encodeURIComponent(agent.agent_id)}/unpublish`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "operator deleted from console" }),
+        auth: true,
+      });
+      const serviceAddress = response?.unpublished?.service_address || agent.service_address || agent.agent_id;
+      serviceNetListStatus(`Deleted ${serviceAddress}.`);
+      await refreshServiceNetAgents();
     }
 
     async function refreshServiceNetAgents() {

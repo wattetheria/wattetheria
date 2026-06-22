@@ -2,6 +2,7 @@ use super::*;
 use crate::social_host::{WattetheriaLocalIdentityProvider, WattetheriaTransportAdapter};
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine as _;
@@ -670,7 +671,6 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     "deployment": body["deployment"],
                     "review": body["review"],
                     "artifacts": body["artifacts"],
-                    "payment_account_binding": body["payment_account_binding"],
                     "attestations": body["attestations"],
                     "submitted_at": "2026-06-04T00:00:00Z",
                     "updated_at": "2026-06-04T00:00:00Z",
@@ -792,6 +792,15 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
         .route(
             "/v1/agents/{agent_id}/unpublish",
             post(|Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                if agent_id == "missing-remote-agent" {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({
+                            "error": format!("published agent `{agent_id}` not found")
+                        })),
+                    )
+                        .into_response();
+                }
                 Json(json!({
                     "agent_id": agent_id,
                     "provider_id": body["provider_id"],
@@ -802,6 +811,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     },
                     "updated_at": "2026-06-04T00:00:00Z",
                 }))
+                .into_response()
             }),
         )
         .route(

@@ -114,12 +114,53 @@ pub fn attach_servicenet_agent_did_document(
         payment_account_binding,
     );
     if let Some(object) = agent_card.as_object_mut() {
-        object.insert(
-            "payment_account_bindings".to_owned(),
-            Value::Array(payment_account_bindings),
-        );
         object.insert("didDocument".to_owned(), did_document);
     }
+    attach_servicenet_payment_discovery_bindings(agent_card, &payment_account_bindings);
+}
+
+fn attach_servicenet_payment_discovery_bindings(
+    agent_card: &mut Value,
+    payment_account_bindings: &[Value],
+) {
+    if payment_account_bindings.is_empty() {
+        return;
+    }
+    let Some(extensions) = agent_card
+        .get_mut("capabilities")
+        .and_then(|capabilities| capabilities.get_mut("extensions"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+
+    for extension in extensions {
+        if !extension_has_pay_to_accept(extension) {
+            continue;
+        }
+        let Some(params) = extension.get_mut("params").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        params.insert(
+            "payment_account_bindings".to_owned(),
+            Value::Array(payment_account_bindings.to_vec()),
+        );
+    }
+}
+
+fn extension_has_pay_to_accept(extension: &Value) -> bool {
+    extension
+        .get("params")
+        .and_then(|params| params.get("accepts"))
+        .and_then(Value::as_array)
+        .is_some_and(|accepts| {
+            accepts.iter().any(|accept| {
+                accept
+                    .get("payTo")
+                    .and_then(Value::as_str)
+                    .is_some_and(|pay_to| !pay_to.trim().is_empty())
+            })
+        })
 }
 
 fn validate_service_address_label(label: &str, field: &str) -> Result<()> {
@@ -625,6 +666,52 @@ mod tests {
             Some("wattetheria://servicenet/dumpling@wattetheria")
         );
         assert_eq!(document["payment_account_bindings"][0], binding);
+    }
+
+    #[test]
+    fn attach_servicenet_agent_did_document_adds_payment_binding_to_existing_pay_to_extension() {
+        let binding = json!({
+            "agent_did": "did:key:z6MkWallet",
+            "rail": "x402",
+            "network": "base",
+            "payment_address": "0x1111111111111111111111111111111111111111",
+        });
+        let mut agent_card = json!({
+            "name": "Agent",
+            "capabilities": {
+                "extensions": [
+                    {
+                        "uri": "https://github.com/google-a2a/a2a-x402/v0.1",
+                        "params": {
+                            "accepts": [
+                                {
+                                    "network": "base",
+                                    "payTo": "0x0000000000000000000000000000000000000000"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        });
+
+        attach_servicenet_agent_did_document(
+            &mut agent_card,
+            "did:key:z6MkProvider",
+            "agent-one",
+            Some("dumpling@wattetheria"),
+            Some(&binding),
+        );
+
+        assert!(agent_card.get("payment_account_bindings").is_none());
+        assert_eq!(
+            agent_card["capabilities"]["extensions"][0]["params"]["payment_account_bindings"][0],
+            binding
+        );
+        assert_eq!(
+            agent_card["didDocument"]["payment_account_bindings"][0],
+            binding
+        );
     }
 
     #[test]

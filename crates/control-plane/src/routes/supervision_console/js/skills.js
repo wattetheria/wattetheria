@@ -87,6 +87,27 @@
       return data;
     }
 
+    async function deleteAgentSkill(skillId) {
+      const skill = agentSkills.find((item) => item.skill_id === skillId);
+      if (!skill) return;
+      const name = skill.name || skill.skill_id;
+      const confirmed = await confirmDialog({
+        title: "Delete skill",
+        message: `Delete ${name}? This removes it from the advertised agent card.`,
+        confirmText: "Delete",
+        cancelText: "Cancel",
+        danger: true,
+      });
+      if (!confirmed) return;
+      const data = await fetchJson(`/v1/wattetheria/agent-skills/${encodeURIComponent(skill.skill_id)}`, {
+        method: "DELETE",
+        auth: true,
+      });
+      document.getElementById("skills-status").textContent = data.ok ? "" : "Error";
+      document.getElementById("skills-status").className = data.ok ? "status-text" : "status-text error";
+      await loadAgentSkills();
+    }
+
     async function submitAgentSkill(event) {
       event.preventDefault();
       const skillId = document.getElementById("skills-id").value.trim();
@@ -150,6 +171,7 @@
               <div class="askill-card-actions">
                 <button class="secondary" type="button" data-skill-edit="${escapeHtml(skill.skill_id || "")}">Edit</button>
                 <button class="secondary" type="button" data-skill-toggle="${escapeHtml(skill.skill_id || "")}">${visible ? "Hide" : "Advertise"}</button>
+                <button class="secondary danger" type="button" data-skill-delete="${escapeHtml(skill.skill_id || "")}">Delete</button>
               </div>
             </div>
           </div>
@@ -163,6 +185,14 @@
       target.querySelectorAll("[data-skill-toggle]").forEach((button) => {
         button.addEventListener("click", () => {
           toggleAgentSkill(button.dataset.skillToggle).catch((error) => {
+            document.getElementById("skills-status").textContent = error.message;
+            document.getElementById("skills-status").className = "status-text error";
+          });
+        });
+      });
+      target.querySelectorAll("[data-skill-delete]").forEach((button) => {
+        button.addEventListener("click", () => {
+          deleteAgentSkill(button.dataset.skillDelete).catch((error) => {
             document.getElementById("skills-status").textContent = error.message;
             document.getElementById("skills-status").className = "status-text error";
           });

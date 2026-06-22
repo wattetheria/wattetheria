@@ -230,3 +230,60 @@
       margin-top: 0.55rem;
     }
 
+    /* ===== Themed confirmation dialog ===== */
+    .confirm-dialog {
+      width: min(26rem, calc(100vw - 2rem));
+      padding: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      color: var(--ink);
+      box-shadow: var(--shadow-md);
+    }
+    .confirm-dialog::backdrop {
+      background: rgba(16, 24, 40, 0.45);
+      backdrop-filter: blur(2px);
+    }
+    .confirm-dialog[open] {
+      animation: confirm-pop 0.14s ease;
+    }
+    @keyframes confirm-pop {
+      from { opacity: 0; transform: translateY(6px) scale(0.98); }
+      to { opacity: 1; transform: none; }
+    }
+    .confirm-dialog-body {
+      padding: 1.25rem 1.25rem 0.4rem;
+    }
+    .confirm-dialog-title {
+      margin: 0 0 0.5rem;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .confirm-dialog-message {
+      margin: 0;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    .confirm-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.6rem;
+      padding: 1rem 1.25rem 1.25rem;
+    }
+
+    /* Solid destructive button (used for the confirm action in danger dialogs). */
+    button.danger-solid {
+      background: var(--red);
+      border-color: var(--red);
+      color: #fff;
+    }
+    button.danger-solid:hover {
+      filter: brightness(0.95);
+    }
+    button.danger-solid:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.22);
+    }
+
