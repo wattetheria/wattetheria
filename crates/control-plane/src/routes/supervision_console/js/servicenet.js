@@ -162,22 +162,7 @@
     }
 
     function serviceNetCardServiceAddress(row = {}) {
-      const card = row.agent_card || {};
-      const candidates = [
-        row.service_address,
-        card.serviceAddress,
-        card.service_address,
-        ...safeArray(card.didDocument?.alsoKnownAs),
-      ];
-      const serviceEndpoint = safeArray(card.didDocument?.service)
-        .map((service) => service?.serviceEndpoint)
-        .find((endpoint) => String(endpoint || "").startsWith("wattetheria://servicenet/"));
-      if (serviceEndpoint) {
-        candidates.push(String(serviceEndpoint).replace("wattetheria://servicenet/", ""));
-      }
-      return candidates
-        .map((value) => String(value || "").trim())
-        .find((value) => value.includes("@")) || "";
+      return String(row.service_address || "").trim();
     }
 
     async function resetServiceNetForm(card = null, agent = null) {
@@ -302,7 +287,7 @@
             ${chipHtml ? `<div class="snet-chips">${chipHtml}</div>` : ""}
             <div class="snet-card-foot">
               <span class="snet-card-provider">${row.provider_id ? `prv ${escapeHtml(compactId(row.provider_id, 28))}` : ""}</span>
-              <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Update</button>
+              <button class="secondary" type="button" data-servicenet-update="${escapeHtml(row.agent_id)}">Edit</button>
             </div>
           </div>
         `;
