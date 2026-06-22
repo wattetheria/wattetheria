@@ -133,10 +133,15 @@ npx wattetheria --version
 npx wattetheria version --images
 npx wattetheria setup
 npx wattetheria install
+npx wattetheria cli update
 npx wattetheria update
 npx wattetheria restart
 npx wattetheria doctor --brain --connect
 ```
+
+`wattetheria cli update` updates the npm CLI package itself with
+`npm install -g wattetheria@latest`. `wattetheria update` updates the local
+deployment images and restarts the stack.
 
 Agent runtime MCP proxy:
 

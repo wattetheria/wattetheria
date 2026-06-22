@@ -373,14 +373,36 @@ fn mission_id_from_event(event: &AgentEventEnvelope) -> Option<String> {
     })
 }
 
+fn non_empty_owned(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn source_agent_did_from_envelope(event: &AgentEventEnvelope) -> Option<String> {
+    event
+        .agent_envelope
+        .as_ref()
+        .and_then(|envelope| non_empty_owned(envelope.source_agent_id.as_deref()))
+}
+
+fn target_agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
+    non_empty_owned(event.target_agent_id.as_deref()).or_else(|| {
+        event
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| non_empty_owned(envelope.target_agent_id.as_deref()))
+    })
+}
+
 fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
     let paths: &[&str] = match event.event_type.as_str() {
-        "task_claim_received" => &["/claimer_agent_did", "/claimer_node_id", "/agent_did"],
+        "task_claim_received" => &["/claimer_agent_did", "/agent_did"],
         "task_claim_decision_received" => &[
             "/task_inputs/agent_did",
             "/task_inputs/claimer_agent_did",
             "/claimer_agent_did",
-            "/claimer_node_id",
             "/agent_did",
         ],
         "task_result_received" => &[
@@ -389,7 +411,6 @@ fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
             "/candidate_output/agent_did",
             "/agent_did",
             "/claimer_agent_did",
-            "/claimer_node_id",
         ],
         "task_completion_decision_received" | "task_settled_received" => &[
             "/task_inputs/agent_did",
@@ -404,18 +425,27 @@ fn agent_did_from_event(event: &AgentEventEnvelope) -> Option<String> {
         ],
         _ => &["/agent_did"],
     };
-    paths
-        .iter()
-        .find_map(|path| {
-            event
-                .payload
-                .pointer(path)
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| event.target_agent_id.clone())
-        .or_else(|| event.source_node_id.clone())
+    let payload_agent_did = paths.iter().find_map(|path| {
+        event
+            .payload
+            .pointer(path)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    });
+    match event.event_type.as_str() {
+        "task_claim_received" => source_agent_did_from_envelope(event).or(payload_agent_did),
+        "task_result_received" => {
+            payload_agent_did.or_else(|| source_agent_did_from_envelope(event))
+        }
+        "task_claim_decision_received"
+        | "task_completion_decision_received"
+        | "task_settled_received"
+        | "topic_message_requires_reply" => {
+            payload_agent_did.or_else(|| target_agent_did_from_event(event))
+        }
+        _ => payload_agent_did,
+    }
 }
 
 fn payload_bool(payload: &Value, key: &str) -> Option<bool> {
@@ -1123,7 +1153,11 @@ fn ensure_mission_payload_fields(
     {
         payload.insert("mission_id".to_string(), Value::String(mission_id));
     }
-    if !payload.contains_key("agent_did")
+    if event.event_type == "task_claim_received" {
+        if let Some(agent_did) = source_agent_did_from_envelope(event) {
+            payload.insert("agent_did".to_string(), Value::String(agent_did));
+        }
+    } else if !payload.contains_key("agent_did")
         && let Some(agent_did) = agent_did_from_event(event)
     {
         payload.insert("agent_did".to_string(), Value::String(agent_did));

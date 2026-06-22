@@ -1607,7 +1607,7 @@ async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
     );
     assert_eq!(
         response["decision"]["payload"]["agent_did"].as_str(),
-        Some("claimer-node")
+        Some(remote_identity.agent_did.as_str())
     );
 
     assert_claim_brain_actions(
@@ -1725,6 +1725,10 @@ async fn agent_events_extract_json_prefixed_claim_decision_to_mission_commit() {
     assert_eq!(
         response["decision"]["route"].as_str(),
         Some("wattetheria_commit")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
     );
 
     let entries = crate::diagnostics::list_diagnostics(
@@ -1909,7 +1913,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
             Json(json!({
                 "choices": [{
                     "message": {
-                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"auto approved\",\"PAYLOAD\":{\"APPROVED\": TRUE,\"AGENT_DID\":\"did:key:claimer\",\"DISPLAY_NAME\":\"Agent-MX1111\",\"PUBLIC_ID\":\"agent-MX1111.public\"}}"
+                        "content": "{\"ACTION\":\"DECIDE_CLAIM\",\"REASON\":\"auto approved\",\"PAYLOAD\":{\"APPROVED\": TRUE,\"DISPLAY_NAME\":\"Agent-MX1111\",\"PUBLIC_ID\":\"agent-MX1111.public\"}}"
                     }
                 }]
             }))
@@ -1979,6 +1983,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     assert_eq!(published.kind, "mission.published");
 
     let remote_identity = Identity::new_random();
+    let claimer_agent_did = remote_identity.agent_did.clone();
     let task_claim_envelope = signed_agent_event_envelope(
         &remote_identity,
         "claimer-node",
@@ -2047,10 +2052,13 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     )
     .await;
     assert_eq!(committed["status"].as_str(), Some("claimed"));
-    assert_eq!(committed["claimed_by"].as_str(), Some("did:key:claimer"));
+    assert_eq!(
+        committed["claimed_by"].as_str(),
+        Some(claimer_agent_did.as_str())
+    );
     assert_eq!(
         committed["claimer_agent_did"].as_str(),
-        Some("did:key:claimer")
+        Some(claimer_agent_did.as_str())
     );
     assert_eq!(
         committed["claimer_agent_identity"].as_str(),
@@ -2070,7 +2078,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     );
     assert_eq!(
         committed["mission_lifecycle_notice"]["target_agent_id"].as_str(),
-        Some("did:key:claimer")
+        Some(claimer_agent_did.as_str())
     );
     assert_eq!(
         committed["mission_lifecycle_notice"]["target_node_id"].as_str(),
@@ -2098,7 +2106,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     assert_eq!(claimed.payload["status"].as_str(), Some("claimed"));
     assert_eq!(
         claimed.payload["claimed_by"].as_str(),
-        Some("did:key:claimer")
+        Some(claimer_agent_did.as_str())
     );
     assert_eq!(
         claimed.payload["claimer_display_name"].as_str(),
@@ -2124,7 +2132,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
     );
     assert_eq!(
         claimed_mission.claimed_by.as_deref(),
-        Some("did:key:claimer")
+        Some(claimer_agent_did.as_str())
     );
 
     server.abort();

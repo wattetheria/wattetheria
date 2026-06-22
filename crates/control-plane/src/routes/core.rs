@@ -427,6 +427,13 @@ fn payload_string(payload: &Value, pointer: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn non_empty_owned(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn mission_id_for_commit(body: &AgentActionCommitBody) -> Option<String> {
     required_payload_string(&body.decision.payload, "/mission_id")
         .or_else(|| payload_string(&body.event.payload, "/mission_id"))
@@ -437,7 +444,29 @@ fn mission_id_for_commit(body: &AgentActionCommitBody) -> Option<String> {
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/mission_id"))
 }
 
+fn mission_agent_did_from_event_envelope(body: &AgentActionCommitBody) -> Option<String> {
+    let envelope = body.event.agent_envelope.as_ref();
+    match body.event.event_type.as_str() {
+        "task_claim_received" | "task_result_received" => {
+            envelope.and_then(|envelope| non_empty_owned(envelope.source_agent_id.as_deref()))
+        }
+        "task_claim_decision_received"
+        | "task_completion_decision_received"
+        | "task_settled_received"
+        | "topic_message_requires_reply" => non_empty_owned(body.event.target_agent_id.as_deref())
+            .or_else(|| {
+                envelope.and_then(|envelope| non_empty_owned(envelope.target_agent_id.as_deref()))
+            }),
+        _ => None,
+    }
+}
+
 fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did: &str) -> String {
+    if body.event.event_type == "task_claim_received"
+        && let Some(agent_did) = mission_agent_did_from_event_envelope(body)
+    {
+        return agent_did;
+    }
     payload_string(&body.decision.payload, "/agent_did")
         .or_else(|| payload_string(&body.decision.payload, "/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/agent_did"))
@@ -450,7 +479,7 @@ fn mission_agent_did_for_commit(body: &AgentActionCommitBody, default_agent_did:
         .or_else(|| payload_string(&body.event.payload, "/output/claimer_agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/candidate_output/agent_did"))
         .or_else(|| payload_string(&body.event.payload, "/task_inputs/agent_did"))
-        .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
+        .or_else(|| mission_agent_did_from_event_envelope(body))
         .unwrap_or_else(|| default_agent_did.to_owned())
 }
 
