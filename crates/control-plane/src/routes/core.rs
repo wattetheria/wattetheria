@@ -1321,11 +1321,13 @@ async fn commit_task_result_settle_mission(
     candidate_id: Option<String>,
     claim_route: Option<Value>,
 ) -> Response {
-    let status = {
+    let mission_state = {
         let board = state.mission_board.lock().await;
-        board.get(&mission_id).map(|mission| mission.status.clone())
+        board
+            .get(&mission_id)
+            .map(|mission| (mission.status.clone(), mission.claimed_by.clone()))
     };
-    let Some(status) = status else {
+    let Some((status, claimed_by)) = mission_state else {
         return bad_request("mission not found");
     };
     if status == MissionStatus::Settled {
@@ -1347,6 +1349,13 @@ async fn commit_task_result_settle_mission(
     {
         return internal_error(&error);
     }
+    let transition_agent_did = match status {
+        MissionStatus::Claimed | MissionStatus::Completed => {
+            claimed_by.filter(|value| !value.trim().is_empty())
+        }
+        MissionStatus::Open | MissionStatus::Settled | MissionStatus::Cancelled => None,
+    }
+    .unwrap_or_else(|| agent_did.clone());
     // Mission transitions are idempotent via replay guards (commit_headers dedup).
     // If any step fails, a retry will skip already-completed steps.
     if status == MissionStatus::Open {
@@ -1363,7 +1372,8 @@ async fn commit_task_result_settle_mission(
         }
     }
     if matches!(status, MissionStatus::Open | MissionStatus::Claimed) {
-        let mut complete_body = MissionClaimBody::local(mission_id.clone(), agent_did.clone());
+        let mut complete_body =
+            MissionClaimBody::local(mission_id.clone(), transition_agent_did.clone());
         complete_body.claim_route = claim_route.clone();
         let response = crate::routes::missions::mission_complete(
             State(state.clone()),
@@ -1381,7 +1391,7 @@ async fn commit_task_result_settle_mission(
         Json(MissionSettleBody {
             mission_id,
             task_id: None,
-            agent_did: Some(agent_did),
+            agent_did: Some(transition_agent_did),
             candidate_id: None,
             claim_route,
         }),

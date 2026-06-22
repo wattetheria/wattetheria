@@ -1496,6 +1496,198 @@ async fn agent_events_route_allows_task_result_to_settle_mission_via_commit_plan
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn accepted_task_result_settles_using_approved_claimer_identity() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":\"accept_result\",\"reason\":\"publisher accepted result\",\"payload\":{}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, _router, token, _policy_engine, state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+    let base_url = format!("http://{addr}/v1");
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+                runtime_adapter: None,
+            },
+        ))),
+        brain_config: Arc::new(tokio::sync::RwLock::new(
+            BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+                runtime_adapter: None,
+            },
+        )),
+        brain_provider_label: format!("openai-compatible model=openclaw url={base_url}"),
+        ..state
+    };
+    let app = app(state.clone());
+    let publisher_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        json!({
+            "title": "Accepted result identity mismatch",
+            "description": "Accepted result must use the already approved claimer identity.",
+            "publisher": publisher_public_id,
+            "publisher_kind": "player",
+            "domain": "trade",
+            "reward": {
+                "agent_watt": 2,
+                "reputation": 1,
+                "capacity": 0,
+                "treasury_share_watt": 0
+            },
+            "payload": {"objective": "verify accepted result identity"}
+        }),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().expect("mission_id");
+    let claimer_identity = Identity::new_random();
+    let claimer_agent_did = claimer_identity.agent_did.clone();
+    let claimed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": claimer_agent_did,
+            "task_id": mission_id,
+            "claim_route": {
+                "agent_event_payload": {
+                    "claimer_node_id": "claimer-node"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(claimed["status"].as_str(), Some("claimed"));
+    assert_eq!(
+        claimed["claimed_by"].as_str(),
+        Some(claimer_agent_did.as_str())
+    );
+
+    let mismatched_result_agent = "wrong-result-agent";
+    let task_result_payload = json!({
+        "task_id": mission_id,
+        "mission_id": mission_id,
+        "candidate_id": "cand-accepted",
+        "candidate_output": {
+            "kind": "wattetheria_mission_result",
+            "mission_id": mission_id,
+            "agent_did": mismatched_result_agent,
+            "result": {"ok": true}
+        }
+    });
+    let task_result_envelope = signed_agent_event_envelope(
+        &claimer_identity,
+        "claimer-node",
+        Some(&state.agent_did),
+        "task.result",
+        task_result_payload.clone(),
+    );
+    let event = json!({
+        "event_id": "evt-task-result-accepted-claimed-by",
+        "event_type": "task_result_received",
+        "source_kind": "task_lifecycle",
+        "source_node_id": "claimer-node",
+        "target_agent_id": state.agent_did,
+        "target_executor": "core-agent",
+        "agent_envelope": task_result_envelope,
+        "payload": task_result_payload,
+        "requires_commit": true,
+        "allowed_actions": ["human_review", "accept_result", "reject_result", "request_retry"],
+        "correlation_id": mission_id,
+        "dedupe_key": format!("task_result:{mission_id}:cand-accepted"),
+        "created_at": 1
+    });
+
+    let response = request_json(
+        app.clone(),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({"event": event.clone()}).to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("settle_mission")
+    );
+    assert_eq!(
+        response["decision"]["payload"]["agent_did"].as_str(),
+        Some(mismatched_result_agent)
+    );
+
+    let committed = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": event,
+            "decision": response["decision"].clone(),
+        }),
+    )
+    .await;
+    assert_eq!(committed["status"].as_str(), Some("settled"));
+    assert_eq!(
+        committed["claimed_by"].as_str(),
+        Some(claimer_agent_did.as_str())
+    );
+    assert_eq!(
+        committed["completed_by"].as_str(),
+        Some(claimer_agent_did.as_str())
+    );
+
+    let board = state.mission_board.lock().await;
+    let settled_mission = board.get(mission_id).expect("settled mission");
+    assert_eq!(
+        settled_mission.status,
+        wattetheria_kernel::civilization::missions::MissionStatus::Settled
+    );
+    assert_eq!(
+        settled_mission.claimed_by.as_deref(),
+        Some(claimer_agent_did.as_str())
+    );
+    assert_eq!(
+        settled_mission.completed_by.as_deref(),
+        Some(claimer_agent_did.as_str())
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_convert_approved_claim_decision_to_mission_commit() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
