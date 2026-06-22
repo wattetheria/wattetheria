@@ -255,6 +255,27 @@ async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice(
     let (dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
     seed_gateway_remote_mission(dir.path(), &state, "mission-remote-2").await;
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "mission-remote-2",
+        "mission-remote-2",
+        &agent_did,
+        &format!("wattetheria:mission-remote-2:{agent_did}"),
+        Some("claimed".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-remote-2".to_string()),
+            publisher_wattswarm_node_id: Some("publisher-node".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
     let response = authed_post_json(
         app,
         &token,
@@ -310,6 +331,152 @@ async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice(
         Some("group:mission-remote-2")
     );
     assert!(response.get("task_announcement_sync").is_none());
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let claim = registry
+        .get("mission-remote-2", "mission-remote-2", &agent_did)
+        .expect("network claim");
+    assert_eq!(claim.status.as_deref(), Some("completed"));
+}
+
+#[tokio::test]
+async fn complete_network_mission_requires_claimed_network_claim_record() {
+    let (dir, app, token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-unclaimed").await;
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "mission-remote-unclaimed",
+        "mission-remote-unclaimed",
+        &agent_did,
+        &format!("wattetheria:mission-remote-unclaimed:{agent_did}"),
+        Some("approved".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-remote-unclaimed".to_string()),
+            publisher_wattswarm_node_id: Some("publisher-node".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let response = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/missions/mission-remote-unclaimed/complete",
+        json!({
+            "mission_id": "mission-remote-unclaimed",
+            "agent_did": agent_did,
+            "claim_route": {
+                "task_id": "mission-remote-unclaimed",
+                "mission_feed_key": "wattetheria.missions",
+                "mission_scope_hint": "group:mission-remote-unclaimed",
+                "publisher_wattswarm_node_id": "publisher-node"
+            },
+            "result": {"delivered": true}
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["error"].as_str(),
+        Some("network mission complete requires a recorded claimed mission")
+    );
+    assert_eq!(response["claim_status"].as_str(), Some("approved"));
+}
+
+#[tokio::test]
+async fn agent_action_commit_completes_claimed_network_mission_from_claim_registry() {
+    let (dir, app, token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-commit-complete").await;
+    let mut claims = NetworkMissionClaimRegistry::default();
+    claims.record(
+        "mission-remote-commit-complete",
+        "mission-remote-commit-complete",
+        &agent_did,
+        &format!("wattetheria:mission-remote-commit-complete:{agent_did}"),
+        Some("claimed".to_string()),
+        NetworkMissionClaimMetadata {
+            mission_feed_key: Some("wattetheria.missions".to_string()),
+            mission_scope_hint: Some("group:mission-remote-commit-complete".to_string()),
+            publisher_wattswarm_node_id: Some("publisher-node".to_string()),
+            ..NetworkMissionClaimMetadata::default()
+        },
+    );
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS,
+            &claims,
+        )
+        .unwrap();
+
+    let response = authed_post_json(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-network-complete-commit",
+                "event_type": "task_claim_decision_received",
+                "source_kind": "task_lifecycle",
+                "source_node_id": "publisher-node",
+                "target_agent_id": agent_did,
+                "payload": {
+                    "approved": true,
+                    "mission_id": "mission-remote-commit-complete",
+                    "task_id": "mission-remote-commit-complete",
+                    "agent_did": agent_did,
+                    "mission_feed_key": "wattetheria.missions",
+                    "mission_scope_hint": "group:mission-remote-commit-complete",
+                    "publisher_wattswarm_node_id": "publisher-node"
+                },
+                "requires_commit": false
+            },
+            "decision": {
+                "decision_id": "decision-network-complete-commit",
+                "action": "complete_mission",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "mission_id": "mission-remote-commit-complete",
+                    "agent_did": agent_did,
+                    "result": {"delivered": true, "summary": "done"}
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["status"].as_str(),
+        Some("network_complete_published")
+    );
+    assert_eq!(
+        response["mission_lifecycle_notice"]["kind"].as_str(),
+        Some("mission_completed")
+    );
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    let claim = registry
+        .get(
+            "mission-remote-commit-complete",
+            "mission-remote-commit-complete",
+            &agent_did,
+        )
+        .expect("network claim");
+    assert_eq!(claim.status.as_deref(), Some("completed"));
 }
 
 #[tokio::test]

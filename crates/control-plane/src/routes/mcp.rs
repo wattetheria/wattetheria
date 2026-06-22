@@ -40,7 +40,7 @@ mod schema;
 
 use schema::input_schema;
 
-const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
+const MCP_PROTOCOL_VERSION: &str = "2026-05-11";
 const LOOPBACK_BODY_LIMIT: usize = 8 * 1024 * 1024;
 const DEFAULT_GATEWAY_TASK_LIMIT: usize = 50;
 const MAX_GATEWAY_TASK_LIMIT: usize = 100;

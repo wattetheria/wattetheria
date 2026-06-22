@@ -155,6 +155,18 @@ impl NetworkMissionClaimRegistry {
             .contains_key(&network_claim_key(mission_id, task_id, agent_did))
     }
 
+    #[must_use]
+    pub fn get(
+        &self,
+        mission_id: &str,
+        task_id: &str,
+        agent_did: &str,
+    ) -> Option<NetworkMissionClaimRecord> {
+        self.claims
+            .get(&network_claim_key(mission_id, task_id, agent_did))
+            .cloned()
+    }
+
     pub fn record(
         &mut self,
         mission_id: &str,
@@ -203,6 +215,25 @@ impl NetworkMissionClaimRegistry {
             .iter()
             .find_map(|(key, record)| (record.mission_id == mission_id).then(|| key.clone()))?;
         let record = self.claims.get_mut(&key)?;
+        record.status = Some(status.to_owned());
+        record.metadata.task_status = Some(status.to_owned());
+        Some(record.clone())
+    }
+
+    pub fn update_status(
+        &mut self,
+        mission_id: &str,
+        task_id: &str,
+        agent_did: &str,
+        status: &str,
+    ) -> Option<NetworkMissionClaimRecord> {
+        let status = status.trim();
+        if status.is_empty() {
+            return None;
+        }
+        let record = self
+            .claims
+            .get_mut(&network_claim_key(mission_id, task_id, agent_did))?;
         record.status = Some(status.to_owned());
         record.metadata.task_status = Some(status.to_owned());
         Some(record.clone())
@@ -628,12 +659,19 @@ mod tests {
         assert_eq!(record.metadata.domain.as_deref(), Some("trade"));
         assert_eq!(record.metadata.reward_watt, Some(10));
         assert!(registry.contains("mission-1", "task-1", "agent-a"));
+        let exact = registry.get("mission-1", "task-1", "agent-a").unwrap();
+        assert_eq!(exact.execution_id, "exec-1");
         assert!(registry.contains_mission("mission-1"));
         let updated = registry
             .update_status_by_mission("mission-1", "approved")
             .unwrap();
         assert_eq!(updated.status.as_deref(), Some("approved"));
         assert_eq!(updated.metadata.task_status.as_deref(), Some("approved"));
+        let updated = registry
+            .update_status("mission-1", "task-1", "agent-a", "completed")
+            .unwrap();
+        assert_eq!(updated.status.as_deref(), Some("completed"));
+        assert_eq!(updated.metadata.task_status.as_deref(), Some("completed"));
         assert!(!registry.contains("mission-1", "task-1", "agent-b"));
     }
 }

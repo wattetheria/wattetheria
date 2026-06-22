@@ -26,7 +26,8 @@ use crate::state::{
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::{
-    CivilMission, MissionStatus, NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
+    CivilMission, MissionStatus, NetworkMissionClaimMetadata, NetworkMissionClaimRecord,
+    NetworkMissionClaimRegistry,
 };
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
@@ -154,6 +155,18 @@ fn network_claim_already_recorded(
         .local_db
         .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
     Ok(registry.contains(mission_id, task_id, agent_did))
+}
+
+fn recorded_network_claim(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+) -> anyhow::Result<Option<NetworkMissionClaimRecord>> {
+    let registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
+    Ok(registry.get(mission_id, task_id, agent_did))
 }
 
 fn network_claim_already_recorded_response(
@@ -2283,22 +2296,84 @@ fn record_network_claim_success(
     Ok(())
 }
 
+fn network_claim_status_allows_complete(status: Option<&str>) -> bool {
+    status.is_some_and(|status| status.trim().eq_ignore_ascii_case("claimed"))
+}
+
+fn network_claim_complete_status_response(
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+    status: Option<&str>,
+) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": "network mission complete requires a recorded claimed mission",
+            "mission_id": mission_id,
+            "task_id": task_id,
+            "agent_did": agent_did,
+            "claim_status": status.unwrap_or("missing"),
+        })),
+    )
+        .into_response()
+}
+
+fn ensure_network_claim_claimed_for_complete(
+    state: &ControlPlaneState,
+    body: &MissionClaimBody,
+    route: &NetworkMissionClaimRoute,
+) -> Result<NetworkMissionClaimRecord, Box<Response>> {
+    match recorded_network_claim(state, &body.mission_id, &route.task_id, &body.agent_did) {
+        Ok(Some(record)) if network_claim_status_allows_complete(record.status.as_deref()) => {
+            Ok(record)
+        }
+        Ok(Some(record)) => Err(Box::new(network_claim_complete_status_response(
+            &body.mission_id,
+            &route.task_id,
+            &body.agent_did,
+            record.status.as_deref(),
+        ))),
+        Ok(None) => Err(Box::new(network_claim_complete_status_response(
+            &body.mission_id,
+            &route.task_id,
+            &body.agent_did,
+            None,
+        ))),
+        Err(error) => Err(Box::new(internal_error(&error))),
+    }
+}
+
+fn record_network_claim_completed(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    task_id: &str,
+    agent_did: &str,
+) -> anyhow::Result<()> {
+    let mut registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
+    registry
+        .update_status(mission_id, task_id, agent_did, "completed")
+        .context("recorded network mission claim not found")?;
+    state
+        .local_db
+        .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
+}
+
 async fn complete_network_mission(
     state: ControlPlaneState,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     auth: String,
     body: MissionClaimBody,
 ) -> Response {
-    if agent_commit_context_from_headers(&headers).is_some() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "network mission complete requires a direct request"})),
-        )
-            .into_response();
-    }
     let route = match network_claim_route_for_action(&state, &body).await {
         Ok(route) => route,
         Err(response) => return response,
+    };
+    let claim_record = match ensure_network_claim_claimed_for_complete(&state, &body, &route) {
+        Ok(record) => record,
+        Err(response) => return *response,
     };
     let Some(result) = body
         .result
@@ -2344,12 +2419,18 @@ async fn complete_network_mission(
         Ok(notice) => notice,
         Err(error) => return internal_error(&error),
     };
+    if let Err(error) =
+        record_network_claim_completed(&state, &body.mission_id, &route.task_id, &body.agent_did)
+    {
+        return internal_error(&error);
+    }
     let response_json = json!({
         "ok": true,
         "status": "network_complete_published",
         "mission_id": body.mission_id,
         "task_id": route.task_id,
         "agent_did": body.agent_did,
+        "execution_id": claim_record.execution_id,
         "mission_feed_key": route.mission_feed_key,
         "mission_scope_hint": route.mission_scope_hint,
         "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,

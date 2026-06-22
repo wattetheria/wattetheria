@@ -638,7 +638,7 @@ fn build_source_agent_card(
         .map(agent_skill_card_json)
         .collect::<Vec<_>>();
     let mut card = serde_json::json!({
-        "protocolVersion": "0.3.0",
+        "protocolVersion": "1.0",
         "name": card_display_name,
         "description": "Wattetheria node agent participating through Wattswarm mesh.",
         "preferredTransport": "wattswarm_mesh",

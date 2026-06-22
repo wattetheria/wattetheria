@@ -474,6 +474,38 @@ fn mission_commit_result(body: &AgentActionCommitBody) -> Option<Value> {
         .or_else(|| body.event.payload.pointer("/output/result").cloned())
 }
 
+fn mission_commit_value(body: &AgentActionCommitBody, field: &str) -> Option<Value> {
+    body.decision
+        .payload
+        .get(field)
+        .cloned()
+        .or_else(|| body.event.payload.get(field).cloned())
+        .or_else(|| {
+            body.event
+                .payload
+                .pointer(&format!("/content/{field}"))
+                .cloned()
+        })
+        .or_else(|| {
+            body.event
+                .payload
+                .pointer(&format!("/topic_content/{field}"))
+                .cloned()
+        })
+        .or_else(|| {
+            body.event
+                .payload
+                .pointer(&format!("/output/{field}"))
+                .cloned()
+        })
+        .or_else(|| {
+            body.event
+                .payload
+                .pointer(&format!("/task_inputs/{field}"))
+                .cloned()
+        })
+}
+
 fn mission_claim_body_for_commit(
     body: &AgentActionCommitBody,
     mission_id: String,
@@ -486,7 +518,7 @@ fn mission_claim_body_for_commit(
     claim_body.publisher_wattswarm_node_id =
         mission_commit_string(body, "publisher_wattswarm_node_id");
     claim_body.result = mission_commit_result(body);
-    claim_body.claim_route = Some(json!({
+    let mut claim_route = json!({
         "agent_envelope": body.event.agent_envelope.clone(),
         "agent_event_payload": body.event.payload.clone(),
         "decision_payload": body.decision.payload.clone(),
@@ -494,7 +526,13 @@ fn mission_claim_body_for_commit(
         "mission_feed_key": claim_body.mission_feed_key,
         "mission_scope_hint": claim_body.mission_scope_hint,
         "publisher_wattswarm_node_id": claim_body.publisher_wattswarm_node_id,
-    }));
+    });
+    if let Some(task_contract) = mission_commit_value(body, "task_contract")
+        && let Some(object) = claim_route.as_object_mut()
+    {
+        object.insert("task_contract".to_owned(), task_contract);
+    }
+    claim_body.claim_route = Some(claim_route);
     claim_body
 }
 
