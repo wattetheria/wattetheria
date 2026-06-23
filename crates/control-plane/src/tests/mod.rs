@@ -45,7 +45,7 @@ use wattetheria_kernel::signing::{canonical_bytes, sign_payload, verify_payload}
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
-    SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
+    SwarmDiscoveredAgent, SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
     SwarmPeerRelationshipView, SwarmPeerView, SwarmPrivateHiveKeyShareCommand,
     SwarmRelationshipActionCommand, SwarmRunSubmitCommand, SwarmSourceAgentCard,
     SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskClaimDecisionCommand,
@@ -919,6 +919,7 @@ struct MockSwarmBridge {
     agent_stats: BTreeMap<String, AgentStats>,
     network_status: SwarmNetworkStatusView,
     peers: Vec<SwarmPeerView>,
+    discovered_agents: BTreeMap<String, SwarmDiscoveredAgent>,
     subscriptions: Mutex<Vec<TopicSubscriptionRecord>>,
     messages: Mutex<Vec<SwarmTopicMessageView>>,
     relationship_views: Mutex<Vec<SwarmPeerRelationshipView>>,
@@ -942,6 +943,7 @@ impl MockSwarmBridge {
                 peer_protocol_distribution: BTreeMap::new(),
             },
             peers: Vec::new(),
+            discovered_agents: BTreeMap::new(),
             subscriptions: Mutex::new(Vec::new()),
             messages: Mutex::new(Vec::new()),
             relationship_views: Mutex::new(Vec::new()),
@@ -1093,6 +1095,33 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn peers(&self) -> anyhow::Result<Vec<SwarmPeerView>> {
         Ok(self.peers.clone())
+    }
+
+    async fn resolve_agent_public_id(
+        &self,
+        public_id: &str,
+    ) -> anyhow::Result<Option<SwarmDiscoveredAgent>> {
+        Ok(self.discovered_agents.get(public_id.trim()).cloned())
+    }
+
+    async fn search_agent_display_name(
+        &self,
+        display_name: &str,
+    ) -> anyhow::Result<Vec<SwarmDiscoveredAgent>> {
+        let display_name = display_name.trim().trim_start_matches('@').trim();
+        Ok(self
+            .discovered_agents
+            .values()
+            .filter(|agent| {
+                agent
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .map(|value| value.trim_start_matches('@').trim())
+                    == Some(display_name)
+            })
+            .cloned()
+            .collect())
     }
 
     async fn diagnostics(

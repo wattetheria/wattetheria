@@ -1857,6 +1857,209 @@ async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
 }
 
 #[tokio::test]
+async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-discovery", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooDiscoveryPeer".to_string();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Discovery".to_string()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "counterpart_public_id": remote_public_id,
+                    "message": {
+                        "kind": "friend_request",
+                        "text": "hello discovered public id"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, remote_node_id);
+    assert_eq!(
+        command.agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("target_public_id")
+            .and_then(Value::as_str),
+        Some(remote_public_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_resolves_display_name_from_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-display", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooDisplayPeer".to_string();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Display".to_string()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "display_name": "@Broker Display",
+                    "message": {
+                        "kind": "friend_request",
+                        "text": "hello discovered display name"
+                    }
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, remote_node_id);
+    assert_eq!(
+        command.agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        command
+            .agent_envelope
+            .message
+            .get("target_public_id")
+            .and_then(Value::as_str),
+        Some(remote_public_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_rejects_ambiguous_discovery_display_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity_a = Identity::new_random();
+    let remote_identity_b = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id_a = scoped_id("broker-display-a", &remote_identity_a.agent_did);
+    let remote_public_id_b = scoped_id("broker-display-b", &remote_identity_b.agent_did);
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [
+            (
+                remote_public_id_a.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_a,
+                    remote_node_id: "12D3KooDisplayPeerA".to_string(),
+                    target_agent_did: remote_identity_a.agent_did,
+                    display_name: Some("Broker Display".to_string()),
+                },
+            ),
+            (
+                remote_public_id_b.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_b,
+                    remote_node_id: "12D3KooDisplayPeerB".to_string(),
+                    target_agent_did: remote_identity_b.agent_did,
+                    display_name: Some("Broker Display".to_string()),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "display_name": "Broker Display",
+                    "message": "hello ambiguous display name"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        response["result"]["structuredContent"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("multiple discovery records matched display_name"))
+    );
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_friendship() {
     let dir = tempfile::tempdir().unwrap();

@@ -125,6 +125,7 @@ async fn client_api_routes_align_with_client_dtos() {
                 "last_action": "accept"
             })),
         }],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
         relationship_views: Mutex::new(Vec::new()),
@@ -955,6 +956,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
             metadata: Some(json!({"network_id": "mainnet:watt-etheria"})),
             relationship: None,
         }],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
         relationship_views: Mutex::new(Vec::new()),
@@ -1137,6 +1139,7 @@ async fn client_export_excludes_local_friends_and_dm() {
             metadata: None,
             relationship: None,
         }],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(vec![
             SwarmTopicMessageView {
@@ -1418,6 +1421,7 @@ async fn client_export_is_public_and_signed() {
             metadata: None,
             relationship: None,
         }],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
         relationship_views: Mutex::new(Vec::new()),
@@ -1825,6 +1829,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
             metadata: None,
             relationship: None,
         }],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
         relationship_views: Mutex::new(Vec::new()),
@@ -1909,6 +1914,7 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
             peer_protocol_distribution: BTreeMap::new(),
         },
         peers: vec![],
+        discovered_agents: BTreeMap::new(),
         subscriptions: Mutex::new(Vec::new()),
         messages: Mutex::new(Vec::new()),
         relationship_views: Mutex::new(Vec::new()),

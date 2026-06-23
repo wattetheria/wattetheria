@@ -3287,9 +3287,19 @@ async fn resolve_agent_relationship_counterpart(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let display_name = body
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    match (target_agent_did, remote_node_id, counterpart_public_id) {
-        (Some(target_agent_did), _, _) => {
+    match (
+        target_agent_did,
+        remote_node_id,
+        counterpart_public_id,
+        display_name,
+    ) {
+        (Some(target_agent_did), _, _, _) => {
             resolve_social_counterpart_target_by_agent_did(
                 state,
                 target_agent_did,
@@ -3297,19 +3307,71 @@ async fn resolve_agent_relationship_counterpart(
             )
             .await
         }
-        (None, Some(remote_node_id), _) => resolve_social_counterpart_target_by_remote_node(
+        (None, Some(remote_node_id), _, _) => resolve_social_counterpart_target_by_remote_node(
             state,
             remote_node_id,
             counterpart_public_id.map(ToOwned::to_owned),
         )
         .await
         .map_err(|error| error.to_string()),
-        (None, None, Some(counterpart_public_id)) => {
-            resolve_social_counterpart_target(state, counterpart_public_id).await
+        (None, None, Some(counterpart_public_id), _) => {
+            resolve_agent_relationship_counterpart_by_public_id(state, counterpart_public_id).await
         }
-        (None, None, None) => Err(
-            "remote_node_id, target_agent_did, or counterpart_public_id is required".to_string(),
+        (None, None, None, Some(display_name)) => {
+            resolve_agent_relationship_counterpart_by_display_name(state, display_name).await
+        }
+        (None, None, None, None) => Err(
+            "display_name, remote_node_id, target_agent_did, or counterpart_public_id is required"
+                .to_string(),
         ),
+    }
+}
+
+async fn resolve_agent_relationship_counterpart_by_public_id(
+    state: &ControlPlaneState,
+    counterpart_public_id: &str,
+) -> Result<SocialCounterpartTarget, String> {
+    match resolve_social_counterpart_target(state, counterpart_public_id).await {
+        Ok(target) => Ok(target),
+        Err(local_error) => match state
+            .swarm_bridge
+            .resolve_agent_public_id(counterpart_public_id)
+            .await
+        {
+            Ok(Some(discovered)) => Ok(SocialCounterpartTarget {
+                counterpart_public_id: discovered.public_id,
+                remote_node: discovered.remote_node_id,
+                target_agent: discovered.target_agent_did,
+            }),
+            Ok(None) => Err(format!(
+                "{local_error}; discovery record missing for {counterpart_public_id}"
+            )),
+            Err(_) => Err(local_error),
+        },
+    }
+}
+
+async fn resolve_agent_relationship_counterpart_by_display_name(
+    state: &ControlPlaneState,
+    display_name: &str,
+) -> Result<SocialCounterpartTarget, String> {
+    let discovered = state
+        .swarm_bridge
+        .search_agent_display_name(display_name)
+        .await
+        .map_err(|error| format!("agent discovery by display_name failed: {error}"))?;
+    match discovered.as_slice() {
+        [agent] => Ok(SocialCounterpartTarget {
+            counterpart_public_id: agent.public_id.clone(),
+            remote_node: agent.remote_node_id.clone(),
+            target_agent: agent.target_agent_did.clone(),
+        }),
+        [] => Err(format!(
+            "discovery record missing for display_name {display_name}"
+        )),
+        _ => Err(format!(
+            "multiple discovery records matched display_name {display_name}; provide counterpart_public_id or remote_node_id"
+        )),
     }
 }
 

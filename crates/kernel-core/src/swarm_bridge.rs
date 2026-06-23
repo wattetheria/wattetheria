@@ -69,6 +69,15 @@ pub struct SwarmNetworkStatusView {
     pub peer_protocol_distribution: BTreeMap<String, u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwarmDiscoveredAgent {
+    pub public_id: String,
+    pub remote_node_id: String,
+    pub target_agent_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwarmDiagnosticsQuery {
     pub limit: Option<usize>,
@@ -417,6 +426,20 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm peers are not configured"))
     }
 
+    async fn resolve_agent_public_id(
+        &self,
+        _public_id: &str,
+    ) -> Result<Option<SwarmDiscoveredAgent>> {
+        Err(anyhow!("wattswarm agent discovery is not configured"))
+    }
+
+    async fn search_agent_display_name(
+        &self,
+        _display_name: &str,
+    ) -> Result<Vec<SwarmDiscoveredAgent>> {
+        Err(anyhow!("wattswarm agent discovery is not configured"))
+    }
+
     async fn diagnostics(&self, _query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
         Err(anyhow!("wattswarm diagnostics are not configured"))
     }
@@ -695,6 +718,22 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn peers(&self) -> Result<Vec<SwarmPeerView>> {
         self.topic_api()?.peers().await
+    }
+
+    async fn resolve_agent_public_id(
+        &self,
+        public_id: &str,
+    ) -> Result<Option<SwarmDiscoveredAgent>> {
+        self.topic_api()?.resolve_agent_public_id(public_id).await
+    }
+
+    async fn search_agent_display_name(
+        &self,
+        display_name: &str,
+    ) -> Result<Vec<SwarmDiscoveredAgent>> {
+        self.topic_api()?
+            .search_agent_display_name(display_name)
+            .await
     }
 
     async fn diagnostics(&self, query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
@@ -1031,6 +1070,68 @@ impl HttpWattswarmApi {
             .json::<PeersListResponse>()
             .await?;
         Ok(wattswarm_peer_views(response))
+    }
+
+    async fn resolve_agent_public_id(
+        &self,
+        public_id: &str,
+    ) -> Result<Option<SwarmDiscoveredAgent>> {
+        let public_id = public_id.trim();
+        if public_id.is_empty() {
+            return Err(anyhow!("public_id is required"));
+        }
+        let network_id = self.current_network_id().await?;
+        let response = self
+            .client
+            .get(format!("{}/api/network/discovery/agent", self.base_url))
+            .query(&AgentDiscoveryQuery {
+                network_id,
+                public_id: Some(public_id.to_owned()),
+                display_name: None,
+                limit: Some(1),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<AgentDiscoveryResponse>()
+            .await
+            .context("decode wattswarm agent discovery response")?;
+        Ok(response
+            .records
+            .iter()
+            .filter_map(discovered_agent_from_record)
+            .find(|agent| agent.public_id == public_id))
+    }
+
+    async fn search_agent_display_name(
+        &self,
+        display_name: &str,
+    ) -> Result<Vec<SwarmDiscoveredAgent>> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(anyhow!("display_name is required"));
+        }
+        let network_id = self.current_network_id().await?;
+        let response = self
+            .client
+            .get(format!("{}/api/network/discovery/agent", self.base_url))
+            .query(&AgentDiscoveryQuery {
+                network_id,
+                public_id: None,
+                display_name: Some(display_name.to_owned()),
+                limit: Some(10),
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<AgentDiscoveryResponse>()
+            .await
+            .context("decode wattswarm agent discovery response")?;
+        Ok(response
+            .records
+            .iter()
+            .filter_map(discovered_agent_from_record)
+            .collect())
     }
 
     async fn diagnostics(&self, query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
@@ -1564,6 +1665,57 @@ struct PeersListResponse {
     peers: Vec<String>,
     #[serde(default)]
     records: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentDiscoveryQuery {
+    network_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentDiscoveryResponse {
+    #[serde(default)]
+    records: Vec<Value>,
+}
+
+fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> {
+    let body = record.get("body")?;
+    let remote_node_id = body
+        .get("node_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+    let source_agent_card = body.get("source_agent_card")?;
+    let card_public_id = source_agent_card
+        .pointer("/card/metadata/public_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let target_agent_did = source_agent_card
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(card_public_id)
+        .to_owned();
+    let display_name = source_agent_card
+        .pointer("/card/name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    Some(SwarmDiscoveredAgent {
+        public_id: card_public_id.to_owned(),
+        remote_node_id,
+        target_agent_did,
+        display_name,
+    })
 }
 
 fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
