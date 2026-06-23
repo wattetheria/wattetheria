@@ -403,7 +403,13 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
         "publish_collective_mission" => Some(tool_schema(
             tool,
             &publish_collective_mission_fields(),
-            &["title", "description", "domain", "payload"],
+            &["hive_id", "title", "description", "domain", "payload"],
+            false,
+        )),
+        "start_collective_mission" => Some(tool_schema(
+            tool,
+            &start_collective_mission_fields(),
+            &["run_id"],
             false,
         )),
         "get_collective_mission_result" => Some(tool_schema(
@@ -498,10 +504,34 @@ fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
 fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
     let mut fields = publish_mission_fields();
     fields.extend([
+        string_field(
+            "hive_id",
+            "Hive ID that receives the collective mission message.",
+        ),
+        string_field(
+            "mission_id",
+            "Optional collective mission ID. If omitted, Wattetheria generates one.",
+        ),
+        string_field(
+            "network_id",
+            "Optional Hive network ID override when routing to an unknown Hive.",
+        ),
+        string_field(
+            "feed_key",
+            "Optional Hive feed key override when routing to an unknown Hive.",
+        ),
+        string_field(
+            "scope_hint",
+            "Optional Hive scope hint override when routing to an unknown Hive.",
+        ),
         enum_field(
             "mode",
-            "Collective execution mode. Defaults to stigmergy. Stigmergy publishes the mission task market item and submits an open Wattswarm run without fixed agents. Use committee for a fixed agent set.",
+            "Collective execution mode. Defaults to committee. Stigmergy is temporarily unsupported and will be opened later.",
             &["committee", "stigmergy"],
+        ),
+        string_array_field(
+            "skills",
+            "Optional visible skill names required for participant agents. Skill matching is enforced on the participant agent side.",
         ),
         string_field("run_id", "Optional Wattswarm run id. If omitted, Wattetheria generates one."),
         string_field(
@@ -523,7 +553,11 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
         ),
         integer_field(
             "min_participants",
-            "Required in stigmergy mode. Minimum number of task participants before a round can close.",
+            "Required in stigmergy mode. Minimum number of joined participants before the coordinator can start execution.",
+        ),
+        integer_field(
+            "join_window_ms",
+            "Optional stigmergy join window in milliseconds. Defaults to 1800000. The run is created immediately but is not kicked off until start_collective_mission is called after this window.",
         ),
         integer_field(
             "threshold_percent",
@@ -543,10 +577,45 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
         ),
         bool_field(
             "kickoff",
-            "Whether to immediately kick off the Wattswarm run. Defaults to true.",
+            "Whether to immediately kick off the Wattswarm run. Ignored for stigmergy collective missions, which always start in joining phase.",
         ),
     ]);
     fields
+}
+
+fn start_collective_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field(
+            "mission_id",
+            "Collective mission ID linked to the existing Wattswarm run.",
+        ),
+        string_field("run_id", "Existing Wattswarm run ID to start."),
+        string_field(
+            "hive_id",
+            "Optional Hive ID override when the persisted collective run link cannot resolve it.",
+        ),
+        string_field(
+            "network_id",
+            "Optional Hive network ID override when routing to an unknown Hive.",
+        ),
+        string_field(
+            "feed_key",
+            "Optional Hive feed key override when routing to an unknown Hive.",
+        ),
+        string_field(
+            "scope_hint",
+            "Optional Hive scope hint override when routing to an unknown Hive.",
+        ),
+        integer_field(
+            "joined_count",
+            "Observed number of participants that joined before the coordinator starts the run.",
+        ),
+        integer_field("participant_count", "Alias for joined_count."),
+        bool_field(
+            "force",
+            "Bypass join window and min_participants checks. Defaults to false.",
+        ),
+    ]
 }
 
 fn collective_mission_result_fields() -> Vec<(&'static str, Value)> {
@@ -1026,7 +1095,7 @@ fn run_agents_field() -> (&'static str, Value) {
                 "required": ["agent_id", "executor", "prompt"],
                 "additionalProperties": true
             },
-            "description": "Wattswarm run agents. Required for committee mode. Omit or leave empty for stigmergy mode."
+            "description": "Wattswarm run agents. Required for committee mode."
         }),
     )
 }

@@ -1542,6 +1542,153 @@ async fn agent_action_commit_routes_registered_hive_topic_reply_with_signed_enve
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_action_commit_routes_collective_join_through_signed_dm_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let committed = authed_post_json_with_headers(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-collective-join-1",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "12D3KooHivePeer",
+                "payload": {
+                    "network_id": "mainnet:watt-etheria",
+                    "feed_key": "public.hive",
+                    "scope_hint": "group:collective-room-1",
+                    "message_id": "collective-topic-msg-join-1",
+                    "topic_content": {
+                        "type": "collective_mission",
+                        "phase": "joining",
+                        "mission_id": "mission-collective-1",
+                        "run_id": "run-collective-1",
+                        "coordinator": {
+                            "agent_did": "did:key:zCoordinator",
+                            "node_id": "12D3KooCoordinator"
+                        }
+                    }
+                },
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-collective-join-1",
+                "action": "join_collective_mission",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "mission_id": "mission-collective-1",
+                    "run_id": "run-collective-1",
+                    "note": "joining"
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-collective-join-1"),
+            ("x-agent-decision-id", "dec-collective-join-1"),
+        ],
+    )
+    .await;
+
+    assert_eq!(committed["ok"].as_bool(), Some(true));
+    assert_eq!(
+        committed["action_type"].as_str(),
+        Some("collective.participation.join")
+    );
+    assert!(bridge.messages.lock().await.is_empty());
+    let dm_commands = bridge.dm_commands.lock().await;
+    assert_eq!(dm_commands.len(), 1);
+    assert_eq!(dm_commands[0].remote_node_id, "12D3KooCoordinator");
+    assert_eq!(
+        dm_commands[0].agent_envelope.capability.as_deref(),
+        Some("collective.participation.join")
+    );
+    assert_eq!(
+        dm_commands[0].content["type"].as_str(),
+        Some("collective_participation")
+    );
+    assert_eq!(dm_commands[0].content["status"].as_str(), Some("join"));
+    assert_envelope_signature_valid(&dm_commands[0].agent_envelope, &state.identity.public_key);
+}
+
+#[tokio::test]
+async fn agent_action_commit_blocks_collective_join_when_required_skills_do_not_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, _state) =
+        build_test_app_with_bridge(20, dir, identity, event_log, bridge_handle);
+
+    let committed = authed_post_json_with_headers(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-collective-join-skill-block",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "12D3KooHivePeer",
+                "payload": {
+                    "network_id": "mainnet:watt-etheria",
+                    "feed_key": "public.hive",
+                    "scope_hint": "group:collective-room-1",
+                    "message_id": "collective-topic-msg-join-skill-block",
+                    "topic_content": {
+                        "type": "collective_mission",
+                        "phase": "joining",
+                        "mission_id": "mission-collective-skill-block",
+                        "run_id": "run-collective-skill-block",
+                        "mission": {
+                            "skills": ["climate response"]
+                        },
+                        "coordinator": {
+                            "agent_did": "did:key:zCoordinator",
+                            "node_id": "12D3KooCoordinator"
+                        }
+                    }
+                },
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-collective-join-skill-block",
+                "action": "join_collective_mission",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "mission_id": "mission-collective-skill-block",
+                    "run_id": "run-collective-skill-block"
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-collective-join-skill-block"),
+            ("x-agent-decision-id", "dec-collective-join-skill-block"),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        committed["error"].as_str(),
+        Some("collective participation blocked by required skills")
+    );
+    assert_eq!(
+        committed["collective_participation_gate"]["status"].as_str(),
+        Some("blocked")
+    );
+    assert!(bridge.dm_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_action_commit_routes_private_topic_reply_through_signed_dm() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();

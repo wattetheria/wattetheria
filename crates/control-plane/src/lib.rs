@@ -13,6 +13,7 @@ pub mod routes {
     pub(crate) mod client;
     pub(crate) mod client_api;
     pub(crate) mod client_swarm;
+    pub(crate) mod collective_skills;
     pub(crate) mod console;
     pub(crate) mod core;
     pub(crate) mod diagnostics;

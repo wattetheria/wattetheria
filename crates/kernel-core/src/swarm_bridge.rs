@@ -474,6 +474,10 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm run submit is not configured"))
     }
 
+    async fn kickoff_run(&self, _run_id: &str) -> Result<Value> {
+        Err(anyhow!("wattswarm run kickoff is not configured"))
+    }
+
     async fn import_task_contract(&self, _contract: TaskContract) -> Result<Value> {
         Err(anyhow!("wattswarm task contract import is not configured"))
     }
@@ -748,6 +752,10 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn submit_run(&self, command: SwarmRunSubmitCommand) -> Result<Value> {
         self.topic_api()?.submit_run(command).await
+    }
+
+    async fn kickoff_run(&self, run_id: &str) -> Result<Value> {
+        self.topic_api()?.kickoff_run(run_id).await
     }
 
     async fn import_task_contract(&self, contract: TaskContract) -> Result<Value> {
@@ -1198,6 +1206,26 @@ impl HttpWattswarmApi {
         }
         Err(anyhow!(
             "wattswarm run submit failed with status {status}: {body}"
+        ))
+    }
+
+    async fn kickoff_run(&self, run_id: &str) -> Result<Value> {
+        let response = self
+            .client
+            .post(format!("{}/api/run/kickoff/{run_id}", self.base_url))
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("read wattswarm run kickoff response")?;
+        if status.is_success() {
+            return serde_json::from_str::<Value>(&body)
+                .context("decode wattswarm run kickoff response");
+        }
+        Err(anyhow!(
+            "wattswarm run kickoff failed with status {status}: {body}"
         ))
     }
 

@@ -1288,6 +1288,14 @@ impl SwarmBridge for MockSwarmBridge {
         }))
     }
 
+    async fn kickoff_run(&self, run_id: &str) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "run_id": run_id,
+            "kicked_off": true,
+        }))
+    }
+
     async fn import_task_contract(&self, contract: TaskContract) -> anyhow::Result<Value> {
         let scope_hint = contract
             .inputs

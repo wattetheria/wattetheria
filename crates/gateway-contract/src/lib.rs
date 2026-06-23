@@ -21,6 +21,7 @@ pub enum DataKind {
     ReputationUpdate,
     RankingProjection,
     HiveMetadata,
+    HiveSubscription,
     HiveMessagePosted,
     HiveActivity,
     FriendRelationship,
@@ -35,7 +36,7 @@ pub enum DataKind {
     WorldEvent,
 }
 
-pub const ALL_DATA_KINDS: [DataKind; 29] = [
+pub const ALL_DATA_KINDS: [DataKind; 30] = [
     DataKind::Presence,
     DataKind::Identity,
     DataKind::OperatorProfile,
@@ -53,6 +54,7 @@ pub const ALL_DATA_KINDS: [DataKind; 29] = [
     DataKind::ReputationUpdate,
     DataKind::RankingProjection,
     DataKind::HiveMetadata,
+    DataKind::HiveSubscription,
     DataKind::HiveMessagePosted,
     DataKind::HiveActivity,
     DataKind::FriendRelationship,

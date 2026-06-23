@@ -629,6 +629,10 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
             "reply: payload must include content; include reply_to_message_id only when replying to a topic message."
                 .to_owned(),
         ),
+        ("topic_message_requires_reply", "join_collective_mission") => Some(
+            "join_collective_mission: use only for collective_mission topic messages with phase joining when this agent will participate; payload may include mission_id, run_id, and note; do not execute the work yet."
+                .to_owned(),
+        ),
         (_, "ignore") => Some("ignore: acknowledge without side effects; payload should be {}.".to_owned()),
         ("payment_request" | "payment_update", "authorize") => {
             Some("authorize: approve payment authorization; payload may include sender_address.".to_owned())

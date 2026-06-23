@@ -24,6 +24,7 @@ use wattetheria_social::domain::friendships::FriendshipState;
 pub(crate) const VERIFIED_AGENT_CONTEXT_PAYLOAD_KEY: &str = "__verified_agent_context";
 
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
+use crate::routes::collective_skills::collective_skill_gate;
 use crate::state::{
     AgentActionCommitBody, AgentActionCommitEvent, AgentActionDecision, ControlPlaneState,
 };
@@ -139,9 +140,10 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
                 | "request_retry"
                 | "human_review"
         ),
-        "topic_message_requires_reply" => {
-            matches!(action, "reply" | "complete_mission" | "settle_mission")
-        }
+        "topic_message_requires_reply" => matches!(
+            action,
+            "reply" | "complete_mission" | "settle_mission" | "join_collective_mission"
+        ),
         _ => false,
     }
 }
@@ -270,6 +272,31 @@ fn topic_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
     mission_lifecycle_value_from_event(event, "kind").and_then(Value::as_str)
 }
 
+fn is_collective_mission_topic_event(event: &AgentEventEnvelope) -> bool {
+    event.event_type == "topic_message_requires_reply"
+        && [
+            "/topic_content/type",
+            "/topic_content/kind",
+            "/content/type",
+            "/content/kind",
+        ]
+        .into_iter()
+        .any(|pointer| {
+            event.payload.pointer(pointer).and_then(Value::as_str) == Some("collective_mission")
+        })
+}
+
+fn collective_mission_phase(event: &AgentEventEnvelope) -> Option<&str> {
+    [
+        "/topic_content/phase",
+        "/content/phase",
+        "/topic_content/status",
+        "/content/status",
+    ]
+    .into_iter()
+    .find_map(|pointer| event.payload.pointer(pointer).and_then(Value::as_str))
+}
+
 fn mission_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
     match event.event_type.as_str() {
         "topic_message_requires_reply" => topic_lifecycle_kind(event),
@@ -307,11 +334,29 @@ fn set_allowed_actions(event: &mut AgentEventEnvelope, actions: &[&str]) {
     event.allowed_actions = actions.iter().map(|action| (*action).to_owned()).collect();
 }
 
-fn add_mission_allowed_actions(event: &mut AgentEventEnvelope) {
+fn add_mission_allowed_actions(state: &ControlPlaneState, event: &mut AgentEventEnvelope) {
     if !is_mission_event(event) {
         return;
     }
     match event.event_type.as_str() {
+        "topic_message_requires_reply" if is_collective_mission_topic_event(event) => {
+            match collective_mission_phase(event) {
+                Some("joining") => {
+                    if let Some(gate) = collective_skill_gate(state, &event.payload)
+                        && !gate.allowed
+                    {
+                        if let Some(payload) = event.payload.as_object_mut() {
+                            payload
+                                .insert("collective_participation_gate".to_owned(), gate.value());
+                        }
+                        set_allowed_actions(event, &["ignore"]);
+                    } else {
+                        set_allowed_actions(event, &["join_collective_mission", "ignore"]);
+                    }
+                }
+                _ => set_allowed_actions(event, &["ignore"]),
+            }
+        }
         "task_claim_received" => {
             set_allowed_actions(event, &["decide_claim", "reject_claim", "human_review"]);
         }
@@ -1828,7 +1873,7 @@ async fn process_agent_event_decision(
     acked_at: u64,
 ) -> Response {
     let callback_request = json!({ "event": &event });
-    add_mission_allowed_actions(&mut event);
+    add_mission_allowed_actions(state, &mut event);
     let network_id = resolve_agent_event_network_id(state, &event).await;
     let input = build_brain_event_input(state, &event, &network_id);
     record_agent_event_diagnostic(
