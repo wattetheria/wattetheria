@@ -4,6 +4,7 @@ mod autonomy;
 mod diagnostics;
 mod gateway_dispatch;
 mod reliability_maintenance;
+mod runtime_sessions;
 pub mod social_host;
 mod swarm_sync;
 pub mod routes {

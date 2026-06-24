@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship;
+use crate::routes::mcp::collective::record_collective_participation_from_dm;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
@@ -1620,6 +1621,14 @@ pub(crate) fn reconcile_swarm_dm_messages(
     let mut synced = Vec::with_capacity(views.len());
     let mut display_name_refreshes = Vec::new();
     for view in views {
+        if let Err(error) = record_collective_participation_from_dm(state, view) {
+            tracing::warn!(
+                target = "wattetheria.collective",
+                message_id = %view.message_id,
+                error = %error,
+                "failed to record collective participation DM"
+            );
+        }
         let counterpart_public_id = dm_counterpart_public_id(
             local_public_id,
             bindings,

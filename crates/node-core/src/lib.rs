@@ -26,7 +26,7 @@ use wattetheria_control_plane::{
     spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
 };
 use wattetheria_kernel::audit::AuditLog;
-use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
+use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
 use wattetheria_kernel::civilization::galaxy::GalaxyState;
 use wattetheria_kernel::civilization::identities::{
@@ -285,6 +285,9 @@ async fn build_control_state(
         travel_state_registry: Arc::new(Mutex::new(civilization_state.travel_state_registry)),
         brain_engine,
         brain_config,
+        runtime_session_mode: Arc::new(tokio::sync::RwLock::new(
+            RuntimeSessionMode::from_key(&cli.brain_runtime_session_mode).unwrap_or_default(),
+        )),
         brain_provider_label,
         audit_log,
         local_db,
@@ -843,6 +846,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -877,6 +881,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -930,6 +935,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -979,6 +985,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -1038,6 +1045,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };
@@ -1085,6 +1093,7 @@ mod tests {
             brain_api_key_env: None,
             brain_runtime_adapter: None,
             brain_session_header_name: None,
+            brain_runtime_session_mode: "stable".to_owned(),
             autonomy_enabled: false,
             autonomy_interval_sec: 30,
         };

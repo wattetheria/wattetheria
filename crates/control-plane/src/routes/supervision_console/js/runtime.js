@@ -9,6 +9,10 @@
       return document.querySelector('input[name="brain-runtime-adapter"]:checked')?.value || "hermes";
     }
 
+    function selectedRuntimeSessionMode() {
+      return document.querySelector('input[name="runtime-session-mode"]:checked')?.value || "stable";
+    }
+
     function defaultRuntimeModel(adapter) {
       return supportedRuntimeAdapters.find((item) => item.key === adapter)?.default_model || "";
     }
@@ -121,6 +125,12 @@
       (input || document.querySelector('input[name="brain-runtime-adapter"][value="hermes"]')).checked = true;
     }
 
+    function setRuntimeSessionMode(mode) {
+      const value = mode || "stable";
+      const input = document.querySelector(`input[name="runtime-session-mode"][value="${value}"]`);
+      (input || document.querySelector('input[name="runtime-session-mode"][value="stable"]')).checked = true;
+    }
+
     async function loadBrainConfig() {
       if (!tokenEl.value.trim()) {
         document.getElementById("brain-config-status").textContent = "Control token required.";
@@ -131,6 +141,7 @@
         const data = await fetchJson("/v1/brain/config", { auth: true });
         supportedRuntimeAdapters = data.supported_runtime_adapters || [];
         defaultRuntimeBaseUrl = data.default_runtime_base_url || "";
+        setRuntimeSessionMode(data.runtime_session_mode || "stable");
         const cfg = data.config || {};
         const kind = (cfg && cfg.kind) || "openai-compatible";
         let runtimeLabel = "not configured";
@@ -185,6 +196,7 @@
       const body = { kind };
       body.adapter = selectedRuntimeAdapter();
       body.session_header_name = document.getElementById("brain-session-header-name").value.trim();
+      body.runtime_session_mode = selectedRuntimeSessionMode();
       body.base_url = document.getElementById("brain-openai-base-url").value.trim();
       body.model = document.getElementById("brain-openai-model").value.trim();
       const apiKey = document.getElementById("brain-api-key").value.trim();

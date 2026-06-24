@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::local_db;
-use wattetheria_kernel::swarm_bridge::SwarmRunSubmitCommand;
+use wattetheria_kernel::swarm_bridge::{SwarmPeerDmMessageView, SwarmRunSubmitCommand};
 
 use crate::state::{ControlPlaneState, HiveMessageBody};
 
@@ -39,8 +39,38 @@ struct CollectiveMissionRunLink {
     join_window_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     join_deadline_ms: Option<u64>,
+    #[serde(default)]
+    task_prompt: String,
+    #[serde(default)]
+    participants: BTreeMap<String, CollectiveMissionParticipant>,
     run_spec: Value,
     wattswarm_run: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CollectiveMissionParticipant {
+    agent_id: String,
+    executor: String,
+    prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    priority: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    participant_agent_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    participant_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    public_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision_id: Option<String>,
+    joined_at: String,
+    #[serde(default)]
+    payload: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,12 +116,9 @@ struct CollectivePublishContext {
 
 struct CollectiveRunSubmitRequest<'a> {
     state: &'a ControlPlaneState,
-    arguments: &'a Value,
     mission_id: &'a str,
     mission: &'a Value,
-    execution: &'a CollectiveExecutionSpec,
-    hive_route: &'a CollectiveHiveRoute,
-    join_policy: CollectiveJoinPolicy,
+    run_spec: Value,
     kickoff: bool,
 }
 
@@ -132,21 +159,18 @@ pub(super) async fn publish_collective_mission_result(
         Ok(context) => context,
         Err(error) => return tool_error(&json!({"error": error})),
     };
-    let submission = match submit_collective_run(CollectiveRunSubmitRequest {
-        state,
+    let task_prompt = collective_task_prompt(arguments, &context.mission);
+    let run_spec = build_run_spec(
         arguments,
-        mission_id: &context.mission_id,
-        mission: &context.mission,
-        execution: &execution,
-        hive_route: &context.hive_route,
-        join_policy: context.join_policy,
-        kickoff: context.kickoff,
-    })
-    .await
-    {
-        Ok(submission) => submission,
-        Err(error) => return error,
-    };
+        &context.mission_id,
+        &context.mission,
+        &execution,
+        &context.hive_route,
+        context.join_policy,
+    );
+    let run_id = required_string(&run_spec, "run_id")
+        .unwrap_or_else(|| format!("collective-{}", context.mission_id));
+    let submission = pending_collective_submission(&run_id, run_spec);
     let (hive_message, hive_post) =
         match post_collective_mission_to_hive(CollectiveHivePostRequest {
             state,
@@ -174,6 +198,8 @@ pub(super) async fn publish_collective_mission_result(
         mission: context.mission.clone(),
         join_window_ms: context.join_policy.window_ms,
         join_deadline_ms: context.join_policy.deadline_ms,
+        task_prompt,
+        participants: BTreeMap::new(),
         run_spec: submission.run_spec.clone(),
         wattswarm_run: submission.wattswarm_run.clone(),
     };
@@ -217,34 +243,36 @@ async fn prepare_collective_publish(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let mission =
         collective_mission_metadata(state, arguments, &public_id, &mission_id, &hive_route);
-    let is_stigmergy = mode == CollectiveExecutionMode::Stigmergy;
-    let join_policy = collective_join_policy(arguments, is_stigmergy);
-    let requested_kickoff = bool_argument(arguments, "kickoff").unwrap_or(true);
-    let kickoff = !is_stigmergy && requested_kickoff;
+    let join_policy = collective_join_policy(arguments, mode);
     Ok(CollectivePublishContext {
         public_id,
         mission_id,
         mission,
         hive_route,
         join_policy,
-        kickoff,
-        phase: if kickoff { "round_started" } else { "joining" },
+        kickoff: false,
+        phase: "joining",
     })
+}
+
+fn pending_collective_submission(run_id: &str, run_spec: Value) -> CollectiveRunSubmission {
+    CollectiveRunSubmission {
+        run_id: run_id.to_owned(),
+        run_spec,
+        wattswarm_run: json!({
+            "ok": true,
+            "run_id": run_id,
+            "submitted": false,
+            "kicked_off": false,
+        }),
+    }
 }
 
 async fn submit_collective_run(
     request: CollectiveRunSubmitRequest<'_>,
 ) -> Result<CollectiveRunSubmission, Value> {
-    let run_spec = build_run_spec(
-        request.arguments,
-        request.mission_id,
-        request.mission,
-        request.execution,
-        request.hive_route,
-        request.join_policy,
-    );
     let command = SwarmRunSubmitCommand {
-        spec: run_spec.clone(),
+        spec: request.run_spec.clone(),
         kickoff: request.kickoff,
     };
     let wattswarm_run = request
@@ -258,18 +286,18 @@ async fn submit_collective_run(
                 "detail": error.to_string(),
                 "mission_id": request.mission_id,
                 "mission": request.mission,
-                "run_spec": run_spec,
+                "run_spec": request.run_spec,
             }))
         })?;
     let run_id = wattswarm_run
         .get("run_id")
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .or_else(|| required_string(&run_spec, "run_id"))
+        .or_else(|| required_string(&request.run_spec, "run_id"))
         .unwrap_or_else(|| format!("collective-{}", request.mission_id));
     Ok(CollectiveRunSubmission {
         run_id,
-        run_spec,
+        run_spec: request.run_spec,
         wattswarm_run,
     })
 }
@@ -416,16 +444,9 @@ pub(crate) async fn start_collective_mission_result(
         return tool_error(&error);
     }
 
-    let kickoff = match state.swarm_bridge.kickoff_run(&link.run_id).await {
-        Ok(payload) => payload,
-        Err(error) => {
-            return tool_error(&json!({
-                "error": "wattswarm_run_kickoff_failed",
-                "detail": error.to_string(),
-                "mission_id": mission_id,
-                "run_id": link.run_id,
-            }));
-        }
+    let participant_agents = match collective_participant_agents(&link) {
+        Ok(agents) => agents,
+        Err(error) => return tool_error(&error),
     };
 
     let hive_route =
@@ -433,12 +454,20 @@ pub(crate) async fn start_collective_mission_result(
             Ok(route) => route,
             Err(error) => return tool_error(&json!({"error": error})),
         };
-    let submission = CollectiveRunSubmission {
-        run_id: link.run_id.clone(),
-        run_spec: link.run_spec.clone(),
-        wattswarm_run: kickoff.clone(),
-    };
     let mission = collective_start_mission(&mission_id, &link, &hive_route);
+    let run_spec = build_started_run_spec(&link, participant_agents);
+    let submission = match submit_collective_run(CollectiveRunSubmitRequest {
+        state,
+        mission_id: &mission_id,
+        mission: &mission,
+        run_spec,
+        kickoff: true,
+    })
+    .await
+    {
+        Ok(submission) => submission,
+        Err(error) => return error,
+    };
     let (hive_message, hive_post) =
         match post_collective_mission_to_hive(CollectiveHivePostRequest {
             state,
@@ -461,7 +490,7 @@ pub(crate) async fn start_collective_mission_result(
             Err(error) => return error,
         };
 
-    let updated = update_started_run_link(&mut index, &mission_id, &link, &mission, &kickoff);
+    let updated = update_started_run_link(&mut index, &mission_id, &link, &mission, &submission);
     if let Err(error) = save_run_index(state, &index) {
         return tool_error(&json!({
             "error": "persist_collective_mission_run_failed",
@@ -480,7 +509,8 @@ pub(crate) async fn start_collective_mission_result(
         "hive_id": hive_route.hive_id,
         "hive_message": hive_message,
         "hive_post": hive_post,
-        "wattswarm_run": kickoff,
+        "run_spec": submission.run_spec,
+        "wattswarm_run": submission.wattswarm_run,
         "link": updated,
     }))
 }
@@ -501,7 +531,7 @@ fn validate_collective_start(
         return Ok(());
     }
     validate_join_window_closed(mission_id, link)?;
-    validate_min_participants(arguments, mission_id, link)
+    validate_min_participants(mission_id, link)
 }
 
 fn validate_join_window_closed(
@@ -525,12 +555,11 @@ fn validate_join_window_closed(
 }
 
 fn validate_min_participants(
-    arguments: &Value,
     mission_id: &str,
     link: &CollectiveMissionRunLink,
 ) -> Result<(), Value> {
     let min_participants = min_participants_from_run_spec(&link.run_spec).unwrap_or(1);
-    let joined_count = joined_count_argument(arguments).unwrap_or(0);
+    let joined_count = link.participants.len() as u64;
     if joined_count >= min_participants {
         return Ok(());
     }
@@ -568,11 +597,12 @@ fn update_started_run_link(
     mission_id: &str,
     link: &CollectiveMissionRunLink,
     mission: &Value,
-    kickoff: &Value,
+    submission: &CollectiveRunSubmission,
 ) -> CollectiveMissionRunLink {
     let mut updated = link.clone();
     updated.kicked_off = true;
-    updated.wattswarm_run = kickoff.clone();
+    updated.run_spec = submission.run_spec.clone();
+    updated.wattswarm_run = submission.wattswarm_run.clone();
     updated.mission = mission.clone();
     index.runs.insert(mission_id.to_owned(), updated.clone());
     updated
@@ -761,17 +791,113 @@ fn build_run_spec(
         "retry": argument_value(arguments, "retry").cloned().unwrap_or_else(|| json!({})),
         "aggregation": argument_value(arguments, "aggregation").cloned().unwrap_or_else(|| json!({})),
     });
+    spec["round_policy"] = execution.round_policy.clone().unwrap_or(Value::Null);
+    if let Some(window_ms) = join_policy.window_ms {
+        spec["join_policy"] = json!({
+            "join_window_ms": window_ms,
+            "join_deadline_ms": join_policy.deadline_ms,
+        });
+    }
     if execution.mode == CollectiveExecutionMode::Stigmergy {
         spec["market_task_id"] = Value::String(mission_id.to_owned());
         spec["feed_key"] = Value::String(hive_route.feed_key.clone());
         spec["scope_hint"] = Value::String(hive_route.scope_hint.clone());
-        spec["round_policy"] = execution.round_policy.clone().unwrap_or(Value::Null);
-        spec["join_policy"] = json!({
-            "join_window_ms": join_policy.window_ms,
-            "join_deadline_ms": join_policy.deadline_ms,
-        });
     }
     spec
+}
+
+fn build_started_run_spec(link: &CollectiveMissionRunLink, agents: Value) -> Value {
+    let mut spec = link.run_spec.clone();
+    spec["agents"] = agents;
+    if let Some(object) = spec.as_object_mut()
+        && let Some(policy) = object.remove("round_policy")
+    {
+        object.insert("collective_policy".to_owned(), policy);
+    }
+    if let Some(object) = spec.as_object_mut() {
+        object.remove("market_task_id");
+        object.remove("feed_key");
+        object.remove("scope_hint");
+    }
+    spec
+}
+
+fn collective_participant_agents(link: &CollectiveMissionRunLink) -> Result<Value, Value> {
+    if link.participants.is_empty() {
+        return Err(json!({
+            "error": "collective_no_participants_joined",
+            "mission_id": link.mission_id,
+            "run_id": link.run_id,
+        }));
+    }
+    let agents = link
+        .participants
+        .values()
+        .map(collective_participant_agent_spec)
+        .collect::<Vec<_>>();
+    Ok(Value::Array(agents))
+}
+
+fn collective_participant_agent_spec(participant: &CollectiveMissionParticipant) -> Value {
+    let mut spec = Map::new();
+    spec.insert(
+        "agent_id".to_owned(),
+        Value::String(participant.agent_id.clone()),
+    );
+    spec.insert(
+        "executor".to_owned(),
+        Value::String(participant.executor.clone()),
+    );
+    spec.insert(
+        "prompt".to_owned(),
+        Value::String(participant.prompt.clone()),
+    );
+    if let Some(profile) = &participant.profile {
+        spec.insert("profile".to_owned(), Value::String(profile.clone()));
+    }
+    if let Some(weight) = participant.weight {
+        spec.insert("weight".to_owned(), json!(weight));
+    }
+    if let Some(priority) = participant.priority {
+        spec.insert("priority".to_owned(), json!(priority));
+    }
+    Value::Object(spec)
+}
+
+fn collective_task_prompt(arguments: &Value, mission: &Value) -> String {
+    optional_string(arguments, "task_prompt")
+        .or_else(|| optional_string(arguments, "prompt"))
+        .unwrap_or_else(|| default_collective_task_prompt(mission))
+}
+
+fn default_collective_task_prompt(mission: &Value) -> String {
+    let title = mission
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Collective mission");
+    let description = mission
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("Complete the assigned collective mission.");
+    let domain = mission
+        .get("domain")
+        .and_then(Value::as_str)
+        .unwrap_or("unspecified");
+    let scope = mission
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("real_world");
+    let skills = mission
+        .get("skills")
+        .filter(|value| !value.is_null())
+        .map_or_else(|| "[]".to_owned(), Value::to_string);
+    let payload = mission
+        .get("payload")
+        .filter(|value| !value.is_null())
+        .map_or_else(|| "{}".to_owned(), Value::to_string);
+    format!(
+        "Collective mission: {title}\nDomain: {domain}\nScope: {scope}\nDescription: {description}\nRequired/visible skills: {skills}\nPayload: {payload}\n\nComplete this task independently from your own perspective. Apply your own available skills, expertise, role, and local context. If the mission specifies required skills, prioritize contributions matching those skills. Do not assume other participants share your skills, role, context, or conclusion. Treat the mission description and payload as the source of truth. Return a concise structured result with evidence, reasoning, and assumptions. Do not wait for other participants."
+    )
 }
 
 fn shared_inputs(arguments: &Value, mission_id: &str, mission: &Value) -> Value {
@@ -905,21 +1031,18 @@ fn auth_headers(auth: &str) -> HeaderMap {
 
 fn collective_execution_spec(arguments: &Value) -> Result<CollectiveExecutionSpec, String> {
     let mode = collective_execution_mode(arguments)?;
-    let agents = collective_agents(arguments, mode)?;
-    let round_policy = match mode {
-        CollectiveExecutionMode::Committee => None,
-        CollectiveExecutionMode::Stigmergy => Some(stigmergy_round_policy(arguments)?),
-    };
+    let round_policy = collective_round_policy(arguments)?;
     Ok(CollectiveExecutionSpec {
         mode,
-        agents,
-        round_policy,
+        agents: json!([]),
+        round_policy: Some(round_policy),
     })
 }
 
 fn collective_execution_mode(arguments: &Value) -> Result<CollectiveExecutionMode, String> {
     match optional_string(arguments, "mode").as_deref() {
-        None | Some("committee") => Ok(CollectiveExecutionMode::Committee),
+        None => Err("mode is required for collective mission".to_owned()),
+        Some("committee") => Ok(CollectiveExecutionMode::Committee),
         Some("stigmergy") => Err(
             "collective stigmergy mode is temporarily unsupported; use committee mode. Stigmergy collective missions will be opened later."
                 .to_owned(),
@@ -928,48 +1051,23 @@ fn collective_execution_mode(arguments: &Value) -> Result<CollectiveExecutionMod
     }
 }
 
-fn collective_agents(arguments: &Value, mode: CollectiveExecutionMode) -> Result<Value, String> {
-    if mode == CollectiveExecutionMode::Stigmergy {
-        return Ok(json!([]));
-    }
-    let Some(agents) = argument_value(arguments, "agents") else {
-        return Err("agents is required".to_owned());
-    };
-    let Some(items) = agents.as_array() else {
-        return Err("agents must be a non-empty array".to_owned());
-    };
-    if items.is_empty() {
-        return Err("agents must be a non-empty array".to_owned());
-    }
-    for (index, agent) in items.iter().enumerate() {
-        for field in ["agent_id", "executor", "prompt"] {
-            if agent
-                .get(field)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .is_none_or(str::is_empty)
-            {
-                return Err(format!("agents[{index}].{field} is required"));
-            }
-        }
-    }
-    Ok(agents.clone())
-}
-
-fn stigmergy_round_policy(arguments: &Value) -> Result<Value, String> {
+fn collective_round_policy(arguments: &Value) -> Result<Value, String> {
     let min_participants = required_positive_integer(arguments, "min_participants")?;
-    let threshold_percent = required_positive_integer(arguments, "threshold_percent")?;
-    if threshold_percent > 100 {
-        return Err("threshold_percent must be between 1 and 100".to_owned());
-    }
-    let round_timeout_ms = required_positive_integer(arguments, "round_timeout_ms")?;
-    let max_rounds = required_positive_integer(arguments, "max_rounds")?;
     let mut policy = json!({
         "min_participants": min_participants,
-        "threshold_percent": threshold_percent,
-        "round_timeout_ms": round_timeout_ms,
-        "max_rounds": max_rounds,
     });
+    if let Some(threshold_percent) = optional_positive_integer(arguments, "threshold_percent")? {
+        if threshold_percent > 100 {
+            return Err("threshold_percent must be between 1 and 100".to_owned());
+        }
+        policy["threshold_percent"] = Value::from(threshold_percent);
+    }
+    if let Some(round_timeout_ms) = optional_positive_integer(arguments, "round_timeout_ms")? {
+        policy["round_timeout_ms"] = Value::from(round_timeout_ms);
+    }
+    if let Some(max_rounds) = optional_positive_integer(arguments, "max_rounds")? {
+        policy["max_rounds"] = Value::from(max_rounds);
+    }
     if let Some(fallback_decision) = optional_string(arguments, "fallback_decision") {
         policy["fallback_decision"] = Value::String(fallback_decision);
     }
@@ -978,12 +1076,25 @@ fn stigmergy_round_policy(arguments: &Value) -> Result<Value, String> {
 
 fn required_positive_integer(arguments: &Value, key: &str) -> Result<u64, String> {
     let Some(value) = argument_value(arguments, key).and_then(Value::as_u64) else {
-        return Err(format!("{key} is required for stigmergy mode"));
+        return Err(format!("{key} is required for collective mission"));
     };
     if value == 0 {
         return Err(format!("{key} must be greater than zero"));
     }
     Ok(value)
+}
+
+fn optional_positive_integer(arguments: &Value, key: &str) -> Result<Option<u64>, String> {
+    let Some(value) = argument_value(arguments, key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(format!("{key} must be a positive integer"));
+    };
+    if value == 0 {
+        return Err(format!("{key} must be greater than zero"));
+    }
+    Ok(Some(value))
 }
 
 fn join_window_ms(arguments: &Value) -> u64 {
@@ -993,8 +1104,11 @@ fn join_window_ms(arguments: &Value) -> u64 {
         .unwrap_or(DEFAULT_JOIN_WINDOW_MS)
 }
 
-fn collective_join_policy(arguments: &Value, is_stigmergy: bool) -> CollectiveJoinPolicy {
-    if !is_stigmergy {
+fn collective_join_policy(
+    arguments: &Value,
+    mode: CollectiveExecutionMode,
+) -> CollectiveJoinPolicy {
+    if mode != CollectiveExecutionMode::Committee {
         return CollectiveJoinPolicy {
             window_ms: None,
             deadline_ms: None,
@@ -1005,12 +1119,6 @@ fn collective_join_policy(arguments: &Value, is_stigmergy: bool) -> CollectiveJo
         window_ms: Some(window_ms),
         deadline_ms: Some(current_time_ms().saturating_add(window_ms)),
     }
-}
-
-fn joined_count_argument(arguments: &Value) -> Option<u64> {
-    argument_value(arguments, "joined_count")
-        .or_else(|| argument_value(arguments, "participant_count"))
-        .and_then(Value::as_u64)
 }
 
 fn min_participants_from_run_spec(run_spec: &Value) -> Option<u64> {
@@ -1040,6 +1148,201 @@ fn argument_value<'a>(arguments: &'a Value, key: &str) -> Option<&'a Value> {
 
 fn optional_string(arguments: &Value, key: &str) -> Option<String> {
     argument_value(arguments, key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(crate) fn record_collective_participation_from_dm(
+    state: &ControlPlaneState,
+    view: &SwarmPeerDmMessageView,
+) -> Result<Option<Value>, String> {
+    if view.direction != "inbound" {
+        return Ok(None);
+    }
+    let Some(message) = collective_participation_dm_message(view) else {
+        return Ok(None);
+    };
+    if message.get("type").and_then(Value::as_str) != Some("collective_participation") {
+        return Ok(None);
+    }
+    if message.get("status").and_then(Value::as_str) != Some("join") {
+        return Ok(None);
+    }
+    let Some(mission_id) = value_string(message, "mission_id") else {
+        return Ok(Some(json!({
+            "recorded": false,
+            "reason": "missing_mission_id",
+            "message_id": view.message_id,
+        })));
+    };
+    let Some(run_id) = value_string(message, "run_id") else {
+        return Ok(Some(json!({
+            "recorded": false,
+            "reason": "missing_run_id",
+            "mission_id": mission_id,
+            "message_id": view.message_id,
+        })));
+    };
+    let mut index = load_run_index(state)?;
+    let Some(link) = index.runs.get_mut(&mission_id) else {
+        return Ok(Some(json!({
+            "recorded": false,
+            "reason": "collective_mission_run_link_not_found",
+            "mission_id": mission_id,
+            "run_id": run_id,
+            "message_id": view.message_id,
+        })));
+    };
+    if link.run_id != run_id {
+        return Ok(Some(json!({
+            "recorded": false,
+            "reason": "collective_mission_run_id_mismatch",
+            "mission_id": mission_id,
+            "expected_run_id": link.run_id,
+            "run_id": run_id,
+            "message_id": view.message_id,
+        })));
+    }
+    if link.kicked_off {
+        return Ok(Some(json!({
+            "recorded": false,
+            "reason": "collective_mission_already_started",
+            "mission_id": mission_id,
+            "run_id": run_id,
+            "message_id": view.message_id,
+        })));
+    }
+    let participant = collective_participant_from_dm(link, message, view);
+    let key = collective_participant_key(&participant, view);
+    let inserted = if link.participants.contains_key(&key) {
+        false
+    } else {
+        link.participants.insert(key.clone(), participant);
+        true
+    };
+    let joined_count = link.participants.len();
+    if inserted {
+        save_run_index(state, &index)?;
+    }
+    Ok(Some(json!({
+        "recorded": true,
+        "inserted": inserted,
+        "mission_id": mission_id,
+        "run_id": run_id,
+        "participant_key": key,
+        "joined_count": joined_count,
+        "message_id": view.message_id,
+    })))
+}
+
+fn collective_participation_dm_message(view: &SwarmPeerDmMessageView) -> Option<&Value> {
+    view.agent_envelope
+        .as_ref()
+        .map(|envelope| &envelope.message)
+        .filter(|message| {
+            message.get("type").and_then(Value::as_str) == Some("collective_participation")
+        })
+        .or_else(|| {
+            if view.content.get("type").and_then(Value::as_str) == Some("collective_participation")
+            {
+                Some(&view.content)
+            } else {
+                None
+            }
+        })
+}
+
+fn collective_participant_from_dm(
+    link: &CollectiveMissionRunLink,
+    message: &Value,
+    view: &SwarmPeerDmMessageView,
+) -> CollectiveMissionParticipant {
+    let payload = message.get("payload").cloned().unwrap_or_else(|| json!({}));
+    let participant_agent_did = value_string(message, "participant_agent_did")
+        .or_else(|| value_string(&payload, "agent_did"))
+        .or_else(|| {
+            view.agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.source_agent_id.clone())
+        });
+    let participant_node_id = value_string(message, "participant_node_id")
+        .or_else(|| value_string(&payload, "node_id"))
+        .or_else(|| {
+            view.agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.source_node_id.clone())
+        })
+        .or_else(|| Some(view.remote_node_id.clone()));
+    let public_id = value_string(&payload, "public_id")
+        .or_else(|| value_string(message, "participant_public_id"))
+        .or_else(|| {
+            view.agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.source_agent_card.as_ref())
+                .and_then(|card| {
+                    value_string(&card.card, "public_id").or_else(|| value_string(&card.card, "id"))
+                })
+        });
+    let agent_id = value_string(&payload, "agent_id")
+        .or_else(|| public_id.clone())
+        .or_else(|| participant_node_id.clone())
+        .or_else(|| participant_agent_did.clone())
+        .unwrap_or_else(|| view.remote_node_id.clone());
+    let executor = value_string(&payload, "executor")
+        .or_else(|| {
+            participant_node_id
+                .as_ref()
+                .map(|node| format!("remote:{node}"))
+        })
+        .unwrap_or_else(|| format!("remote:{}", view.remote_node_id));
+    let prompt = value_string(&payload, "prompt")
+        .or_else(|| (!link.task_prompt.trim().is_empty()).then(|| link.task_prompt.clone()))
+        .unwrap_or_else(|| default_collective_task_prompt(&link.mission));
+    CollectiveMissionParticipant {
+        agent_id,
+        executor,
+        prompt,
+        profile: value_string(&payload, "profile"),
+        weight: payload.get("weight").and_then(Value::as_f64),
+        priority: payload.get("priority").and_then(Value::as_i64),
+        participant_agent_did,
+        participant_node_id,
+        public_id,
+        event_id: value_string(message, "event_id"),
+        decision_id: value_string(message, "decision_id"),
+        joined_at: chrono::Utc::now().to_rfc3339(),
+        payload,
+    }
+}
+
+fn collective_participant_key(
+    participant: &CollectiveMissionParticipant,
+    view: &SwarmPeerDmMessageView,
+) -> String {
+    participant
+        .public_id
+        .as_ref()
+        .map(|value| format!("public:{value}"))
+        .or_else(|| {
+            participant
+                .participant_node_id
+                .as_ref()
+                .map(|value| format!("node:{value}"))
+        })
+        .or_else(|| {
+            participant
+                .participant_agent_did
+                .as_ref()
+                .map(|value| format!("agent:{value}"))
+        })
+        .unwrap_or_else(|| format!("message:{}", view.message_id))
+}
+
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

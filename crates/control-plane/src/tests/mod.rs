@@ -294,6 +294,9 @@ fn build_test_state_with_bridge(
             &BrainProviderConfig::Rules,
         ))),
         brain_config: Arc::new(tokio::sync::RwLock::new(BrainProviderConfig::Rules)),
+        runtime_session_mode: Arc::new(tokio::sync::RwLock::new(
+            wattetheria_kernel::brain::RuntimeSessionMode::Stable,
+        )),
         brain_provider_label: "rules".to_string(),
         audit_log,
         local_db,

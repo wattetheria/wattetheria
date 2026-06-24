@@ -485,6 +485,19 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                     <input id="brain-session-header-name" class="field-input" placeholder="X-Agent-Session-Id">
                   </div>
                   <div>
+                    <label class="field-label">Session Mode</label>
+                    <div class="runtime-adapter-options" role="radiogroup" aria-label="Runtime session mode">
+                      <label class="runtime-adapter-option">
+                        <input type="radio" name="runtime-session-mode" value="stable" checked>
+                        <span class="runtime-adapter-name">Single stable session</span>
+                      </label>
+                      <label class="runtime-adapter-option">
+                        <input type="radio" name="runtime-session-mode" value="new_per_interaction">
+                        <span class="runtime-adapter-name">New session per interaction</span>
+                      </label>
+                    </div>
+                  </div>
+                  <div>
                     <label class="field-label" for="brain-openai-base-url">Base URL</label>
                     <input id="brain-openai-base-url" class="field-input" placeholder="http://host.docker.internal:8642/v1">
                   </div>

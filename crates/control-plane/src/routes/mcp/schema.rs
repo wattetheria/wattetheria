@@ -403,7 +403,15 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
         "publish_collective_mission" => Some(tool_schema(
             tool,
             &publish_collective_mission_fields(),
-            &["hive_id", "title", "description", "domain", "payload"],
+            &[
+                "hive_id",
+                "title",
+                "description",
+                "domain",
+                "payload",
+                "mode",
+                "min_participants",
+            ],
             false,
         )),
         "start_collective_mission" => Some(tool_schema(
@@ -524,11 +532,7 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
             "scope_hint",
             "Optional Hive scope hint override when routing to an unknown Hive.",
         ),
-        enum_field(
-            "mode",
-            "Collective execution mode. Defaults to committee. Stigmergy is temporarily unsupported and will be opened later.",
-            &["committee", "stigmergy"],
-        ),
+        collective_mode_field(),
         string_array_field(
             "skills",
             "Optional visible skill names required for participant agents. Skill matching is enforced on the participant agent side.",
@@ -542,7 +546,10 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
             "shared_inputs",
             "Structured inputs shared by every run-queue agent. Defaults to the published mission payload.",
         ),
-        run_agents_field(),
+        string_field(
+            "task_prompt",
+            "Optional default prompt used for every joined participant when the participant does not provide its own prompt.",
+        ),
         value_field(
             "aggregation",
             "Wattswarm run aggregation policy; omitted fields use Wattswarm defaults.",
@@ -553,31 +560,31 @@ fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
         ),
         integer_field(
             "min_participants",
-            "Required in stigmergy mode. Minimum number of joined participants before the coordinator can start execution.",
+            "Required collective quorum policy. Minimum number of joined participants before the coordinator can start execution.",
         ),
         integer_field(
             "join_window_ms",
-            "Optional stigmergy join window in milliseconds. Defaults to 1800000. The run is created immediately but is not kicked off until start_collective_mission is called after this window.",
+            "Optional committee join window in milliseconds. Defaults to 1800000. The run is created immediately; if kickoff is false, start_collective_mission enforces this window before kickoff.",
         ),
         integer_field(
             "threshold_percent",
-            "Required in stigmergy mode. Percentage threshold from the observed participants, from 1 to 100.",
+            "Optional collective quorum threshold from observed participants, from 1 to 100.",
         ),
         integer_field(
             "round_timeout_ms",
-            "Required in stigmergy mode. Collection window duration for each round.",
+            "Optional collective result collection window duration for each round.",
         ),
         integer_field(
             "max_rounds",
-            "Required in stigmergy mode. Maximum number of stigmergy collection rounds.",
+            "Optional maximum number of collective result collection rounds.",
         ),
         string_field(
             "fallback_decision",
-            "Optional stigmergy fallback decision used when max rounds expires without quorum.",
+            "Optional fallback decision used when max rounds expire without quorum.",
         ),
         bool_field(
             "kickoff",
-            "Whether to immediately kick off the Wattswarm run. Ignored for stigmergy collective missions, which always start in joining phase.",
+            "Compatibility flag. publish_collective_mission never starts Wattswarm execution; use start_collective_mission after participants join.",
         ),
     ]);
     fields
@@ -606,11 +613,6 @@ fn start_collective_mission_fields() -> Vec<(&'static str, Value)> {
             "scope_hint",
             "Optional Hive scope hint override when routing to an unknown Hive.",
         ),
-        integer_field(
-            "joined_count",
-            "Observed number of participants that joined before the coordinator starts the run.",
-        ),
-        integer_field("participant_count", "Alias for joined_count."),
         bool_field(
             "force",
             "Bypass join window and min_participants checks. Defaults to false.",
@@ -1066,6 +1068,18 @@ fn enum_field<'a>(name: &'a str, description: &str, values: &[&str]) -> (&'a str
     )
 }
 
+fn collective_mode_field() -> (&'static str, Value) {
+    (
+        "mode",
+        json!({
+            "type": "string",
+            "enum": ["committee", "stigmergy"],
+            "default": "committee",
+            "description": "Required collective execution mode. Defaults to committee. Stigmergy is temporarily unsupported and will be opened later."
+        }),
+    )
+}
+
 fn string_array_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) {
     (
         name,
@@ -1073,29 +1087,6 @@ fn string_array_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) 
             "type": "array",
             "items": {"type": "string"},
             "description": description
-        }),
-    )
-}
-
-fn run_agents_field() -> (&'static str, Value) {
-    (
-        "agents",
-        json!({
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "agent_id": {"type": "string"},
-                    "executor": {"type": "string"},
-                    "prompt": {"type": "string"},
-                    "profile": {"type": "string"},
-                    "weight": {"type": "number"},
-                    "priority": {"type": "integer"}
-                },
-                "required": ["agent_id", "executor", "prompt"],
-                "additionalProperties": true
-            },
-            "description": "Wattswarm run agents. Required for committee mode."
         }),
     )
 }

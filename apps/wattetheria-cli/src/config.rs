@@ -5,7 +5,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use wattetheria_kernel::brain::BrainProviderConfig;
+use wattetheria_kernel::brain::{BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mcp::McpRegistry;
@@ -21,6 +21,8 @@ pub(crate) struct LocalConfig {
     pub(crate) recovery_sources: Vec<String>,
     #[serde(default)]
     pub(crate) brain_provider: BrainProviderConfig,
+    #[serde(default)]
+    pub(crate) runtime_session_mode: RuntimeSessionMode,
     #[serde(default)]
     pub(crate) wattswarm_ui_base_url: Option<String>,
     #[serde(default)]
@@ -66,6 +68,7 @@ impl Default for LocalConfig {
             control_plane_bind: bind,
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
+            runtime_session_mode: RuntimeSessionMode::Stable,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             servicenet_registrations: Vec::new(),
@@ -222,7 +225,9 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
         .arg("--data-dir")
         .arg(data_dir)
         .arg("--control-plane-bind")
-        .arg(&config.control_plane_bind);
+        .arg(&config.control_plane_bind)
+        .arg("--brain-runtime-session-mode")
+        .arg(config.runtime_session_mode.as_str());
 
     if config.autonomy_enabled {
         command.arg("--autonomy-enabled");
@@ -408,12 +413,14 @@ mod tests {
     use super::{LocalConfig, append_kernel_runtime_args};
     use std::path::Path;
     use std::process::Command;
+    use wattetheria_kernel::brain::RuntimeSessionMode;
 
     #[test]
     fn kernel_runtime_args_include_autonomy_settings() {
         let mut command = Command::new("echo");
         let config = LocalConfig {
             autonomy_enabled: true,
+            runtime_session_mode: RuntimeSessionMode::NewPerInteraction,
             ..LocalConfig::default()
         };
 
@@ -430,5 +437,8 @@ mod tests {
             args.windows(2)
                 .any(|pair| { pair[0] == "--autonomy-interval-sec" })
         );
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--brain-runtime-session-mode" && pair[1] == "new_per_interaction"
+        }));
     }
 }

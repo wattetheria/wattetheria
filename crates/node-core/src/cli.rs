@@ -47,6 +47,8 @@ pub struct Cli {
     pub brain_runtime_adapter: Option<String>,
     #[arg(long)]
     pub brain_session_header_name: Option<String>,
+    #[arg(long, default_value = "stable")]
+    pub brain_runtime_session_mode: String,
     #[arg(long, default_value_t = false)]
     pub autonomy_enabled: bool,
     #[arg(long, default_value_t = 30)]

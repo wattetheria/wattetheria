@@ -163,8 +163,9 @@ fn build_brain_event_input(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
     network_id: &str,
+    runtime_session_id: Option<String>,
 ) -> Value {
-    json!({
+    let mut input = json!({
         "agent_did": state.agent_did,
         "network_id": network_id,
         "event_id": event.event_id,
@@ -180,7 +181,11 @@ fn build_brain_event_input(
         "created_at": event.created_at,
         "agent_envelope": event.agent_envelope,
         "payload": sanitize_agent_event_payload_for_brain(&event.payload),
-    })
+    });
+    if let Some(session_id) = runtime_session_id {
+        input["runtime_session_id"] = Value::String(session_id);
+    }
+    input
 }
 
 async fn resolve_agent_event_network_id(
@@ -1875,7 +1880,13 @@ async fn process_agent_event_decision(
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(state, &mut event);
     let network_id = resolve_agent_event_network_id(state, &event).await;
-    let input = build_brain_event_input(state, &event, &network_id);
+    let runtime_session_mode = *state.runtime_session_mode.read().await;
+    let runtime_session_id = crate::runtime_sessions::agent_event_runtime_session_id(
+        &state.agent_did,
+        &network_id,
+        runtime_session_mode,
+    );
+    let input = build_brain_event_input(state, &event, &network_id, runtime_session_id);
     record_agent_event_diagnostic(
         state,
         &event,

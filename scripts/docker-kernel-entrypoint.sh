@@ -38,6 +38,9 @@ fi
 if [ -n "${WATTETHERIA_BRAIN_SESSION_HEADER_NAME:-}" ]; then
   set -- "$@" --brain-session-header-name "${WATTETHERIA_BRAIN_SESSION_HEADER_NAME}"
 fi
+if [ -n "${WATTETHERIA_BRAIN_SESSION_MODE:-}" ]; then
+  set -- "$@" --brain-runtime-session-mode "${WATTETHERIA_BRAIN_SESSION_MODE}"
+fi
 
 if [ -n "${WATTETHERIA_WATTSWARM_UI_BASE_URL:-}" ]; then
   set -- "$@" --wattswarm-ui-base-url "${WATTETHERIA_WATTSWARM_UI_BASE_URL}"

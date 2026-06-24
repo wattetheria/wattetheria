@@ -59,6 +59,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
                     "kind": "openai-compatible",
                     "adapter": "openclaw",
                     "session_header_name": "X-OpenClaw-Thread",
+                    "runtime_session_mode": "new_per_interaction",
                     "base_url": "http://127.0.0.1:18789/v1",
                     "model": "openclaw",
                     "api_key": "secret-runtime-key"
@@ -83,9 +84,17 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_RUNTIME_ADAPTER=openclaw"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_HEADER_NAME=X-OpenClaw-Thread"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_MODE=new_per_interaction"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY=secret-runtime-key"));
     assert!(!env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=secret-runtime-key"));
     assert!(!env_body.lines().any(|line| line.starts_with("OPENCLAW_")));
+
+    let config_body: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config_body["runtime_session_mode"].as_str(),
+        Some("new_per_interaction")
+    );
 
     let loaded = authed_get_json(app.clone(), &token, "/v1/brain/config").await;
     assert_eq!(
@@ -98,6 +107,10 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
         Some("X-OpenClaw-Thread")
     );
     assert_eq!(
+        loaded["runtime_session_mode"].as_str(),
+        Some("new_per_interaction")
+    );
+    assert_eq!(
         loaded["config"]["runtime_adapter"]["session_header_name"].as_str(),
         Some("X-OpenClaw-Thread")
     );
@@ -107,6 +120,31 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     );
     assert_eq!(loaded["has_api_key"].as_bool(), Some(true));
     assert!(loaded["config"].get("api_key").is_none());
+
+    let preserved = request_json(
+        app.clone(),
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/v1/brain/config")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "kind": "openai-compatible",
+                    "adapter": "openclaw",
+                    "session_header_name": "X-OpenClaw-Thread",
+                    "base_url": "http://127.0.0.1:18789/v1",
+                    "model": "openclaw"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        preserved["runtime_session_mode"].as_str(),
+        Some("new_per_interaction")
+    );
 }
 
 #[tokio::test]

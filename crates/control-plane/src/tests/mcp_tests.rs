@@ -3209,7 +3209,15 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     let publish_collective_mission = find_tool(tools, "publish_collective_mission");
     assert_schema_requires(
         publish_collective_mission,
-        &["hive_id", "title", "description", "domain", "payload"],
+        &[
+            "hive_id",
+            "title",
+            "description",
+            "domain",
+            "payload",
+            "mode",
+            "min_participants",
+        ],
     );
     assert_schema_omits(
         publish_collective_mission,
@@ -3245,8 +3253,19 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .is_some_and(|description| description.contains("Defaults to committee"))
     );
     assert_eq!(
+        publish_collective_mission["inputSchema"]["properties"]["mode"]["default"].as_str(),
+        Some("committee")
+    );
+    assert_eq!(
         publish_collective_mission["inputSchema"]["properties"]["skills"]["type"].as_str(),
         Some("array")
+    );
+    assert!(
+        publish_collective_mission["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .get("agents")
+            .is_none()
     );
     assert!(
         publish_collective_mission["inputSchema"]["properties"]
@@ -3255,23 +3274,36 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .contains_key("min_participants")
     );
     assert!(
+        publish_collective_mission["inputSchema"]["properties"]["min_participants"]["description"]
+            .as_str()
+            .is_some_and(|description| !description.contains("stigmergy mode"))
+    );
+    assert!(
         publish_collective_mission["inputSchema"]["properties"]
             .as_object()
             .unwrap()
             .contains_key("join_window_ms")
     );
+    assert!(
+        publish_collective_mission["inputSchema"]["properties"]["join_window_ms"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("committee join window"))
+    );
     assert_eq!(
         publish_collective_mission["inputSchema"]["properties"]["kickoff"]["type"].as_str(),
         Some("boolean")
     );
+    assert!(
+        publish_collective_mission["inputSchema"]["properties"]["kickoff"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("never starts Wattswarm"))
+    );
 
     let start_collective_mission = find_tool(tools, "start_collective_mission");
     assert_schema_requires(start_collective_mission, &["run_id"]);
-    assert!(
-        start_collective_mission["inputSchema"]["properties"]
-            .as_object()
-            .unwrap()
-            .contains_key("joined_count")
+    assert_schema_omits(
+        start_collective_mission,
+        &["joined_count", "participant_count"],
     );
     assert_eq!(
         start_collective_mission["inputSchema"]["properties"]["force"]["type"].as_str(),
@@ -4032,19 +4064,13 @@ fn collective_mission_request(hive_id: &str) -> Value {
                 "publisher_kind": "system",
                 "domain": "trade",
                 "scope": "in_world",
+                "required_faction": "freeport",
+                "required_role": "broker",
                 "payload": {"objective": "collective-intel"},
-                "agents": [
-                    {
-                        "agent_id": "local-planner",
-                        "executor": "rules",
-                        "prompt": "Plan the route."
-                    },
-                    {
-                        "agent_id": "remote-scout",
-                        "executor": "remote:12D3KooScout",
-                        "prompt": "Check remote evidence."
-                    }
-                ],
+                "min_participants": 2,
+                "threshold_percent": 60,
+                "round_timeout_ms": 30000,
+                "max_rounds": 3,
                 "aggregation": {"mode": "MAJORITY"},
                 "kickoff": true
             }
@@ -4079,17 +4105,15 @@ fn collective_stigmergy_mission_request(hive_id: &str) -> Value {
     })
 }
 
-fn collective_mission_result_request(mission_id: &str) -> Value {
+fn start_collective_mission_request(run_id: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": 3,
         "method": "tools/call",
         "params": {
-            "name": "get_collective_mission_result",
+            "name": "start_collective_mission",
             "arguments": {
-                "mission_id": mission_id,
-                "include_events": true,
-                "events_limit": 10
+                "run_id": run_id
             }
         }
     })
@@ -4133,7 +4157,13 @@ fn assert_collective_publish_result<'a>(
     );
     let mission_id = content["mission_id"].as_str().expect("mission id");
     let run_id = content["run_id"].as_str().expect("run id");
-    assert_eq!(content["wattswarm_run"]["kicked_off"].as_bool(), Some(true));
+    assert_eq!(content["kicked_off"].as_bool(), Some(false));
+    assert_eq!(content["phase"].as_str(), Some("joining"));
+    assert_eq!(content["wattswarm_run"]["submitted"].as_bool(), Some(false));
+    assert_eq!(
+        content["wattswarm_run"]["kicked_off"].as_bool(),
+        Some(false)
+    );
     assert_eq!(
         content["run_spec"]["task_type"].as_str(),
         Some("wattetheria.collective_mission")
@@ -4150,10 +4180,22 @@ fn assert_collective_publish_result<'a>(
         content["run_spec"]["shared_inputs"]["mission"]["scope"].as_str(),
         Some("in_world")
     );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["min_participants"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        content["run_spec"]["round_policy"]["threshold_percent"].as_u64(),
+        Some(60)
+    );
+    assert_eq!(
+        content["run_spec"]["join_policy"]["join_window_ms"].as_u64(),
+        Some(1_800_000)
+    );
     assert_public_geo_projection(&content["run_spec"]["shared_inputs"]["mission"]);
     assert_eq!(
-        content["run_spec"]["agents"][1]["executor"].as_str(),
-        Some("remote:12D3KooScout")
+        content["run_spec"]["agents"].as_array().map(Vec::len),
+        Some(0)
     );
     assert_eq!(
         content["hive_message"]["type"].as_str(),
@@ -4173,11 +4215,12 @@ fn assert_collective_publish_result<'a>(
         Some(mission_id)
     );
     assert_eq!(content["hive_message"]["run_id"].as_str(), Some(run_id));
+    assert_eq!(content["hive_message"]["kickoff"].as_bool(), Some(false));
     (mission_id, run_id)
 }
 
 #[tokio::test]
-async fn mcp_publish_collective_mission_submits_wattswarm_run_and_links_result() {
+async fn mcp_publish_collective_mission_creates_joining_link_without_submitting_run() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
     let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
     let local_public_id = self_json["id"].as_str().unwrap();
@@ -4204,18 +4247,204 @@ async fn mcp_publish_collective_mission_submits_wattswarm_run_and_links_result()
         Some(hive_id.as_str())
     );
 
-    let result_response =
-        mcp_request(app, &token, collective_mission_result_request(mission_id)).await;
-    let result = &result_response["result"]["structuredContent"];
-    assert_eq!(result_response["result"]["isError"].as_bool(), Some(false));
-    assert_eq!(result["run_id"].as_str(), Some(run_id));
     assert_eq!(
-        result["result"]["result"]["status"].as_str(),
-        Some("finalized")
+        persisted["runs"][mission_id]["wattswarm_run"]["submitted"].as_bool(),
+        Some(false)
+    );
+    assert!(
+        persisted["runs"][mission_id]["task_prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("Apply your own available skills"))
     );
     assert_eq!(
-        result["events"]["events"][0]["event_type"].as_str(),
-        Some("RUN_KICKOFF")
+        persisted["runs"][mission_id]["participants"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn collective_participation_dm_records_joined_participant_in_run_link() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+    let hive_id = create_collective_hive(app.clone(), &token).await;
+
+    let response = mcp_request(app, &token, collective_mission_request(&hive_id)).await;
+    let (mission_id, run_id) =
+        assert_collective_publish_result(&response, local_public_id, &hive_id);
+    let view = SwarmPeerDmMessageView {
+        thread_id: "thread-alpha".to_owned(),
+        message_id: "dm-alpha".to_owned(),
+        remote_node_id: "node-alpha".to_owned(),
+        message_kind: "agent".to_owned(),
+        direction: "inbound".to_owned(),
+        delivery_state: "delivered".to_owned(),
+        a2a_protocol: "wattetheria.agent.v1".to_owned(),
+        agent_envelope: None,
+        content: json!({
+            "type": "collective_participation",
+            "version": 1,
+            "status": "join",
+            "mission_id": mission_id,
+            "run_id": run_id,
+            "event_id": "event-alpha",
+            "decision_id": "decision-alpha",
+            "participant_agent_did": "did:key:alpha",
+            "participant_node_id": "node-alpha",
+            "payload": {
+                "public_id": "agent-alpha"
+            }
+        }),
+        encrypted_body: None,
+        content_encoding: None,
+        created_at: 1,
+        acknowledged_at: None,
+    };
+
+    let recorded =
+        crate::routes::mcp::collective::record_collective_participation_from_dm(&state, &view)
+            .unwrap()
+            .expect("collective participation record");
+    assert_eq!(recorded["recorded"].as_bool(), Some(true));
+    assert_eq!(recorded["inserted"].as_bool(), Some(true));
+    assert_eq!(recorded["joined_count"].as_u64(), Some(1));
+    let duplicate =
+        crate::routes::mcp::collective::record_collective_participation_from_dm(&state, &view)
+            .unwrap()
+            .expect("duplicate collective participation record");
+    assert_eq!(duplicate["recorded"].as_bool(), Some(true));
+    assert_eq!(duplicate["inserted"].as_bool(), Some(false));
+    assert_eq!(duplicate["joined_count"].as_u64(), Some(1));
+
+    let persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    let participant = &persisted["runs"][mission_id]["participants"]["public:agent-alpha"];
+    assert_eq!(participant["agent_id"].as_str(), Some("agent-alpha"));
+    assert_eq!(participant["executor"].as_str(), Some("remote:node-alpha"));
+    assert!(
+        participant["prompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("Apply your own available skills"))
+    );
+}
+
+#[tokio::test]
+async fn mcp_start_collective_mission_submits_joined_participants_as_committee_agents() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+    let hive_id = create_collective_hive(app.clone(), &token).await;
+
+    let response = mcp_request(app.clone(), &token, collective_mission_request(&hive_id)).await;
+    let (mission_id, run_id) =
+        assert_collective_publish_result(&response, local_public_id, &hive_id);
+
+    let mut persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    persisted["runs"][mission_id]["join_deadline_ms"] = json!(0);
+    persisted["runs"][mission_id]["participants"] = json!({
+        "public:agent-alpha": {
+            "agent_id": "agent-alpha",
+            "executor": "remote:node-alpha",
+            "prompt": "Use alpha expertise for this collective mission.",
+            "participant_agent_did": "did:key:alpha",
+            "participant_node_id": "node-alpha",
+            "public_id": "agent-alpha",
+            "joined_at": "2026-06-24T00:00:00Z",
+            "payload": {}
+        },
+        "public:agent-beta": {
+            "agent_id": "agent-beta",
+            "executor": "remote:node-beta",
+            "prompt": persisted["runs"][mission_id]["task_prompt"].clone(),
+            "participant_agent_did": "did:key:beta",
+            "participant_node_id": "node-beta",
+            "public_id": "agent-beta",
+            "joined_at": "2026-06-24T00:00:00Z",
+            "payload": {}
+        }
+    });
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS,
+            &persisted,
+        )
+        .unwrap();
+
+    let response = mcp_request(app, &token, start_collective_mission_request(run_id)).await;
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(content["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(content["run_id"].as_str(), Some(run_id));
+    assert_eq!(content["kicked_off"].as_bool(), Some(true));
+    assert_eq!(content["wattswarm_run"]["kicked_off"].as_bool(), Some(true));
+    assert!(content["run_spec"].get("round_policy").is_none());
+    assert_eq!(
+        content["run_spec"]["collective_policy"]["min_participants"].as_u64(),
+        Some(2)
+    );
+    let agents = content["run_spec"]["agents"].as_array().expect("agents");
+    assert_eq!(agents.len(), 2);
+    assert!(
+        agents
+            .iter()
+            .any(|agent| agent["agent_id"].as_str() == Some("agent-alpha")
+                && agent["prompt"].as_str()
+                    == Some("Use alpha expertise for this collective mission."))
+    );
+    assert!(agents.iter().any(|agent| {
+        agent["agent_id"].as_str() == Some("agent-beta")
+            && agent["prompt"]
+                .as_str()
+                .is_some_and(|prompt| prompt.contains("Apply your own available skills"))
+    }));
+    assert_eq!(
+        content["link"]["participants"]
+            .as_object()
+            .map(serde_json::Map::len),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn mcp_publish_collective_mission_defaults_to_joining_without_kickoff() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let hive_id = create_collective_hive(app.clone(), &token).await;
+    let mut request = collective_mission_request(&hive_id);
+    request["params"]["arguments"]
+        .as_object_mut()
+        .expect("collective arguments")
+        .remove("kickoff");
+
+    let response = mcp_request(app, &token, request).await;
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let mission_id = content["mission_id"].as_str().expect("mission id");
+    assert_eq!(content["kicked_off"].as_bool(), Some(false));
+    assert_eq!(content["phase"].as_str(), Some("joining"));
+    assert_eq!(
+        content["wattswarm_run"]["kicked_off"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(content["hive_message"]["kickoff"].as_bool(), Some(false));
+
+    let persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        persisted["runs"][mission_id]["kicked_off"].as_bool(),
+        Some(false)
     );
 }
 
@@ -4304,14 +4533,13 @@ async fn mcp_get_collective_mission_result_rejects_unlinked_run_id() {
 }
 
 #[tokio::test]
-async fn mcp_publish_collective_mission_defaults_to_committee_and_persists_skills() {
+async fn mcp_publish_collective_mission_committee_persists_policy_and_skills() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
     let hive_id = create_collective_hive(app.clone(), &token).await;
     let mut request = collective_mission_request(&hive_id);
     let arguments = request["params"]["arguments"]
         .as_object_mut()
         .expect("collective arguments");
-    arguments.remove("mode");
     arguments.insert(
         "skills".to_owned(),
         json!(["climate response", "supply-chain analysis"]),
@@ -4323,10 +4551,17 @@ async fn mcp_publish_collective_mission_defaults_to_committee_and_persists_skill
     let mission_id = content["mission_id"].as_str().expect("mission id");
     assert_eq!(
         content["run_spec"]["agents"].as_array().map(Vec::len),
-        Some(2)
+        Some(0)
     );
     assert!(content["run_spec"].get("market_task_id").is_none());
-    assert!(content["run_spec"].get("round_policy").is_none());
+    assert_eq!(
+        content["run_spec"]["round_policy"]["min_participants"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        content["run_spec"]["join_policy"]["join_window_ms"].as_u64(),
+        Some(1_800_000)
+    );
     assert_eq!(
         content["mission"]["skills"].as_array().map(Vec::len),
         Some(2)
@@ -4348,6 +4583,40 @@ async fn mcp_publish_collective_mission_defaults_to_committee_and_persists_skill
         persisted["runs"][mission_id]["mission"]["skills"][0].as_str(),
         Some("climate response")
     );
+}
+
+#[tokio::test]
+async fn mcp_publish_collective_mission_requires_collective_policy_and_filters() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let hive_id = create_collective_hive(app.clone(), &token).await;
+    let mut missing_mode = collective_mission_request(&hive_id);
+    missing_mode["params"]["arguments"]
+        .as_object_mut()
+        .expect("collective arguments")
+        .remove("mode");
+
+    let response = mcp_request(app.clone(), &token, missing_mode).await;
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("mode is required for collective mission")
+    );
+
+    let mut missing_min_participants = collective_mission_request(&hive_id);
+    missing_min_participants["params"]["arguments"]
+        .as_object_mut()
+        .expect("collective arguments")
+        .remove("min_participants");
+
+    let response = mcp_request(app.clone(), &token, missing_min_participants).await;
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        response["result"]["structuredContent"]["error"].as_str(),
+        Some("min_participants is required for collective mission")
+    );
+
+    let response = mcp_request(app, &token, collective_mission_request(&hive_id)).await;
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
 }
 
 #[tokio::test]

@@ -23,6 +23,34 @@ pub enum AgentRuntimeAdapter {
     },
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionMode {
+    #[default]
+    Stable,
+    NewPerInteraction,
+}
+
+impl RuntimeSessionMode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::NewPerInteraction => "new_per_interaction",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "stable" | "single_stable_session" => Ok(Self::Stable),
+            "new_per_interaction" | "new-per-interaction" | "new_session_per_interaction" => {
+                Ok(Self::NewPerInteraction)
+            }
+            other => bail!("unsupported runtime session mode: {other}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRuntimeAdapterMetadata {
     pub key: &'static str,
@@ -216,6 +244,15 @@ impl RuntimeSessionContext {
 
     #[must_use]
     pub fn from_agent_event_input(event: &Value) -> Option<Self> {
+        if let Some(session_id) = event
+            .get("runtime_session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(Self::precomputed(session_id));
+        }
+
         let agent_did = event
             .get("agent_did")
             .and_then(Value::as_str)
@@ -304,6 +341,21 @@ mod tests {
         assert_eq!(
             context.session_id(),
             "wattetheria:identity:did:key:zAgent:mainnet:watt-etheria"
+        );
+    }
+
+    #[test]
+    fn runtime_session_context_prefers_precomputed_agent_event_session() {
+        let context = RuntimeSessionContext::from_agent_event_input(&json!({
+            "agent_did": "did:key:zAgent",
+            "network_id": "mainnet:watt-etheria",
+            "runtime_session_id": "wattetheria:identity:did:key:zAgent:mainnet:watt-etheria:482913"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            context.session_id(),
+            "wattetheria:identity:did:key:zAgent:mainnet:watt-etheria:482913"
         );
     }
 

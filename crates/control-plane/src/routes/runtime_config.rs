@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
-use wattetheria_kernel::brain::AgentRuntimeAdapter;
+use wattetheria_kernel::brain::{AgentRuntimeAdapter, RuntimeSessionMode};
 
 const DEFAULT_OPENAI_COMPATIBLE_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY";
 const ENV_BRAIN_API_KEY_ENV: &str = "WATTETHERIA_BRAIN_API_KEY_ENV";
 const ENV_BRAIN_API_KEY: &str = "WATTETHERIA_BRAIN_API_KEY";
 const ENV_BRAIN_RUNTIME_ADAPTER: &str = "WATTETHERIA_BRAIN_RUNTIME_ADAPTER";
 const ENV_BRAIN_SESSION_HEADER_NAME: &str = "WATTETHERIA_BRAIN_SESSION_HEADER_NAME";
+const ENV_BRAIN_SESSION_MODE: &str = "WATTETHERIA_BRAIN_SESSION_MODE";
 const DEFAULT_RUNTIME_BASE_URL: &str = "http://host.docker.internal:8642/v1";
 
 fn supported_runtime_adapters() -> Value {
@@ -125,12 +126,20 @@ fn brain_api_key_present(
     env_line_value(&lines, key_name).is_some_and(|value| !value.trim().is_empty())
 }
 
-fn normalize_brain_config_request(mut body: Value) -> anyhow::Result<(Value, Option<String>)> {
+fn normalize_brain_config_request(
+    mut body: Value,
+) -> anyhow::Result<(Value, Option<String>, Option<RuntimeSessionMode>)> {
     let api_key = body
         .as_object_mut()
         .and_then(|object| object.remove("api_key"))
         .and_then(|value| value.as_str().map(str::trim).map(str::to_string))
         .filter(|value| !value.is_empty());
+    let runtime_session_mode = body
+        .as_object_mut()
+        .and_then(|object| object.remove("runtime_session_mode"))
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .map(|value| RuntimeSessionMode::from_key(&value))
+        .transpose()?;
     if body
         .get("kind")
         .and_then(Value::as_str)
@@ -159,12 +168,13 @@ fn normalize_brain_config_request(mut body: Value) -> anyhow::Result<(Value, Opt
         object.remove("session_header_name");
         object.remove("custom_session_header_name");
     }
-    Ok((body, api_key))
+    Ok((body, api_key, runtime_session_mode))
 }
 
 fn persist_brain_config_to_env(
     env_path: &Path,
     config: &wattetheria_kernel::brain::BrainProviderConfig,
+    runtime_session_mode: RuntimeSessionMode,
     api_key: Option<&str>,
 ) -> anyhow::Result<()> {
     if let Some(parent) = env_path.parent() {
@@ -230,6 +240,11 @@ fn persist_brain_config_to_env(
         ENV_BRAIN_SESSION_HEADER_NAME,
         &session_header_name,
     );
+    upsert_env_line(
+        &mut lines,
+        ENV_BRAIN_SESSION_MODE,
+        runtime_session_mode.as_str(),
+    );
     if let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
         upsert_env_line(&mut lines, ENV_BRAIN_API_KEY, api_key);
     }
@@ -245,6 +260,7 @@ fn persist_brain_config_to_env(
 fn persist_brain_config_to_json(
     data_dir: &Path,
     config: &wattetheria_kernel::brain::BrainProviderConfig,
+    runtime_session_mode: RuntimeSessionMode,
 ) -> anyhow::Result<()> {
     let config_path = data_dir.join("config.json");
     let mut root = if config_path.exists() {
@@ -253,6 +269,7 @@ fn persist_brain_config_to_json(
         json!({})
     };
     root["brain_provider"] = serde_json::to_value(config)?;
+    root["runtime_session_mode"] = serde_json::to_value(runtime_session_mode)?;
     fs::write(config_path, serde_json::to_string_pretty(&root)?)?;
     Ok(())
 }
@@ -266,6 +283,7 @@ pub(crate) async fn brain_config_get(
         Err(response) => return response,
     };
     let config = state.brain_config.read().await.clone();
+    let runtime_session_mode = *state.runtime_session_mode.read().await;
     let label = brain_provider_label(&config);
     let env_path = deploy_env_path(&state.data_dir);
     let has_api_key = brain_api_key_present(&env_path, &config);
@@ -292,6 +310,7 @@ pub(crate) async fn brain_config_get(
         "has_api_key": has_api_key,
         "runtime_adapter": runtime_adapter,
         "session_header_name": session_header_name,
+        "runtime_session_mode": runtime_session_mode.as_str(),
         "default_runtime_base_url": DEFAULT_RUNTIME_BASE_URL,
         "supported_runtime_adapters": supported_runtime_adapters(),
     }))
@@ -307,9 +326,14 @@ pub(crate) async fn brain_config_put(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let (body, api_key) = match normalize_brain_config_request(body) {
+    let (body, api_key, requested_runtime_session_mode) = match normalize_brain_config_request(body)
+    {
         Ok(normalized) => normalized,
         Err(error) => return bad_request(format!("invalid brain config: {error}")),
+    };
+    let runtime_session_mode = match requested_runtime_session_mode {
+        Some(mode) => mode,
+        None => *state.runtime_session_mode.read().await,
     };
     let config: wattetheria_kernel::brain::BrainProviderConfig = match serde_json::from_value(body)
     {
@@ -320,21 +344,26 @@ pub(crate) async fn brain_config_put(
     let label = brain_provider_label(&config);
     let env_path = deploy_env_path(&state.data_dir);
 
-    if let Err(error) = persist_brain_config_to_env(&env_path, &config, api_key.as_deref()) {
+    if let Err(error) =
+        persist_brain_config_to_env(&env_path, &config, runtime_session_mode, api_key.as_deref())
+    {
         return internal_error(&error);
     }
-    if let Err(error) = persist_brain_config_to_json(&state.data_dir, &config) {
+    if let Err(error) = persist_brain_config_to_json(&state.data_dir, &config, runtime_session_mode)
+    {
         return internal_error(&error);
     }
 
     let has_api_key = brain_api_key_present(&env_path, &config);
     *state.brain_config.write().await = config;
     *state.brain_engine.write().await = engine;
+    *state.runtime_session_mode.write().await = runtime_session_mode;
 
     Json(json!({
         "ok": true,
         "status": "updated",
         "label": label,
+        "runtime_session_mode": runtime_session_mode.as_str(),
         "env_path": env_path.display().to_string(),
         "has_api_key": has_api_key,
         "restart_required": true,

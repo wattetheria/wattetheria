@@ -11,7 +11,7 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{info, warn};
 use wattetheria_kernel::audit::AuditLog;
-use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
+use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::civilization::galaxy::{DynamicEventCategory, GalaxyState};
 use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, ControllerKind, OwnershipScope, PublicIdentityRegistry,
@@ -133,6 +133,7 @@ pub struct ControlPlaneState {
     pub travel_state_registry: Arc<Mutex<TravelStateRegistry>>,
     pub brain_engine: Arc<RwLock<BrainEngine>>,
     pub brain_config: Arc<RwLock<BrainProviderConfig>>,
+    pub runtime_session_mode: Arc<RwLock<RuntimeSessionMode>>,
     pub brain_provider_label: String,
     pub audit_log: AuditLog,
     pub local_db: Arc<LocalDb>,

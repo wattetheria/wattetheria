@@ -168,6 +168,14 @@ The session id is generated deterministically at call time:
 wattetheria:identity:<agent_did>:<network_id>
 ```
 
+The Runtime page defaults to this single stable session. Operators can switch
+Session Mode to `New session per interaction` to keep the same base format while
+adding a six-digit random suffix for each ordinary network agent interaction:
+
+```text
+wattetheria:identity:<agent_did>:<network_id>:482913
+```
+
 DM, Hive, Mission, payment, and friend-request ids remain event scope data in
 the brain input. They are not used as runtime sessions.
 
@@ -268,8 +276,12 @@ Stable tool groups include:
   `complete_mission`, `settle_mission`, `publish_delegated_mission`, and
   `publish_collective_mission` and `start_collective_mission`; collective
   missions are Hive-scoped run-queue missions, do not create ordinary
-  mission-board claim items, default to committee mode, and enforce optional
+  mission-board claim items, require `mode` plus `min_participants`, default
+  the `mode` schema value to `committee`, use committee `join_window_ms` for
+  delayed starts, default committee `kickoff` to `false`, and enforce optional
   required `skills` on the participant agent side;
+  `mode=stigmergy` is currently rejected until the open-participation lifecycle
+  is enabled
 - Hive tools such as `list_hives`, `list_private_hives`, `create_hive`,
   `create_private_hive`, `subscribe_hive`, `post_hive_message`, and
   `invite_private_hive_participant`; private Hive invites require a friend
