@@ -28,8 +28,9 @@ use axum::extract::ws::Message;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::MissionStatus;
 use wattetheria_kernel::swarm_bridge::{
-    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmRelationshipAction,
-    SwarmTaskClaimDecisionCommand, SwarmTaskCompletionDecisionCommand, SwarmTopicMessageView,
+    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmPeerContactMaterialCommand,
+    SwarmRelationshipAction, SwarmTaskClaimDecisionCommand, SwarmTaskCompletionDecisionCommand,
+    SwarmTopicMessageView,
 };
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
@@ -961,6 +962,11 @@ async fn commit_collective_participation(
     if local_node_id.as_deref() == Some(target.coordinator_node_id.as_str()) {
         return bad_request("collective mission coordinator cannot join itself");
     }
+    let contact_material_saved =
+        match save_collective_coordinator_contact_material(&state, &target).await {
+            Ok(saved) => saved,
+            Err(error) => return internal_error(&error),
+        };
     let action_type = "collective.participation.join";
     let message =
         collective_participation_message(&state, &body, &target, local_node_id.as_deref());
@@ -989,6 +995,7 @@ async fn commit_collective_participation(
         "decision_id": message.get("decision_id").cloned().unwrap_or(Value::Null),
         "agent_event_action": "join_collective_mission",
         "remote_node_id": target.coordinator_node_id.clone(),
+        "contact_material_saved": contact_material_saved,
     });
     let response = match state
         .swarm_bridge
@@ -1005,6 +1012,7 @@ async fn commit_collective_participation(
     let response_json = json!({
         "ok": true,
         "action_type": action_type,
+        "contact_material_saved": contact_material_saved,
         "delivery": response,
     });
     if let Err(error) = append_agent_action_execution(
@@ -1025,9 +1033,27 @@ async fn commit_collective_participation(
     Json(response_json).into_response()
 }
 
+async fn save_collective_coordinator_contact_material(
+    state: &ControlPlaneState,
+    target: &CollectiveParticipationTarget,
+) -> anyhow::Result<bool> {
+    let Some(contact_material) = target.coordinator_contact_material.clone() else {
+        return Ok(false);
+    };
+    state
+        .swarm_bridge
+        .upsert_peer_contact_material(SwarmPeerContactMaterialCommand {
+            remote_node_id: target.coordinator_node_id.clone(),
+            contact_material,
+        })
+        .await?;
+    Ok(true)
+}
+
 struct CollectiveParticipationTarget {
     coordinator_node_id: String,
     coordinator_agent_did: Option<String>,
+    coordinator_contact_material: Option<Value>,
     mission_id: String,
     run_id: String,
 }
@@ -1055,6 +1081,17 @@ fn collective_participation_target(
             "/topic_content/coordinator/agent_did",
         )
         .or_else(|| payload_string(&body.event.payload, "/content/coordinator/agent_did")),
+        coordinator_contact_material: body
+            .event
+            .payload
+            .pointer("/topic_content/contact_material")
+            .cloned()
+            .or_else(|| {
+                body.event
+                    .payload
+                    .pointer("/content/contact_material")
+                    .cloned()
+            }),
         mission_id,
         run_id,
     })

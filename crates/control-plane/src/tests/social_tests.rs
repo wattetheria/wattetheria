@@ -1581,6 +1581,11 @@ async fn agent_action_commit_routes_collective_join_through_signed_dm_only() {
                         "coordinator": {
                             "agent_did": "did:key:zCoordinator",
                             "node_id": "12D3KooCoordinator"
+                        },
+                        "contact_material": {
+                            "material_json": "{\"node_id\":\"12D3KooCoordinator\",\"encryption\":{\"private_message\":{\"public_key_b64\":\"coordinator-key\"}}}",
+                            "signature": "coordinator-signature",
+                            "generated_at": 1
                         }
                     }
                 },
@@ -1609,6 +1614,7 @@ async fn agent_action_commit_routes_collective_join_through_signed_dm_only() {
         committed["action_type"].as_str(),
         Some("collective.participation.join")
     );
+    assert_eq!(committed["contact_material_saved"].as_bool(), Some(true));
     assert!(bridge.messages.lock().await.is_empty());
     let dm_commands = bridge.dm_commands.lock().await;
     assert_eq!(dm_commands.len(), 1);

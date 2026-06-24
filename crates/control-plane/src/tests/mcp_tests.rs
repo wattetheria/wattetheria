@@ -4677,7 +4677,13 @@ fn assert_collective_publish_result<'a>(
     );
     assert!(
         content["hive_message"].get("contribution").is_none(),
-        "collective Hive messages must not expose coordinator contact material"
+        "collective Hive messages must not use legacy contribution contact material"
+    );
+    assert!(
+        content["hive_message"]["contact_material"]["material_json"]
+            .as_str()
+            .is_some_and(|value| value.contains("private_message")),
+        "public collective Hive messages must carry coordinator contact material for join-time DM setup"
     );
     assert!(
         content["hive_message"]["coordinator"]["agent_did"]
@@ -4938,7 +4944,11 @@ async fn mcp_publish_collective_mission_omits_contact_material_for_private_hive(
     );
     assert!(
         content["hive_message"].get("contribution").is_none(),
-        "private collective Hive messages must not expose coordinator contact material"
+        "private collective Hive messages must not use legacy contribution contact material"
+    );
+    assert!(
+        content["hive_message"].get("contact_material").is_none(),
+        "private collective Hive messages must not include coordinator contact material"
     );
 }
 

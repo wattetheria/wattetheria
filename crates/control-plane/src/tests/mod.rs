@@ -45,12 +45,13 @@ use wattetheria_kernel::signing::{canonical_bytes, sign_payload, verify_payload}
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmAgentPaymentCommand, SwarmAgentView, SwarmBridge,
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmDirectMessageCommand,
-    SwarmDiscoveredAgent, SwarmNetworkStatusView, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmPeerView, SwarmPrivateHiveKeyShareCommand,
-    SwarmRelationshipActionCommand, SwarmRunSubmitCommand, SwarmSourceAgentCard,
-    SwarmTaskAnnounceCommand, SwarmTaskClaimCommand, SwarmTaskClaimDecisionCommand,
-    SwarmTaskCompleteCommand, SwarmTaskCompletionDecisionCommand, SwarmTaskProposeCandidateCommand,
-    SwarmTaskSettleCommand, SwarmTopicCursorView, SwarmTopicMessageView,
+    SwarmDiscoveredAgent, SwarmNetworkStatusView, SwarmPeerContactMaterialCommand,
+    SwarmPeerDmMessageView, SwarmPeerDmThreadView, SwarmPeerRelationshipView, SwarmPeerView,
+    SwarmPrivateHiveKeyShareCommand, SwarmRelationshipActionCommand, SwarmRunSubmitCommand,
+    SwarmSourceAgentCard, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
+    SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskCompletionDecisionCommand,
+    SwarmTaskProposeCandidateCommand, SwarmTaskSettleCommand, SwarmTopicCursorView,
+    SwarmTopicMessageView,
 };
 use wattetheria_kernel::swarm_sync::{
     SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTopicActivitySnapshot,
@@ -1185,6 +1186,35 @@ impl SwarmBridge for MockSwarmBridge {
             "ok": true,
             "remote_node_id": command.remote_node_id,
             "message_kind": "direct",
+        }))
+    }
+
+    async fn local_contact_material(&self) -> anyhow::Result<Value> {
+        Ok(json!({
+            "material_json": serde_json::to_string(&json!({
+                "node_id": self.local_node_id.clone(),
+                "encryption": {
+                    "private_message": {
+                        "scheme": "wattswarm.private.dm.v1",
+                        "key_agreement": "x25519",
+                        "cipher": "chacha20poly1305",
+                        "public_key_b64": "mock-public-message-key"
+                    }
+                }
+            }))?,
+            "signature": "mock-contact-signature",
+            "generated_at": 1_u64,
+        }))
+    }
+
+    async fn upsert_peer_contact_material(
+        &self,
+        command: SwarmPeerContactMaterialCommand,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "ok": true,
+            "remote_node_id": command.remote_node_id,
+            "contact_material_saved": true,
         }))
     }
 

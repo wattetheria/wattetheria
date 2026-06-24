@@ -144,6 +144,7 @@ struct CollectiveHiveMessageRequest<'a> {
     join_policy: CollectiveJoinPolicy,
     run_spec: &'a Value,
     coordinator_node_id: Option<&'a str>,
+    coordinator_contact_material: Option<&'a Value>,
 }
 
 pub(super) async fn publish_collective_mission_result(
@@ -306,6 +307,21 @@ async fn post_collective_mission_to_hive(
     request: CollectiveHivePostRequest<'_>,
 ) -> Result<(Value, Value), Value> {
     let coordinator_node_id = request.state.swarm_bridge.local_node_id().await.ok();
+    let coordinator_contact_material = if collective_route_is_private_hive(request.hive_route) {
+        None
+    } else {
+        match request.state.swarm_bridge.local_contact_material().await {
+            Ok(material) => Some(material),
+            Err(error) => {
+                return Err(tool_error(&json!({
+                    "error": "coordinator_contact_material_unavailable",
+                    "detail": error.to_string(),
+                    "mission_id": request.mission_id,
+                    "run_id": request.submission.run_id,
+                })));
+            }
+        }
+    };
     let hive_message = collective_hive_message(&CollectiveHiveMessageRequest {
         state: request.state,
         mission: request.mission,
@@ -315,6 +331,7 @@ async fn post_collective_mission_to_hive(
         join_policy: request.join_policy,
         run_spec: &request.submission.run_spec,
         coordinator_node_id: coordinator_node_id.as_deref(),
+        coordinator_contact_material: coordinator_contact_material.as_ref(),
     });
     let hive_response = crate::routes::topics::post_hive_topic_message(
         request.state.clone(),
@@ -1002,8 +1019,12 @@ async fn collective_hive_route_from_link_or_arguments(
         })
 }
 
+fn collective_route_is_private_hive(route: &CollectiveHiveRoute) -> bool {
+    route.feed_key != "wattswarm.dm" && route.scope_hint.starts_with("group:dm-")
+}
+
 fn collective_hive_message(request: &CollectiveHiveMessageRequest<'_>) -> Value {
-    json!({
+    let mut message = json!({
         "type": "collective_mission",
         "version": 1,
         "mission_id": request.mission.get("mission_id").cloned().unwrap_or(Value::Null),
@@ -1018,7 +1039,11 @@ fn collective_hive_message(request: &CollectiveHiveMessageRequest<'_>) -> Value 
         },
         "mission": request.mission,
         "run_spec": request.run_spec,
-    })
+    });
+    if let Some(contact_material) = request.coordinator_contact_material {
+        message["contact_material"] = contact_material.clone();
+    }
+    message
 }
 
 fn auth_headers(auth: &str) -> HeaderMap {

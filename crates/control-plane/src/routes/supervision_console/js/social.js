@@ -453,6 +453,42 @@
         .filter(Boolean);
     }
 
+    function collectiveMissionTitle(content) {
+      return content?.mission?.title
+        || content?.payload?.title
+        || content?.payload?.mission?.title
+        || content?.payload?.mission_title
+        || content?.title
+        || content?.mission_id
+        || content?.run_id
+        || "the collective mission";
+    }
+
+    function dmMessagePreview(message) {
+      const content = message?.content;
+      if (content && typeof content === "object" && !Array.isArray(content)) {
+        const type = content.type || content.kind;
+        if (type === "collective_participation") {
+          const title = collectiveMissionTitle(content);
+          if (content.status === "join") {
+            return `Accepted participation for ${title}.`;
+          }
+          if (content.status === "reject") {
+            return `Declined participation for ${title}.`;
+          }
+          return `Participation update for ${title}.`;
+        }
+        if (type === "collective_contribution" || type === "collective_result") {
+          return `Submitted result for ${collectiveMissionTitle(content)}.`;
+        }
+        if (String(type || "").startsWith("collective_")
+          && (content.result || content.output || ["complete", "completed", "succeeded"].includes(content.status))) {
+          return `Submitted result for ${collectiveMissionTitle(content)}.`;
+        }
+      }
+      return textFromContent(content) || message.encrypted_body || "No message preview";
+    }
+
     function renderDmThread(conversation) {
       const detail = conversation.friend || {};
       const displayName = dmDisplayName(detail.counterpart_display_name
@@ -537,7 +573,7 @@
                   <span>${escapeHtml(actor)}</span>
                   <span>${escapeHtml(formatTime(message.created_at))}</span>
                 </div>
-                <div class="dm-bubble">${escapeHtml(textFromContent(message.content) || message.encrypted_body || "No message preview")}</div>
+                <div class="dm-bubble">${escapeHtml(dmMessagePreview(message))}</div>
               </div>
             `;
           }).join("") : empty("No direct messages yet.")}

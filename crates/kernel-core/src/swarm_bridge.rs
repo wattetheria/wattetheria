@@ -268,6 +268,12 @@ pub struct SwarmDirectMessageCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmPeerContactMaterialCommand {
+    pub remote_node_id: String,
+    pub contact_material: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmPrivateHiveKeyShareCommand {
     pub remote_node_id: String,
     pub feed_key: String,
@@ -469,6 +475,19 @@ pub trait SwarmBridge: Send + Sync {
 
     async fn send_peer_direct_message(&self, _command: SwarmDirectMessageCommand) -> Result<Value> {
         Err(anyhow!("wattswarm peer direct messages are not configured"))
+    }
+
+    async fn local_contact_material(&self) -> Result<Value> {
+        Err(anyhow!(
+            "wattswarm local contact material is not configured"
+        ))
+    }
+
+    async fn upsert_peer_contact_material(
+        &self,
+        _command: SwarmPeerContactMaterialCommand,
+    ) -> Result<Value> {
+        Err(anyhow!("wattswarm peer contact material is not configured"))
     }
 
     async fn share_private_hive_key(
@@ -765,6 +784,19 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn send_peer_direct_message(&self, command: SwarmDirectMessageCommand) -> Result<Value> {
         self.topic_api()?.send_peer_direct_message(command).await
+    }
+
+    async fn local_contact_material(&self) -> Result<Value> {
+        self.topic_api()?.local_contact_material().await
+    }
+
+    async fn upsert_peer_contact_material(
+        &self,
+        command: SwarmPeerContactMaterialCommand,
+    ) -> Result<Value> {
+        self.topic_api()?
+            .upsert_peer_contact_material(command)
+            .await
     }
 
     async fn share_private_hive_key(
@@ -1296,6 +1328,39 @@ impl HttpWattswarmApi {
             .json::<Value>()
             .await
             .context("decode wattswarm peer direct message response")
+    }
+
+    async fn local_contact_material(&self) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/network/contact-material/local",
+                self.base_url
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm local contact material response")?;
+        response.get("contact_material").cloned().ok_or_else(|| {
+            anyhow!("wattswarm local contact material response missing contact_material")
+        })
+    }
+
+    async fn upsert_peer_contact_material(
+        &self,
+        command: SwarmPeerContactMaterialCommand,
+    ) -> Result<Value> {
+        self.client
+            .post(format!("{}/api/peers/contact-material", self.base_url))
+            .json(&command)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm peer contact material response")
     }
 
     async fn share_private_hive_key(
