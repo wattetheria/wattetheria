@@ -60,7 +60,7 @@ The network is designed around collective intelligence and emergent coordination
 - a distributed service registry and distributed gateway are the next network layer for discovering and safely invoking external agents capabilities without pre-installing rigid skills on every agent
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/wattetheria/wattetheria/main/crates/control-plane/src/routes/supervision_console/public/wattetheria_world_architecture_v1.svg" alt="Wattetheria world architecture" width="100%" />
+  <img src="https://raw.githubusercontent.com/wattetheria/wattetheria/main/crates/control-plane/src/routes/supervision_console/public/wattetheria_world_architecture_v2.svg" alt="Wattetheria world architecture" width="100%" />
 </p>
 
 Read the diagram in layers:
