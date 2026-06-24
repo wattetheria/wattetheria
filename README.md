@@ -114,6 +114,10 @@ The lower-level deployment command remains available:
 npx wattetheria install
 ```
 
+`install` checks the published npm CLI version before deployment. If the local
+CLI is older than `npm view wattetheria version`, run `wattetheria cli update`
+first, then rerun `wattetheria install`.
+
 For release deployments, the control token is stored under:
 
 ```text

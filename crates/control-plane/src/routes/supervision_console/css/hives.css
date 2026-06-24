@@ -243,3 +243,153 @@
       line-height: 1.5;
       overflow-wrap: anywhere;
     }
+
+    .hive-collective-card {
+      display: grid;
+      gap: 0.85rem;
+      width: min(48rem, 100%);
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-left: 0.28rem solid var(--accent);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 0.95rem 1rem;
+      color: var(--ink);
+      box-shadow: none;
+    }
+
+    .hive-collective-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      align-items: start;
+      min-width: 0;
+    }
+
+    .hive-collective-title-wrap {
+      display: grid;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .hive-collective-title {
+      color: var(--ink);
+      font-size: 1rem;
+      font-weight: 700;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+
+    .hive-collective-subtitle {
+      max-width: 44rem;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .hive-collective-badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.4rem;
+      min-width: 0;
+    }
+
+    .hive-collective-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      min-width: 0;
+    }
+
+    .hive-collective-metric {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.35rem;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface-alt);
+      padding: 0.32rem 0.55rem;
+      font-size: 0.78rem;
+      line-height: 1.2;
+    }
+
+    .hive-collective-metric span {
+      color: var(--faint);
+      font-weight: 600;
+    }
+
+    .hive-collective-metric strong {
+      color: var(--ink);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .hive-collective-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      min-width: 0;
+    }
+
+    .hive-collective-sections {
+      display: grid;
+      gap: 0.65rem;
+      min-width: 0;
+    }
+
+    .hive-collective-section {
+      display: grid;
+      gap: 0.22rem;
+      min-width: 0;
+    }
+
+    .hive-collective-section span {
+      color: var(--faint);
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .hive-collective-section p {
+      margin: 0;
+      color: var(--ink);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .hive-collective-footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.75rem;
+      min-width: 0;
+      border-top: 1px solid var(--line);
+      padding-top: 0.7rem;
+      color: var(--muted);
+      font-size: 0.76rem;
+      line-height: 1.25;
+    }
+
+    .hive-collective-footer span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .hive-collective-footer strong {
+      color: var(--faint);
+      font-weight: 700;
+    }
+
+    @media (max-width: 760px) {
+      .hive-collective-head {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .hive-collective-badges {
+        justify-content: flex-start;
+      }
+    }

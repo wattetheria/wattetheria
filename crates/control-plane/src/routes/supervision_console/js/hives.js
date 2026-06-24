@@ -138,11 +138,173 @@
               ${pill("Hive", "ready")}
               <span>${escapeHtml(formatTime(row.created_at))}</span>
             </div>
-            <div class="hive-message-bubble">${escapeHtml(textFromContent(row.content) || row.text_preview || "No content preview")}</div>
+            ${renderHiveMessageContent(row)}
           </div>
         </div>
       `);
       scrollHiveMessagesToLatest();
+    }
+
+    function renderHiveMessageContent(row) {
+      const content = row.content;
+      if (isCollectiveMissionContent(content)) {
+        return renderCollectiveMissionCard(content);
+      }
+      return `<div class="hive-message-bubble">${escapeHtml(textFromContent(content) || row.text_preview || "No content preview")}</div>`;
+    }
+
+    function isCollectiveMissionContent(content) {
+      if (!content || typeof content !== "object") return false;
+      return content.type === "collective_mission" || content.kind === "collective_mission";
+    }
+
+    function renderCollectiveMissionCard(content) {
+      const mission = content.mission && typeof content.mission === "object" ? content.mission : {};
+      const payload = collectivePayload(content, mission);
+      const runSpec = content.run_spec && typeof content.run_spec === "object" ? content.run_spec : {};
+      const policy = collectivePolicy(content, runSpec);
+      const title = firstText(mission.title, content.title, payload.title, "Collective Mission");
+      const phase = firstText(content.phase, mission.phase);
+      const description = firstText(mission.description, content.description, payload.description);
+      const metrics = [
+        collectiveMetric("Domain", firstText(mission.domain, content.domain)),
+        collectiveMetric("Mode", firstText(content.mode, mission.mode)),
+        collectiveMetric("Min", numberText(policy.min_participants)),
+        collectiveMetric("Window", formatDurationMs(content.join_window_ms || at(runSpec, ["join_policy", "join_window_ms"]))),
+        collectiveMetric("Threshold", percentText(policy.threshold_percent)),
+        collectiveMetric("Rounds", numberText(policy.max_rounds)),
+        collectiveMetric("Deadline", formatTimeOrEmpty(content.join_deadline_ms || at(runSpec, ["join_policy", "join_deadline_ms"]))),
+      ].filter(Boolean).join("");
+      const sections = [
+        collectiveSection("Question", firstText(payload.question, mission.question, content.question)),
+        collectiveSection("Expected output", firstText(payload.expected_output, payload.expectedOutput, mission.expected_output)),
+        collectiveSection("Context", firstText(payload.context, mission.context)),
+        collectiveSection("Fallback", firstText(policy.fallback_decision)),
+      ].filter(Boolean).join("");
+      const skills = skillTags(mission.skills || content.skills, 5);
+      const footer = collectiveFooter([
+        ["Mission", firstText(content.mission_id, mission.mission_id, mission.task_id)],
+        ["Run", firstText(content.run_id, runSpec.run_id)],
+        ["Coordinator", firstText(at(content, ["coordinator", "node_id"]), at(content, ["coordinator", "agent_did"]))],
+      ]);
+      return `
+        <article class="hive-collective-card">
+          <div class="hive-collective-head">
+            <div class="hive-collective-title-wrap">
+              <div class="hive-collective-title">${escapeHtml(title)}</div>
+              ${description ? `<div class="hive-collective-subtitle">${escapeHtml(description)}</div>` : ""}
+            </div>
+            <div class="hive-collective-badges">
+              <span class="pill ready">Collective Mission</span>
+              ${phase ? pill(phaseLabel(phase), phaseClass(phase)) : ""}
+            </div>
+          </div>
+          ${metrics ? `<div class="hive-collective-metrics">${metrics}</div>` : ""}
+          ${skills ? `<div class="hive-collective-tags">${skills}</div>` : ""}
+          ${sections ? `<div class="hive-collective-sections">${sections}</div>` : ""}
+          ${footer}
+        </article>
+      `;
+    }
+
+    function collectivePayload(content, mission) {
+      const missionPayload = mission.payload && typeof mission.payload === "object" ? mission.payload : null;
+      const contentPayload = content.payload && typeof content.payload === "object" ? content.payload : null;
+      const sharedPayload = at(content, ["run_spec", "shared_inputs", "mission_payload"]);
+      if (missionPayload) return missionPayload;
+      if (contentPayload) return contentPayload;
+      return sharedPayload && typeof sharedPayload === "object" ? sharedPayload : {};
+    }
+
+    function collectivePolicy(content, runSpec) {
+      const policy = runSpec.round_policy || runSpec.collective_policy || content.round_policy || content.collective_policy;
+      return policy && typeof policy === "object" ? policy : {};
+    }
+
+    function collectiveMetric(label, value) {
+      const text = firstText(value);
+      if (!text) return "";
+      return `
+        <div class="hive-collective-metric">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(text)}</strong>
+        </div>
+      `;
+    }
+
+    function collectiveSection(label, value) {
+      const text = firstText(value);
+      if (!text) return "";
+      return `
+        <div class="hive-collective-section">
+          <span>${escapeHtml(label)}</span>
+          <p>${escapeHtml(text)}</p>
+        </div>
+      `;
+    }
+
+    function collectiveFooter(items) {
+      const rows = items
+        .map(([label, value]) => [label, firstText(value)])
+        .filter(([, value]) => Boolean(value));
+      if (!rows.length) return "";
+      return `
+        <div class="hive-collective-footer">
+          ${rows.map(([label, value]) => `
+            <span><strong>${escapeHtml(label)}</strong> ${escapeHtml(compactId(value, 22))}</span>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    function firstText(...values) {
+      for (const value of values) {
+        if (value == null) continue;
+        if (typeof value === "number" && Number.isFinite(value)) return String(value);
+        const text = String(value).trim();
+        if (text) return text;
+      }
+      return "";
+    }
+
+    function numberText(value) {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? String(number) : "";
+    }
+
+    function percentText(value) {
+      const number = Number(value);
+      return Number.isFinite(number) && number > 0 ? `${number}%` : "";
+    }
+
+    function formatDurationMs(value) {
+      const milliseconds = Number(value);
+      if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "";
+      const seconds = Math.round(milliseconds / 1000);
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.round(minutes / 60);
+      return `${hours}h`;
+    }
+
+    function formatTimeOrEmpty(value) {
+      if (value == null || value === "") return "";
+      const formatted = formatTime(value);
+      return formatted === "-" ? "" : formatted;
+    }
+
+    function phaseLabel(value) {
+      return firstText(value)
+        .replaceAll("_", " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function phaseClass(value) {
+      const phase = firstText(value).toLowerCase();
+      if (phase.includes("complete") || phase.includes("final")) return "ready";
+      if (phase.includes("start") || phase.includes("round")) return "pending";
+      return "ready";
     }
 
     function fallbackHiveMessages(payload, hive) {
