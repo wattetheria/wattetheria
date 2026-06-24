@@ -28,7 +28,7 @@ use wattetheria_kernel::servicenet::{
     ServiceNetClient, ServiceNetInvokeRequest, SettlementLayer as ServiceNetSettlementLayer,
     normalize_service_address,
 };
-use wattetheria_kernel::swarm_bridge::SwarmPeerRelationshipView;
+use wattetheria_kernel::swarm_bridge::{SwarmDiscoveredAgent, SwarmPeerRelationshipView};
 use wattetheria_social::application::friend_request_service;
 use wattetheria_social::domain::friend_requests::{
     FriendRequest, FriendRequestDirection, FriendRequestState,
@@ -299,6 +299,8 @@ async fn direct_mcp_tool_result(
         "get_collective_mission_result" => {
             Some(collective::get_collective_mission_result(state, arguments).await)
         }
+        "search_agents" => Some(search_agents_result(state, arguments).await),
+        "get_agent_card" => Some(agent_card_result(state, arguments).await),
         "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
         "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
         "invoke_servicenet_agent_sync" => {
@@ -312,6 +314,134 @@ async fn direct_mcp_tool_result(
         "list_private_hives" => Some(local_private_hives_result(state, arguments).await),
         _ => None,
     }
+}
+
+async fn search_agents_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    if let Some(public_id) = string_argument(arguments, "public_id") {
+        return match state.swarm_bridge.resolve_agent_public_id(&public_id).await {
+            Ok(Some(agent)) => {
+                search_agents_tool_success(&json!({"public_id": public_id}), &[agent])
+            }
+            Ok(None) => search_agents_tool_success(&json!({"public_id": public_id}), &[]),
+            Err(error) => tool_error(&json!({
+                "error": format!("agent search by public_id failed: {error}")
+            })),
+        };
+    }
+
+    let Some(display_name) = string_argument(arguments, "display_name")
+        .map(|value| normalize_agent_display_name_lookup(&value))
+        .filter(|value| !value.is_empty())
+    else {
+        return tool_error(&json!({
+            "error": "public_id or display_name is required"
+        }));
+    };
+
+    match state
+        .swarm_bridge
+        .search_agent_display_name(&display_name)
+        .await
+    {
+        Ok(agents) => search_agents_tool_success(&json!({"display_name": display_name}), &agents),
+        Err(error) => tool_error(&json!({
+            "error": format!("agent search by display_name failed: {error}")
+        })),
+    }
+}
+
+fn search_agents_tool_success(query: &Value, agents: &[SwarmDiscoveredAgent]) -> Value {
+    let items = agents
+        .iter()
+        .map(discovered_agent_search_payload)
+        .collect::<Vec<_>>();
+    tool_success(&json!({
+        "query": query,
+        "result_count": items.len(),
+        "items": items,
+    }))
+}
+
+async fn agent_card_result(state: &ControlPlaneState, arguments: &Value) -> Value {
+    if let Some(public_id) = string_argument(arguments, "public_id") {
+        return match state.swarm_bridge.resolve_agent_public_id(&public_id).await {
+            Ok(Some(agent)) => discovered_agent_card_tool_result(agent),
+            Ok(None) => tool_error(&json!({
+                "error": format!("discovery record missing for public_id {public_id}")
+            })),
+            Err(error) => tool_error(&json!({
+                "error": format!("agent discovery by public_id failed: {error}")
+            })),
+        };
+    }
+    let Some(display_name) = string_argument(arguments, "display_name")
+        .map(|value| normalize_agent_display_name_lookup(&value))
+        .filter(|value| !value.is_empty())
+    else {
+        return tool_error(&json!({
+            "error": "public_id or display_name is required"
+        }));
+    };
+    match state
+        .swarm_bridge
+        .search_agent_display_name(&display_name)
+        .await
+    {
+        Ok(agents) => match agents.as_slice() {
+            [agent] => discovered_agent_card_tool_result(agent.clone()),
+            [] => tool_error(&json!({
+                "error": format!("discovery record missing for display_name {display_name}")
+            })),
+            _ => tool_error(&json!({
+                "error": format!("multiple discovery records matched display_name {display_name}; provide public_id"),
+                "candidates": agents.iter().map(discovered_agent_search_payload).collect::<Vec<_>>()
+            })),
+        },
+        Err(error) => tool_error(&json!({
+            "error": format!("agent discovery by display_name failed: {error}")
+        })),
+    }
+}
+
+fn discovered_agent_card_tool_result(agent: SwarmDiscoveredAgent) -> Value {
+    let Some(source_agent_card) = agent.source_agent_card else {
+        return tool_error(&json!({
+            "error": format!("discovery record for {} is missing source_agent_card", agent.public_id)
+        }));
+    };
+    tool_success(&json!({
+        "public_id": agent.public_id,
+        "display_name": agent.display_name,
+        "target_agent_did": agent.target_agent_did,
+        "remote_node_id": agent.remote_node_id,
+        "agent_card": source_agent_card.card.clone(),
+        "source_agent_card": source_agent_card.clone(),
+        "card_hash": source_agent_card.card_hash,
+        "issued_at": source_agent_card.issued_at,
+        "signature": source_agent_card.signature,
+    }))
+}
+
+fn discovered_agent_search_payload(agent: &SwarmDiscoveredAgent) -> Value {
+    json!({
+        "public_id": agent.public_id,
+        "display_name": agent.display_name,
+        "target_agent_did": agent.target_agent_did,
+        "remote_node_id": agent.remote_node_id,
+        "card_hash": agent
+            .source_agent_card
+            .as_ref()
+            .map(|source_agent_card| source_agent_card.card_hash.as_str()),
+        "has_source_agent_card": agent.source_agent_card.is_some(),
+    })
+}
+
+fn normalize_agent_display_name_lookup(display_name: &str) -> String {
+    display_name
+        .trim()
+        .trim_start_matches('@')
+        .trim()
+        .to_owned()
 }
 
 async fn record_mcp_tool_result(
@@ -2782,7 +2912,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 47] = [
+const AGENT_TOOLS: [AgentTool; 49] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -2813,6 +2943,8 @@ const AGENT_TOOLS: [AgentTool; 47] = [
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
     AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/agent-friends", description: "List accepted agent friend relationships.", availability: Availability::Always },
     AgentTool { name: "list_nearby", method: Method::GET, path: "/v1/wattetheria/social/nearby", description: "List nearby Wattswarm/Iroh peer nodes visible to this Wattetheria node.", availability: Availability::Always },
+    AgentTool { name: "search_agents", method: Method::GET, path: "/v1/wattetheria/social/agents/search", description: "Search discovered network agents by public ID or display name and return lightweight candidates.", availability: Availability::Always },
+    AgentTool { name: "get_agent_card", method: Method::GET, path: "/v1/wattetheria/social/agent-card", description: "Resolve a discovered network agent by public ID and return its signed agent card.", availability: Availability::Always },
     AgentTool { name: "list_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/friend-requests", description: "List inbound pending friend requests awaiting local approval.", availability: Availability::Always },
     AgentTool { name: "list_sent_friend_requests", method: Method::GET, path: "/v1/wattetheria/social/sent-friend-requests", description: "List outbound friend requests sent by this local agent.", availability: Availability::Always },
     AgentTool { name: "get_friend_request", method: Method::GET, path: "/v1/wattetheria/social/friend-requests/{request_id}", description: "Get one friend request with agent, message, and network details.", availability: Availability::Always },

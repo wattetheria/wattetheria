@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use wattswarm_protocol::types::{ArtifactRef, ClaimRole, InlineEvidence, TaskContract};
 
@@ -69,13 +69,15 @@ pub struct SwarmNetworkStatusView {
     pub peer_protocol_distribution: BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmDiscoveredAgent {
     pub public_id: String,
     pub remote_node_id: String,
     pub target_agent_did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent_card: Option<SwarmSourceAgentCard>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -901,6 +903,9 @@ struct HttpWattswarmApi {
     client: reqwest::Client,
 }
 
+const DEFAULT_AGENT_DISCOVERY_RADIUS_KM: f64 = 20_050.0;
+const DEFAULT_AGENT_DISCOVERY_LIMIT: usize = 50;
+
 impl HttpWattswarmApi {
     fn new(base_url: &str) -> Self {
         Self {
@@ -1076,50 +1081,70 @@ impl HttpWattswarmApi {
         &self,
         public_id: &str,
     ) -> Result<Option<SwarmDiscoveredAgent>> {
-        let public_id = public_id.trim();
+        let public_id = normalize_agent_lookup_key(public_id);
         if public_id.is_empty() {
             return Err(anyhow!("public_id is required"));
         }
-        let network_id = self.current_network_id().await?;
-        let response = self
-            .client
-            .get(format!("{}/api/network/discovery/agent", self.base_url))
-            .query(&AgentDiscoveryQuery {
-                network_id,
-                public_id: Some(public_id.to_owned()),
-                display_name: None,
-                limit: Some(1),
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<AgentDiscoveryResponse>()
-            .await
-            .context("decode wattswarm agent discovery response")?;
-        Ok(response
-            .records
-            .iter()
-            .filter_map(discovered_agent_from_record)
-            .find(|agent| agent.public_id == public_id))
+        let agents = self
+            .search_discovered_agents(Some(&public_id), None, Some(1))
+            .await?;
+        Ok(agents.into_iter().next())
     }
 
     async fn search_agent_display_name(
         &self,
         display_name: &str,
     ) -> Result<Vec<SwarmDiscoveredAgent>> {
-        let display_name = display_name.trim();
+        let display_name = normalize_agent_lookup_key(display_name);
         if display_name.is_empty() {
             return Err(anyhow!("display_name is required"));
         }
+        self.search_discovered_agents(None, Some(&display_name), Some(10))
+            .await
+    }
+
+    async fn search_discovered_agents(
+        &self,
+        public_id: Option<&str>,
+        display_name: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<SwarmDiscoveredAgent>> {
         let network_id = self.current_network_id().await?;
+        let limit = limit.unwrap_or(DEFAULT_AGENT_DISCOVERY_LIMIT);
+        let mut records = self
+            .fetch_agent_discovery_records(&network_id, public_id, display_name, limit)
+            .await
+            .unwrap_or_default();
+        if records.is_empty() {
+            records.extend(
+                self.fetch_bootnode_nearby_discovery_records(&network_id, limit)
+                    .await
+                    .unwrap_or_default(),
+            );
+        }
+        Ok(filter_discovered_agents(
+            records,
+            public_id,
+            display_name,
+            limit,
+        ))
+    }
+
+    async fn fetch_agent_discovery_records(
+        &self,
+        network_id: &str,
+        public_id: Option<&str>,
+        display_name: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
         let response = self
             .client
             .get(format!("{}/api/network/discovery/agent", self.base_url))
             .query(&AgentDiscoveryQuery {
-                network_id,
-                public_id: None,
-                display_name: Some(display_name.to_owned()),
-                limit: Some(10),
+                network_id: network_id.to_owned(),
+                public_id: public_id.map(ToOwned::to_owned),
+                display_name: display_name.map(ToOwned::to_owned),
+                limit: Some(limit),
             })
             .send()
             .await?
@@ -1127,11 +1152,72 @@ impl HttpWattswarmApi {
             .json::<AgentDiscoveryResponse>()
             .await
             .context("decode wattswarm agent discovery response")?;
-        Ok(response
-            .records
-            .iter()
-            .filter_map(discovered_agent_from_record)
-            .collect())
+        Ok(response.records)
+    }
+
+    async fn fetch_bootnode_nearby_discovery_records(
+        &self,
+        network_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Value>> {
+        let (latitude, longitude) = self.startup_geo().await.unwrap_or((0.0, 0.0));
+        let mut records = Vec::new();
+        for base_url in self.discovery_bootnode_urls().await.unwrap_or_default() {
+            let response = self
+                .client
+                .get(discovery_nearby_endpoint(&base_url))
+                .query(&NearbyDiscoveryQuery {
+                    network_id: network_id.to_owned(),
+                    latitude,
+                    longitude,
+                    radius_km: DEFAULT_AGENT_DISCOVERY_RADIUS_KM,
+                    limit: Some(limit.max(DEFAULT_AGENT_DISCOVERY_LIMIT)),
+                })
+                .send()
+                .await;
+            let Ok(response) = response else {
+                continue;
+            };
+            let Ok(response) = response.error_for_status() else {
+                continue;
+            };
+            let Ok(response) = response.json::<NearbyDiscoveryResponse>().await else {
+                continue;
+            };
+            records.extend(response.records);
+        }
+        Ok(records)
+    }
+
+    async fn discovery_bootnode_urls(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .get(format!("{}/api/network/discovery/bootnodes", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<DiscoveryBootnodesResponse>()
+            .await
+            .context("decode wattswarm discovery bootnodes response")?;
+        Ok(normalize_discovery_bootnode_urls(response.urls))
+    }
+
+    async fn startup_geo(&self) -> Result<(f64, f64)> {
+        let response = self
+            .client
+            .get(format!("{}/api/startup-config", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<StartupConfigResponse>()
+            .await
+            .context("decode wattswarm startup config response")?;
+        match (response.config.latitude, response.config.longitude) {
+            (Some(latitude), Some(longitude)) if latitude.is_finite() && longitude.is_finite() => {
+                Ok((latitude, longitude))
+            }
+            _ => Err(anyhow!("wattswarm startup config did not include geo")),
+        }
     }
 
     async fn diagnostics(&self, query: SwarmDiagnosticsQuery) -> Result<SwarmDiagnosticsSnapshot> {
@@ -1683,7 +1769,41 @@ struct AgentDiscoveryResponse {
     records: Vec<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DiscoveryBootnodesResponse {
+    #[serde(default)]
+    urls: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NearbyDiscoveryQuery {
+    network_id: String,
+    latitude: f64,
+    longitude: f64,
+    radius_km: f64,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NearbyDiscoveryResponse {
+    #[serde(default)]
+    records: Vec<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StartupConfigResponse {
+    #[serde(default)]
+    config: StartupConfigPayload,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StartupConfigPayload {
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+}
+
 fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> {
+    let record = discovery_record_payload(record);
     let body = record.get("body")?;
     let remote_node_id = body
         .get("node_id")
@@ -1692,6 +1812,8 @@ fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> 
         .filter(|value| !value.is_empty())?
         .to_owned();
     let source_agent_card = body.get("source_agent_card")?;
+    let signed_source_agent_card =
+        serde_json::from_value::<SwarmSourceAgentCard>(source_agent_card.clone()).ok();
     let card_public_id = source_agent_card
         .pointer("/card/metadata/public_id")
         .and_then(Value::as_str)
@@ -1704,18 +1826,93 @@ fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> 
         .filter(|value| !value.is_empty())
         .unwrap_or(card_public_id)
         .to_owned();
-    let display_name = source_agent_card
-        .pointer("/card/name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
+    let display_name = agent_card_display_name(source_agent_card);
     Some(SwarmDiscoveredAgent {
         public_id: card_public_id.to_owned(),
         remote_node_id,
         target_agent_did,
         display_name,
+        source_agent_card: signed_source_agent_card,
     })
+}
+
+fn discovery_record_payload(record: &Value) -> &Value {
+    record.get("record").unwrap_or(record)
+}
+
+fn agent_card_display_name(source_agent_card: &Value) -> Option<String> {
+    source_agent_card
+        .pointer("/card/name")
+        .or_else(|| source_agent_card.pointer("/card/metadata/display_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn filter_discovered_agents(
+    records: Vec<Value>,
+    public_id: Option<&str>,
+    display_name: Option<&str>,
+    limit: usize,
+) -> Vec<SwarmDiscoveredAgent> {
+    let public_id = public_id.map(normalize_agent_lookup_key);
+    let display_name = display_name.map(normalize_agent_lookup_key);
+    let mut seen = BTreeSet::new();
+    let mut agents = Vec::new();
+    for agent in records
+        .into_iter()
+        .filter_map(|record| discovered_agent_from_record(&record))
+    {
+        if let Some(public_id) = public_id.as_deref()
+            && normalize_agent_lookup_key(&agent.public_id) != public_id
+        {
+            continue;
+        }
+        if let Some(display_name) = display_name.as_deref()
+            && agent
+                .display_name
+                .as_deref()
+                .map(normalize_agent_lookup_key)
+                .as_deref()
+                != Some(display_name)
+        {
+            continue;
+        }
+        if seen.insert(agent.public_id.clone()) {
+            agents.push(agent);
+        }
+        if agents.len() >= limit {
+            break;
+        }
+    }
+    agents
+}
+
+fn normalize_agent_lookup_key(value: &str) -> String {
+    value.trim().trim_start_matches('@').trim().to_owned()
+}
+
+fn normalize_discovery_bootnode_urls(urls: Vec<String>) -> Vec<String> {
+    let mut urls = urls
+        .into_iter()
+        .map(|url| url.trim().trim_end_matches('/').to_owned())
+        .filter(|url| !url.is_empty())
+        .collect::<Vec<_>>();
+    urls.sort();
+    urls.dedup();
+    urls
+}
+
+fn discovery_nearby_endpoint(base_url: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.ends_with("/api/network/discovery/nearby") {
+        base_url.to_owned()
+    } else if base_url.ends_with("/api/network/discovery") {
+        format!("{base_url}/nearby")
+    } else {
+        format!("{base_url}/api/network/discovery/nearby")
+    }
 }
 
 fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
@@ -1941,5 +2138,62 @@ mod tests {
         assert_eq!(peers[1].recently_seen, Some(false));
         assert_eq!(peers[1].stale, Some(true));
         assert_eq!(peers[1].last_seen_age_ms, Some(181_000));
+    }
+
+    #[test]
+    fn discovered_agent_filter_accepts_bootnode_nearby_records_and_at_prefixes() {
+        let records = vec![json!({
+            "distance_km": 0.0,
+            "record": {
+                "body": {
+                    "node_id": "node-a",
+                    "network_id": "mainnet:watt-etheria",
+                    "source_agent_card": {
+                        "agent_id": "did:key:z6Agent",
+                        "node_id": "node-a",
+                        "card_hash": "card-a",
+                        "issued_at": 123,
+                        "card": {
+                            "name": "Agent Alpha",
+                            "metadata": {
+                                "public_id": "agent-alpha.123",
+                                "display_name": "Agent Alpha"
+                            }
+                        },
+                        "signature": "sig-a"
+                    }
+                }
+            }
+        })];
+
+        let by_public_id =
+            filter_discovered_agents(records.clone(), Some("@agent-alpha.123"), None, 10);
+        assert_eq!(by_public_id.len(), 1);
+        assert_eq!(by_public_id[0].public_id, "agent-alpha.123");
+        assert_eq!(by_public_id[0].remote_node_id, "node-a");
+        assert_eq!(by_public_id[0].display_name.as_deref(), Some("Agent Alpha"));
+        assert!(by_public_id[0].source_agent_card.is_some());
+
+        let by_display_name = filter_discovered_agents(records, None, Some("@Agent Alpha"), 10);
+        assert_eq!(by_display_name.len(), 1);
+        assert_eq!(by_display_name[0].target_agent_did, "did:key:z6Agent");
+    }
+
+    #[test]
+    fn discovery_bootnode_urls_are_normalized_from_api_response() {
+        let urls = normalize_discovery_bootnode_urls(vec![
+            " https://bootstrap-a.example.com/ ".to_owned(),
+            "https://bootstrap-a.example.com".to_owned(),
+            String::new(),
+            " https://bootstrap-b.example.com/api/network/discovery/ ".to_owned(),
+        ]);
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://bootstrap-a.example.com".to_owned(),
+                "https://bootstrap-b.example.com/api/network/discovery".to_owned()
+            ]
+        );
     }
 }

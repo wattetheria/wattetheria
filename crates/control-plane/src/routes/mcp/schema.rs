@@ -703,6 +703,8 @@ fn settle_mission_fields() -> Vec<(&'static str, Value)> {
 fn social_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "list_nearby" => Some(empty_tool_schema(tool)),
+        "search_agents" => Some(agent_search_schema(tool)),
+        "get_agent_card" => Some(agent_card_lookup_schema(tool)),
         "list_friend_requests" | "list_sent_friend_requests" => Some(tool_schema(
             tool,
             &[
@@ -788,13 +790,51 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         "request_agent_friend" => Some(relationship_action_schema(
             tool,
             "Optional friend request message payload. Maximum 120 characters.",
+            true,
         )),
         "remove_agent_friend" => Some(relationship_action_schema(
             tool,
             "Optional relationship removal message payload.",
+            true,
         )),
         _ => None,
     }
+}
+
+fn agent_search_schema(tool: &AgentTool) -> Value {
+    tool_schema(
+        tool,
+        &[
+            string_field(
+                "public_id",
+                "Discovered network agent public ID. Preferred lookup key.",
+            ),
+            string_field(
+                "display_name",
+                "Discovered network agent display name. Search may return multiple discovery records when public_id is not provided.",
+            ),
+        ],
+        &[],
+        false,
+    )
+}
+
+fn agent_card_lookup_schema(tool: &AgentTool) -> Value {
+    tool_schema(
+        tool,
+        &[
+            string_field(
+                "public_id",
+                "Discovered network agent public ID. Preferred exact lookup key.",
+            ),
+            string_field(
+                "display_name",
+                "Discovered network agent display name. Must resolve to exactly one record.",
+            ),
+        ],
+        &[],
+        false,
+    )
 }
 
 fn friend_request_lookup_schema(tool: &AgentTool, fields: &[(&str, Value)]) -> Value {
@@ -811,32 +851,36 @@ fn friend_request_lookup_schema(tool: &AgentTool, fields: &[(&str, Value)]) -> V
     })
 }
 
-fn relationship_action_schema(tool: &AgentTool, message_description: &str) -> Value {
-    tool_schema(
-        tool,
-        &[
-            string_field(
-                "remote_node_id",
-                "Discovered Wattswarm/Iroh node ID fallback when target_agent_did is not available.",
-            ),
-            string_field(
-                "target_agent_did",
-                "Target agent DID. Preferred identity input; resolves the remote node from known public identity bindings.",
-            ),
-            string_field(
-                "counterpart_public_id",
-                "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
-            ),
-            string_field(
-                "display_name",
-                "Counterpart agent display name. For request_agent_friend, resolves a unique discovery match; for remove_agent_friend, resolves an existing accepted friend.",
-            ),
-            value_field("message", message_description),
-            value_field("extensions", "Optional signed envelope extension payload."),
-        ],
-        &[],
-        false,
-    )
+fn relationship_action_schema(
+    tool: &AgentTool,
+    message_description: &str,
+    include_display_name: bool,
+) -> Value {
+    let mut fields = vec![
+        string_field(
+            "remote_node_id",
+            "Discovered Wattswarm/Iroh node ID fallback when target_agent_did is not available.",
+        ),
+        string_field(
+            "target_agent_did",
+            "Target agent DID. Preferred identity input; resolves the remote node from known public identity bindings.",
+        ),
+        string_field(
+            "counterpart_public_id",
+            "Optional counterpart public identity hint. Used to disambiguate target_agent_did when multiple identities are known.",
+        ),
+    ];
+    if include_display_name {
+        fields.push(string_field(
+            "display_name",
+            "Counterpart accepted friend display name.",
+        ));
+    }
+    fields.extend([
+        value_field("message", message_description),
+        value_field("extensions", "Optional signed envelope extension payload."),
+    ]);
+    tool_schema(tool, &fields, &[], false)
 }
 
 fn mailbox_schema(tool: &AgentTool) -> Option<Value> {

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 use watt_did::PaymentAccountCustody;
 use watt_wallet::{
     InMemoryKeyStore, KeyStore, PaymentAccountBindingProofOptions, PaymentAccountSigner,
@@ -67,6 +68,35 @@ fn build_payment_binding_fixture(network: &str) -> PaymentBindingFixture {
         agent_did: proof.agent_did.to_string(),
         payment_address: proof.payment_address.clone(),
         binding: serde_json::to_value(proof).expect("serialize payment account binding"),
+    }
+}
+
+fn discovered_source_agent_card(
+    public_id: &str,
+    display_name: &str,
+    agent_did: &str,
+    remote_node_id: &str,
+    card_hash_suffix: &str,
+) -> SwarmSourceAgentCard {
+    SwarmSourceAgentCard {
+        agent_id: agent_did.to_owned(),
+        node_id: Some(remote_node_id.to_owned()),
+        card_hash: format!("sha256:{card_hash_suffix}"),
+        issued_at: 1_716_120_000_000,
+        card: json!({
+            "name": display_name,
+            "description": "Discovered network agent.",
+            "metadata": {
+                "agent_id": agent_did,
+                "node_id": remote_node_id,
+                "public_id": public_id,
+                "display_name": display_name,
+            },
+            "skills": [
+                {"id": "social", "name": "Social direct message"}
+            ]
+        }),
+        signature: Some(format!("sig-{card_hash_suffix}")),
     }
 }
 
@@ -189,6 +219,8 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "settle_mission",
     "list_friends",
     "list_nearby",
+    "search_agents",
+    "get_agent_card",
     "list_friend_requests",
     "list_sent_friend_requests",
     "get_friend_request",
@@ -1872,6 +1904,13 @@ async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery(
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
                 display_name: Some("Broker Discovery".to_string()),
+                source_agent_card: Some(discovered_source_agent_card(
+                    &remote_public_id,
+                    "Broker Discovery",
+                    &remote_identity.agent_did,
+                    &remote_node_id,
+                    "broker-discovery-card",
+                )),
             },
         )]
         .into_iter()
@@ -1940,6 +1979,13 @@ async fn mcp_request_agent_friend_resolves_display_name_from_discovery() {
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
                 display_name: Some("Broker Display".to_string()),
+                source_agent_card: Some(discovered_source_agent_card(
+                    &remote_public_id,
+                    "Broker Display",
+                    &remote_identity.agent_did,
+                    &remote_node_id,
+                    "broker-display-card",
+                )),
             },
         )]
         .into_iter()
@@ -1993,7 +2039,7 @@ async fn mcp_request_agent_friend_resolves_display_name_from_discovery() {
 }
 
 #[tokio::test]
-async fn mcp_request_agent_friend_rejects_ambiguous_discovery_display_name() {
+async fn mcp_request_agent_friend_rejects_display_name_before_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity_a = Identity::new_random();
@@ -2006,19 +2052,33 @@ async fn mcp_request_agent_friend_rejects_ambiguous_discovery_display_name() {
             (
                 remote_public_id_a.clone(),
                 SwarmDiscoveredAgent {
-                    public_id: remote_public_id_a,
+                    public_id: remote_public_id_a.clone(),
                     remote_node_id: "12D3KooDisplayPeerA".to_string(),
-                    target_agent_did: remote_identity_a.agent_did,
+                    target_agent_did: remote_identity_a.agent_did.clone(),
                     display_name: Some("Broker Display".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_a,
+                        "Broker Display",
+                        &remote_identity_a.agent_did,
+                        "12D3KooDisplayPeerA",
+                        "broker-display-a-card",
+                    )),
                 },
             ),
             (
                 remote_public_id_b.clone(),
                 SwarmDiscoveredAgent {
-                    public_id: remote_public_id_b,
+                    public_id: remote_public_id_b.clone(),
                     remote_node_id: "12D3KooDisplayPeerB".to_string(),
-                    target_agent_did: remote_identity_b.agent_did,
+                    target_agent_did: remote_identity_b.agent_did.clone(),
                     display_name: Some("Broker Display".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_b,
+                        "Broker Display",
+                        &remote_identity_b.agent_did,
+                        "12D3KooDisplayPeerB",
+                        "broker-display-b-card",
+                    )),
                 },
             ),
         ]
@@ -2053,6 +2113,395 @@ async fn mcp_request_agent_friend_rejects_ambiguous_discovery_display_name() {
     assert_eq!(response["result"]["isError"].as_bool(), Some(true));
     assert!(
         response["result"]["structuredContent"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("multiple discovery records matched display_name"))
+    );
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_search_agents_resolves_public_id_from_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-search-public", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooSearchPublicPeer".to_string();
+    let source_agent_card = discovered_source_agent_card(
+        &remote_public_id,
+        "Broker Search Public",
+        &remote_identity.agent_did,
+        &remote_node_id,
+        "broker-search-public",
+    );
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Search Public".to_string()),
+                source_agent_card: Some(source_agent_card.clone()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search_agents",
+                "arguments": {
+                    "public_id": remote_public_id.clone()
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["result_count"].as_u64(), Some(1));
+    assert_eq!(
+        content["query"]["public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    let item = &content["items"].as_array().unwrap()[0];
+    assert_eq!(item["public_id"].as_str(), Some(remote_public_id.as_str()));
+    assert_eq!(item["display_name"].as_str(), Some("Broker Search Public"));
+    assert_eq!(
+        item["remote_node_id"].as_str(),
+        Some(remote_node_id.as_str())
+    );
+    assert_eq!(
+        item["target_agent_did"].as_str(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        item["card_hash"].as_str(),
+        Some(source_agent_card.card_hash.as_str())
+    );
+    assert!(item.get("agent_card").is_none());
+    assert!(item.get("source_agent_card").is_none());
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_search_agents_returns_repeated_display_name_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity_a = Identity::new_random();
+    let remote_identity_b = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id_a = scoped_id("broker-search-a", &remote_identity_a.agent_did);
+    let remote_public_id_b = scoped_id("broker-search-b", &remote_identity_b.agent_did);
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [
+            (
+                remote_public_id_a.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_a.clone(),
+                    remote_node_id: "12D3KooSearchPeerA".to_string(),
+                    target_agent_did: remote_identity_a.agent_did.clone(),
+                    display_name: Some("Broker Search".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_a,
+                        "Broker Search",
+                        &remote_identity_a.agent_did,
+                        "12D3KooSearchPeerA",
+                        "broker-search-a",
+                    )),
+                },
+            ),
+            (
+                remote_public_id_b.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_b.clone(),
+                    remote_node_id: "12D3KooSearchPeerB".to_string(),
+                    target_agent_did: remote_identity_b.agent_did.clone(),
+                    display_name: Some("Broker Search".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_b,
+                        "Broker Search",
+                        &remote_identity_b.agent_did,
+                        "12D3KooSearchPeerB",
+                        "broker-search-b",
+                    )),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "search_agents",
+                "arguments": {
+                    "display_name": "@Broker Search"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["result_count"].as_u64(), Some(2));
+    assert_eq!(
+        content["query"]["display_name"].as_str(),
+        Some("Broker Search")
+    );
+    let items = content["items"].as_array().unwrap();
+    let public_ids = items
+        .iter()
+        .filter_map(|item| item["public_id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        public_ids,
+        BTreeSet::from([remote_public_id_a.as_str(), remote_public_id_b.as_str()])
+    );
+    assert!(items.iter().all(|item| item.get("agent_card").is_none()));
+    assert!(
+        items
+            .iter()
+            .all(|item| item.get("source_agent_card").is_none())
+    );
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_get_agent_card_resolves_public_id_from_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-card-public", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooCardPublicPeer".to_string();
+    let source_agent_card = discovered_source_agent_card(
+        &remote_public_id,
+        "Broker Card Public",
+        &remote_identity.agent_did,
+        &remote_node_id,
+        "broker-card-public",
+    );
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Card Public".to_string()),
+                source_agent_card: Some(source_agent_card.clone()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_agent_card",
+                "arguments": {
+                    "public_id": remote_public_id.clone()
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["agent_card"]["metadata"]["public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        content["source_agent_card"]["card_hash"].as_str(),
+        Some(source_agent_card.card_hash.as_str())
+    );
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_get_agent_card_resolves_display_name_from_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-card", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooCardPeer".to_string();
+    let source_agent_card = discovered_source_agent_card(
+        &remote_public_id,
+        "Broker Card",
+        &remote_identity.agent_did,
+        &remote_node_id,
+        "broker-card",
+    );
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Card".to_string()),
+                source_agent_card: Some(source_agent_card.clone()),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_agent_card",
+                "arguments": {
+                    "display_name": "@Broker Card"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["agent_card"]["metadata"]["public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+    assert_eq!(
+        content["source_agent_card"]["card_hash"].as_str(),
+        Some(source_agent_card.card_hash.as_str())
+    );
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_get_agent_card_rejects_display_name_before_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity_a = Identity::new_random();
+    let remote_identity_b = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id_a = scoped_id("broker-card-a", &remote_identity_a.agent_did);
+    let remote_public_id_b = scoped_id("broker-card-b", &remote_identity_b.agent_did);
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [
+            (
+                remote_public_id_a.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_a.clone(),
+                    remote_node_id: "12D3KooCardPeerA".to_string(),
+                    target_agent_did: remote_identity_a.agent_did.clone(),
+                    display_name: Some("Broker Card".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_a,
+                        "Broker Card",
+                        &remote_identity_a.agent_did,
+                        "12D3KooCardPeerA",
+                        "broker-card-a",
+                    )),
+                },
+            ),
+            (
+                remote_public_id_b.clone(),
+                SwarmDiscoveredAgent {
+                    public_id: remote_public_id_b.clone(),
+                    remote_node_id: "12D3KooCardPeerB".to_string(),
+                    target_agent_did: remote_identity_b.agent_did.clone(),
+                    display_name: Some("Broker Card".to_string()),
+                    source_agent_card: Some(discovered_source_agent_card(
+                        &remote_public_id_b,
+                        "Broker Card",
+                        &remote_identity_b.agent_did,
+                        "12D3KooCardPeerB",
+                        "broker-card-b",
+                    )),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_agent_card",
+                "arguments": {
+                    "display_name": "Broker Card"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    let content = &response["result"]["structuredContent"];
+    assert!(
+        content["error"]
             .as_str()
             .is_some_and(|error| error.contains("multiple discovery records matched display_name"))
     );
@@ -3529,7 +3978,32 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .iter()
             .any(|field| field.as_str() == Some("remote_node_id"))
     );
+    assert_schema_optional(request_agent_friend, "display_name");
     assert_schema_omits(request_agent_friend, &["public_id", "action"]);
+    let search_agents = find_tool(tools, "search_agents");
+    assert_schema_requires(search_agents, &[]);
+    assert_schema_optional(search_agents, "public_id");
+    assert_schema_optional(search_agents, "display_name");
+    assert_eq!(
+        search_agents["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/agents/search")
+    );
+    assert_eq!(
+        search_agents["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(true)
+    );
+    let get_agent_card = find_tool(tools, "get_agent_card");
+    assert_schema_requires(get_agent_card, &[]);
+    assert_schema_optional(get_agent_card, "public_id");
+    assert_schema_optional(get_agent_card, "display_name");
+    assert_eq!(
+        get_agent_card["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/social/agent-card")
+    );
+    assert_eq!(
+        get_agent_card["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(true)
+    );
     let remove_agent_friend = find_tool(tools, "remove_agent_friend");
     assert!(
         remove_agent_friend["inputSchema"]["properties"]

@@ -292,9 +292,12 @@ Stable tool groups include:
   display name and Hive name so the encrypted key-share DM includes a readable
   invitation
 - payment, friend request, and messaging tools such as `list_agent_payments`,
-  `accept_friend_request`, and `send_agent_dm_message`; display names can be
-  used for lookup and are included in payment and messaging responses where
-  available
+  `search_agents`, `get_agent_card`, `accept_friend_request`, and
+  `send_agent_dm_message`; `search_agents` returns lightweight discovered agent
+  candidates by public ID or display name, while `get_agent_card` resolves a
+  discovered network agent by public ID and returns the signed source agent card
+  without sending a message; display names can be searched first, then the
+  selected public ID can be used for exact agent-card or friend-request calls
 - ServiceNet tools such as `invoke_servicenet_agent_sync`,
   `invoke_servicenet_agent_async`, and `get_servicenet_receipt`; invoke tools
   accept either `agent_id` or an exact, unique `agent_name`
