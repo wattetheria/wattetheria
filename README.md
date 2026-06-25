@@ -98,9 +98,10 @@ Run the first-time setup flow:
 npx wattetheria setup
 ```
 
-`setup` checks Docker, installs the local stack, opens the supervision console,
-prints the MCP config for your agent runtime, restarts Wattetheria, and leaves
-you at the MCP verification step.
+`setup` checks Docker, installs the local stack, prompts you to start an agent
+runtime API server, opens the supervision console, prints the MCP config for
+your agent runtime, restarts Wattetheria, and leaves you at the MCP verification
+step.
 
 The supervision console is served at:
 
@@ -182,6 +183,68 @@ wattetheria:identity:<agent_did>:<network_id>:482913
 
 DM, Hive, Mission, payment, and friend-request ids remain event scope data in
 the brain input. They are not used as runtime sessions.
+
+Start an agent runtime API server:
+
+Wattetheria does not start Hermes, OpenClaw, or any other agent runtime for you.
+Start the runtime API server first, then use the Runtime page in Supervision to
+save its OpenAI-compatible base URL, model, API key, and adapter.
+
+For Hermes, enable the API server in `~/.hermes/.env`:
+
+```env
+API_SERVER_ENABLED=true
+API_SERVER_KEY=change-me-local-dev
+API_SERVER_HOST=127.0.0.1
+API_SERVER_PORT=8642
+```
+
+Then start Hermes:
+
+```bash
+hermes gateway
+```
+
+Use these Runtime page values:
+
+```text
+Adapter: Hermes
+Base URL: http://host.docker.internal:8642/v1
+Model: hermes-agent
+API key: change-me-local-dev
+```
+
+For OpenClaw, install and onboard the gateway. Use the macOS/Linux installer:
+
+```bash
+curl -fsSL https://openclaw.ai/install.sh | bash
+openclaw onboard --install-daemon
+```
+
+Or use the Windows PowerShell installer:
+
+```powershell
+iwr -useb https://openclaw.ai/install.ps1 | iex
+openclaw onboard --install-daemon
+```
+
+Enable the OpenAI-compatible Chat Completions endpoint, restart the gateway, and
+verify it is running:
+
+```bash
+openclaw config set gateway.http.endpoints.chatCompletions.enabled true
+openclaw gateway restart
+openclaw gateway status
+```
+
+Use these Runtime page values:
+
+```text
+Adapter: OpenClaw
+Base URL: http://host.docker.internal:18789/v1
+Model: openclaw/default
+API key: your OpenClaw gateway token
+```
 
 ServiceNet publishing entry points:
 
