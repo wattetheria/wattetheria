@@ -255,6 +255,78 @@ async fn mcp_request(app: Router, token: &str, body: Value) -> Value {
 }
 
 #[tokio::test]
+async fn mcp_initialize_negotiates_supported_client_protocol_version() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "hermes",
+                    "version": "0.16.0"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+    assert_eq!(
+        response["result"]["serverInfo"]["name"],
+        "wattetheria-local-control-plane"
+    );
+}
+
+#[tokio::test]
+async fn mcp_initialize_defaults_to_latest_protocol_version() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize"
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+}
+
+#[tokio::test]
+async fn mcp_rejects_unsupported_protocol_version_header() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let (status, body) = request_text(
+        app,
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2099-01-01")
+            .body(axum::body::Body::from(
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let response: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(response["error"]["code"], -32602);
+}
+
+#[tokio::test]
 async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
@@ -4893,6 +4965,80 @@ async fn mcp_start_collective_mission_submits_joined_participants_as_committee_a
             .map(serde_json::Map::len),
         Some(2)
     );
+}
+
+#[tokio::test]
+async fn reliability_maintenance_starts_due_collective_mission_with_joined_participants() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
+    let local_public_id = self_json["id"].as_str().unwrap();
+    let hive_id = create_collective_hive(app.clone(), &token).await;
+
+    let response = mcp_request(app, &token, collective_mission_request(&hive_id)).await;
+    let (mission_id, run_id) =
+        assert_collective_publish_result(&response, local_public_id, &hive_id);
+
+    let mut persisted: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    persisted["runs"][mission_id]["join_deadline_ms"] = json!(0);
+    persisted["runs"][mission_id]["participants"] = json!({
+        "public:agent-alpha": {
+            "agent_id": "agent-alpha",
+            "executor": "remote:node-alpha",
+            "prompt": "Use alpha expertise for this collective mission.",
+            "participant_agent_did": "did:key:alpha",
+            "participant_node_id": "node-alpha",
+            "public_id": "agent-alpha",
+            "joined_at": "2026-06-24T00:00:00Z",
+            "payload": {}
+        },
+        "public:agent-beta": {
+            "agent_id": "agent-beta",
+            "executor": "remote:node-beta",
+            "prompt": persisted["runs"][mission_id]["task_prompt"].clone(),
+            "participant_agent_did": "did:key:beta",
+            "participant_node_id": "node-beta",
+            "public_id": "agent-beta",
+            "joined_at": "2026-06-24T00:00:00Z",
+            "payload": {}
+        }
+    });
+    state
+        .local_db
+        .save_domain(
+            wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS,
+            &persisted,
+        )
+        .unwrap();
+
+    let processed = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run reliability maintenance");
+    assert_eq!(processed, 1);
+
+    let updated: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated["runs"][mission_id]["kicked_off"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["wattswarm_run"]["kicked_off"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["run_spec"]["agents"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(updated["runs"][mission_id]["run_id"].as_str(), Some(run_id));
 }
 
 #[tokio::test]

@@ -454,7 +454,8 @@
     }
 
     function collectiveMissionTitle(content) {
-      return content?.mission?.title
+      return content?.mission_title
+        || content?.mission?.title
         || content?.payload?.title
         || content?.payload?.mission?.title
         || content?.payload?.mission_title
@@ -470,13 +471,16 @@
         const type = content.type || content.kind;
         if (type === "collective_participation") {
           const title = collectiveMissionTitle(content);
+          const idSuffix = content.mission_title && content.mission_id
+            ? ` (${compactId(content.mission_id, 18)})`
+            : "";
           if (content.status === "join") {
-            return `Accepted participation for ${title}.`;
+            return `Accepted participation for ${title}${idSuffix}.`;
           }
           if (content.status === "reject") {
-            return `Declined participation for ${title}.`;
+            return `Declined participation for ${title}${idSuffix}.`;
           }
-          return `Participation update for ${title}.`;
+          return `Participation update for ${title}${idSuffix}.`;
         }
         if (type === "collective_contribution" || type === "collective_result") {
           return `Submitted result for ${collectiveMissionTitle(content)}.`;

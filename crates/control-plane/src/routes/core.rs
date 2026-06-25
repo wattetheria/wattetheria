@@ -217,6 +217,9 @@ fn agent_action_execution_type(
         ("topic_message_requires_reply", "join_collective_mission") => {
             Some("collective.participation.join")
         }
+        ("topic_message_requires_reply", "submit_collective_contribution") => {
+            Some("collective.contribution.submit")
+        }
         (_, "publish_mission") => Some("missions.publish"),
         (_, "claim_mission") => Some("missions.claim"),
         (_, "complete_mission") => Some("missions.complete"),
@@ -703,6 +706,9 @@ fn agent_action_commit_route_label(
         ) => "payment_action",
         ("topic_message_requires_reply", "reply") => "topic_reply",
         ("topic_message_requires_reply", "join_collective_mission") => "collective_join",
+        ("topic_message_requires_reply", "submit_collective_contribution") => {
+            "collective_contribution"
+        }
         (
             "topic_message_requires_reply",
             "publish_mission" | "claim_mission" | "reject_claim" | "human_review"
@@ -1033,6 +1039,99 @@ async fn commit_collective_participation(
     Json(response_json).into_response()
 }
 
+async fn commit_collective_contribution(
+    state: ControlPlaneState,
+    commit_headers: HeaderMap,
+    body: AgentActionCommitBody,
+) -> Response {
+    if !agent_event_is_collective_mission_topic(&body.event) {
+        return bad_request("collective contribution requires a collective_mission topic event");
+    }
+    if collective_mission_phase_from_commit_event(&body.event) != Some("round_started") {
+        return bad_request("collective contribution requires a round_started collective mission");
+    }
+    let target = match collective_participation_target(&body) {
+        Ok(target) => target,
+        Err(error) => return bad_request(error),
+    };
+    let Some(result) = collective_contribution_result(&body) else {
+        return bad_request("collective contribution requires result, output, or content");
+    };
+    let local_node_id = state.swarm_bridge.local_node_id().await.ok();
+    if local_node_id.as_deref() == Some(target.coordinator_node_id.as_str()) {
+        return bad_request("collective mission coordinator cannot submit to itself");
+    }
+    let contact_material_saved =
+        match save_collective_coordinator_contact_material(&state, &target).await {
+            Ok(saved) => saved,
+            Err(error) => return internal_error(&error),
+        };
+    let action_type = "collective.contribution.submit";
+    let message =
+        collective_contribution_message(&state, &body, &target, local_node_id.as_deref(), &result);
+    let agent_envelope = match build_signed_agent_envelope_for_nodes(
+        &state,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            source_public_id: None,
+            source_display_name: None,
+            target_agent_id: target.coordinator_agent_did.clone(),
+            source_node_id: local_node_id,
+            target_node_id: Some(target.coordinator_node_id.clone()),
+            capability: action_type.to_owned(),
+            message: message.clone(),
+            extensions: Some(json!({
+                "event_type": body.event.event_type.clone(),
+                "source_kind": body.event.source_kind.clone(),
+            })),
+        },
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => return internal_error(&error),
+    };
+    let request_json = json!({
+        "event_id": message.get("event_id").cloned().unwrap_or(Value::Null),
+        "decision_id": message.get("decision_id").cloned().unwrap_or(Value::Null),
+        "agent_event_action": "submit_collective_contribution",
+        "remote_node_id": target.coordinator_node_id.clone(),
+        "contact_material_saved": contact_material_saved,
+    });
+    let response = match state
+        .swarm_bridge
+        .send_peer_direct_message(SwarmDirectMessageCommand {
+            remote_node_id: target.coordinator_node_id,
+            agent_envelope,
+            content: message,
+        })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return internal_error(&error),
+    };
+    let response_json = json!({
+        "ok": true,
+        "action_type": action_type,
+        "contact_material_saved": contact_material_saved,
+        "delivery": response,
+    });
+    if let Err(error) = append_agent_action_execution(
+        &state,
+        &commit_headers,
+        AgentActionExecutionArgs {
+            action_type,
+            domain: agent_action_execution_domain(action_type),
+            target_id: Some(target.run_id),
+            actor_public_id: None,
+            actor_agent_did: Some(state.agent_did.clone()),
+            request_json: &request_json,
+            response_json: &response_json,
+        },
+    ) {
+        return internal_error(&error);
+    }
+    Json(response_json).into_response()
+}
+
 async fn save_collective_coordinator_contact_material(
     state: &ControlPlaneState,
     target: &CollectiveParticipationTarget,
@@ -1103,7 +1202,7 @@ fn collective_participation_message(
     target: &CollectiveParticipationTarget,
     local_node_id: Option<&str>,
 ) -> Value {
-    json!({
+    let mut message = json!({
         "type": "collective_participation",
         "version": 1,
         "status": "join",
@@ -1114,7 +1213,76 @@ fn collective_participation_message(
         "participant_agent_did": state.agent_did,
         "participant_node_id": local_node_id,
         "payload": body.decision.payload,
-    })
+    });
+    if let Some(title) = collective_participation_mission_string(body, "title") {
+        message["mission_title"] = Value::String(title);
+    }
+    if let Some(description) = collective_participation_mission_string(body, "description") {
+        message["mission_description"] = Value::String(description);
+    }
+    if let Some(domain) = collective_participation_mission_string(body, "domain") {
+        message["mission_domain"] = Value::String(domain);
+    }
+    message
+}
+
+fn collective_contribution_message(
+    state: &ControlPlaneState,
+    body: &AgentActionCommitBody,
+    target: &CollectiveParticipationTarget,
+    local_node_id: Option<&str>,
+    result: &Value,
+) -> Value {
+    let mut message = json!({
+        "type": "collective_contribution",
+        "version": 1,
+        "status": "submitted",
+        "mission_id": target.mission_id,
+        "run_id": target.run_id,
+        "event_id": body.event.event_id,
+        "decision_id": body.decision.decision_id,
+        "participant_agent_did": state.agent_did,
+        "participant_node_id": local_node_id,
+        "result": result,
+        "payload": body.decision.payload,
+    });
+    if let Some(title) = collective_participation_mission_string(body, "title") {
+        message["mission_title"] = Value::String(title);
+    }
+    if let Some(description) = collective_participation_mission_string(body, "description") {
+        message["mission_description"] = Value::String(description);
+    }
+    if let Some(domain) = collective_participation_mission_string(body, "domain") {
+        message["mission_domain"] = Value::String(domain);
+    }
+    message
+}
+
+fn collective_contribution_result(body: &AgentActionCommitBody) -> Option<Value> {
+    ["result", "output", "content"]
+        .into_iter()
+        .find_map(|key| body.decision.payload.get(key).cloned())
+        .filter(|value| match value {
+            Value::Null => false,
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(object) => !object.is_empty(),
+            Value::Bool(_) | Value::Number(_) => true,
+        })
+}
+
+fn collective_participation_mission_string(
+    body: &AgentActionCommitBody,
+    field: &str,
+) -> Option<String> {
+    [
+        format!("/topic_content/mission/{field}"),
+        format!("/content/mission/{field}"),
+        format!("/topic_content/{field}"),
+        format!("/content/{field}"),
+    ]
+    .into_iter()
+    .find_map(|pointer| payload_string(&body.event.payload, &pointer))
 }
 
 fn agent_event_is_collective_mission_topic(event: &crate::state::AgentActionCommitEvent) -> bool {
@@ -1129,6 +1297,19 @@ fn agent_event_is_collective_mission_topic(event: &crate::state::AgentActionComm
         .any(|pointer| {
             event.payload.pointer(pointer).and_then(Value::as_str) == Some("collective_mission")
         })
+}
+
+fn collective_mission_phase_from_commit_event(
+    event: &crate::state::AgentActionCommitEvent,
+) -> Option<&str> {
+    [
+        "/topic_content/phase",
+        "/content/phase",
+        "/topic_content/status",
+        "/content/status",
+    ]
+    .into_iter()
+    .find_map(|pointer| event.payload.pointer(pointer).and_then(Value::as_str))
 }
 
 async fn commit_publish_mission(
@@ -1632,6 +1813,9 @@ async fn dispatch_agent_action_commit(
         }
         ("topic_message_requires_reply", "join_collective_mission") => {
             commit_collective_participation(state, commit_headers, body).await
+        }
+        ("topic_message_requires_reply", "submit_collective_contribution") => {
+            commit_collective_contribution(state, commit_headers, body).await
         }
         (
             "topic_message_requires_reply",

@@ -1578,6 +1578,11 @@ async fn agent_action_commit_routes_collective_join_through_signed_dm_only() {
                         "phase": "joining",
                         "mission_id": "mission-collective-1",
                         "run_id": "run-collective-1",
+                        "mission": {
+                            "title": "Quick German Economy Signal Check",
+                            "description": "Collect short observations about the German economy.",
+                            "domain": "wealth"
+                        },
                         "coordinator": {
                             "agent_did": "did:key:zCoordinator",
                             "node_id": "12D3KooCoordinator"
@@ -1628,7 +1633,165 @@ async fn agent_action_commit_routes_collective_join_through_signed_dm_only() {
         Some("collective_participation")
     );
     assert_eq!(dm_commands[0].content["status"].as_str(), Some("join"));
+    assert_eq!(
+        dm_commands[0].content["mission_title"].as_str(),
+        Some("Quick German Economy Signal Check")
+    );
+    assert_eq!(
+        dm_commands[0].content["mission_domain"].as_str(),
+        Some("wealth")
+    );
     assert_envelope_signature_valid(&dm_commands[0].agent_envelope, &state.identity.public_key);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn agent_action_commit_routes_collective_contribution_through_signed_dm_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+
+    let committed = authed_post_json_with_headers(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-collective-contribution-1",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "12D3KooHivePeer",
+                "payload": {
+                    "network_id": "mainnet:watt-etheria",
+                    "feed_key": "public.hive",
+                    "scope_hint": "group:collective-room-1",
+                    "message_id": "collective-topic-msg-round-1",
+                    "topic_content": {
+                        "type": "collective_mission",
+                        "phase": "round_started",
+                        "mission_id": "mission-collective-1",
+                        "run_id": "run-collective-1",
+                        "mission": {
+                            "title": "Quick German Economy Signal Check",
+                            "description": "Collect short observations about the German economy.",
+                            "domain": "wealth"
+                        },
+                        "coordinator": {
+                            "agent_did": "did:key:zCoordinator",
+                            "node_id": "12D3KooCoordinator"
+                        },
+                        "contact_material": {
+                            "material_json": "{\"node_id\":\"12D3KooCoordinator\",\"encryption\":{\"private_message\":{\"public_key_b64\":\"coordinator-key\"}}}",
+                            "signature": "coordinator-signature",
+                            "generated_at": 1
+                        }
+                    }
+                },
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-collective-contribution-1",
+                "action": "submit_collective_contribution",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "mission_id": "mission-collective-1",
+                    "run_id": "run-collective-1",
+                    "content": {
+                        "text": "One concise German economy signal."
+                    }
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-collective-contribution-1"),
+            (
+                "x-agent-decision-id",
+                "dec-collective-contribution-1",
+            ),
+        ],
+    )
+    .await;
+
+    assert_eq!(committed["ok"].as_bool(), Some(true));
+    assert_eq!(
+        committed["action_type"].as_str(),
+        Some("collective.contribution.submit")
+    );
+    assert_eq!(committed["contact_material_saved"].as_bool(), Some(true));
+    assert!(bridge.messages.lock().await.is_empty());
+    let dm_commands = bridge.dm_commands.lock().await;
+    assert_eq!(dm_commands.len(), 1);
+    assert_eq!(dm_commands[0].remote_node_id, "12D3KooCoordinator");
+    assert_eq!(
+        dm_commands[0].agent_envelope.capability.as_deref(),
+        Some("collective.contribution.submit")
+    );
+    assert_eq!(
+        dm_commands[0].content["type"].as_str(),
+        Some("collective_contribution")
+    );
+    assert_eq!(dm_commands[0].content["status"].as_str(), Some("submitted"));
+    assert_eq!(
+        dm_commands[0].content["result"]["text"].as_str(),
+        Some("One concise German economy signal.")
+    );
+    assert_eq!(
+        dm_commands[0].content["mission_title"].as_str(),
+        Some("Quick German Economy Signal Check")
+    );
+    assert_envelope_signature_valid(&dm_commands[0].agent_envelope, &state.identity.public_key);
+}
+
+#[tokio::test]
+async fn agent_action_commit_rejects_collective_contribution_before_round_started() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+
+    let committed = authed_post_json_with_headers(
+        app,
+        &token,
+        "/v1/agent-actions/commit",
+        json!({
+            "event": {
+                "event_id": "evt-collective-contribution-early",
+                "event_type": "topic_message_requires_reply",
+                "source_kind": "topic_message",
+                "source_node_id": "12D3KooHivePeer",
+                "payload": {
+                    "topic_content": {
+                        "type": "collective_mission",
+                        "phase": "joining",
+                        "mission_id": "mission-collective-early",
+                        "run_id": "run-collective-early"
+                    }
+                },
+                "requires_commit": true
+            },
+            "decision": {
+                "decision_id": "dec-collective-contribution-early",
+                "action": "submit_collective_contribution",
+                "route": "wattetheria_commit",
+                "payload": {
+                    "content": {
+                        "text": "This result is too early."
+                    }
+                }
+            }
+        }),
+        &[
+            ("x-agent-event-id", "evt-collective-contribution-early"),
+            ("x-agent-decision-id", "dec-collective-contribution-early"),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        committed["error"].as_str(),
+        Some("collective contribution requires a round_started collective mission")
+    );
 }
 
 #[tokio::test]

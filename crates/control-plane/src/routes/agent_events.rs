@@ -142,7 +142,11 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
         ),
         "topic_message_requires_reply" => matches!(
             action,
-            "reply" | "complete_mission" | "settle_mission" | "join_collective_mission"
+            "reply"
+                | "complete_mission"
+                | "settle_mission"
+                | "join_collective_mission"
+                | "submit_collective_contribution"
         ),
         _ => false,
     }
@@ -358,6 +362,9 @@ fn add_mission_allowed_actions(state: &ControlPlaneState, event: &mut AgentEvent
                     } else {
                         set_allowed_actions(event, &["join_collective_mission", "ignore"]);
                     }
+                }
+                Some("round_started") => {
+                    set_allowed_actions(event, &["submit_collective_contribution", "ignore"]);
                 }
                 _ => set_allowed_actions(event, &["ignore"]),
             }

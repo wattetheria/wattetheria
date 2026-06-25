@@ -1,4 +1,5 @@
 use crate::routes::civilization::reconcile_swarm_relationship_views;
+use crate::routes::mcp::collective::start_due_collective_missions;
 use crate::routes::servicenet::async_jobs::maintain_servicenet_async_invocations;
 use crate::social_host::{
     SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, load_social_identity_maps,
@@ -95,6 +96,8 @@ pub async fn run_reliability_maintenance_tick_once(
     }
     let remaining = limit.saturating_sub(processed);
     processed += maintain_servicenet_async_invocations(state, now, remaining).await?;
+    let remaining = limit.saturating_sub(processed);
+    processed += start_due_collective_missions(state, remaining).await?;
     Ok(processed)
 }
 

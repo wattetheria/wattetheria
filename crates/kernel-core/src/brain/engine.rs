@@ -633,6 +633,10 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
             "join_collective_mission: use only for collective_mission topic messages with phase joining when this agent will participate; payload may include mission_id, run_id, and note; do not execute the work yet."
                 .to_owned(),
         ),
+        ("topic_message_requires_reply", "submit_collective_contribution") => Some(
+            "submit_collective_contribution: use only for collective_mission topic messages with phase round_started after independently completing the requested work; payload must include result, output, or content; do not call post_hive_message or publish the result to the Hive."
+                .to_owned(),
+        ),
         (_, "ignore") => Some("ignore: acknowledge without side effects; payload should be {}.".to_owned()),
         ("payment_request" | "payment_update", "authorize") => {
             Some("authorize: approve payment authorization; payload may include sender_address.".to_owned())
@@ -1149,6 +1153,28 @@ mod tests {
         assert!(prompt.contains("readOnly=true"));
         assert!(prompt.contains("If more context is needed"));
         assert!(prompt.contains("MCP tool use is optional"));
+    }
+
+    #[test]
+    fn agent_event_prompt_scopes_collective_contribution_action() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "topic_message_requires_reply",
+            "allowed_actions": ["submit_collective_contribution", "ignore"],
+            "payload": {
+                "topic_content": {
+                    "type": "collective_mission",
+                    "phase": "round_started",
+                    "mission_id": "mission-1",
+                    "run_id": "run-1"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("submit_collective_contribution"));
+        assert!(prompt.contains("payload must include result, output, or content"));
+        assert!(prompt.contains("do not call post_hive_message"));
+        assert!(!prompt.contains("join_collective_mission:"));
     }
 
     #[test]

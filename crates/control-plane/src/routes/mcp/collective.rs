@@ -432,11 +432,53 @@ pub(crate) async fn start_collective_mission_result(
     auth: &str,
     arguments: &Value,
 ) -> Value {
+    match start_collective_mission_core(state, auth, arguments).await {
+        Ok(started) => tool_success(&started),
+        Err(error) => tool_error(&error),
+    }
+}
+
+pub(crate) async fn start_due_collective_missions(
+    state: &ControlPlaneState,
+    limit: usize,
+) -> anyhow::Result<usize> {
+    let index = load_run_index(state).map_err(anyhow::Error::msg)?;
+    let due_run_ids = due_collective_run_ids(&index, limit);
+    let mut processed = 0;
+    for run_id in due_run_ids {
+        let result = start_collective_mission_core(
+            state,
+            &state.auth_token,
+            &json!({
+                "run_id": run_id,
+            }),
+        )
+        .await;
+        match result {
+            Ok(_) => processed += 1,
+            Err(error) => {
+                if error.get("error").and_then(Value::as_str)
+                    == Some("collective_mission_already_started")
+                {
+                    continue;
+                }
+                return Err(anyhow::anyhow!(error.to_string()));
+            }
+        }
+    }
+    Ok(processed)
+}
+
+async fn start_collective_mission_core(
+    state: &ControlPlaneState,
+    auth: &str,
+    arguments: &Value,
+) -> Result<Value, Value> {
     let public_id = local_public_id(state).await;
     let mut index = match load_run_index(state) {
         Ok(index) => index,
         Err(error) => {
-            return tool_error(&json!({
+            return Err(json!({
                 "error": "load_collective_mission_runs_failed",
                 "detail": error,
             }));
@@ -448,28 +490,26 @@ pub(crate) async fn start_collective_mission_result(
         arguments,
     ) {
         Ok(resolved) => resolved,
-        Err(error) => return tool_error(&json!({"error": error})),
+        Err(error) => return Err(json!({"error": error})),
     };
     let mission_id = match resolved.mission_id.as_str() {
         Some(value) => value.to_owned(),
-        None => return tool_error(&json!({"error": "collective mission_id is required"})),
+        None => return Err(json!({"error": "collective mission_id is required"})),
     };
     let Some(link) = index.runs.get(&mission_id).cloned() else {
-        return tool_error(&json!({"error": "collective mission run link not found"}));
+        return Err(json!({"error": "collective mission run link not found"}));
     };
-    if let Err(error) = validate_collective_start(arguments, &mission_id, &link) {
-        return tool_error(&error);
-    }
+    validate_collective_start(arguments, &mission_id, &link)?;
 
     let participant_agents = match collective_participant_agents(&link) {
         Ok(agents) => agents,
-        Err(error) => return tool_error(&error),
+        Err(error) => return Err(error),
     };
 
     let hive_route =
         match collective_hive_route_from_link_or_arguments(state, arguments, &link).await {
             Ok(route) => route,
-            Err(error) => return tool_error(&json!({"error": error})),
+            Err(error) => return Err(json!({"error": error})),
         };
     let mission = collective_start_mission(&mission_id, &link, &hive_route);
     let run_spec = build_started_run_spec(&link, participant_agents);
@@ -483,7 +523,7 @@ pub(crate) async fn start_collective_mission_result(
     .await
     {
         Ok(submission) => submission,
-        Err(error) => return error,
+        Err(error) => return Err(tool_error_payload(&error)),
     };
     let (hive_message, hive_post) =
         match post_collective_mission_to_hive(CollectiveHivePostRequest {
@@ -504,12 +544,12 @@ pub(crate) async fn start_collective_mission_result(
         .await
         {
             Ok(posted) => posted,
-            Err(error) => return error,
+            Err(error) => return Err(tool_error_payload(&error)),
         };
 
     let updated = update_started_run_link(&mut index, &mission_id, &link, &mission, &submission);
     if let Err(error) = save_run_index(state, &index) {
-        return tool_error(&json!({
+        return Err(json!({
             "error": "persist_collective_mission_run_failed",
             "detail": error,
             "mission_id": mission_id,
@@ -517,7 +557,7 @@ pub(crate) async fn start_collective_mission_result(
         }));
     }
 
-    tool_success(&json!({
+    Ok(json!({
         "mission_id": mission_id,
         "run_id": updated.run_id,
         "phase": "round_started",
@@ -530,6 +570,38 @@ pub(crate) async fn start_collective_mission_result(
         "wattswarm_run": submission.wattswarm_run,
         "link": updated,
     }))
+}
+
+fn tool_error_payload(value: &Value) -> Value {
+    value.get("structuredContent").cloned().unwrap_or_else(|| {
+        value
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or_else(|| value.clone())
+    })
+}
+
+fn due_collective_run_ids(index: &CollectiveMissionRunIndex, limit: usize) -> Vec<String> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let now = current_time_ms();
+    index
+        .runs
+        .values()
+        .filter(|link| !link.kicked_off)
+        .filter(|link| link.join_deadline_ms.is_none_or(|deadline| now >= deadline))
+        .filter(|link| {
+            let min_participants = min_participants_from_run_spec(&link.run_spec).unwrap_or(1);
+            (link.participants.len() as u64) >= min_participants
+        })
+        .take(limit)
+        .map(|link| link.run_id.clone())
+        .collect()
 }
 
 fn validate_collective_start(

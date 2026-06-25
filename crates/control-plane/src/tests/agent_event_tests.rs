@@ -88,7 +88,7 @@ async fn agent_events_scope_collective_topic_actions_without_changing_regular_re
                     "node_id": "node-coordinator"
                 }
             }),
-            vec!["ignore"],
+            vec!["submit_collective_contribution", "ignore"],
         ),
         (
             "evt-regular-topic-1",
