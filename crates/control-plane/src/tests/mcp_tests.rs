@@ -4978,6 +4978,96 @@ async fn reliability_maintenance_starts_due_collective_mission_with_joined_parti
     let (mission_id, run_id) =
         assert_collective_publish_result(&response, local_public_id, &hive_id);
 
+    persist_due_collective_participants(&state, mission_id);
+
+    let processed = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run reliability maintenance");
+    assert_eq!(processed, 2);
+
+    let updated: Value = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        updated["runs"][mission_id]["kicked_off"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["wattswarm_run"]["kicked_off"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["run_spec"]["agents"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(updated["runs"][mission_id]["run_id"].as_str(), Some(run_id));
+    assert_eq!(
+        updated["runs"][mission_id]["finalized_hive_message"]["type"].as_str(),
+        Some("collective_mission_finalized")
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["finalized_hive_message"]["final"]["answer"].as_str(),
+        Some("mock collective result")
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["finalized_hive_message"]["aggregation"]["threshold_percent"]
+            .as_u64(),
+        Some(60)
+    );
+    assert_eq!(
+        updated["runs"][mission_id]["finalized_hive_message"]["participation"]["joined_count"]
+            .as_u64(),
+        Some(2)
+    );
+    assert!(
+        updated["runs"][mission_id]["finalized_hive_message"]
+            .get("result")
+            .is_none(),
+        "finalized Hive card must not publish raw run result"
+    );
+
+    let messages = state
+        .swarm_bridge
+        .list_topic_messages(
+            None,
+            "mcp-collective-feed",
+            "group:mcp-collective-feed",
+            10,
+            None,
+            None,
+        )
+        .await
+        .expect("collective Hive messages");
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[2].content["type"].as_str(),
+        Some("collective_mission_finalized")
+    );
+
+    let processed_again = run_reliability_maintenance_tick_once(&state, 10)
+        .await
+        .expect("run reliability maintenance again");
+    assert_eq!(processed_again, 0);
+    let messages_after_dedupe = state
+        .swarm_bridge
+        .list_topic_messages(
+            None,
+            "mcp-collective-feed",
+            "group:mcp-collective-feed",
+            10,
+            None,
+            None,
+        )
+        .await
+        .expect("collective Hive messages after dedupe");
+    assert_eq!(messages_after_dedupe.len(), 3);
+}
+
+fn persist_due_collective_participants(state: &ControlPlaneState, mission_id: &str) {
     let mut persisted: Value = state
         .local_db
         .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
@@ -5013,32 +5103,6 @@ async fn reliability_maintenance_starts_due_collective_mission_with_joined_parti
             &persisted,
         )
         .unwrap();
-
-    let processed = run_reliability_maintenance_tick_once(&state, 10)
-        .await
-        .expect("run reliability maintenance");
-    assert_eq!(processed, 1);
-
-    let updated: Value = state
-        .local_db
-        .load_domain(wattetheria_kernel::local_db::domain::COLLECTIVE_MISSION_RUNS)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        updated["runs"][mission_id]["kicked_off"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        updated["runs"][mission_id]["wattswarm_run"]["kicked_off"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        updated["runs"][mission_id]["run_spec"]["agents"]
-            .as_array()
-            .map(Vec::len),
-        Some(2)
-    );
-    assert_eq!(updated["runs"][mission_id]["run_id"].as_str(), Some(run_id));
 }
 
 #[tokio::test]

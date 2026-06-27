@@ -6,6 +6,7 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::swarm_bridge::{SwarmPeerDmMessageView, SwarmRunSubmitCommand};
+use wattetheria_kernel::swarm_sync::SwarmRunResultSnapshot;
 
 use crate::state::{ControlPlaneState, HiveMessageBody};
 
@@ -45,6 +46,12 @@ struct CollectiveMissionRunLink {
     participants: BTreeMap<String, CollectiveMissionParticipant>,
     run_spec: Value,
     wattswarm_run: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finalized_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finalized_hive_message: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finalized_hive_post: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +210,9 @@ pub(super) async fn publish_collective_mission_result(
         participants: BTreeMap::new(),
         run_spec: submission.run_spec.clone(),
         wattswarm_run: submission.wattswarm_run.clone(),
+        finalized_at: None,
+        finalized_hive_message: None,
+        finalized_hive_post: None,
     };
     if let Err(error) = save_run_link(state, link.clone()) {
         return tool_error(&json!({
@@ -467,6 +477,103 @@ pub(crate) async fn start_due_collective_missions(
         }
     }
     Ok(processed)
+}
+
+pub(crate) async fn publish_finalized_collective_mission_results(
+    state: &ControlPlaneState,
+    auth: &str,
+    limit: usize,
+) -> anyhow::Result<usize> {
+    if limit == 0 {
+        return Ok(0);
+    }
+    let index = load_run_index(state).map_err(anyhow::Error::msg)?;
+    let mission_ids = finalized_publish_candidate_mission_ids(&index, limit);
+    let mut processed = 0;
+    for mission_id in mission_ids {
+        if publish_finalized_collective_mission_result(state, auth, &mission_id).await? {
+            processed += 1;
+        }
+    }
+    Ok(processed)
+}
+
+async fn publish_finalized_collective_mission_result(
+    state: &ControlPlaneState,
+    auth: &str,
+    mission_id: &str,
+) -> anyhow::Result<bool> {
+    let mut index = load_run_index(state).map_err(anyhow::Error::msg)?;
+    let Some(link) = index.runs.get(mission_id).cloned() else {
+        return Ok(false);
+    };
+    if !link.kicked_off || link.finalized_hive_message.is_some() {
+        return Ok(false);
+    }
+    let Ok(result) = state.swarm_bridge.run_result_snapshot(&link.run_id).await else {
+        return Ok(false);
+    };
+    if !collective_run_result_is_finalized(&result.result) {
+        return Ok(false);
+    }
+    let hive_route = collective_hive_route_from_link_or_arguments(state, &json!({}), &link)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let public_id = local_public_id(state).await;
+    let finalized_at = chrono::Utc::now().to_rfc3339();
+    let hive_message = collective_finalized_hive_message(&link, &result, &public_id, &finalized_at);
+    let hive_response = crate::routes::topics::post_hive_topic_message(
+        state.clone(),
+        auth_headers(auth),
+        Some(hive_route.hive_id.clone()),
+        HiveMessageBody {
+            public_id: Some(public_id),
+            network_id: hive_route.network_id.clone(),
+            feed_key: Some(hive_route.feed_key.clone()),
+            scope_hint: Some(hive_route.scope_hint.clone()),
+            content: hive_message.clone(),
+            reply_to_message_id: None,
+        },
+    )
+    .await;
+    let (hive_status, hive_post) = response_json(hive_response).await.map_err(|error| {
+        anyhow::anyhow!(
+            "decode finalized collective Hive post response for {}: {}",
+            link.run_id,
+            error
+        )
+    })?;
+    if !hive_status.is_success() {
+        return Err(anyhow::anyhow!(
+            "finalized collective Hive post failed for {}: status={} detail={}",
+            link.run_id,
+            hive_status.as_u16(),
+            hive_post
+        ));
+    }
+
+    let Some(updated) = index.runs.get_mut(mission_id) else {
+        return Ok(false);
+    };
+    updated.finalized_at = Some(finalized_at);
+    updated.finalized_hive_message = Some(hive_message);
+    updated.finalized_hive_post = Some(hive_post);
+    save_run_index(state, &index).map_err(anyhow::Error::msg)?;
+    Ok(true)
+}
+
+fn finalized_publish_candidate_mission_ids(
+    index: &CollectiveMissionRunIndex,
+    limit: usize,
+) -> Vec<String> {
+    index
+        .runs
+        .values()
+        .filter(|link| link.kicked_off)
+        .filter(|link| link.finalized_hive_message.is_none())
+        .take(limit)
+        .map(|link| link.mission_id.clone())
+        .collect()
 }
 
 async fn start_collective_mission_core(
@@ -1116,6 +1223,203 @@ fn collective_hive_message(request: &CollectiveHiveMessageRequest<'_>) -> Value 
         message["contact_material"] = contact_material.clone();
     }
     message
+}
+
+fn collective_finalized_hive_message(
+    link: &CollectiveMissionRunLink,
+    result: &SwarmRunResultSnapshot,
+    coordinator_public_id: &str,
+    finalized_at: &str,
+) -> Value {
+    let policy = collective_policy_from_run_spec(&link.run_spec);
+    let aggregation = collective_finalized_aggregation(&result.result, policy.as_ref());
+    let final_summary = collective_final_summary(&result.result, &aggregation);
+    let joined_count = u64::try_from(link.participants.len()).unwrap_or(u64::MAX);
+    let submitted_count = collective_submitted_count(&result.result);
+    let missing_count = submitted_count.map(|submitted| joined_count.saturating_sub(submitted));
+    json!({
+        "type": "collective_mission_finalized",
+        "kind": "collective_mission_finalized",
+        "version": 1,
+        "mission_id": link.mission_id,
+        "run_id": link.run_id,
+        "title": link.mission.get("title").cloned().unwrap_or(Value::Null),
+        "domain": link.mission.get("domain").cloned().unwrap_or(Value::Null),
+        "mode": "committee",
+        "scope": link.mission.get("scope").cloned().unwrap_or(Value::Null),
+        "status": "finalized",
+        "mission": link.mission,
+        "final": final_summary,
+        "aggregation": aggregation,
+        "participation": {
+            "joined_count": joined_count,
+            "submitted_count": submitted_count,
+            "missing_count": missing_count,
+            "missing_views": collective_missing_views(&result.result),
+        },
+        "rounds": {
+            "round_count": collective_number_from_paths(&result.result, &[
+                &["round_count"],
+                &["aggregation", "round_count"],
+                &["result", "round_count"],
+            ]),
+            "max_rounds": policy.as_ref().and_then(|value| value.get("max_rounds")).cloned().unwrap_or(Value::Null),
+        },
+        "evidence": {
+            "key_takeaways": collective_array_from_paths(&result.result, &[
+                &["key_takeaways"],
+                &["final", "key_takeaways"],
+                &["result", "key_takeaways"],
+            ]),
+        },
+        "coordinator": {
+            "agent_did": link.mission.get("publisher_agent_did").cloned().unwrap_or(Value::Null),
+            "public_id": coordinator_public_id,
+            "display_name": link.mission.get("source_display_name").cloned().unwrap_or_else(|| link.mission.get("publisher").cloned().unwrap_or(Value::Null)),
+        },
+        "finalized_at": finalized_at,
+    })
+}
+
+fn collective_run_result_is_finalized(result: &Value) -> bool {
+    collective_text_from_paths(result, &[&["status"], &["result", "status"]])
+        .is_some_and(|status| status.eq_ignore_ascii_case("finalized"))
+}
+
+fn collective_policy_from_run_spec(run_spec: &Value) -> Option<Value> {
+    run_spec
+        .get("collective_policy")
+        .or_else(|| run_spec.get("round_policy"))
+        .filter(|value| value.is_object())
+        .cloned()
+}
+
+fn collective_finalized_aggregation(result: &Value, policy: Option<&Value>) -> Value {
+    let source = result
+        .get("aggregation")
+        .or_else(|| result.pointer("/result/aggregation"))
+        .filter(|value| value.is_object());
+    let mut object = Map::new();
+    for key in [
+        "mode",
+        "source",
+        "final_decision",
+        "final_answer",
+        "decision_votes",
+        "answer_votes",
+        "quorum_met",
+        "resolution_paths",
+        "null_resolution",
+        "null_policy",
+    ] {
+        if let Some(value) = source.and_then(|source| source.get(key)).cloned() {
+            object.insert(key.to_owned(), value);
+        }
+    }
+    if !object.contains_key("final_decision")
+        && let Some(value) = result.get("final_decision").cloned()
+    {
+        object.insert("final_decision".to_owned(), value);
+    }
+    if !object.contains_key("final_answer")
+        && let Some(value) = result.get("final_answer").cloned()
+    {
+        object.insert("final_answer".to_owned(), value);
+    }
+    if let Some(policy) = policy {
+        for key in ["threshold_percent", "fallback_decision", "min_participants"] {
+            if !object.contains_key(key)
+                && let Some(value) = policy.get(key).cloned()
+            {
+                object.insert(key.to_owned(), value);
+            }
+        }
+    }
+    Value::Object(object)
+}
+
+fn collective_final_summary(result: &Value, aggregation: &Value) -> Value {
+    let summary = collective_text_from_paths(
+        result,
+        &[
+            &["final", "summary"],
+            &["result", "summary"],
+            &["summary"],
+            &["result_summary"],
+        ],
+    )
+    .or_else(|| value_string(aggregation, "final_answer"))
+    .or_else(|| value_string(aggregation, "final_decision"));
+    json!({
+        "summary": summary,
+        "decision": value_string(aggregation, "final_decision")
+            .or_else(|| collective_text_from_paths(result, &[&["final_decision"]])),
+        "answer": value_string(aggregation, "final_answer")
+            .or_else(|| collective_text_from_paths(result, &[&["final_answer"]])),
+        "confidence": collective_number_from_paths(result, &[
+            &["final", "confidence"],
+            &["confidence"],
+            &["aggregation", "confidence"],
+        ]),
+    })
+}
+
+fn collective_submitted_count(result: &Value) -> Option<u64> {
+    collective_number_from_paths(
+        result,
+        &[
+            &["submitted_count"],
+            &["counts", "submitted"],
+            &["counts", "succeeded"],
+            &["result", "counts", "submitted"],
+            &["result", "counts", "succeeded"],
+        ],
+    )
+}
+
+fn collective_missing_views(result: &Value) -> Value {
+    collective_array_from_paths(
+        result,
+        &[
+            &["missing_views"],
+            &["result", "missing_views"],
+            &["aggregation", "missing_views"],
+        ],
+    )
+}
+
+fn collective_text_from_paths(result: &Value, paths: &[&[&str]]) -> Option<String> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(result, path))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn collective_number_from_paths(result: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(result, path))
+        .and_then(Value::as_u64)
+}
+
+fn collective_array_from_paths(result: &Value, paths: &[&[&str]]) -> Value {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(result, path))
+        .filter(|value| value.is_array())
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
+fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    Some(current)
 }
 
 fn auth_headers(auth: &str) -> HeaderMap {

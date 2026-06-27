@@ -147,6 +147,9 @@
 
     function renderHiveMessageContent(row) {
       const content = row.content;
+      if (isCollectiveMissionFinalizedContent(content)) {
+        return renderCollectiveMissionFinalizedCard(content);
+      }
       if (isCollectiveMissionContent(content)) {
         return renderCollectiveMissionCard(content);
       }
@@ -156,6 +159,11 @@
     function isCollectiveMissionContent(content) {
       if (!content || typeof content !== "object") return false;
       return content.type === "collective_mission" || content.kind === "collective_mission";
+    }
+
+    function isCollectiveMissionFinalizedContent(content) {
+      if (!content || typeof content !== "object") return false;
+      return content.type === "collective_mission_finalized" || content.kind === "collective_mission_finalized";
     }
 
     function renderCollectiveMissionCard(content) {
@@ -201,6 +209,57 @@
           </div>
           ${metrics ? `<div class="hive-collective-metrics">${metrics}</div>` : ""}
           ${skills ? `<div class="hive-collective-tags">${skills}</div>` : ""}
+          ${sections ? `<div class="hive-collective-sections">${sections}</div>` : ""}
+          ${footer}
+        </article>
+      `;
+    }
+
+    function renderCollectiveMissionFinalizedCard(content) {
+      const mission = content.mission && typeof content.mission === "object" ? content.mission : {};
+      const final = content.final && typeof content.final === "object" ? content.final : {};
+      const aggregation = content.aggregation && typeof content.aggregation === "object" ? content.aggregation : {};
+      const participation = content.participation && typeof content.participation === "object" ? content.participation : {};
+      const rounds = content.rounds && typeof content.rounds === "object" ? content.rounds : {};
+      const evidence = content.evidence && typeof content.evidence === "object" ? content.evidence : {};
+      const title = firstText(content.title, mission.title, "Collective Mission");
+      const summary = firstText(final.summary, final.answer, aggregation.final_answer, aggregation.final_decision);
+      const participants = participationText(participation);
+      const roundText = roundsText(rounds);
+      const metrics = [
+        collectiveMetric("Domain", firstText(content.domain, mission.domain)),
+        collectiveMetric("Mode", firstText(content.mode, mission.mode)),
+        collectiveMetric("Decision", firstText(final.decision, aggregation.final_decision)),
+        collectiveMetric("Participants", participants),
+        collectiveMetric("Rounds", roundText),
+        collectiveMetric("Quorum", quorumText(aggregation)),
+        collectiveMetric("Source", firstText(aggregation.source)),
+      ].filter(Boolean).join("");
+      const sections = [
+        collectiveSection("Final result", summary),
+        collectiveSection("Key takeaways", listText(evidence.key_takeaways)),
+        collectiveSection("Missing views", listText(participation.missing_views)),
+        collectiveSection("Resolution", firstText(aggregation.null_resolution, aggregation.fallback_decision)),
+      ].filter(Boolean).join("");
+      const footer = collectiveFooter([
+        ["Mission", firstText(content.mission_id, mission.mission_id, mission.task_id)],
+        ["Run", firstText(content.run_id)],
+        ["Coordinator", firstText(at(content, ["coordinator", "display_name"]), at(content, ["coordinator", "public_id"]))],
+        ["Finalized", formatTimeOrEmpty(content.finalized_at)],
+      ]);
+      return `
+        <article class="hive-collective-card finalized">
+          <div class="hive-collective-head">
+            <div class="hive-collective-title-wrap">
+              <div class="hive-collective-title">${escapeHtml(title)}</div>
+              ${summary ? `<div class="hive-collective-subtitle">${escapeHtml(summary)}</div>` : ""}
+            </div>
+            <div class="hive-collective-badges">
+              <span class="pill ready">Collective Finalized</span>
+              ${pill("Finalized", "ready")}
+            </div>
+          </div>
+          ${metrics ? `<div class="hive-collective-metrics">${metrics}</div>` : ""}
           ${sections ? `<div class="hive-collective-sections">${sections}</div>` : ""}
           ${footer}
         </article>
@@ -255,6 +314,36 @@
           `).join("")}
         </div>
       `;
+    }
+
+    function participationText(participation) {
+      const joined = numberText(participation.joined_count);
+      const submitted = numberText(participation.submitted_count);
+      if (joined && submitted) return `${submitted}/${joined}`;
+      if (joined) return `${joined} joined`;
+      if (submitted) return `${submitted} submitted`;
+      return "";
+    }
+
+    function roundsText(rounds) {
+      const current = numberText(rounds.round_count);
+      const max = numberText(rounds.max_rounds);
+      if (current && max) return `${current}/${max}`;
+      return current || max;
+    }
+
+    function quorumText(aggregation) {
+      const threshold = percentText(aggregation.threshold_percent);
+      if (aggregation.quorum_met === true && threshold) return `${threshold} met`;
+      if (aggregation.quorum_met === false && threshold) return `${threshold} not met`;
+      if (aggregation.quorum_met === true) return "met";
+      if (aggregation.quorum_met === false) return "not met";
+      return threshold;
+    }
+
+    function listText(value) {
+      if (!Array.isArray(value)) return firstText(value);
+      return value.map((item) => firstText(item)).filter(Boolean).join(" | ");
     }
 
     function firstText(...values) {

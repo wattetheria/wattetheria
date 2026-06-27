@@ -258,6 +258,10 @@
       box-shadow: none;
     }
 
+    .hive-collective-card.finalized {
+      border-left-color: var(--green);
+    }
+
     .hive-collective-head {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
