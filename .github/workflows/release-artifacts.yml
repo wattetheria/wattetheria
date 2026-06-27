@@ -2,57 +2,150 @@ name: release-artifacts
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v1.0.4'
+        required: true
+        type: string
+      previous_manifest_path:
+        description: 'Previous stack manifest path for the first release; leave empty later to use the latest release asset'
+        required: false
+        default: '.github/release/stack-baseline.json'
+        type: string
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binaries
-        run: cargo build --release -p wattetheria-kernel -p wattetheria-client-cli -p wattetheria-observatory
-
-      - name: Package artifact (Unix)
-        if: runner.os != 'Windows'
-        run: bash scripts/package.sh
-
-      - name: Package artifact (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/package.ps1
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: wattetheria-${{ runner.os }}-${{ runner.arch }}
-          path: dist/
-
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Validate release inputs
+        id: release-inputs
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PREVIOUS_MANIFEST_PATH: ${{ inputs.previous_manifest_path }}
+        run: |
+          if [ "${{ github.ref_name }}" != "main" ]; then
+            echo "Stack releases must be run from main."
+            exit 1
+          fi
+
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *)
+              echo "Release tag must start with v."
+              exit 1
+              ;;
+          esac
+
+          release_version="${RELEASE_TAG#v}"
+          if [ -z "$release_version" ]; then
+            echo "Release version is empty after removing the v prefix."
+            exit 1
+          fi
+
+          case "$PREVIOUS_MANIFEST_PATH" in
+            "" )
+              previous_manifest=""
+              ;;
+            /* | *..* )
+              echo "previous_manifest_path must be a relative path inside the wattetheria checkout."
+              exit 1
+              ;;
+            * )
+              previous_manifest="$GITHUB_WORKSPACE/wattetheria/$PREVIOUS_MANIFEST_PATH"
+              ;;
+          esac
+
+          {
+            echo "release_version=$release_version"
+            echo "previous_manifest=$previous_manifest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout wattetheria
+        uses: actions/checkout@v4
         with:
-          path: artifacts/
+          repository: wattetheria/wattetheria
+          ref: ${{ github.ref_name }}
+          path: wattetheria
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Checkout wattswarm
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattswarm
+          ref: main
+          path: wattswarm
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Checkout watt-did
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-did
+          ref: main
+          path: watt-did
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Checkout watt-wallet
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-wallet
+          ref: main
+          path: watt-wallet
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Checkout watt-servicenet
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-servicenet
+          ref: main
+          path: watt-servicenet
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Checkout wattetheria-gateway
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattetheria-gateway
+          ref: main
+          path: wattetheria-gateway
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+
+      - name: Validate release boundary
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PREVIOUS_MANIFEST: ${{ steps.release-inputs.outputs.previous_manifest }}
+        run: |
+          git -C wattetheria fetch --tags origin
+          if git -C wattetheria rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            echo "Release tag already exists: $RELEASE_TAG"
+            exit 1
+          fi
+
+          if [ -n "$PREVIOUS_MANIFEST" ] && [ ! -f "$PREVIOUS_MANIFEST" ]; then
+            echo "Previous stack manifest does not exist: $PREVIOUS_MANIFEST"
+            exit 1
+          fi
+
+      - name: Generate stack release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          RELEASE: ${{ steps.release-inputs.outputs.release_version }}
+          PREVIOUS_STACK_MANIFEST: ${{ steps.release-inputs.outputs.previous_manifest }}
+          STACK_RELEASE_REPO: wattetheria/wattetheria
+          STACK_RELEASE_WORKSPACE: ${{ github.workspace }}
+          STACK_RELEASE_OUT_DIR: ${{ github.workspace }}/stack-release
+        run: node wattetheria/scripts/generate-stack-release.js
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          files: artifacts/**/*
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.ref_name }}
+          name: Wattetheria Stack ${{ steps.release-inputs.outputs.release_version }}
+          body_path: stack-release/release-notes.md
+          files: stack-release/release-manifest.${{ steps.release-inputs.outputs.release_version }}.json
+          prerelease: ${{ contains(inputs.tag, '-alpha') || contains(inputs.tag, '-beta') || contains(inputs.tag, '-rc') }}

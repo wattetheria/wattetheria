@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "stack_version": "1.0.3",
+  "baseline_kind": "ghcr-published-stack",
+  "generated_at": "2026-06-27T12:00:23Z",
+  "release_repository": "wattetheria/wattetheria",
+  "components": [
+    {
+      "name": "wattetheria",
+      "repo": "wattetheria/wattetheria",
+      "path": "wattetheria",
+      "remote_url": "https://github.com/wattetheria/wattetheria.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "20a24124ef0065a721fa538fbcd3db2a082ea2a5",
+      "commit_date": "2026-06-27T21:29:55+10:00",
+      "commit_subject": "collective: publish finalized mission results"
+    },
+    {
+      "name": "wattswarm",
+      "repo": "wattetheria/wattswarm",
+      "path": "wattswarm",
+      "remote_url": "https://github.com/wattetheria/wattswarm.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "03ad3112e0381d92e15e45aa9440f83618a74e67",
+      "commit_date": "2026-06-25T01:10:00+10:00",
+      "commit_subject": "feat: expose peer contact material APIs"
+    },
+    {
+      "name": "watt-did",
+      "repo": "wattetheria/watt-did",
+      "path": "watt-did",
+      "remote_url": "https://github.com/wattetheria/watt-did.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "9c9c01007834fbd7059a98b128a1ab80895ea4af",
+      "commit_date": "2026-06-21T11:39:27+10:00",
+      "commit_subject": "did: validate Wattetheria agent documents"
+    },
+    {
+      "name": "watt-wallet",
+      "repo": "wattetheria/watt-wallet",
+      "path": "watt-wallet",
+      "remote_url": "https://github.com/wattetheria/watt-wallet.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "73f6c1cce8f57f5545039e943e70b83e73dd4ec1",
+      "commit_date": "2026-06-10T19:34:07+10:00",
+      "commit_subject": "docs: streamline wallet README"
+    },
+    {
+      "name": "wattswarm-servicenet",
+      "repo": "wattetheria/watt-servicenet",
+      "path": "watt-servicenet",
+      "remote_url": "https://github.com/wattetheria/watt-servicenet.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "c4d9d429415b3250cd75e6b6bea9f93b2c056aa7",
+      "commit_date": "2026-06-21T18:15:00+10:00",
+      "commit_subject": "registry: validate payment bindings from agent cards"
+    },
+    {
+      "name": "wattetheria-gateway",
+      "repo": "wattetheria/wattetheria-gateway",
+      "path": "wattetheria-gateway",
+      "remote_url": "https://github.com/wattetheria/wattetheria-gateway.git",
+      "default_branch": "main",
+      "current_branch": "main",
+      "current_commit": "5cdfac7b61d9bd8e699124fd0d868b520ac07e66",
+      "commit_date": "2026-06-23T20:03:42+10:00",
+      "commit_subject": "gateway: surface hive subscription member counts"
+    }
+  ]
+}
