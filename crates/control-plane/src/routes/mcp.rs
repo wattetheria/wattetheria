@@ -17,7 +17,9 @@ use crate::routes::identity::resolve_identity_context;
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, record_contribution_event,
 };
-use crate::routes::servicenet::envelope::servicenet_invoke_agent_envelope;
+use crate::routes::servicenet::envelope::{
+    normalize_servicenet_invoke_body, servicenet_invoke_agent_envelope,
+};
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::payments::{
     PaymentStatus, PaymentTransaction, SettlementLayer as PaymentSettlementLayer,
@@ -883,6 +885,7 @@ async fn servicenet_invoke_agent_result(
         object.remove("agent_name");
         object.remove("service_address");
     }
+    normalize_servicenet_invoke_body(&mut body, arguments);
     let envelope = match servicenet_invoke_agent_envelope(state, &agent_id, &body).await {
         Ok(envelope) => envelope,
         Err(error) => return tool_error(&json!({"error": error.to_string()})),

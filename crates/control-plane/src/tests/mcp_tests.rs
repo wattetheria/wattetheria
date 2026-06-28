@@ -1385,8 +1385,67 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
         callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
         Some("agent-alpha")
     );
+    let envelope_extensions = &callback_events[0]["event"]["agent_envelope"]["extensions"];
+    assert!(
+        envelope_extensions["nonce"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        envelope_extensions["request_digest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    let issued_at_ms = envelope_extensions["issued_at_ms"]
+        .as_u64()
+        .expect("issued_at_ms should be present");
+    let expires_at_ms = envelope_extensions["expires_at_ms"]
+        .as_u64()
+        .expect("expires_at_ms should be present");
+    assert!(expires_at_ms > issued_at_ms);
 
     callback_server.abort();
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_invoke_servicenet_agent_sync_normalizes_query_to_message() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "invoke_servicenet_agent_sync",
+                "arguments": {
+                    "service_address": "alpha@wattetheria",
+                    "query": "Recommend dishes",
+                    "settlement": alpha_servicenet_settlement()
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(
+        response["result"]["structuredContent"]["output"]["echo"].as_str(),
+        Some("Recommend dishes"),
+        "response: {response}"
+    );
+
     servicenet_server.abort();
 }
 
