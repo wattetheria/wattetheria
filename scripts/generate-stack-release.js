@@ -135,6 +135,10 @@ function resolveArtifacts(component, release) {
   return component.artifacts.map((artifact) => artifact.replace("${release}", release));
 }
 
+function commitUrl(component, commit) {
+  return `https://github.com/${component.repo}/commit/${commit.sha}`;
+}
+
 function loadManifestFromPath(manifestPath) {
   return parseJson(fs.readFileSync(manifestPath, "utf8"), manifestPath);
 }
@@ -250,8 +254,27 @@ function collectCommitRange(repoPath, previousCommit, currentCommit) {
     };
   }
 
-  const output = git(repoPath, ["log", "--format=%H", `${previousCommit}..${currentCommit}`]);
-  const commits = output ? output.split(/\r?\n/).filter(Boolean) : [];
+  const output = git(repoPath, [
+    "log",
+    "--format=%H%x1f%an%x1f%ae%x1f%cI%x1f%s",
+    `${previousCommit}..${currentCommit}`,
+  ]);
+  const commits = output
+    ? output
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          const [sha, authorName, authorEmail, committedAt, ...subjectParts] = line.split("\x1f");
+          return {
+            sha,
+            short_sha: shortSha(sha),
+            title: subjectParts.join("\x1f"),
+            author_name: authorName,
+            author_email: authorEmail,
+            committed_at: committedAt,
+          };
+        })
+    : [];
   return {
     commits,
     boundary: "commit_range",
@@ -266,9 +289,13 @@ function collectPullRequestsForCommits(component, commits) {
   if (SKIP_GITHUB) {
     return {
       pullRequests: [],
+      commits: commits.map((commit) => ({ ...commit, pull_requests: [] })),
+      directCommits: commits.map((commit) => ({ ...commit, pull_requests: [] })),
       warnings: ["GitHub API lookup skipped by STACK_RELEASE_SKIP_GITHUB=1"],
     };
   }
+
+  const commitsWithPullRequests = [];
 
   for (const commit of commits) {
     const response = run(
@@ -277,35 +304,46 @@ function collectPullRequestsForCommits(component, commits) {
         "api",
         "-H",
         "Accept: application/vnd.github+json",
-        `repos/${component.repo}/commits/${commit}/pulls`,
+        `repos/${component.repo}/commits/${commit.sha}/pulls`,
       ],
       { allowFailure: true },
     );
 
     if (!response.ok) {
-      warnings.push(`failed to read pull requests for ${component.repo}@${shortSha(commit)}`);
+      warnings.push(`failed to read pull requests for ${component.repo}@${commit.short_sha}`);
+      commitsWithPullRequests.push({ ...commit, pull_requests: [] });
       continue;
     }
 
     const pullRequests = parseJson(response.stdout || "[]", `${component.repo} pull requests`);
+    const pullRequestsForCommit = [];
     for (const pullRequest of pullRequests) {
       if (!pullRequest.merged_at || pullRequest.base?.ref !== "main") {
         continue;
       }
-      prsByNumber.set(pullRequest.number, {
+      const normalizedPullRequest = {
         number: pullRequest.number,
         title: pullRequest.title,
         url: pullRequest.html_url,
         author: pullRequest.user?.login || "",
         merged_at: pullRequest.merged_at,
-      });
+      };
+      prsByNumber.set(pullRequest.number, normalizedPullRequest);
+      pullRequestsForCommit.push(normalizedPullRequest);
     }
+    commitsWithPullRequests.push({ ...commit, pull_requests: pullRequestsForCommit });
   }
+
+  const directCommits = commitsWithPullRequests.filter((commit) => {
+    return commit.pull_requests.length === 0;
+  });
 
   return {
     pullRequests: Array.from(prsByNumber.values()).sort((left, right) => {
       return new Date(left.merged_at).getTime() - new Date(right.merged_at).getTime();
     }),
+    commits: commitsWithPullRequests,
+    directCommits,
     warnings,
   };
 }
@@ -314,6 +352,8 @@ function collectInitialPullRequests(component) {
   if (SKIP_GITHUB) {
     return {
       pullRequests: [],
+      commits: [],
+      directCommits: [],
       warnings: ["GitHub API lookup skipped by STACK_RELEASE_SKIP_GITHUB=1"],
     };
   }
@@ -340,6 +380,8 @@ function collectInitialPullRequests(component) {
   if (!response.ok) {
     return {
       pullRequests: [],
+      commits: [],
+      directCommits: [],
       warnings: [`failed to list merged pull requests for ${component.repo}`],
     };
   }
@@ -367,6 +409,8 @@ function collectInitialPullRequests(component) {
       .sort((left, right) => {
         return new Date(left.merged_at).getTime() - new Date(right.merged_at).getTime();
       }),
+    commits: [],
+    directCommits: [],
     warnings,
   };
 }
@@ -378,6 +422,10 @@ function collectComponent(component, previousManifest, release) {
   const previousComponent = previousComponentFor(previousManifest, component);
   const previousCommit = previousComponent?.current_commit || previousComponent?.commit || null;
   const range = collectCommitRange(repoPath, previousCommit, currentCommit);
+  if (range.boundary === "previous_commit_not_ancestor") {
+    throw new Error(`${component.repo}: ${range.warning}`);
+  }
+
   const prResult =
     range.boundary === "missing_previous_commit"
       ? collectInitialPullRequests(component)
@@ -399,6 +447,8 @@ function collectComponent(component, previousManifest, release) {
     commit_count: range.commits.length,
     boundary: range.boundary,
     warnings: [range.warning, ...prResult.warnings].filter(Boolean),
+    commits: prResult.commits,
+    direct_commits: prResult.directCommits,
     merged_pull_requests: prResult.pullRequests,
     artifacts: resolveArtifacts(component, release),
   };
@@ -406,8 +456,8 @@ function collectComponent(component, previousManifest, release) {
 
 function renderComponentTable(components) {
   const lines = [
-    "| Component | Repo | Previous | Current | Commits | PRs |",
-    "|---|---|---:|---:|---:|---:|",
+    "| Component | Repo | Previous | Current | Commits | PRs | Direct |",
+    "|---|---|---:|---:|---:|---:|---:|",
   ];
 
   for (const component of components) {
@@ -419,6 +469,7 @@ function renderComponentTable(components) {
         `\`${shortSha(component.current_commit)}\``,
         String(component.commit_count),
         String(component.merged_pull_requests.length),
+        String(component.direct_commits.length),
       ].join(" | ").replace(/^/, "| ").replace(/$/, " |"),
     );
   }
@@ -426,19 +477,47 @@ function renderComponentTable(components) {
   return lines.join("\n");
 }
 
-function renderPullRequests(components) {
-  const lines = ["## Merged PRs", ""];
+function renderPullRequestsForCommit(commit) {
+  if (commit.pull_requests.length === 0) {
+    return "PR: none";
+  }
+  return commit.pull_requests
+    .map((pullRequest) => {
+      return `PR: [#${pullRequest.number} ${markdownEscape(pullRequest.title)}](${pullRequest.url})`;
+    })
+    .join("; ");
+}
+
+function renderRelatedPullRequests(pullRequests) {
+  if (pullRequests.length === 0) {
+    return ["- No related PRs found for this release boundary."];
+  }
+
+  return pullRequests.map((pullRequest) => {
+    const author = pullRequest.author ? ` by @${pullRequest.author}` : "";
+    return `- [#${pullRequest.number} ${markdownEscape(pullRequest.title)}](${pullRequest.url})${author} (${pullRequest.merged_at})`;
+  });
+}
+
+function renderChangesByComponent(components) {
+  const lines = ["## Changes By Component", ""];
 
   for (const component of components) {
     lines.push(`### ${component.name}`, "");
-    if (component.merged_pull_requests.length === 0) {
-      lines.push("- No merged PRs found for this release boundary.");
+    lines.push("#### Related Pull Requests", "");
+    lines.push(...renderRelatedPullRequests(component.merged_pull_requests));
+    lines.push("");
+    lines.push("#### Main Commits", "");
+
+    if (component.commits.length === 0) {
+      lines.push("- No commits found for this release boundary.");
     } else {
-      for (const pullRequest of component.merged_pull_requests) {
-        const author = pullRequest.author ? ` by @${pullRequest.author}` : "";
+      for (const commit of component.commits) {
+        const author = commit.author_name ? ` by ${markdownEscape(commit.author_name)}` : "";
         lines.push(
-          `- [#${pullRequest.number} ${markdownEscape(pullRequest.title)}](${pullRequest.url})${author} (${pullRequest.merged_at})`,
+          `- [\`${commit.short_sha}\`](${commitUrl(component, commit)}) ${markdownEscape(commit.title)}${author} (${commit.committed_at})`,
         );
+        lines.push(`  - ${renderPullRequestsForCommit(commit)}`);
       }
     }
 
@@ -490,7 +569,7 @@ function renderNotes(manifest) {
     lines.push(`Previous release manifest: ${manifest.previous_manifest.source}.`, "");
   }
 
-  lines.push(renderPullRequests(manifest.components));
+  lines.push(renderChangesByComponent(manifest.components));
   lines.push(renderArtifacts(manifest.components));
   lines.push(
     [

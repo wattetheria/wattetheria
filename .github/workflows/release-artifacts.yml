@@ -70,6 +70,7 @@ jobs:
           repository: wattetheria/wattetheria
           ref: ${{ github.ref_name }}
           path: wattetheria
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Checkout wattswarm
@@ -78,6 +79,7 @@ jobs:
           repository: wattetheria/wattswarm
           ref: main
           path: wattswarm
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Checkout watt-did
@@ -86,6 +88,7 @@ jobs:
           repository: wattetheria/watt-did
           ref: main
           path: watt-did
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Checkout watt-wallet
@@ -94,6 +97,7 @@ jobs:
           repository: wattetheria/watt-wallet
           ref: main
           path: watt-wallet
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Checkout watt-servicenet
@@ -102,6 +106,7 @@ jobs:
           repository: wattetheria/watt-servicenet
           ref: main
           path: watt-servicenet
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Checkout wattetheria-gateway
@@ -110,6 +115,7 @@ jobs:
           repository: wattetheria/wattetheria-gateway
           ref: main
           path: wattetheria-gateway
+          fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
       - name: Validate release boundary
