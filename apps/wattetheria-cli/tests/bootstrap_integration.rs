@@ -71,6 +71,54 @@ fn init_command_creates_expected_layout() {
 }
 
 #[test]
+fn identity_commands_emit_single_purpose_outputs() {
+    let tmp = tempdir().unwrap();
+    let data_dir = tmp.path().join("identity-only");
+
+    let init = run_cli(&["identity", "--data-dir", data_dir.to_str().unwrap(), "init"]);
+    assert!(
+        init.status.success(),
+        "identity init failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr),
+    );
+    let init_json: Value = serde_json::from_slice(&init.stdout).expect("single init JSON object");
+    let agent_did = init_json["agent_did"].as_str().expect("agent DID");
+    assert!(agent_did.starts_with("did:key:z"));
+    assert!(init_json.get("control_plane_endpoint").is_none());
+    assert!(init_json.get("token_file").is_none());
+
+    let show = run_cli(&["identity", "--data-dir", data_dir.to_str().unwrap(), "show"]);
+    assert!(
+        show.status.success(),
+        "identity show failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&show.stdout),
+        String::from_utf8_lossy(&show.stderr),
+    );
+    let show_json: Value = serde_json::from_slice(&show.stdout).expect("single show JSON object");
+    assert_eq!(show_json["agent_did"].as_str(), Some(agent_did));
+    assert!(show_json.get("control_plane_endpoint").is_none());
+    assert!(show_json.get("token_file").is_none());
+
+    let export_seed = run_cli(&[
+        "identity",
+        "--data-dir",
+        data_dir.to_str().unwrap(),
+        "export-seed",
+    ]);
+    assert!(
+        export_seed.status.success(),
+        "identity export-seed failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&export_seed.stdout),
+        String::from_utf8_lossy(&export_seed.stderr),
+    );
+    let seed = String::from_utf8(export_seed.stdout).expect("seed utf8");
+    let seed = seed.trim();
+    assert_eq!(seed.len(), 64);
+    assert!(seed.chars().all(|ch| ch.is_ascii_hexdigit()));
+}
+
+#[test]
 fn doctor_fails_without_running_control_plane() {
     let tmp = tempdir().unwrap();
     let data_dir = tmp.path().join("node");

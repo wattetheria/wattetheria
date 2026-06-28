@@ -564,11 +564,11 @@ fn run_data(data_dir: &Path, command: DataCommand) -> Result<()> {
 }
 
 fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
-    run_init(data_dir)?;
-    let identity = load_or_create_wallet_backed_identity(data_dir)
-        .context("load or create wallet-backed identity")?;
     match command {
         IdentityCommand::Init => {
+            fs::create_dir_all(data_dir).context("create identity data directory")?;
+            let identity = load_or_create_wallet_backed_identity(data_dir)
+                .context("load or create wallet-backed identity")?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
