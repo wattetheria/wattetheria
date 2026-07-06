@@ -1,11 +1,64 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::http::header::CONTENT_TYPE;
-use axum::response::{Html, IntoResponse};
+use axum::response::{Html, IntoResponse, Response};
 
 use crate::state::ControlPlaneState;
 
 const SUPERVISION_CONSOLE_HTML: &str = include_str!("supervision_console/template.html");
 const SUPERVISION_FAVICON_PNG: &[u8] = include_bytes!("supervision_console/public/favicon.png");
+const SUPERVISION_FONT_FILES: &[(&str, &[u8])] = &[
+    (
+        "albert-sans-v4-latin-regular.woff2",
+        include_bytes!("supervision_console/public/fonts/albert-sans-v4-latin-regular.woff2"),
+    ),
+    (
+        "albert-sans-v4-latin-500.woff2",
+        include_bytes!("supervision_console/public/fonts/albert-sans-v4-latin-500.woff2"),
+    ),
+    (
+        "albert-sans-v4-latin-600.woff2",
+        include_bytes!("supervision_console/public/fonts/albert-sans-v4-latin-600.woff2"),
+    ),
+    (
+        "dm-sans-v17-latin-regular.woff2",
+        include_bytes!("supervision_console/public/fonts/dm-sans-v17-latin-regular.woff2"),
+    ),
+    (
+        "dm-sans-v17-latin-500.woff2",
+        include_bytes!("supervision_console/public/fonts/dm-sans-v17-latin-500.woff2"),
+    ),
+    (
+        "dm-sans-v17-latin-600.woff2",
+        include_bytes!("supervision_console/public/fonts/dm-sans-v17-latin-600.woff2"),
+    ),
+    (
+        "fraunces-v38-latin-600.woff2",
+        include_bytes!("supervision_console/public/fonts/fraunces-v38-latin-600.woff2"),
+    ),
+    (
+        "outfit-v15-latin-regular.woff2",
+        include_bytes!("supervision_console/public/fonts/outfit-v15-latin-regular.woff2"),
+    ),
+    (
+        "outfit-v15-latin-500.woff2",
+        include_bytes!("supervision_console/public/fonts/outfit-v15-latin-500.woff2"),
+    ),
+    (
+        "outfit-v15-latin-600.woff2",
+        include_bytes!("supervision_console/public/fonts/outfit-v15-latin-600.woff2"),
+    ),
+    (
+        "playwrite-us-trad-v11-latin-regular.woff2",
+        include_bytes!(
+            "supervision_console/public/fonts/playwrite-us-trad-v11-latin-regular.woff2"
+        ),
+    ),
+    (
+        "OFL.txt",
+        include_bytes!("supervision_console/public/fonts/OFL.txt"),
+    ),
+];
 const SUPERVISION_CONSOLE_CSS: &str = concat!(
     include_str!("supervision_console/css/theme.css"),
     "\n",
@@ -101,6 +154,23 @@ pub(crate) async fn supervision_console(
 
 pub(crate) async fn supervision_favicon_png() -> impl IntoResponse {
     ([(CONTENT_TYPE, "image/png")], SUPERVISION_FAVICON_PNG)
+}
+
+pub(crate) async fn supervision_font(Path(file): Path<String>) -> Response {
+    for (name, bytes) in SUPERVISION_FONT_FILES {
+        if *name == file {
+            let content_type = if std::path::Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("woff2"))
+            {
+                "font/woff2"
+            } else {
+                "text/plain; charset=utf-8"
+            };
+            return ([(CONTENT_TYPE, content_type)], *bytes).into_response();
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 fn render_supervision_console(bootstrap_control_token: &str) -> String {

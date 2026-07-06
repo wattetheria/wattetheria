@@ -88,8 +88,8 @@
       setStatus("Local console settings saved.");
     }
 
-    const themeOptions = ["teal", "emerald", "forest", "blue-royal", "blue-sky", "indigo"];
-    const defaultTheme = "forest";
+    const themeOptions = ["forest", "matcha", "butter", "chocolate"];
+    const defaultTheme = "matcha";
 
     function readStoredSettings() {
       try {

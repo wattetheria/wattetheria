@@ -11,15 +11,19 @@
     }
 
     .social-requests-list {
-      max-height: var(--console-thread-workspace-height, 70vh);
+      max-height: calc(var(--console-thread-workspace-height, 70vh) + var(--console-social-stack-offset) - 4.14rem);
       min-height: 0;
       overflow-y: auto;
     }
 
+    /* Panel bottom must stay flush with the hives layout, whose height is
+       thread-workspace-height + social-stack-offset inside a padding-less
+       panel. This panel wraps the workspace in 1px border + 1.25rem padding
+       + the heading block (~1.64rem), so subtract that chrome (4.14rem). */
     .dm-workspace {
       display: grid;
       grid-template-columns: minmax(13rem, 19rem) minmax(0, 1fr);
-      height: var(--console-thread-workspace-height);
+      height: calc(var(--console-thread-workspace-height) + var(--console-social-stack-offset) - 4.14rem);
       min-height: 28rem;
       border: 1px solid var(--line);
       border-radius: var(--radius);

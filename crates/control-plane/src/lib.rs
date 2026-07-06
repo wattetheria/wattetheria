@@ -112,6 +112,7 @@ fn console_router() -> Router<ControlPlaneState> {
             "/favicon.png",
             get(routes::console::supervision_favicon_png),
         )
+        .route("/fonts/{file}", get(routes::console::supervision_font))
         .route("/supervision", get(routes::console::supervision_console))
         .route(
             "/supervision/console",
