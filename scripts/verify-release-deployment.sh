@@ -39,7 +39,7 @@ require_text "$ENV_FILE" "WATTETHERIA_BRAIN_API_KEY=" "release env template must
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_SESSION_MODE=stable" "release env template must default to stable runtime sessions"
 require_text "$ENV_FILE" "WATTSWARM_IROH_HOST_PORT=4002" "release env template must define the host Iroh UDP port"
 require_text "$ENV_FILE" "WATTSWARM_IROH_BIND_ADDR=0.0.0.0:4002" "release env template must define the fixed Iroh UDP bind address"
-require_text "$ENV_FILE" "WATTSWARM_IROH_PUBLISH_DIRECT_ADDRS=true" "release env template must publish Iroh direct addresses by default"
+require_text "$ENV_FILE" "WATTSWARM_IROH_PUBLISH_DIRECT_ADDRS=false" "release env template must publish Iroh direct addresses by default"
 require_text "$ENV_FILE" "WATTSWARM_IROH_DATA_PLANE_START_TIMEOUT_MS=120000" "release env template must define the Iroh data plane startup timeout"
 require_text "$ENV_FILE" "WATTETHERIA_GATEWAY_CONFIG_PATH=/var/lib/wattswarm/startup_config.json" "release env template must expose the gateway config path"
 
