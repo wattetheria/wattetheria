@@ -1970,17 +1970,17 @@ fn assert_supervision_home_game_block(supervision_home_json: &Value, expected_pu
             .len()
             >= 2
     );
-    assert!(
+    assert_eq!(
         supervision_home_json["game"]["mission_pack"]["upcoming_templates"]
             .as_array()
             .unwrap()
-            .len()
-            == usize::try_from(
-                supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
-                    .as_u64()
-                    .unwrap()
-            )
-            .unwrap()
+            .len(),
+        usize::try_from(
+            supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
+                .as_u64()
+                .unwrap()
+        )
+        .unwrap()
     );
     assert!(
         supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]

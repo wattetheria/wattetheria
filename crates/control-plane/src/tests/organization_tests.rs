@@ -506,11 +506,12 @@ async fn organization_endpoints_and_views_work() {
             .as_str(),
         Some("aurora-consortium")
     );
-    assert!(
-            supervision_home_json["game"]["organizations"][0]["autonomy_track"]["eligible_for_subnet_charter"]
-                .as_bool()
-                == Some(true)
-        );
+    assert_eq!(
+        supervision_home_json["game"]["organizations"][0]["autonomy_track"]
+            ["eligible_for_subnet_charter"]
+            .as_bool(),
+        Some(true)
+    );
 }
 
 #[tokio::test]
