@@ -46,6 +46,7 @@
       if (nextPage === "skills" && !agentSkills.length) {
         loadAgentSkills().catch((error) => setStatus(error.message, true));
       }
+      restartMessageRefreshForCurrentView();
     }
 
     function normalizeToken(raw) {

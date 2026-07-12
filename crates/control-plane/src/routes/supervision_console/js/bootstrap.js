@@ -4,6 +4,7 @@
     qs("identity-display-cancel")?.addEventListener("click", cancelIdentityDisplayNameEdit);
     qs("identity-display-form")?.addEventListener("submit", saveIdentityDisplayName);
     publicIdEl.addEventListener("change", () => {
+      stopMessageRefresh();
       identityDisplayEditing = false;
       syncIdentityDisplayForm();
     });
@@ -73,6 +74,7 @@
     syncSwarmConsoleLink();
     loadSettings();
     showPage(pageFromHash(), false);
+    initMessageRefresh();
     if (tokenEl.value.trim()) {
       loadIdentities().then(() => {
         if (publicIdEl.value) { refreshConsole(); loadBrainConfig(); }

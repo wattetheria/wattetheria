@@ -94,7 +94,7 @@
       }
     }
 
-    function renderTopicMessages(payload) {
+    function renderTopicMessages(payload, options = {}) {
       const hives = safeArray(payload.public_topics);
       const activeHive = hives.find((row) => hiveKey(row) === activeHiveKey);
       if (!activeHive) {
@@ -142,7 +142,7 @@
           </div>
         </div>
       `);
-      scrollHiveMessagesToLatest();
+      restoreMessageScroll(qs("hive-messages-list"), options.scrollState);
     }
 
     function renderHiveMessageContent(row) {
@@ -410,25 +410,47 @@
       );
     }
 
-    async function loadHiveMessages(hive) {
+    async function loadHiveMessages(hive, options = {}) {
       const key = hiveKey(hive);
-      if (!hive.feed_key || !hive.scope_hint || hiveMessageLoadingKey === key) return;
+      if (!hive.feed_key || !hive.scope_hint || hiveMessageLoadingKey === key) {
+        return { ok: true, changed: false };
+      }
+      const silent = options.silent === true;
+      const scrollState = silent ? captureMessageScroll(qs("hive-messages-list")) : null;
       hiveMessageLoadingKey = key;
       hiveMessageErrors.delete(key);
-      renderTopicMessages(lastConsolePayload || { public_topics: [], public_topic_messages: [] });
+      if (!silent) {
+        renderTopicMessages(lastConsolePayload || { public_topics: [], public_topic_messages: [] });
+      }
       const params = new URLSearchParams({
         feed_key: hive.feed_key,
         scope_hint: hive.scope_hint,
         limit: String(Math.max(1, Math.min(Number(limitEl.value) || 50, 200))),
       });
       if (hive.network_id) params.set("network_id", hive.network_id);
+      let outcome = { ok: false, changed: false };
       try {
         const response = await fetchJson(`/v1/client/hives/messages?${params.toString()}`, { auth: true });
-        hiveMessageCache.set(key, safeArray(response.messages));
+        const nextMessages = safeArray(response.messages);
+        const hadCachedMessages = hiveMessageCache.has(key);
+        const previousMessages = safeArray(hiveMessageCache.get(key));
+        outcome = {
+          ok: true,
+          changed: !hadCachedMessages || !messageCollectionsEqual(previousMessages, nextMessages),
+        };
+        if (outcome.changed) {
+          hiveMessageCache.set(key, nextMessages);
+        }
       } catch (error) {
         hiveMessageErrors.set(key, error.message || "Hive messages unavailable.");
       } finally {
         if (hiveMessageLoadingKey === key) hiveMessageLoadingKey = "";
-        renderTopicMessages(lastConsolePayload || { public_topics: [], public_topic_messages: [] });
+        if (!silent || outcome.changed || (!outcome.ok && !hiveMessageCache.has(key))) {
+          renderTopicMessages(
+            lastConsolePayload || { public_topics: [], public_topic_messages: [] },
+            { scrollState },
+          );
+        }
       }
+      return outcome;
     }

@@ -127,6 +127,8 @@ const SUPERVISION_CONSOLE_JS: &str = concat!(
     "\n",
     include_str!("supervision_console/js/hives.js"),
     "\n",
+    include_str!("supervision_console/js/message-refresh.js"),
+    "\n",
     include_str!("supervision_console/js/identity-list.js"),
     "\n",
     include_str!("supervision_console/js/wallet.js"),
@@ -178,4 +180,43 @@ fn render_supervision_console(bootstrap_control_token: &str) -> String {
         .replace("__SUPERVISION_CONSOLE_CSS__", SUPERVISION_CONSOLE_CSS)
         .replace("__SUPERVISION_CONSOLE_JS__", SUPERVISION_CONSOLE_JS)
         .replace("__BOOTSTRAP_CONTROL_TOKEN__", bootstrap_control_token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn message_refresh_script_loads_before_console_bootstrap() {
+        let polling = SUPERVISION_CONSOLE_JS
+            .find("const messageRefreshBaseDelayMs")
+            .expect("message refresh script");
+        let bootstrap = SUPERVISION_CONSOLE_JS
+            .find("document.getElementById(\"load-identities\")")
+            .expect("console bootstrap script");
+
+        assert!(polling < bootstrap);
+    }
+
+    #[test]
+    fn message_refresh_is_visibility_aware_and_scoped_to_message_views() {
+        let script = include_str!("supervision_console/js/message-refresh.js");
+
+        assert!(script.contains("document.visibilityState === \"visible\""));
+        assert!(script.contains("page === \"swarm\" || page === \"social\""));
+        assert!(script.contains("messageRefreshBaseDelayMs = 10000"));
+        assert!(script.contains("messageRefreshMaxDelayMs = 60000"));
+        assert!(script.contains("/v1/client/friends/messages?"));
+        assert!(script.contains("lastConsolePayload !== payload"));
+        assert!(!script.contains("refreshConsole("));
+    }
+
+    #[test]
+    fn message_refresh_handles_empty_hive_recovery_and_avoids_duplicate_dm_fetch() {
+        let hives = include_str!("supervision_console/js/hives.js");
+        let refresh = include_str!("supervision_console/js/refresh.js");
+
+        assert!(hives.contains("changed: !hadCachedMessages ||"));
+        assert!(refresh.contains("restartMessageRefreshForCurrentView({ immediate: false })"));
+    }
 }

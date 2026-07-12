@@ -29,6 +29,7 @@
         const payload = signed.payload || signed;
         Object.assign(payload, localSocial);
         renderSnapshot(payload);
+        restartMessageRefreshForCurrentView({ immediate: false });
         const diagnosticsError = await diagnosticsRequest;
         if (diagnosticsError) throw diagnosticsError;
         lastRefreshEl.textContent = `Refreshed ${new Date().toLocaleString()}`;

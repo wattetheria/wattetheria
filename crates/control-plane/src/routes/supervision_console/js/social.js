@@ -598,7 +598,7 @@
       setTimeout(scroll, 120);
     }
 
-    function renderDmMessages(payload) {
+    function renderDmMessages(payload, options = {}) {
       const target = qs("dm-list");
       const conversations = groupDmConversations(payload);
       if (!conversations.length) {
@@ -634,7 +634,7 @@
           <div class="dm-thread-view">${renderDmThread(activeConversation)}</div>
         </div>
       `;
-      scrollDmThreadToLatest(target);
+      restoreMessageScroll(target.querySelector(".dm-bubble-list"), options.scrollState);
       target.querySelectorAll("[data-dm-thread]").forEach((button) => {
         button.addEventListener("click", () => {
           activeDmThreadKey = button.dataset.dmThread || "";
