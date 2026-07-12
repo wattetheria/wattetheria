@@ -10,7 +10,7 @@
     }
 
     function selectedRuntimeSessionMode() {
-      return document.querySelector('input[name="runtime-session-mode"]:checked')?.value || "stable";
+      return document.querySelector('input[name="runtime-session-mode"]:checked')?.value || "stable_per_scope";
     }
 
     function defaultRuntimeModel(adapter) {
@@ -126,9 +126,9 @@
     }
 
     function setRuntimeSessionMode(mode) {
-      const value = mode || "stable";
+      const value = mode || "stable_per_scope";
       const input = document.querySelector(`input[name="runtime-session-mode"][value="${value}"]`);
-      (input || document.querySelector('input[name="runtime-session-mode"][value="stable"]')).checked = true;
+      (input || document.querySelector('input[name="runtime-session-mode"][value="stable_per_scope"]')).checked = true;
     }
 
     async function loadBrainConfig() {
@@ -141,7 +141,7 @@
         const data = await fetchJson("/v1/brain/config", { auth: true });
         supportedRuntimeAdapters = data.supported_runtime_adapters || [];
         defaultRuntimeBaseUrl = data.default_runtime_base_url || "";
-        setRuntimeSessionMode(data.runtime_session_mode || "stable");
+        setRuntimeSessionMode(data.runtime_session_mode || "stable_per_scope");
         const cfg = data.config || {};
         const kind = (cfg && cfg.kind) || "openai-compatible";
         let runtimeLabel = "not configured";

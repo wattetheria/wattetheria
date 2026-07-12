@@ -28,6 +28,7 @@ pub enum AgentRuntimeAdapter {
 pub enum RuntimeSessionMode {
     #[default]
     Stable,
+    StablePerScope,
     NewPerInteraction,
 }
 
@@ -36,6 +37,7 @@ impl RuntimeSessionMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Stable => "stable",
+            Self::StablePerScope => "stable_per_scope",
             Self::NewPerInteraction => "new_per_interaction",
         }
     }
@@ -43,6 +45,7 @@ impl RuntimeSessionMode {
     pub fn from_key(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "" | "stable" | "single_stable_session" => Ok(Self::Stable),
+            "stable_per_scope" | "stable-per-scope" | "scoped_stable" => Ok(Self::StablePerScope),
             "new_per_interaction" | "new-per-interaction" | "new_session_per_interaction" => {
                 Ok(Self::NewPerInteraction)
             }
@@ -370,6 +373,20 @@ mod tests {
         assert_eq!(
             context.session_id(),
             "wattetheria:servicenet:did:key:zCaller:stripe-agent:mainnet:watt-etheria"
+        );
+    }
+
+    #[test]
+    fn runtime_session_modes_parse_scoped_stable_aliases() {
+        for key in ["stable_per_scope", "stable-per-scope", "scoped_stable"] {
+            assert_eq!(
+                RuntimeSessionMode::from_key(key).unwrap(),
+                RuntimeSessionMode::StablePerScope
+            );
+        }
+        assert_eq!(
+            RuntimeSessionMode::StablePerScope.as_str(),
+            "stable_per_scope"
         );
     }
 

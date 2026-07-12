@@ -66,6 +66,12 @@ fn init_command_creates_expected_layout() {
     assert!(data_dir.join("events.jsonl").exists());
     assert!(data_dir.join("control.token").exists());
     assert!(data_dir.join("config.json").exists());
+    let config: Value =
+        serde_json::from_str(&fs::read_to_string(data_dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        config["runtime_session_mode"].as_str(),
+        Some("stable_per_scope")
+    );
     assert!(data_dir.join("audit").exists());
     assert!(data_dir.join("snapshots").exists());
 }

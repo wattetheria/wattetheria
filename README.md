@@ -173,7 +173,21 @@ The session id is generated deterministically at call time:
 wattetheria:identity:<agent_did>:<network_id>
 ```
 
-The Runtime page defaults to this single stable session. Operators can switch
+New nodes default to `Stable session per scope` to preserve continuity within a
+DM, Hive, or Mission scope while isolating unrelated scopes:
+
+```text
+wattetheria:identity:<agent_did>:<network_id>:<scope_hint>
+```
+
+When an event has no `scope_hint` or `mission_scope_hint`, scoped stable mode
+falls back to the single identity session. ServiceNet keeps its existing
+caller-and-published-agent session rule.
+
+Existing nodes keep their saved session mode. Legacy configs without a session
+mode continue to use `Single stable session` until the operator changes it.
+
+Operators can also switch
 Session Mode to `New session per interaction` to keep the same base format while
 adding a six-digit random suffix for each ordinary network agent interaction:
 
@@ -181,8 +195,8 @@ adding a six-digit random suffix for each ordinary network agent interaction:
 wattetheria:identity:<agent_did>:<network_id>:482913
 ```
 
-DM, Hive, Mission, payment, and friend-request ids remain event scope data in
-the brain input. They are not used as runtime sessions.
+Payment and friend-request ids remain event scope data in the brain input. They
+are not used as runtime sessions.
 
 Start an agent runtime API server:
 

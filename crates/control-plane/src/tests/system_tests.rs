@@ -45,6 +45,15 @@ async fn brain_doctor_updates_attach_status() {
 
 #[tokio::test]
 async fn brain_config_save_updates_deploy_env_and_runtime_label() {
+    assert_brain_config_session_mode_roundtrip("stable_per_scope").await;
+}
+
+#[tokio::test]
+async fn brain_config_preserves_new_per_interaction_session_mode() {
+    assert_brain_config_session_mode_roundtrip("new_per_interaction").await;
+}
+
+async fn assert_brain_config_session_mode_roundtrip(runtime_session_mode: &str) {
     let (dir, app, token, _, _state) = build_test_app(10);
 
     let updated = request_json(
@@ -59,7 +68,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
                     "kind": "openai-compatible",
                     "adapter": "openclaw",
                     "session_header_name": "X-OpenClaw-Thread",
-                    "runtime_session_mode": "new_per_interaction",
+                    "runtime_session_mode": runtime_session_mode,
                     "base_url": "http://127.0.0.1:18789/v1",
                     "model": "openclaw",
                     "api_key": "secret-runtime-key"
@@ -84,7 +93,9 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=WATTETHERIA_BRAIN_API_KEY"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_RUNTIME_ADAPTER=openclaw"));
     assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_HEADER_NAME=X-OpenClaw-Thread"));
-    assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_MODE=new_per_interaction"));
+    assert!(env_body.contains(&format!(
+        "WATTETHERIA_BRAIN_SESSION_MODE={runtime_session_mode}"
+    )));
     assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY=secret-runtime-key"));
     assert!(!env_body.contains("WATTETHERIA_BRAIN_API_KEY_ENV=secret-runtime-key"));
     assert!(!env_body.lines().any(|line| line.starts_with("OPENCLAW_")));
@@ -93,7 +104,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
         serde_json::from_str(&fs::read_to_string(dir.path().join("config.json")).unwrap()).unwrap();
     assert_eq!(
         config_body["runtime_session_mode"].as_str(),
-        Some("new_per_interaction")
+        Some(runtime_session_mode)
     );
 
     let loaded = authed_get_json(app.clone(), &token, "/v1/brain/config").await;
@@ -108,7 +119,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     );
     assert_eq!(
         loaded["runtime_session_mode"].as_str(),
-        Some("new_per_interaction")
+        Some(runtime_session_mode)
     );
     assert_eq!(
         loaded["config"]["runtime_adapter"]["session_header_name"].as_str(),
@@ -143,7 +154,7 @@ async fn brain_config_save_updates_deploy_env_and_runtime_label() {
     .await;
     assert_eq!(
         preserved["runtime_session_mode"].as_str(),
-        Some("new_per_interaction")
+        Some(runtime_session_mode)
     );
 }
 

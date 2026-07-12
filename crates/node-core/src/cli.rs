@@ -47,10 +47,23 @@ pub struct Cli {
     pub brain_runtime_adapter: Option<String>,
     #[arg(long)]
     pub brain_session_header_name: Option<String>,
-    #[arg(long, default_value = "stable")]
+    #[arg(long, default_value = "stable_per_scope")]
     pub brain_runtime_session_mode: String,
     #[arg(long, default_value_t = false)]
     pub autonomy_enabled: bool,
     #[arg(long, default_value_t = 30)]
     pub autonomy_interval_sec: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn runtime_session_mode_defaults_to_scoped_stable() {
+        let cli = Cli::try_parse_from(["wattetheria-kernel"]).expect("default CLI");
+
+        assert_eq!(cli.brain_runtime_session_mode, "stable_per_scope");
+    }
 }

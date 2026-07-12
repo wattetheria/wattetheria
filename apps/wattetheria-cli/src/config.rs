@@ -68,7 +68,7 @@ impl Default for LocalConfig {
             control_plane_bind: bind,
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
-            runtime_session_mode: RuntimeSessionMode::Stable,
+            runtime_session_mode: RuntimeSessionMode::StablePerScope,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             servicenet_registrations: Vec::new(),
@@ -411,9 +411,25 @@ async fn wait_for_control_plane(endpoint: &str, token: &str, timeout_seconds: u6
 #[cfg(test)]
 mod tests {
     use super::{LocalConfig, append_kernel_runtime_args};
+    use serde_json::json;
     use std::path::Path;
     use std::process::Command;
     use wattetheria_kernel::brain::RuntimeSessionMode;
+
+    #[test]
+    fn new_local_config_defaults_to_scoped_stable_sessions() {
+        assert_eq!(
+            LocalConfig::default().runtime_session_mode,
+            RuntimeSessionMode::StablePerScope
+        );
+    }
+
+    #[test]
+    fn legacy_config_without_session_mode_keeps_stable_default() {
+        let config: LocalConfig = serde_json::from_value(json!({})).expect("legacy config");
+
+        assert_eq!(config.runtime_session_mode, RuntimeSessionMode::Stable);
+    }
 
     #[test]
     fn kernel_runtime_args_include_autonomy_settings() {

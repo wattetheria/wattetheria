@@ -55,6 +55,70 @@ fn assert_collective_skill_gate(
 }
 
 #[tokio::test]
+async fn agent_events_prefer_transport_scope_hint_for_scoped_stable_runtime_sessions() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    *state.runtime_session_mode.write().await =
+        wattetheria_kernel::brain::RuntimeSessionMode::StablePerScope;
+    let event_id = "evt-scoped-runtime-session-1";
+    let remote_identity = Identity::new_random();
+    let agent_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "node-source",
+        Some(&state.agent_did),
+        "hive.message.post",
+        json!({
+            "content": "hello",
+            "scope_hint": "group:crew-7"
+        }),
+    );
+
+    let response = request_json(
+        app,
+        Request::post("/agent-events")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": event_id,
+                        "event_type": "topic_message_requires_reply",
+                        "source_kind": "topic_message",
+                        "source_node_id": "node-source",
+                        "target_executor": "core-agent",
+                        "agent_envelope": agent_envelope,
+                        "payload": {
+                            "network_id": "mainnet:watt-etheria",
+                            "scope_hint": "group:crew-7",
+                            "content": {
+                                "scope_hint": "group:message-content-must-not-route-session"
+                            },
+                            "message_id": "message-scoped-runtime-session-1",
+                            "topic_content": "hello"
+                        },
+                        "requires_commit": false,
+                        "allowed_actions": ["reply", "ignore"],
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true), "{response}");
+    let received = callback_received_diagnostic(&state.data_dir, event_id);
+    let expected_session_id = format!(
+        "wattetheria:identity:{}:mainnet:watt-etheria:group:crew-7",
+        state.agent_did
+    );
+    assert_eq!(
+        received["brain_input"]["runtime_session_id"].as_str(),
+        Some(expected_session_id.as_str())
+    );
+}
+
+#[tokio::test]
 async fn agent_events_scope_collective_topic_actions_without_changing_regular_replies() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
     let data_dir = state.data_dir.clone();
@@ -1517,7 +1581,7 @@ async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
         brain_input["payload"]["topic_content"]["content"].as_str(),
         Some("hello")
     );
-    assert_eq!(brain_input["payload"]["content"].as_str(), Some("hello"));
+    assert!(brain_input["payload"]["content"].is_null());
 
     server.abort();
 }

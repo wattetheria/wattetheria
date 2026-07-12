@@ -486,8 +486,12 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                     <label class="field-label">Session Mode</label>
                     <div class="runtime-adapter-options" role="radiogroup" aria-label="Runtime session mode">
                       <label class="runtime-adapter-option">
-                        <input type="radio" name="runtime-session-mode" value="stable" checked>
+                        <input type="radio" name="runtime-session-mode" value="stable">
                         <span class="runtime-adapter-name">Single stable session</span>
+                      </label>
+                      <label class="runtime-adapter-option">
+                        <input type="radio" name="runtime-session-mode" value="stable_per_scope" checked>
+                        <span class="runtime-adapter-name">Stable session per scope</span>
                       </label>
                       <label class="runtime-adapter-option">
                         <input type="radio" name="runtime-session-mode" value="new_per_interaction">

@@ -184,7 +184,7 @@ fn build_brain_event_input(
         "dedupe_key": event.dedupe_key,
         "created_at": event.created_at,
         "agent_envelope": event.agent_envelope,
-        "payload": sanitize_agent_event_payload_for_brain(&event.payload),
+        "payload": build_brain_event_payload(event, network_id),
     });
     if let Some(session_id) = runtime_session_id {
         input["runtime_session_id"] = Value::String(session_id);
@@ -237,6 +237,70 @@ fn sanitize_agent_event_payload_for_brain(value: &Value) -> Value {
                 .collect(),
         ),
         _ => value.clone(),
+    }
+}
+
+fn build_brain_event_payload(event: &AgentEventEnvelope, network_id: &str) -> Value {
+    let mut payload = sanitize_agent_event_payload_for_brain(&event.payload);
+    if event.event_type != "topic_message_requires_reply" {
+        return payload;
+    }
+
+    let Some(envelope) = event.agent_envelope.as_ref() else {
+        return payload;
+    };
+    let Some(signed_content) = envelope
+        .message
+        .pointer("/payload/content")
+        .or_else(|| envelope.message.get("content"))
+        .filter(|content| content.is_string())
+    else {
+        return payload;
+    };
+    let canonical_author_node_id = envelope
+        .source_node_id
+        .as_ref()
+        .or(event.source_node_id.as_ref())
+        .map(|value| Value::String(value.clone()));
+    let canonical_network_id = envelope
+        .message
+        .get("network_id")
+        .filter(|value| value.as_str() == Some(network_id));
+    let Some(payload_object) = payload.as_object_mut() else {
+        return payload;
+    };
+
+    remove_matching_payload_field(payload_object, "content", Some(signed_content));
+    remove_matching_payload_field(payload_object, "topic_content", Some(signed_content));
+
+    remove_matching_payload_field(
+        payload_object,
+        "author_node_id",
+        canonical_author_node_id.as_ref(),
+    );
+    remove_matching_payload_field(payload_object, "feed_key", envelope.message.get("feed_key"));
+    remove_matching_payload_field(payload_object, "network_id", canonical_network_id);
+    remove_matching_payload_field(
+        payload_object,
+        "reply_to_message_id",
+        envelope.message.pointer("/payload/reply_to_message_id"),
+    );
+    remove_matching_payload_field(
+        payload_object,
+        "scope_hint",
+        envelope.message.get("scope_hint"),
+    );
+
+    payload
+}
+
+fn remove_matching_payload_field(
+    payload: &mut serde_json::Map<String, Value>,
+    key: &str,
+    canonical: Option<&Value>,
+) {
+    if canonical.is_some_and(|canonical| payload.get(key) == Some(canonical)) {
+        payload.remove(key);
     }
 }
 
@@ -560,6 +624,28 @@ fn mission_lifecycle_string_from_event(event: &AgentEventEnvelope, key: &str) ->
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn runtime_session_scope_hint_from_event(event: &AgentEventEnvelope) -> Option<String> {
+    non_empty_owned(event.payload.get("scope_hint").and_then(Value::as_str))
+        .or_else(|| {
+            non_empty_owned(
+                event
+                    .agent_envelope
+                    .as_ref()
+                    .and_then(|envelope| envelope.message.get("scope_hint"))
+                    .and_then(Value::as_str),
+            )
+        })
+        .or_else(|| {
+            non_empty_owned(
+                event
+                    .payload
+                    .pointer("/agent_envelope/message/scope_hint")
+                    .and_then(Value::as_str),
+            )
+        })
+        .or_else(|| mission_lifecycle_string_from_event(event, "mission_scope_hint"))
 }
 
 fn payment_event_bad_request(message: impl Into<String>) -> Response {
@@ -1888,9 +1974,11 @@ async fn process_agent_event_decision(
     add_mission_allowed_actions(state, &mut event);
     let network_id = resolve_agent_event_network_id(state, &event).await;
     let runtime_session_mode = *state.runtime_session_mode.read().await;
+    let runtime_session_scope_hint = runtime_session_scope_hint_from_event(&event);
     let runtime_session_id = crate::runtime_sessions::agent_event_runtime_session_id(
         &state.agent_did,
         &network_id,
+        runtime_session_scope_hint.as_deref(),
         runtime_session_mode,
     );
     let input = build_brain_event_input(state, &event, &network_id, runtime_session_id);
@@ -2046,6 +2134,128 @@ mod tests {
             dedupe_key: None,
             created_at: 1,
         }
+    }
+
+    fn test_agent_envelope(message: Value) -> SwarmAgentEnvelope {
+        SwarmAgentEnvelope {
+            protocol: "google_a2a".to_owned(),
+            transport_profile: Some("wattswarm_mesh".to_owned()),
+            source_agent_id: Some("did:key:zSource".to_owned()),
+            target_agent_id: Some("did:key:zTarget".to_owned()),
+            source_node_id: Some("node-a".to_owned()),
+            target_node_id: None,
+            capability: Some("hive.message.post".to_owned()),
+            source_agent_card: None,
+            message,
+            extensions: None,
+            signature: Some("signature".to_owned()),
+        }
+    }
+
+    #[test]
+    fn brain_topic_payload_keeps_only_metadata_not_present_in_signed_envelope() {
+        let mut event = test_event(
+            "topic_message_requires_reply",
+            json!({
+                "author_node_id": "node-a",
+                "content": "hello",
+                "created_at": 7,
+                "feed_key": "private.hive",
+                "message_id": "message-1",
+                "network_id": "mainnet:watt-etheria",
+                "reply_to_message_id": null,
+                "scope_hint": "group:dm-1",
+                "topic_content": "hello"
+            }),
+        );
+        event.source_kind = "topic_message".to_owned();
+        event.agent_envelope = Some(test_agent_envelope(json!({
+            "action": "message.post",
+            "feed_key": "private.hive",
+            "network_id": "mainnet:watt-etheria",
+            "payload": {
+                "content": "hello",
+                "reply_to_message_id": null
+            },
+            "scope_hint": "group:dm-1"
+        })));
+
+        let brain_payload = build_brain_event_payload(&event, "mainnet:watt-etheria");
+
+        assert_eq!(
+            brain_payload,
+            json!({
+                "created_at": 7,
+                "message_id": "message-1"
+            })
+        );
+        assert_eq!(event.payload["content"].as_str(), Some("hello"));
+        assert_eq!(event.payload["topic_content"].as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn brain_topic_payload_preserves_structured_topic_content() {
+        let structured_content = json!({
+            "kind": "mission_claim_approved",
+            "mission_id": "mission-1"
+        });
+        let mut event = test_event(
+            "topic_message_requires_reply",
+            json!({
+                "message_id": "message-1",
+                "content": structured_content,
+                "topic_content": structured_content
+            }),
+        );
+        event.agent_envelope = Some(test_agent_envelope(json!({
+            "content": structured_content
+        })));
+
+        let brain_payload = build_brain_event_payload(&event, "mainnet:watt-etheria");
+
+        assert_eq!(brain_payload["content"], structured_content);
+        assert_eq!(brain_payload["topic_content"], structured_content);
+    }
+
+    #[test]
+    fn brain_topic_payload_preserves_fields_that_conflict_with_signed_envelope() {
+        let mut event = test_event(
+            "topic_message_requires_reply",
+            json!({
+                "content": "unsigned content",
+                "message_id": "message-1",
+                "network_id": "other-network",
+                "topic_content": "unsigned content"
+            }),
+        );
+        event.agent_envelope = Some(test_agent_envelope(json!({
+            "network_id": "mainnet:watt-etheria",
+            "payload": {
+                "content": "signed content"
+            }
+        })));
+
+        let brain_payload = build_brain_event_payload(&event, "other-network");
+
+        assert_eq!(brain_payload["content"].as_str(), Some("unsigned content"));
+        assert_eq!(
+            brain_payload["topic_content"].as_str(),
+            Some("unsigned content")
+        );
+        assert_eq!(brain_payload["network_id"].as_str(), Some("other-network"));
+    }
+
+    #[test]
+    fn runtime_session_scope_skips_blank_transport_scope_for_envelope_scope() {
+        let mut event = test_event("topic_message_requires_reply", json!({"scope_hint": "   "}));
+        event.agent_envelope = Some(test_agent_envelope(json!({
+            "scope_hint": "group:envelope-scope"
+        })));
+
+        assert_eq!(
+            runtime_session_scope_hint_from_event(&event).as_deref(),
+            Some("group:envelope-scope")
+        );
     }
 
     #[test]
