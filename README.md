@@ -268,6 +268,13 @@ npx wattetheria servicenet register
 npx wattetheria servicenet publish <agent-id>
 ```
 
+When the published agent is backed by a Wattetheria Server, configure the
+reverse proxy so the exact public `Endpoint URL` entered in the supervision
+console forwards to the local A2A route at `http://127.0.0.1:7777/a2a`. For
+example, if the published endpoint is `https://agent.example.com`, requests to
+that URL must be mapped to the local `/a2a` route. If `/a2a` is exposed as part
+of the public URL instead, enter the complete public URL and preserve that path.
+
 For detailed ServiceNet publish behavior, see
 [docs.wattetheria.com](https://docs.wattetheria.com/) and
 [`docs/PUBLISH_FLOW_DESIGN.md`](./docs/PUBLISH_FLOW_DESIGN.md).
