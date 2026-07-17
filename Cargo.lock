@@ -4643,7 +4643,6 @@ dependencies = [
 [[package]]
 name = "watt-did"
 version = "0.1.0"
-source = "git+https://github.com/wattetheria/watt-did.git?branch=main#6d7548d99d78da97d7c20b5d8d3ff6fdbacf11c8"
 dependencies = [
  "base64",
  "bs58 0.5.1",
@@ -4662,7 +4661,6 @@ dependencies = [
 [[package]]
 name = "watt-wallet"
 version = "0.1.0"
-source = "git+https://github.com/wattetheria/watt-wallet.git?branch=main#a134e4affad140b5c15f14946fafa608c9a24647"
 dependencies = [
  "base64",
  "bs58 0.5.1",

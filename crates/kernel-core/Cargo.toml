@@ -41,8 +41,8 @@ jsonschema.workspace = true
 flate2.workspace = true
 fs2.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
-watt-did = { git = "https://github.com/wattetheria/watt-did.git", branch = "main" }
-watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git", branch = "main" }
+watt-did = { path = "../../../watt-did" }
+watt-wallet = { path = "../../../watt-wallet" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
 [dev-dependencies]
