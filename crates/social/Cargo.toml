@@ -14,4 +14,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-watt-did = { path = "../../../watt-did" }
+watt-did = { git = "https://github.com/wattetheria/watt-did.git", branch = "main" }

@@ -31,7 +31,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_jcs = "0.1"
+serde_jcs = "0.2"
 sha2 = "0.10"
 thiserror = "2.0"
 tokio = { version = "1.44", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }

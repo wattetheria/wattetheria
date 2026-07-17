@@ -865,16 +865,10 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     );
     assert_eq!(extension_binding["rail"].as_str(), Some("x402"));
     assert_eq!(extension_binding["network"].as_str(), Some("base"));
-    let binding_agent_did = extension_binding["agent_did"].as_object().map(|agent_did| {
-        format!(
-            "did:{}:{}",
-            agent_did["method"].as_str().unwrap(),
-            agent_did["id"].as_str().unwrap()
-        )
-    });
+    let binding_agent_did = extension_binding["agent_did"].as_str();
     assert_eq!(
         submitted_card["didDocument"]["id"].as_str(),
-        binding_agent_did.as_deref()
+        binding_agent_did
     );
     assert_eq!(
         submitted_card["didDocument"]["alsoKnownAs"]

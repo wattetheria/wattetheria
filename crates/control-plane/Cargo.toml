@@ -35,8 +35,8 @@ uuid.workspace = true
 wattetheria-social = { path = "../social" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core" }
-watt-did = { path = "../../../watt-did" }
-watt-wallet = { path = "../../../watt-wallet" }
+watt-did = { git = "https://github.com/wattetheria/watt-did.git", branch = "main" }
+watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git", branch = "main" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
 [build-dependencies]
