@@ -25,6 +25,7 @@ use wattetheria_control_plane::{
     push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
     spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
 };
+use wattetheria_kernel::agent_identity::load_or_create_agent_identity;
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
@@ -51,7 +52,6 @@ use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
-use wattetheria_kernel::wallet_identity::WalletSigner;
 use wattetheria_social::SocialStore;
 
 struct RuntimeState {
@@ -127,12 +127,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let local_db = Arc::new(LocalDb::open(&local_db_path)?);
     let social_store = Arc::new(SocialStore::open(&local_db_path)?);
     social_store.import_legacy_db(local_db::legacy_social_db_path(&cli.data_dir))?;
-    let runtime_identity =
-        wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity(&cli.data_dir)?;
-    let signer: Arc<dyn PayloadSigner> = Arc::new(WalletSigner::new(
-        &cli.data_dir,
-        runtime_identity.compat_view(),
-    ));
+    let runtime_identity = load_or_create_agent_identity(&cli.data_dir)?;
+    let signer: Arc<dyn PayloadSigner> = Arc::new(runtime_identity.clone());
     let identity = runtime_identity.compat_view();
     let event_log = EventLog::new(events_path)?;
     let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;

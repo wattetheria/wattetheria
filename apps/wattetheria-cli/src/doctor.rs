@@ -7,12 +7,12 @@ use chrono::Utc;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use wattetheria_kernel::agent_identity::{agent_identity_path, load_agent_identity};
 use wattetheria_kernel::brain::BrainEngine;
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::identity::IdentityCompatView;
 use wattetheria_kernel::mcp::McpRegistry;
 use wattetheria_kernel::signing::{PayloadSigner, sign_payload_with, verify_payload};
-use wattetheria_kernel::wallet_identity::WalletSigner;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct DoctorCheck {
@@ -63,17 +63,10 @@ pub(crate) async fn run_doctor(
     );
     push_check(
         &mut checks,
-        "wallet_metadata",
-        data_dir.join(".watt-wallet/metadata.json").exists(),
-        "wallet metadata exists",
-        "wallet metadata missing",
-    );
-    push_check(
-        &mut checks,
-        "wallet_keystore",
-        data_dir.join(".watt-wallet/keystore.json").exists(),
-        "wallet keystore exists",
-        "wallet keystore missing",
+        "agent_identity_store",
+        agent_identity_path(data_dir).exists(),
+        "private agent identity exists",
+        "private agent identity missing",
     );
     append_signing_check(&mut checks, data_dir);
     append_network_config_check(&mut checks, &config);
@@ -129,7 +122,7 @@ fn append_mcp_registry_check(checks: &mut Vec<DoctorCheck>, data_dir: &Path) {
 }
 
 fn append_signing_check(checks: &mut Vec<DoctorCheck>, data_dir: &Path) {
-    match WalletSigner::from_data_dir(data_dir) {
+    match load_agent_identity(data_dir) {
         Ok(signer) => {
             let probe = serde_json::json!({"probe":"doctor_signing"});
             match sign_payload_with(&probe, &signer)

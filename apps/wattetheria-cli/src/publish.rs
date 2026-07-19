@@ -5,15 +5,11 @@
 //! corresponding command runners in `main.rs`.
 
 use anyhow::{Context, Result, anyhow, bail};
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
 use uuid::Uuid;
 use wattetheria_kernel::servicenet::validate_servicenet_agent_name;
-use wattetheria_kernel::wallet_identity::{LocalWalletState, open_local_wallet};
 
 /// Minimal client for a watt-servicenet node. Only covers the routes the
 /// CLI uses today.
@@ -359,27 +355,6 @@ fn is_ipv4_publicly_routable(addr: std::net::Ipv4Addr) -> bool {
         && !addr.is_multicast()
         && !addr.is_unspecified()
         && !addr.is_documentation()
-}
-
-/// Open the wallet, run a closure that needs `&LocalWalletState`, and surface
-/// errors with a friendlier wallet-not-initialised message.
-pub(crate) fn open_wallet_or_explain(data_dir: &Path) -> Result<LocalWalletState> {
-    open_local_wallet(data_dir).with_context(|| {
-        format!(
-            "no wallet found at `{}` — run `wattetheria identity init --data-dir {}` first",
-            data_dir.display(),
-            data_dir.display()
-        )
-    })
-}
-
-/// Sign a payload with the active wallet identity and base64-encode it.
-pub(crate) fn sign_with_identity_b64(wallet: &LocalWalletState, payload: &[u8]) -> Result<String> {
-    let signature = wallet
-        .wallet
-        .sign_with_active_identity(&wallet.profile, payload)
-        .context("sign with active identity")?;
-    Ok(STANDARD.encode(signature.0))
 }
 
 #[cfg(test)]

@@ -161,6 +161,10 @@ runtime endpoint still uses an OpenAI-compatible chat completions path, but the
 adapter determines how Wattetheria passes the long-lived identity session into
 the runtime loop.
 
+The Agent `did:key` private key is stored independently at
+`.wattetheria/.agent-identity/identity.json`. The sibling
+`.wattetheria/identity.json` is a public compatibility view and never contains
+the private key. 
 ```text
 Hermes  -> X-Hermes-Session-Id
 OpenClaw -> x-openclaw-session-key

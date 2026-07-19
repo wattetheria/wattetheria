@@ -22,6 +22,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use wattetheria_kernel::agent_identity::{
+    agent_identity_path, load_agent_identity, load_or_create_agent_identity,
+};
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::{CapabilityPolicy, TrustLevel};
 use wattetheria_kernel::civilization::identities::{
@@ -47,10 +50,7 @@ use wattetheria_kernel::servicenet::{
 };
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
-use wattetheria_kernel::wallet_identity::{
-    WalletSigner, active_payment_account_binding_proof, load_or_create_wallet_backed_identity,
-    load_wallet_backed_identity, open_local_wallet,
-};
+use wattetheria_kernel::wallet_identity::active_payment_account_binding_proof;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -358,7 +358,7 @@ async fn run_brain(data_dir: &Path, command: BrainCommand) -> Result<()> {
 
 struct BrainAuditContext {
     event_log: EventLog,
-    signer: WalletSigner,
+    signer: Identity,
     provider: Value,
 }
 
@@ -372,7 +372,7 @@ impl BrainAuditContext {
     fn new(data_dir: &Path, provider: Value) -> Result<Self> {
         Ok(Self {
             event_log: EventLog::new(data_dir.join("events.jsonl"))?,
-            signer: WalletSigner::from_data_dir(data_dir)?,
+            signer: load_agent_identity(data_dir)?,
             provider,
         })
     }
@@ -567,8 +567,8 @@ fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
     match command {
         IdentityCommand::Init => {
             fs::create_dir_all(data_dir).context("create identity data directory")?;
-            let identity = load_or_create_wallet_backed_identity(data_dir)
-                .context("load or create wallet-backed identity")?;
+            let identity =
+                load_or_create_agent_identity(data_dir).context("load or create agent identity")?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -579,8 +579,7 @@ fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
             );
         }
         IdentityCommand::Show => {
-            let identity =
-                load_wallet_backed_identity(data_dir).context("load wallet-backed identity")?;
+            let identity = load_agent_identity(data_dir).context("load agent identity")?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -590,11 +589,7 @@ fn run_identity(data_dir: &Path, command: &IdentityCommand) -> Result<()> {
             );
         }
         IdentityCommand::ExportSeed => {
-            let wallet_state = open_local_wallet(data_dir)?;
-            let seed = wallet_state
-                .wallet
-                .export_active_identity_ed25519_seed(&wallet_state.profile)
-                .context("export active identity seed")?;
+            let seed = load_agent_identity(data_dir)?.export_ed25519_seed()?;
             println!("{}", hex::encode(seed));
         }
     }
@@ -669,7 +664,7 @@ fn run_servicenet_agent_card_init(out: Option<PathBuf>) -> Result<()> {
 
 async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> Result<()> {
     ensure_servicenet_data_dir(data_dir)?;
-    let _ = load_or_create_wallet_backed_identity(data_dir)?;
+    let identity = load_or_create_agent_identity(data_dir)?;
     let config = read_config(data_dir)?;
     let servicenet = resolve_servicenet_base_url();
     let (agent_card, card_raw, card_path) = load_agent_card(card_path)?;
@@ -677,19 +672,14 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
     let endpoint = agent_card_url(&agent_card)?.to_owned();
     publish::validate_endpoint(&endpoint)?;
 
-    let wallet = publish::open_wallet_or_explain(data_dir)?;
-    let identity = wallet
-        .wallet
-        .active_identity(&wallet.profile)
-        .context("resolve active identity")?;
-    let identity_did = identity.did.to_string();
+    let identity_did = identity.agent_did.clone();
 
     let client = publish::ServicenetClient::new(&servicenet);
     let challenge = client
         .create_ownership_challenge(&identity_did, "register")
         .await?;
 
-    let signature_b64 = publish::sign_with_identity_b64(&wallet, challenge.challenge.as_bytes())?;
+    let signature_b64 = identity.sign(challenge.challenge.as_bytes())?;
     let record = client
         .register_provider(
             &challenge.provider_id,
@@ -751,7 +741,7 @@ async fn run_servicenet_publish(
     dry_run: bool,
 ) -> Result<()> {
     ensure_servicenet_data_dir(data_dir)?;
-    let _ = load_or_create_wallet_backed_identity(data_dir)?;
+    let identity = load_or_create_agent_identity(data_dir)?;
     let config = read_config(data_dir)?;
     let registration = config
         .servicenet_registrations
@@ -779,13 +769,8 @@ async fn run_servicenet_publish(
     let service_address = registration_service_address(registration.service_address.as_deref())?;
     strip_agent_card_submission_metadata(&mut agent_card);
 
-    let wallet = publish::open_wallet_or_explain(data_dir)?;
-    let identity = wallet
-        .wallet
-        .active_identity(&wallet.profile)
-        .context("resolve active identity")?;
-    let identity_did = identity.did.to_string();
-    let payment_account_binding = active_payment_account_binding_proof(data_dir)?
+    let identity_did = identity.agent_did.clone();
+    let payment_account_binding = active_payment_account_binding_proof(data_dir, &identity)?
         .map(serde_json::to_value)
         .transpose()
         .context("serialize active payment account binding proof")?
@@ -839,7 +824,7 @@ async fn run_servicenet_publish(
     });
     let attestation_bytes =
         serde_jcs::to_vec(&attestation_payload_value).context("canonicalize attestation")?;
-    let signature_b64 = publish::sign_with_identity_b64(&wallet, &attestation_bytes)?;
+    let signature_b64 = identity.sign(&attestation_bytes)?;
 
     let attestations = serde_json::json!({
         "attestation_signature": signature_b64,
@@ -1057,8 +1042,8 @@ fn run_oracle(data_dir: &Path, command: OracleCommand) -> Result<()> {
         wattetheria_kernel::local_db::domain::ORACLE_REGISTRY,
         &data_dir.join("oracle/state.json"),
     )?;
-    let identity = load_or_create_wallet_backed_identity(data_dir)?;
-    let signer = WalletSigner::from_data_dir(data_dir)?;
+    let identity = load_or_create_agent_identity(data_dir)?;
+    let signer = identity.clone();
     let identity_view = identity.compat_view();
     let event_log = EventLog::new(data_dir.join("events.jsonl"))?;
 
@@ -1213,7 +1198,7 @@ async fn run_mcp_test(
         Some(&input),
     )?;
 
-    let signer = load_wallet_signer(data_dir)?;
+    let signer = load_agent_signer(data_dir)?;
     let event_log = EventLog::new(data_dir.join("events.jsonl"))?;
     let input_digest = digest_value(&input)?;
 
@@ -1252,8 +1237,8 @@ async fn run_mcp_test(
     Ok(())
 }
 
-fn load_wallet_signer(data_dir: &Path) -> Result<WalletSigner> {
-    WalletSigner::from_data_dir(data_dir)
+fn load_agent_signer(data_dir: &Path) -> Result<Identity> {
+    load_agent_identity(data_dir)
 }
 
 fn ensure_capabilities_allowed(
@@ -1372,9 +1357,9 @@ async fn post_summary(
 ) -> Result<()> {
     let identity = if let Some(data_dir) = identity_path
         .parent()
-        .filter(|dir| dir.join(".watt-wallet").exists())
+        .filter(|dir| agent_identity_path(dir).exists())
     {
-        load_wallet_backed_identity(data_dir)?
+        load_agent_identity(data_dir)?
     } else {
         Identity::load(identity_path)?
     };

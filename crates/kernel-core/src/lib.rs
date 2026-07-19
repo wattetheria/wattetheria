@@ -1,5 +1,6 @@
 //! Core kernel modules for the wattetheria Rust MVP.
 
+pub mod agent_identity;
 pub mod brain;
 pub mod civilization;
 pub mod economy;

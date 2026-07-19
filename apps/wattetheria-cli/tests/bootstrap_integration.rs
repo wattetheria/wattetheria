@@ -58,11 +58,16 @@ fn init_command_creates_expected_layout() {
 
     assert!(output.status.success());
     assert!(data_dir.join("identity.json").exists());
-    assert!(data_dir.join(".watt-wallet/metadata.json").exists());
-    assert!(data_dir.join(".watt-wallet/keystore.json").exists());
+    assert!(data_dir.join(".agent-identity/identity.json").exists());
+    assert!(!data_dir.join(".watt-wallet").exists());
     let identity: Value =
         serde_json::from_str(&fs::read_to_string(data_dir.join("identity.json")).unwrap()).unwrap();
     assert!(identity.get("private_key").is_none());
+    let private_identity: Value = serde_json::from_str(
+        &fs::read_to_string(data_dir.join(".agent-identity/identity.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(private_identity.get("private_key").is_some());
     assert!(data_dir.join("events.jsonl").exists());
     assert!(data_dir.join("control.token").exists());
     assert!(data_dir.join("config.json").exists());

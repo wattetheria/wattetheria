@@ -645,14 +645,15 @@ pub(crate) async fn publish_agent(
         .filter(|value| !value.is_empty())
         .unwrap_or("low")
         .to_owned();
-    let payment_account_binding = match active_payment_account_binding_proof(&state.data_dir) {
-        Ok(Some(proof)) => match serde_json::to_value(proof) {
-            Ok(value) => value,
-            Err(error) => return internal_error(&anyhow::anyhow!(error)),
-        },
-        Ok(None) => Value::Null,
-        Err(error) => return internal_error(&error),
-    };
+    let payment_account_binding =
+        match active_payment_account_binding_proof(&state.data_dir, state.signer.as_ref()) {
+            Ok(Some(proof)) => match serde_json::to_value(proof) {
+                Ok(value) => value,
+                Err(error) => return internal_error(&anyhow::anyhow!(error)),
+            },
+            Ok(None) => Value::Null,
+            Err(error) => return internal_error(&error),
+        };
     attach_servicenet_agent_did_document(
         &mut agent_card,
         &state.agent_did,

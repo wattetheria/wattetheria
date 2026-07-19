@@ -33,7 +33,7 @@ use wattetheria_kernel::payments::{
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentPaymentCommand;
 use wattetheria_kernel::wallet_identity::{
-    active_payment_account_binding_proof, load_or_create_wallet_backed_identity, open_local_wallet,
+    active_payment_account_binding_proof, open_local_wallet,
 };
 use wattetheria_social::application::friendship_service;
 use wattetheria_social::domain::friendships::{Friendship, FriendshipState};
@@ -135,9 +135,6 @@ pub(crate) async fn bind_web3_payment_account(
         .network
         .or_else(|| network_from_chain_id(body.chain_id.as_deref()));
 
-    if let Err(error) = load_or_create_wallet_backed_identity(&state.data_dir) {
-        return internal_error(&error);
-    }
     let mut wallet_state = match open_local_wallet(&state.data_dir) {
         Ok(wallet) => wallet,
         Err(error) => return internal_error(&error),
@@ -230,9 +227,6 @@ pub(crate) async fn create_payment_account(
     let rail = body.rail.unwrap_or_else(|| "x402".to_string());
     let network = body.network.clone();
 
-    if let Err(error) = load_or_create_wallet_backed_identity(&state.data_dir) {
-        return internal_error(&error);
-    }
     let mut wallet_state = match open_local_wallet(&state.data_dir) {
         Ok(wallet) => wallet,
         Err(error) => return internal_error(&error),
@@ -1757,7 +1751,8 @@ async fn send_payment_message(
 /// return `Ok(None)` for backwards compatibility. Callers decide when the proof
 /// is required for a payment state transition.
 fn try_build_payment_account_binding(state: &ControlPlaneState) -> anyhow::Result<Option<Value>> {
-    let Some(proof) = active_payment_account_binding_proof(&state.data_dir)? else {
+    let Some(proof) = active_payment_account_binding_proof(&state.data_dir, state.signer.as_ref())?
+    else {
         return Ok(None);
     };
     serde_json::to_value(&proof)

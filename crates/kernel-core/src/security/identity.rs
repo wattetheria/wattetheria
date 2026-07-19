@@ -114,6 +114,15 @@ impl Identity {
         Ok(STANDARD.encode(signature.to_bytes()))
     }
 
+    pub fn export_ed25519_seed(&self) -> Result<[u8; 32]> {
+        let bytes = STANDARD
+            .decode(&self.private_key)
+            .context("decode private key base64")?;
+        bytes
+            .try_into()
+            .map_err(|_| anyhow!("invalid private key length"))
+    }
+
     pub fn verify(&self, message: &[u8], signature_b64: &str) -> Result<bool> {
         verify_with_public_key(message, signature_b64, &self.public_key)
     }

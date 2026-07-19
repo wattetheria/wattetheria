@@ -1,18 +1,15 @@
-use crate::identity::Identity;
-use crate::identity::IdentityCompatView;
 use crate::signing::PayloadSigner;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use watt_did::{PaymentAccountBindingProof, PaymentAccountCustody};
-use watt_wallet::WalletMetadataStore;
+use watt_did::{Did, DidKey, PaymentAccountBindingProof, PaymentAccountCustody};
 use watt_wallet::{
-    FileKeyStore, FileWalletMetadataStore, PaymentAccount, PaymentAccountBindingProofOptions,
-    PaymentAccountSigner, SignerPurpose, Wallet, WalletProfileMetadata,
-    build_payment_account_binding_proof,
+    ExternalAgentPaymentAccountBindingProofOptions, FileKeyStore, FileWalletMetadataStore,
+    PaymentAccount, PaymentAccountSigner, SignatureBytes, Wallet, WalletProfileMetadata,
+    build_payment_account_binding_proof_with_agent_signer,
 };
 
 const DEFAULT_WALLET_PROFILE_ID: &str = "default";
@@ -28,85 +25,6 @@ impl LocalWalletState {
     pub fn save(&self) -> Result<()> {
         Ok(self.wallet.save_profile(&self.profile)?)
     }
-}
-
-pub fn load_or_create_wallet_backed_identity(data_dir: impl AsRef<Path>) -> Result<Identity> {
-    let data_dir = data_dir.as_ref();
-    fs::create_dir_all(data_dir).context("create data directory for wallet identity")?;
-
-    let wallet_paths = wallet_paths(data_dir);
-    let metadata_store = FileWalletMetadataStore::new(&wallet_paths.metadata_path);
-    let keystore = FileKeyStore::open(&wallet_paths.keystore_path)
-        .context("open wallet keystore for runtime identity")?;
-    let mut wallet = Wallet::new(keystore, metadata_store);
-    let now_ms = now_ms();
-    let mut profile = wallet
-        .load_or_create_profile(DEFAULT_WALLET_PROFILE_ID, now_ms)
-        .context("load or create default wallet profile")?;
-
-    if profile.active_identity().is_none() {
-        if let Some(first_identity_id) = profile
-            .identities
-            .iter()
-            .find(|identity| matches!(identity.status, watt_wallet::IdentityStatus::Active))
-            .map(|identity| identity.identity_id.clone())
-        {
-            wallet
-                .set_active_identity(&mut profile, &first_identity_id, now_ms)
-                .context("set existing wallet identity active")?;
-        } else {
-            wallet
-                .create_identity_ed25519(
-                    &mut profile,
-                    Some("wattetheria-node".to_string()),
-                    vec![
-                        SignerPurpose::General,
-                        SignerPurpose::Authentication,
-                        SignerPurpose::AssertionMethod,
-                        SignerPurpose::CapabilityInvocation,
-                    ],
-                    now_ms,
-                )
-                .context("create wallet-backed runtime identity")?;
-        }
-    }
-
-    let active_identity = wallet
-        .active_identity(&profile)
-        .context("resolve active wallet identity")?;
-    let seed = wallet
-        .export_active_identity_ed25519_seed(&profile)
-        .context("export active wallet seed for runtime identity")?;
-    let runtime_identity = Identity::from_ed25519_seed(active_identity.did.to_string(), seed)
-        .context("build runtime identity from wallet")?;
-
-    runtime_identity
-        .save_compat_view(data_dir.join("identity.json"))
-        .context("write compatibility identity view")?;
-
-    Ok(runtime_identity)
-}
-
-pub fn load_wallet_backed_identity(data_dir: impl AsRef<Path>) -> Result<Identity> {
-    let data_dir = data_dir.as_ref();
-    let wallet_paths = wallet_paths(data_dir);
-    let metadata_store = FileWalletMetadataStore::new(&wallet_paths.metadata_path);
-    let profile = metadata_store
-        .load()
-        .context("load wallet metadata for runtime identity")?
-        .ok_or_else(|| anyhow!("wallet metadata missing for runtime identity"))?;
-    let keystore = FileKeyStore::open(&wallet_paths.keystore_path)
-        .context("open wallet keystore for runtime identity")?;
-    let wallet = Wallet::new(keystore, metadata_store);
-
-    let active_identity = wallet
-        .active_identity(&profile)
-        .context("resolve active wallet identity")?;
-    let seed = wallet
-        .export_active_identity_ed25519_seed(&profile)
-        .context("export active wallet seed for runtime identity")?;
-    Identity::from_ed25519_seed(active_identity.did.to_string(), seed)
-        .context("build runtime identity from wallet")
 }
 
 pub fn open_local_wallet(data_dir: impl AsRef<Path>) -> Result<LocalWalletState> {
@@ -134,20 +52,19 @@ pub fn active_payment_account(data_dir: impl AsRef<Path>) -> Result<PaymentAccou
 
 /// Best-effort binding proof for the active local payment account.
 ///
-/// Missing wallets, missing identities, inactive payment accounts, and watch-only
-/// accounts return `Ok(None)` so callers can decide whether a signed payment
-/// binding is mandatory for their flow.
+/// Missing wallets, inactive payment accounts, and watch-only accounts return
+/// `Ok(None)` so callers can decide whether a signed payment binding is
+/// mandatory for their flow.
 pub fn active_payment_account_binding_proof(
     data_dir: impl AsRef<Path>,
+    agent_signer: &(impl PayloadSigner + ?Sized),
 ) -> Result<Option<PaymentAccountBindingProof>> {
-    let Ok(wallet_state) = open_local_wallet(data_dir) else {
+    let data_dir = data_dir.as_ref();
+    let paths = wallet_paths(data_dir);
+    if !paths.metadata_path.exists() || !paths.keystore_path.exists() {
         return Ok(None);
-    };
-    let agent_key_info = wallet_state
-        .wallet
-        .active_identity_key_info(&wallet_state.profile)
-        .ok();
-    let Some(agent_key_info) = agent_key_info else {
+    }
+    let Ok(wallet_state) = open_local_wallet(data_dir) else {
         return Ok(None);
     };
     let active_account = wallet_state
@@ -166,12 +83,13 @@ pub fn active_payment_account_binding_proof(
         .active_payment_account_key_info(&wallet_state.profile)
         .context("load active payment account key")?
         .clone();
-    build_payment_account_binding_proof(
+    let agent_did = Did::parse(agent_signer.agent_did()).context("parse agent did:key")?;
+    let agent_did_key = DidKey::from_did(agent_did.clone()).context("resolve agent did:key")?;
+    build_payment_account_binding_proof_with_agent_signer(
         wallet_state.wallet.keystore(),
-        PaymentAccountBindingProofOptions {
-            agent_did: agent_key_info.did.clone(),
-            agent_key_handle: &agent_key_info.key_handle,
-            agent_public_key_multibase: agent_key_info.public_key_multibase.clone(),
+        ExternalAgentPaymentAccountBindingProofOptions {
+            agent_did,
+            agent_public_key_multibase: agent_did_key.public_key_multibase,
             rail: active_account.rail.clone(),
             network: active_account.network.clone(),
             custody: PaymentAccountCustody::LocalGenerated,
@@ -187,61 +105,18 @@ pub fn active_payment_account_binding_proof(
             }),
             watch_only_payment_address: None,
         },
+        |payload| {
+            let signature = agent_signer
+                .sign_bytes(payload)
+                .context("sign payment account binding with agent identity")?;
+            let bytes = STANDARD
+                .decode(signature)
+                .context("decode agent binding signature")?;
+            Ok::<SignatureBytes, anyhow::Error>(SignatureBytes(bytes))
+        },
     )
     .context("build active payment account binding proof")
     .map(Some)
-}
-
-#[derive(Debug, Clone)]
-pub struct WalletSigner {
-    data_dir: PathBuf,
-    identity: IdentityCompatView,
-}
-
-impl WalletSigner {
-    pub fn new(data_dir: impl AsRef<Path>, identity: IdentityCompatView) -> Self {
-        Self {
-            data_dir: data_dir.as_ref().to_path_buf(),
-            identity,
-        }
-    }
-
-    pub fn from_data_dir(data_dir: impl AsRef<Path>) -> Result<Self> {
-        let data_dir = data_dir.as_ref();
-        let identity = IdentityCompatView::load(data_dir.join("identity.json"))
-            .context("load compatibility identity view for wallet signer")?;
-        Ok(Self::new(data_dir, identity))
-    }
-
-    fn sign_with_wallet(&self, payload: &[u8]) -> Result<String> {
-        let wallet_paths = wallet_paths(&self.data_dir);
-        let metadata_store = FileWalletMetadataStore::new(&wallet_paths.metadata_path);
-        let profile = metadata_store
-            .load()
-            .context("load wallet metadata for signer")?
-            .ok_or_else(|| anyhow!("wallet metadata missing for signer"))?;
-        let keystore = FileKeyStore::open(&wallet_paths.keystore_path)
-            .context("open wallet keystore for signer")?;
-        let wallet = Wallet::new(keystore, metadata_store);
-        let signature = wallet
-            .sign_with_active_identity(&profile, payload)
-            .context("sign payload with active wallet identity")?;
-        Ok(STANDARD.encode(signature.0))
-    }
-}
-
-impl PayloadSigner for WalletSigner {
-    fn agent_did(&self) -> &str {
-        &self.identity.agent_did
-    }
-
-    fn public_key(&self) -> &str {
-        &self.identity.public_key
-    }
-
-    fn sign_bytes(&self, payload: &[u8]) -> Result<String> {
-        self.sign_with_wallet(payload)
-    }
 }
 
 #[derive(Debug)]
@@ -270,53 +145,12 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_identity::load_or_create_agent_identity;
     use tempfile::tempdir;
-
-    #[test]
-    fn wallet_backed_identity_creates_wallet_artifacts_and_compat_identity() {
-        let dir = tempdir().unwrap();
-        let identity = load_or_create_wallet_backed_identity(dir.path()).unwrap();
-
-        assert!(identity.agent_did.starts_with("did:key:z"));
-        assert!(dir.path().join("identity.json").exists());
-        assert!(dir.path().join(".watt-wallet/metadata.json").exists());
-        assert!(dir.path().join(".watt-wallet/keystore.json").exists());
-
-        let reloaded = load_or_create_wallet_backed_identity(dir.path()).unwrap();
-        assert_eq!(reloaded.agent_did, identity.agent_did);
-        assert_eq!(reloaded.public_key, identity.public_key);
-    }
-
-    #[test]
-    fn load_wallet_backed_identity_requires_existing_wallet_state() {
-        let dir = tempdir().unwrap();
-        let error = load_wallet_backed_identity(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("wallet metadata missing"));
-    }
-
-    #[test]
-    fn wallet_signer_matches_runtime_identity_signature() {
-        let dir = tempdir().unwrap();
-        let identity = load_or_create_wallet_backed_identity(dir.path()).unwrap();
-        let signer = WalletSigner::from_data_dir(dir.path()).unwrap();
-        let payload = br#"{"probe":"wallet-signer"}"#;
-
-        let wallet_signature = signer.sign_bytes(payload).unwrap();
-        assert!(
-            crate::identity::verify_with_public_key(
-                payload,
-                &wallet_signature,
-                signer.public_key()
-            )
-            .unwrap()
-        );
-        assert_eq!(signer.agent_did(), identity.agent_did);
-    }
 
     #[test]
     fn local_wallet_state_supports_payment_accounts() {
         let dir = tempdir().unwrap();
-        let _ = load_or_create_wallet_backed_identity(dir.path()).unwrap();
         let mut state = open_local_wallet(dir.path()).unwrap();
         let account = state
             .wallet
@@ -335,5 +169,44 @@ mod tests {
         let active = active_payment_account(dir.path()).unwrap();
         assert_eq!(active.account_id, account.account_id);
         assert!(active.address.as_deref().is_some());
+    }
+
+    #[test]
+    fn payment_binding_uses_agent_identity_outside_the_wallet() {
+        let dir = tempdir().unwrap();
+        let identity = load_or_create_agent_identity(dir.path()).unwrap();
+        let mut state = open_local_wallet(dir.path()).unwrap();
+        let account = state
+            .wallet
+            .create_payment_account_web3_evm(
+                &mut state.profile,
+                Some("settlement".into()),
+                Some("base-sepolia".into()),
+                Some("x402".into()),
+                now_ms(),
+            )
+            .unwrap();
+        state
+            .wallet
+            .set_active_payment_account(&mut state.profile, &account.account_id, now_ms())
+            .unwrap();
+
+        let proof = active_payment_account_binding_proof(dir.path(), &identity)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(proof.agent_did.to_string(), identity.agent_did);
+        watt_wallet::verify_payment_account_binding_proof(&proof).unwrap();
+    }
+
+    #[test]
+    fn payment_binding_probe_does_not_create_an_optional_wallet() {
+        let dir = tempdir().unwrap();
+        let identity = load_or_create_agent_identity(dir.path()).unwrap();
+
+        let proof = active_payment_account_binding_proof(dir.path(), &identity).unwrap();
+
+        assert!(proof.is_none());
+        assert!(!dir.path().join(".watt-wallet").exists());
     }
 }

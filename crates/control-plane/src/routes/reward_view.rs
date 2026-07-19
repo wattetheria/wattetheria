@@ -200,19 +200,17 @@ pub(crate) fn wallet_payment_binding_payload(state: &ControlPlaneState) -> Value
     }
     match open_local_wallet(&state.data_dir) {
         Ok(wallet_state) => {
-            let active_identity = wallet_state.profile.active_identity();
             let active_account = wallet_state.profile.active_payment_account();
             let can_sign = active_account.is_some_and(|account| account.key_handle.is_some());
-            let status = match (active_identity, active_account, can_sign) {
-                (Some(_), Some(_), true) => "ready",
-                (Some(_), Some(_), false) => "watch_only",
-                (Some(_), None, _) => "missing_payment_account",
-                _ => "missing_identity",
+            let status = match (active_account, can_sign) {
+                (Some(_), true) => "ready",
+                (Some(_), false) => "watch_only",
+                (None, _) => "missing_payment_account",
             };
             json!({
                 "status": status,
                 "proof_available": can_sign,
-                "agent_did": active_identity.map(|identity| identity.did.to_string()),
+                "agent_did": state.agent_did,
                 "payment_address": active_account.and_then(|account| account.address.clone()),
                 "rail": active_account.map(|account| account.rail.clone()),
                 "network": active_account.and_then(|account| account.network.clone()),
@@ -220,7 +218,7 @@ pub(crate) fn wallet_payment_binding_payload(state: &ControlPlaneState) -> Value
                 "receive_only": active_account.is_some_and(|account| account.key_handle.is_none()),
                 "can_sign": can_sign,
                 "capabilities": active_account.map_or_else(Vec::new, |account| account.capabilities.clone()),
-                "agent_proof_algorithm": if active_identity.is_some() { "ed25519-binding" } else { "" },
+                "agent_proof_algorithm": "ed25519-binding",
                 "payment_proof_algorithm": if can_sign { "secp256k1-binding" } else { "" },
             })
         }

@@ -5,11 +5,11 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
+use wattetheria_kernel::agent_identity::load_or_create_agent_identity;
 use wattetheria_kernel::brain::{BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mcp::McpRegistry;
-use wattetheria_kernel::wallet_identity::load_or_create_wallet_backed_identity;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LocalConfig {
@@ -86,7 +86,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     fs::create_dir_all(data_dir.join("mcp"))?;
     fs::create_dir_all(data_dir.join("policy"))?;
 
-    let identity = load_or_create_wallet_backed_identity(data_dir)?;
+    let identity = load_or_create_agent_identity(data_dir)?;
     let _ = EventLog::new(data_dir.join("events.jsonl"))?;
     let token = load_or_create_control_token(data_dir.join("control.token"))?;
 
