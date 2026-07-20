@@ -311,7 +311,7 @@ pub fn verify_public_id_ownership(public_id: &str, public_key_ref: &str) -> Resu
     Ok(embedded == expected)
 }
 
-fn did_key_from_public_key_b64(public_key_b64: &str) -> Result<String> {
+pub fn did_key_from_public_key_b64(public_key_b64: &str) -> Result<String> {
     let public_key = STANDARD
         .decode(public_key_b64)
         .context("decode public key base64")?;

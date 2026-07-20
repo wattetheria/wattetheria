@@ -51,8 +51,40 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
         brain_config: Arc::new(tokio::sync::RwLock::new(brain_config)),
         ..state
     };
+    let service_identity = FileServiceAgentIdentityStore::new(&state.data_dir)
+        .load_or_create("stripe-agent", "http://127.0.0.1/a2a")
+        .expect("Service Agent identity should initialize");
+    crate::routes::servicenet::publish::save_publisher_state(
+        &state.data_dir,
+        &crate::routes::servicenet::publish::ServiceNetPublisherState {
+            registrations: vec![
+                crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
+                    provider_id: "provider-test".to_owned(),
+                    provider_did: state.agent_did.clone(),
+                    agent_id: "stripe-agent".to_owned(),
+                    service_did: service_identity.service_did,
+                    service_address: Some("stripe@wattetheria".to_owned()),
+                    card_hash: "sha256:test".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    updated_at: Utc::now().to_rfc3339(),
+                    agent_card: json!({}),
+                    deployment: json!({"runtime": "wattetheria_adapter"}),
+                    review: json!({}),
+                },
+            ],
+        },
+    )
+    .expect("publisher state should save");
     let caller_agent_id = state.agent_did.clone();
     let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let signed_message = json!({"message": "hello service"});
+    let request_digest = format!(
+        "sha256:{:x}",
+        sha2::Sha256::digest(
+            serde_jcs::to_vec(&signed_message).expect("signed message should canonicalize")
+        )
+    );
+    let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
     let agent_envelope = crate::social_host::build_signed_agent_envelope_for_nodes(
         &state,
         crate::social_host::SignedAgentEnvelopeArgs {
@@ -63,38 +95,39 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
             source_node_id,
             target_node_id: None,
             capability: "servicenet.agents.invoke".to_owned(),
-            message: json!({"message": "hello service"}),
+            message: signed_message,
             extensions: Some(json!({
-                "caller_public_id": "pub_caller"
+                "caller_public_id": "pub_caller",
+                "nonce": uuid::Uuid::new_v4().to_string(),
+                "issued_at_ms": issued_at_ms,
+                "expires_at_ms": issued_at_ms + 300_000,
+                "request_digest": request_digest,
             })),
         },
     )
     .expect("agent envelope should sign");
     let app = app(state);
-
+    let request_body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [
+                    {"kind": "text", "text": "hello service"}
+                ]
+            },
+            "extensions": {
+                "agent_envelope": agent_envelope
+            }
+        }
+    });
     let body = request_json(
-        app,
+        app.clone(),
         axum::http::Request::post("/a2a/stripe-agent")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "SendMessage",
-                    "params": {
-                        "message": {
-                            "role": "user",
-                            "parts": [
-                                {"kind": "text", "text": "hello service"}
-                            ]
-                        },
-                        "extensions": {
-                            "agent_envelope": agent_envelope
-                        }
-                    }
-                })
-                .to_string(),
-            ))
+            .body(axum::body::Body::from(request_body.to_string()))
             .expect("request should build"),
     )
     .await;
@@ -114,6 +147,19 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
             .expect("session mutex poisoned")
             .as_deref(),
         Some(expected_session.as_str())
+    );
+    let replay = request_json(
+        app,
+        axum::http::Request::post("/a2a/stripe-agent")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(request_body.to_string()))
+            .expect("request should build"),
+    )
+    .await;
+    assert!(
+        replay["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("refusing replay"))
     );
 
     runtime_server.abort();
@@ -325,35 +371,57 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
 async fn servicenet_continue_decision_invokes_agent_again_with_context() {
     let invoke_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
     let invoke_bodies_for_route = Arc::clone(&invoke_bodies);
-    let servicenet_app = Router::new().route(
-        "/v1/agents/{agent_id}/invoke",
-        post(move |Path(agent_id): Path<String>, Json(body): Json<Value>| {
-            let invoke_bodies = Arc::clone(&invoke_bodies_for_route);
-            async move {
-                let mut bodies = invoke_bodies.lock().await;
-                let call_index = bodies.len();
-                bodies.push(body.clone());
-                let message = if call_index == 0 {
-                    "need more detail"
-                } else {
-                    "completed after follow-up"
-                };
-                Json(json!({
-                    "agent_id": agent_id,
-                    "status": "completed",
-                    "task_id": "task-42",
-                    "context_id": "ctx-1",
-                    "message": message,
-                    "output": {
-                        "round": call_index + 1,
-                        "echo": body["message"].clone(),
-                        "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
-                    },
-                    "raw": {"kind": "invoke", "round": call_index + 1},
-                }))
-            }
-        }),
-    );
+    let servicenet_app = Router::new()
+        .route(
+            "/v1/agents/{agent_id}",
+            get(|Path(agent_id): Path<String>| async move {
+                Json(mock_published_service_agent(&agent_id))
+            }),
+        )
+        .route(
+            "/v1/agents/{agent_id}/invoke",
+            post(move |Path(agent_id): Path<String>, Json(body): Json<Value>| {
+                let invoke_bodies = Arc::clone(&invoke_bodies_for_route);
+                async move {
+                    let mut bodies = invoke_bodies.lock().await;
+                    let call_index = bodies.len();
+                    bodies.push(body.clone());
+                    let message = if call_index == 0 {
+                        "need more detail"
+                    } else {
+                        "completed after follow-up"
+                    };
+                    let result = json!({"kind": "invoke", "round": call_index + 1});
+                    let request_digest = body
+                        .pointer("/agent_envelope/extensions/request_digest")
+                        .and_then(Value::as_str)
+                        .unwrap_or("sha256:mock");
+                    let request_nonce = body
+                        .pointer("/agent_envelope/extensions/nonce")
+                        .and_then(Value::as_str);
+                    let service_signature = mock_service_signature(
+                        &agent_id,
+                        request_digest,
+                        request_nonce,
+                        &result,
+                    );
+                    Json(json!({
+                        "agent_id": agent_id,
+                        "status": "completed",
+                        "task_id": "task-42",
+                        "context_id": "ctx-1",
+                        "message": message,
+                        "output": {
+                            "round": call_index + 1,
+                            "echo": body["message"].clone(),
+                            "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
+                        },
+                        "service_signature": service_signature,
+                        "raw": {"jsonrpc": "2.0", "result": result},
+                    }))
+                }
+            }),
+        );
     let servicenet_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let servicenet_addr = servicenet_listener.local_addr().unwrap();
     let servicenet_server = tokio::spawn(async move {
@@ -475,6 +543,12 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
     let task_poll_count_for_route = Arc::clone(&task_poll_count);
     let servicenet_app = Router::new()
         .route(
+            "/v1/agents/{agent_id}",
+            get(|Path(agent_id): Path<String>| async move {
+                Json(mock_published_service_agent(&agent_id))
+            }),
+        )
+        .route(
             "/v1/agents/{agent_id}/invoke-async",
             post(
                 |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
@@ -494,10 +568,24 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
             "/v1/agents/{agent_id}/tasks/{task_id}/get",
             post(
                 move |Path((agent_id, task_id)): Path<(String, String)>,
-                      Json(_body): Json<Value>| {
+                      Json(body): Json<Value>| {
                     let task_poll_count = Arc::clone(&task_poll_count_for_route);
                     async move {
                         task_poll_count.fetch_add(1, Ordering::SeqCst);
+                        let result = json!({"kind": "task"});
+                        let request_params = json!({
+                            "id": task_id,
+                            "historyLength": body["history_length"].as_u64().unwrap_or(10),
+                        });
+                        let request_digest = format!(
+                            "sha256:{:x}",
+                            sha2::Sha256::digest(
+                                serde_jcs::to_vec(&request_params)
+                                    .expect("task request should canonicalize")
+                            )
+                        );
+                        let service_signature =
+                            mock_service_signature(&agent_id, &request_digest, None, &result);
                         Json(json!({
                             "agent_id": agent_id,
                             "status": "completed",
@@ -505,7 +593,8 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
                             "context_id": "ctx-async",
                             "message": "async completed",
                             "output": {"result": "done async"},
-                            "raw": {"kind": "task"},
+                            "service_signature": service_signature,
+                            "raw": {"jsonrpc": "2.0", "result": result},
                         }))
                     }
                 },
@@ -700,6 +789,12 @@ fn assert_published_console_agent(published_json: &Value, target_agent_id: &str,
         published_json["items"][0]["service_address"].as_str(),
         Some("console@wattetheria")
     );
+    assert!(
+        published_json["items"][0]["service_did"]
+            .as_str()
+            .is_some_and(|did| did.starts_with("did:key:"))
+    );
+    assert!(published_json["items"][0].get("did_document_url").is_none());
 }
 
 async fn spawn_list_counting_servicenet() -> (
@@ -748,6 +843,7 @@ async fn servicenet_published_agents_uses_local_publisher_state_only() {
                 "provider_id": "provider-local",
                 "provider_did": state.agent_did,
                 "agent_id": "agent-local-only",
+                "service_did": "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM",
                 "card_hash": "sha256:local",
                 "version": "0.1.0",
                 "updated_at": "2026-06-04T00:00:00Z",
@@ -851,6 +947,15 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         .as_str()
         .unwrap();
     let submitted_card = &publish_json["submission"]["agent_card"];
+    let published_endpoint = publish_json["submission"]["deployment"]["endpoint"]["url"]
+        .as_str()
+        .unwrap();
+    assert_eq!(published_endpoint, "https://console-agent.example.com/a2a");
+    assert_eq!(
+        submitted_card["url"].as_str(),
+        Some(published_endpoint),
+        "the public Agent Card must route callers through the Adapter"
+    );
     assert!(
         publish_json["submission"]
             .get("payment_account_binding")
@@ -865,25 +970,17 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     );
     assert_eq!(extension_binding["rail"].as_str(), Some("x402"));
     assert_eq!(extension_binding["network"].as_str(), Some("base"));
-    let binding_agent_did = extension_binding["agent_did"].as_str();
-    assert_eq!(
-        submitted_card["didDocument"]["id"].as_str(),
-        binding_agent_did
+    assert!(
+        publish_json["service_did"]
+            .as_str()
+            .is_some_and(|did| did.starts_with("did:key:"))
     );
-    assert_eq!(
-        submitted_card["didDocument"]["alsoKnownAs"]
-            .as_array()
-            .unwrap(),
-        &[json!("console@wattetheria")]
+    assert_ne!(
+        publish_json["service_did"].as_str(),
+        Some(state.agent_did.as_str())
     );
-    assert_eq!(
-        submitted_card["didDocument"]["service"][0]["serviceEndpoint"].as_str(),
-        Some("wattetheria://servicenet/console@wattetheria")
-    );
-    assert_eq!(
-        submitted_card["didDocument"]["payment_account_bindings"][0]["payment_address"].as_str(),
-        Some(payment_address)
-    );
+    assert!(publish_json.get("did_document_url").is_none());
+    assert!(submitted_card.get("didDocument").is_none());
 
     let published_json = authed_get_json(
         app.clone(),
@@ -980,6 +1077,8 @@ async fn servicenet_unpublish_cleans_local_state_when_remote_agent_is_missing() 
                     provider_id: "provider-ui".to_owned(),
                     provider_did: state.agent_did.clone(),
                     agent_id: "missing-remote-agent".to_owned(),
+                    service_did: "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM"
+                        .to_owned(),
                     service_address: Some("missing@wattetheria".to_owned()),
                     card_hash: "sha256:missing-remote-agent".to_owned(),
                     version: "0.1.0".to_owned(),

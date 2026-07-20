@@ -46,5 +46,6 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 async-trait.workspace = true
+ed25519-dalek.workspace = true
 tempfile.workspace = true
 http-body-util = "0.1"

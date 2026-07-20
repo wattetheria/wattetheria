@@ -4723,6 +4723,7 @@ dependencies = [
  "axum 0.8.8",
  "base64",
  "chrono",
+ "ed25519-dalek",
  "hex",
  "http-body-util",
  "k256",

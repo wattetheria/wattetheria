@@ -3,21 +3,28 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::net::IpAddr;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::Path as FsPath;
 use uuid::Uuid;
 
 use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::agent_identity::service_agent::{
+    FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
+};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
-    ServiceNetClient, attach_servicenet_agent_did_document, normalize_service_address,
+    ServiceNetClient, attach_service_agent_payment_binding, load_servicenet_publisher_state,
+    normalize_service_address, rollback_servicenet_publisher_registration,
+    save_servicenet_publisher_state, stage_servicenet_publisher_registration,
     validate_servicenet_agent_name,
+};
+pub(crate) use wattetheria_kernel::servicenet::{
+    ServiceNetPublisherRegistration, ServiceNetPublisherState,
 };
 use wattetheria_kernel::wallet_identity::active_payment_account_binding_proof;
 
@@ -47,30 +54,6 @@ pub(crate) struct UnpublishAgentBody {
     reason: Option<String>,
     #[serde(default)]
     ttl_minutes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct ServiceNetPublisherState {
-    #[serde(default)]
-    pub(crate) registrations: Vec<ServiceNetPublisherRegistration>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ServiceNetPublisherRegistration {
-    pub(crate) provider_id: String,
-    pub(crate) provider_did: String,
-    pub(crate) agent_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) service_address: Option<String>,
-    pub(crate) card_hash: String,
-    pub(crate) version: String,
-    pub(crate) updated_at: String,
-    #[serde(default)]
-    pub(crate) agent_card: Value,
-    #[serde(default)]
-    pub(crate) deployment: Value,
-    #[serde(default)]
-    pub(crate) review: Value,
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -473,29 +456,15 @@ fn validate_scope_origin_domain(scope: &str, origin: &str, domain: &str) -> Resu
     Ok(())
 }
 
-fn publisher_state_path(data_dir: &FsPath) -> PathBuf {
-    data_dir.join("servicenet").join("publisher-state.json")
-}
-
 pub(crate) fn load_publisher_state(data_dir: &FsPath) -> anyhow::Result<ServiceNetPublisherState> {
-    let path = publisher_state_path(data_dir);
-    if !path.exists() {
-        return Ok(ServiceNetPublisherState::default());
-    }
-    let raw = fs::read_to_string(&path)?;
-    Ok(serde_json::from_str(&raw)?)
+    load_servicenet_publisher_state(data_dir)
 }
 
 pub(crate) fn save_publisher_state(
     data_dir: &FsPath,
     publisher_state: &ServiceNetPublisherState,
 ) -> anyhow::Result<()> {
-    let path = publisher_state_path(data_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, serde_json::to_vec_pretty(publisher_state)?)?;
-    Ok(())
+    save_servicenet_publisher_state(data_dir, publisher_state)
 }
 
 fn remove_registration(
@@ -506,16 +475,6 @@ fn remove_registration(
     publisher_state.registrations.retain(|registration| {
         registration.agent_id != agent_id || !registration_matches_identity(registration, owner_did)
     });
-}
-
-fn upsert_registration(
-    publisher_state: &mut ServiceNetPublisherState,
-    registration: ServiceNetPublisherRegistration,
-) {
-    publisher_state
-        .registrations
-        .retain(|existing| existing.agent_id != registration.agent_id);
-    publisher_state.registrations.push(registration);
 }
 
 fn hash_agent_card(card: &Value) -> String {
@@ -654,19 +613,19 @@ pub(crate) async fn publish_agent(
             Ok(None) => Value::Null,
             Err(error) => return internal_error(&error),
         };
-    attach_servicenet_agent_did_document(
-        &mut agent_card,
-        &state.agent_did,
-        &agent_id,
-        service_address.as_deref(),
-        Some(&payment_account_binding),
-    );
     let endpoint = agent_card
         .get("url")
         .and_then(Value::as_str)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_owned();
+    let service_identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let service_identity = match service_identity_store.load_or_create(&agent_id, &endpoint) {
+        Ok(identity) => identity,
+        Err(error) => return internal_error(&error),
+    };
+    attach_service_agent_payment_binding(&mut agent_card, Some(&payment_account_binding));
     let deployment = json!({
-        "runtime": "agent",
+        "runtime": "wattetheria_adapter",
         "endpoint": {
             "url": endpoint,
             "protocol_binding": "JSONRPC",
@@ -689,6 +648,7 @@ pub(crate) async fn publish_agent(
     let attestation_payload = json!({
         "provider_id": provider_id,
         "agent_id": agent_id,
+        "service_did": service_identity.service_did,
         "service_address": service_address.clone(),
         "version": version,
         "agent_card": agent_card,
@@ -714,6 +674,7 @@ pub(crate) async fn publish_agent(
     let request = json!({
         "provider_id": provider_id,
         "agent_id": agent_id,
+        "service_did": service_identity.service_did,
         "service_address": service_address.clone(),
         "version": version,
         "agent_card": agent_card,
@@ -728,12 +689,8 @@ pub(crate) async fn publish_agent(
             "expires_at_ms": expires_at_ms,
         },
     });
-    let response = match client.submit_agent(&request).await {
-        Ok(response) => response,
-        Err(error) => return servicenet_error_response(&error),
-    };
-    upsert_registration(
-        &mut publisher_state,
+    let previous_registration = match stage_servicenet_publisher_registration(
+        &state.data_dir,
         ServiceNetPublisherRegistration {
             provider_id: request["provider_id"]
                 .as_str()
@@ -741,6 +698,10 @@ pub(crate) async fn publish_agent(
                 .to_owned(),
             provider_did: state.agent_did.clone(),
             agent_id: request["agent_id"].as_str().unwrap_or_default().to_owned(),
+            service_did: request["service_did"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
             service_address: request["service_address"].as_str().map(ToOwned::to_owned),
             card_hash: hash_agent_card(&request["agent_card"]),
             version: request["version"].as_str().unwrap_or_default().to_owned(),
@@ -749,10 +710,23 @@ pub(crate) async fn publish_agent(
             deployment: request["deployment"].clone(),
             review: request["review"].clone(),
         },
-    );
-    if let Err(error) = save_publisher_state(&state.data_dir, &publisher_state) {
-        return internal_error(&error);
-    }
+    ) {
+        Ok(previous) => previous,
+        Err(error) => return internal_error(&error),
+    };
+    let response = match client.submit_agent(&request).await {
+        Ok(response) => response,
+        Err(error) => {
+            if let Err(rollback_error) = rollback_servicenet_publisher_registration(
+                &state.data_dir,
+                &agent_id,
+                previous_registration,
+            ) {
+                return internal_error(&rollback_error);
+            }
+            return servicenet_error_response(&error);
+        }
+    };
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: Utc::now().timestamp(),
@@ -772,6 +746,9 @@ pub(crate) async fn publish_agent(
     Json(json!({
         "status": "ok",
         "agent_id": request["agent_id"],
+        "service_did": request["service_did"],
+        "service_identity_path": service_identity_store
+            .identity_path(request["agent_id"].as_str().unwrap_or_default()),
         "service_address": request["service_address"],
         "provider_id": request["provider_id"],
         "provider_did": state.agent_did,

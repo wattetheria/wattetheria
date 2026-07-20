@@ -8,15 +8,20 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
+use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::Digest as _;
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use tower::ServiceExt;
 use watt_wallet::SignerPurpose;
+use wattetheria_kernel::agent_identity::service_agent::{
+    FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
+};
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
@@ -35,7 +40,8 @@ use wattetheria_kernel::governance::{
     GovernanceEngine, PlanetConstitutionTemplate, PlanetCreationRequest,
 };
 use wattetheria_kernel::identity::{
-    Identity, build_scoped_public_id, extract_public_id_fingerprint, fingerprint_from_did_key,
+    Identity, build_scoped_public_id, did_key_from_public_key_b64, extract_public_id_fingerprint,
+    fingerprint_from_did_key,
 };
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
@@ -424,6 +430,96 @@ async fn authed_post_json_with_headers(
     .await
 }
 
+fn mock_service_signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[24u8; 32])
+}
+
+fn mock_service_did(_agent_id: &str) -> String {
+    did_key_from_public_key_b64(
+        &STANDARD.encode(mock_service_signing_key().verifying_key().as_bytes()),
+    )
+    .expect("mock Service Agent public key should produce did:key")
+}
+
+fn mock_service_verification_method(agent_id: &str) -> String {
+    let service_did = mock_service_did(agent_id);
+    let fingerprint = service_did
+        .strip_prefix("did:key:")
+        .expect("mock Service Agent should use did:key");
+    format!("{service_did}#{fingerprint}")
+}
+
+fn mock_published_service_agent(agent_id: &str) -> Value {
+    json!({
+        "agent_id": agent_id,
+        "service_did": mock_service_did(agent_id),
+        "service_address": format!("{agent_id}@wattetheria"),
+        "provider_id": "provider-one",
+        "version": "0.1.0",
+        "status": "approved",
+        "agent_card": {
+            "name": "Mock Service Agent",
+            "description": "Control-plane test Service Agent",
+            "supportsTask": true,
+            "skills": [],
+        },
+        "deployment": {
+            "runtime": "wattetheria_adapter",
+            "endpoint": {
+                "url": "https://example.com/a2a",
+                "interaction_protocol": "google_a2a",
+                "protocol_binding": "JSONRPC",
+                "protocol_version": "1.0",
+            }
+        },
+        "review": {"risk_level": "low"},
+    })
+}
+
+fn mock_service_signature(
+    agent_id: &str,
+    request_digest: &str,
+    request_nonce: Option<&str>,
+    result: &Value,
+) -> Value {
+    let service_did = mock_service_did(agent_id);
+    let verification_method = mock_service_verification_method(agent_id);
+    let result_digest = format!(
+        "sha256:{:x}",
+        sha2::Sha256::digest(serde_jcs::to_vec(result).expect("result should canonicalize"))
+    );
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
+    let payload = json!({
+        "protocol": "wattetheria.servicenet.response.v1",
+        "service_did": service_did,
+        "agent_id": agent_id,
+        "verification_method": verification_method,
+        "request_digest": request_digest,
+        "request_nonce": request_nonce,
+        "result_digest": result_digest,
+        "nonce": nonce,
+        "issued_at_ms": issued_at_ms,
+    });
+    let signature = STANDARD.encode(
+        mock_service_signing_key()
+            .sign(&serde_jcs::to_vec(&payload).expect("signature payload should canonicalize"))
+            .to_bytes(),
+    );
+    json!({
+        "protocol": "wattetheria.servicenet.response.v1",
+        "service_did": service_did,
+        "agent_id": agent_id,
+        "verification_method": verification_method,
+        "request_digest": request_digest,
+        "request_nonce": request_nonce,
+        "result_digest": result_digest,
+        "nonce": nonce,
+        "issued_at_ms": issued_at_ms,
+        "signature": signature,
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let app = Router::new()
@@ -483,7 +579,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "agent",
+                            "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -512,7 +608,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "agent",
+                            "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.net/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -564,7 +660,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "agent",
+                            "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -668,6 +764,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     "submission_id": "00000000-0000-0000-0000-000000000456",
                     "provider_id": body["provider_id"],
                     "agent_id": body["agent_id"],
+                    "service_did": body["service_did"],
                     "service_address": body["service_address"],
                     "version": body["version"],
                     "status": "approved",
@@ -728,7 +825,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             ]
                         },
                         "deployment": {
-                            "runtime": "agent",
+                            "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "google_a2a",
@@ -740,6 +837,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                 }
                 Json(json!({
                     "agent_id": agent_id,
+                    "service_did": mock_service_did(&agent_id),
                     "service_address": "alpha@wattetheria",
                     "provider_id": "provider-one",
                     "version": "0.1.0",
@@ -782,7 +880,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         ]
                     },
                     "deployment": {
-                        "runtime": "agent",
+                        "runtime": "wattetheria_adapter",
                         "endpoint": {
                             "url": "https://example.com/a2a",
                             "interaction_protocol": "google_a2a",
@@ -822,6 +920,20 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
             "/v1/agents/{agent_id}/invoke",
             post(
                 |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
+                    let result = json!({"kind": "invoke"});
+                    let request_digest = body
+                        .pointer("/agent_envelope/extensions/request_digest")
+                        .and_then(Value::as_str)
+                        .unwrap_or("sha256:mock");
+                    let request_nonce = body
+                        .pointer("/agent_envelope/extensions/nonce")
+                        .and_then(Value::as_str);
+                    let service_signature = mock_service_signature(
+                        &agent_id,
+                        request_digest,
+                        request_nonce,
+                        &result,
+                    );
                     Json(json!({
                         "agent_id": agent_id,
                         "status": "completed",
@@ -839,8 +951,10 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "status": "submitted",
                             "rail": body["settlement"]["rail"].clone(),
                         },
+                        "service_signature": service_signature,
                         "raw": {
-                            "kind": "invoke",
+                            "jsonrpc": "2.0",
+                            "result": result,
                         },
                     }))
                 },
@@ -880,6 +994,20 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
             "/v1/agents/{agent_id}/tasks/{task_id}/get",
             post(
                 |Path((agent_id, task_id)): Path<(String, String)>, Json(body): Json<Value>| async move {
+                    let result = json!({"kind": "task"});
+                    let request_params = json!({
+                        "id": task_id,
+                        "historyLength": body["history_length"].as_u64().unwrap_or(10),
+                    });
+                    let request_digest = format!(
+                        "sha256:{:x}",
+                        sha2::Sha256::digest(
+                            serde_jcs::to_vec(&request_params)
+                                .expect("task request should canonicalize")
+                        )
+                    );
+                    let service_signature =
+                        mock_service_signature(&agent_id, &request_digest, None, &result);
                     Json(json!({
                         "agent_id": agent_id,
                         "status": "completed",
@@ -888,8 +1016,10 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "history_length": body["history_length"].clone(),
                             "result": "done",
                         },
+                        "service_signature": service_signature,
                         "raw": {
-                            "kind": "task",
+                            "jsonrpc": "2.0",
+                            "result": result,
                         },
                     }))
                 },

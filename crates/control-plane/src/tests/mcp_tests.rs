@@ -143,7 +143,7 @@ async fn spawn_servicenet_with_binding_payment(
             "security": [{"none": []}]
         },
         "deployment": {
-            "runtime": "agent",
+            "runtime": "wattetheria_adapter",
             "endpoint": {
                 "url": "https://binding.example.com/a2a",
                 "interaction_protocol": "google_a2a",
@@ -601,7 +601,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(beta["status"].as_str(), Some("online"));
     assert_eq!(beta["version"].as_str(), Some("0.2.0"));
     assert_eq!(beta["provider_id"].as_str(), Some("provider-two"));
-    assert_eq!(beta["runtime"].as_str(), Some("agent"));
+    assert_eq!(beta["runtime"].as_str(), Some("wattetheria_adapter"));
     assert_eq!(beta["protocol"].as_str(), Some("google_a2a / JSONRPC"));
     assert!(beta.get("url").is_none());
     assert_eq!(beta["risk_level"].as_str(), Some("medium"));
@@ -651,7 +651,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["status"].as_str(), Some("published"));
     assert_eq!(agent["version"].as_str(), Some("0.1.0"));
     assert_eq!(agent["provider_id"].as_str(), Some("provider-one"));
-    assert_eq!(agent["runtime"].as_str(), Some("agent"));
+    assert_eq!(agent["runtime"].as_str(), Some("wattetheria_adapter"));
     assert_eq!(agent["protocol"].as_str(), Some("google_a2a / JSONRPC"));
     assert!(agent.get("url").is_none());
     assert_eq!(agent["risk_level"].as_str(), Some("low"));
@@ -1609,6 +1609,8 @@ async fn mcp_delete_servicenet_agent_resolves_service_address() {
                     provider_id: "provider-one".to_string(),
                     provider_did: state.agent_did.clone(),
                     agent_id: "agent-alpha".to_string(),
+                    service_did: "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM"
+                        .to_string(),
                     service_address: Some("alpha@wattetheria".to_string()),
                     card_hash: "sha256:agent-alpha".to_string(),
                     version: "0.1.0".to_string(),

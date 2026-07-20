@@ -22,6 +22,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use wattetheria_kernel::agent_identity::service_agent::{
+    FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
+};
 use wattetheria_kernel::agent_identity::{
     agent_identity_path, load_agent_identity, load_or_create_agent_identity,
 };
@@ -46,7 +49,9 @@ use wattetheria_kernel::policy_engine::{
     CapabilityRequest, DecisionKind, PolicyEngine, PolicyState,
 };
 use wattetheria_kernel::servicenet::{
-    attach_servicenet_agent_did_document, normalize_service_address,
+    ServiceNetPublisherRegistration, attach_service_agent_payment_binding,
+    normalize_service_address, rollback_servicenet_publisher_registration,
+    stage_servicenet_publisher_registration,
 };
 use wattetheria_kernel::summary::build_signed_summary_for_public_identity;
 use wattetheria_kernel::types::AgentStats;
@@ -731,7 +736,7 @@ async fn run_servicenet_provider_register(data_dir: &Path, card_path: &Path) -> 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 async fn run_servicenet_publish(
     data_dir: &Path,
     agent_id: &str,
@@ -775,16 +780,13 @@ async fn run_servicenet_publish(
         .transpose()
         .context("serialize active payment account binding proof")?
         .unwrap_or(Value::Null);
-    attach_servicenet_agent_did_document(
-        &mut agent_card,
-        &identity_did,
-        &registration.agent_id,
-        service_address.as_deref(),
-        Some(&payment_account_binding),
-    );
+    let service_identity_store = FileServiceAgentIdentityStore::new(data_dir);
+    let service_identity =
+        service_identity_store.load_or_create(&registration.agent_id, &endpoint)?;
+    attach_service_agent_payment_binding(&mut agent_card, Some(&payment_account_binding));
 
     let deployment = serde_json::json!({
-        "runtime": "remote_http",
+        "runtime": "wattetheria_adapter",
         "endpoint": {
             "url": endpoint,
             "protocol_binding": "JSONRPC",
@@ -808,6 +810,7 @@ async fn run_servicenet_publish(
     let attestation_payload_value = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,
+        "service_did": &service_identity.service_did,
         "service_address": &service_address,
         "version": version,
         "agent_card": agent_card,
@@ -836,6 +839,7 @@ async fn run_servicenet_publish(
     let request = serde_json::json!({
         "provider_id": &registration.provider_id,
         "agent_id": &registration.agent_id,
+        "service_did": &service_identity.service_did,
         "service_address": &service_address,
         "version": version,
         "agent_card": agent_card,
@@ -846,13 +850,64 @@ async fn run_servicenet_publish(
     });
 
     if dry_run {
-        println!("{}", serde_json::to_string_pretty(&request)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "service_did": service_identity.service_did,
+                "service_identity_path": service_identity_store
+                    .identity_path(&registration.agent_id),
+                "node_requirement": "publish and run the Wattetheria Adapter with this same data directory",
+                "request": request,
+            }))?
+        );
         return Ok(());
     }
 
+    let previous_registration = stage_servicenet_publisher_registration(
+        data_dir,
+        ServiceNetPublisherRegistration {
+            provider_id: registration.provider_id.clone(),
+            provider_did: identity_did.clone(),
+            agent_id: registration.agent_id.clone(),
+            service_did: service_identity.service_did.clone(),
+            service_address: service_address.clone(),
+            card_hash: format!(
+                "sha256:{:x}",
+                Sha256::digest(
+                    serde_jcs::to_vec(&request["agent_card"])
+                        .context("canonicalize submitted Agent Card")?
+                )
+            ),
+            version: version.to_owned(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            agent_card: request["agent_card"].clone(),
+            deployment: request["deployment"].clone(),
+            review: request["review"].clone(),
+        },
+    )?;
+
     let client = publish::ServicenetClient::new(&servicenet);
-    let record = client.submit_agent(request).await?;
-    println!("{}", serde_json::to_string_pretty(&record)?);
+    let record = match client.submit_agent(request).await {
+        Ok(record) => record,
+        Err(error) => {
+            rollback_servicenet_publisher_registration(
+                data_dir,
+                &registration.agent_id,
+                previous_registration,
+            )?;
+            return Err(error);
+        }
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "service_did": service_identity.service_did,
+            "service_identity_path": service_identity_store
+                .identity_path(&registration.agent_id),
+            "node_requirement": "the Wattetheria Adapter must run with this same data directory",
+            "submission": record,
+        }))?
+    );
     Ok(())
 }
 

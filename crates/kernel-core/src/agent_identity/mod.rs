@@ -1,6 +1,7 @@
 //! Local Agent identity custody and storage backends.
 
 mod file_store;
+pub mod service_agent;
 mod store;
 
 use crate::identity::Identity;

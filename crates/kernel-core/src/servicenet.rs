@@ -1,12 +1,35 @@
 use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use reqwest::{Client, Method, Url};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::time::Duration;
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
+use watt_did::{Did, DidKey, DidKeyPublicKey};
+
+mod publisher_state;
+
+pub use publisher_state::{
+    ServiceNetPublisherRegistration, ServiceNetPublisherState, load_servicenet_publisher_state,
+    rollback_servicenet_publisher_registration, save_servicenet_publisher_state,
+    stage_servicenet_publisher_registration, upsert_servicenet_publisher_registration,
+};
 
 const DEFAULT_TIMEOUT_SEC: u64 = 120;
+const SERVICE_IDENTITY_CACHE_TTL: Duration = Duration::from_mins(5);
+const SERVICE_IDENTITY_CACHE_MAX_ENTRIES: usize = 4_096;
+const SERVICE_RESPONSE_NONCE_CACHE_TTL: Duration = Duration::from_mins(5);
+const SERVICE_RESPONSE_NONCE_CACHE_MAX_ENTRIES: usize = 262_144;
+const SERVICE_RESPONSE_SIGNATURE_PROTOCOL: &str = "wattetheria.servicenet.response.v1";
+const SERVICE_RESPONSE_MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
+const SERVICE_AGENT_GET_TASK_DEFAULT_HISTORY_LENGTH: u32 = 10;
 pub const MAX_SERVICENET_AGENT_NAME_CHARS: usize = 40;
 
 pub fn validate_servicenet_agent_name(name: &str) -> Result<()> {
@@ -60,62 +83,11 @@ pub fn servicenet_payment_account_bindings(payment_account_binding: Option<&Valu
         .unwrap_or_default()
 }
 
-#[must_use]
-pub fn servicenet_agent_did_document(
-    provider_did: &str,
-    agent_id: &str,
-    service_address: Option<&str>,
-    payment_account_binding: Option<&Value>,
-) -> Value {
-    let document_id = payment_account_binding_agent_did(payment_account_binding)
-        .unwrap_or(provider_did.to_owned());
-    let mut aliases = Vec::new();
-    if let Some(service_address) = service_address {
-        aliases.push(Value::String(service_address.to_owned()));
-    }
-    let service_endpoint = service_address.map_or_else(
-        || format!("wattetheria://servicenet/agents/{agent_id}"),
-        |service_address| format!("wattetheria://servicenet/{service_address}"),
-    );
-    json!({
-        "id": document_id,
-        "alsoKnownAs": aliases,
-        "service": [{
-            "id": "#servicenet-agent",
-            "type": "WattetheriaServiceNetAgent",
-            "serviceEndpoint": service_endpoint,
-        }],
-        "payment_account_bindings": servicenet_payment_account_bindings(payment_account_binding),
-    })
-}
-
-fn payment_account_binding_agent_did(payment_account_binding: Option<&Value>) -> Option<String> {
-    let agent_did = payment_account_binding.and_then(|value| value.get("agent_did"))?;
-    if let Some(agent_did) = agent_did.as_str() {
-        return Some(agent_did.to_owned());
-    }
-    let method = agent_did.get("method").and_then(Value::as_str)?;
-    let id = agent_did.get("id").and_then(Value::as_str)?;
-    Some(format!("did:{method}:{id}"))
-}
-
-pub fn attach_servicenet_agent_did_document(
+pub fn attach_service_agent_payment_binding(
     agent_card: &mut Value,
-    provider_did: &str,
-    agent_id: &str,
-    service_address: Option<&str>,
     payment_account_binding: Option<&Value>,
 ) {
     let payment_account_bindings = servicenet_payment_account_bindings(payment_account_binding);
-    let did_document = servicenet_agent_did_document(
-        provider_did,
-        agent_id,
-        service_address,
-        payment_account_binding,
-    );
-    if let Some(object) = agent_card.as_object_mut() {
-        object.insert("didDocument".to_owned(), did_document);
-    }
     attach_servicenet_payment_discovery_bindings(agent_card, &payment_account_bindings);
 }
 
@@ -252,7 +224,24 @@ pub struct ServiceNetInvokeResponse {
     pub settlement: Option<SettlementRequest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_receipt: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_signature: Option<ServiceNetServiceAgentSignature>,
     pub raw: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceNetServiceAgentSignature {
+    pub protocol: String,
+    pub service_did: String,
+    pub agent_id: String,
+    pub verification_method: String,
+    pub request_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_nonce: Option<String>,
+    pub result_digest: String,
+    pub nonce: String,
+    pub issued_at_ms: u64,
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +289,14 @@ pub struct ServiceNetListAgentsResponse {
 pub struct ServiceNetClient {
     base_url: String,
     http_client: Client,
+    service_identity_cache: Arc<Mutex<HashMap<String, CachedServiceIdentity>>>,
+    service_response_nonce_cache: Arc<Mutex<HashMap<String, Instant>>>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedServiceIdentity {
+    record: Value,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +334,8 @@ impl ServiceNetClient {
         Ok(Self {
             base_url,
             http_client,
+            service_identity_cache: Arc::new(Mutex::new(HashMap::new())),
+            service_response_nonce_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -407,13 +406,17 @@ impl ServiceNetClient {
         &self,
         agent_id: &str,
     ) -> std::result::Result<Value, ServiceNetClientError> {
-        self.request_json(
-            Method::GET,
-            self.endpoint(&["v1", "agents", agent_id])
-                .map_err(|error| Self::client_error(&error))?,
-            Option::<&Value>::None,
-        )
-        .await
+        let record = self
+            .request_json(
+                Method::GET,
+                self.endpoint(&["v1", "agents", agent_id])
+                    .map_err(|error| Self::client_error(&error))?,
+                Option::<&Value>::None,
+            )
+            .await?;
+        self.cache_service_identity(agent_id, &record)
+            .map_err(|error| Self::client_error(&error))?;
+        Ok(record)
     }
 
     pub async fn create_provider_ownership_challenge(
@@ -478,13 +481,36 @@ impl ServiceNetClient {
         agent_id: &str,
         request: &ServiceNetInvokeRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
-        self.request_json(
-            Method::POST,
-            self.endpoint(&["v1", "agents", agent_id, "invoke"])
-                .map_err(|error| Self::client_error(&error))?,
-            Some(request),
+        let identity = self.resolve_service_identity(agent_id).await?;
+        let response = self
+            .request_json(
+                Method::POST,
+                self.endpoint(&["v1", "agents", agent_id, "invoke"])
+                    .map_err(|error| Self::client_error(&error))?,
+                Some(request),
+            )
+            .await?;
+        let expected_request_digest = request
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.pointer("/extensions/request_digest"))
+            .and_then(Value::as_str);
+        let expected_request_nonce = request
+            .agent_envelope
+            .as_ref()
+            .and_then(|envelope| envelope.pointer("/extensions/nonce"))
+            .and_then(Value::as_str);
+        verify_service_agent_invoke_response(
+            &identity,
+            &response,
+            expected_request_digest,
+            expected_request_nonce,
+            true,
         )
-        .await
+        .map_err(|error| Self::client_error(&error))?;
+        self.record_service_response_nonce(&response)
+            .map_err(|error| Self::client_error(&error))?;
+        Ok(response)
     }
 
     pub async fn invoke_agent_async(
@@ -507,13 +533,28 @@ impl ServiceNetClient {
         task_id: &str,
         request: &ServiceNetGetAgentTaskRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
-        self.request_json(
-            Method::POST,
-            self.endpoint(&["v1", "agents", agent_id, "tasks", task_id, "get"])
-                .map_err(|error| Self::client_error(&error))?,
-            Some(request),
+        let identity = self.resolve_service_identity(agent_id).await?;
+        let expected_request_digest = service_agent_task_request_digest(task_id, request)
+            .map_err(|error| Self::client_error(&error))?;
+        let response = self
+            .request_json(
+                Method::POST,
+                self.endpoint(&["v1", "agents", agent_id, "tasks", task_id, "get"])
+                    .map_err(|error| Self::client_error(&error))?,
+                Some(request),
+            )
+            .await?;
+        verify_service_agent_invoke_response(
+            &identity,
+            &response,
+            Some(&expected_request_digest),
+            None,
+            true,
         )
-        .await
+        .map_err(|error| Self::client_error(&error))?;
+        self.record_service_response_nonce(&response)
+            .map_err(|error| Self::client_error(&error))?;
+        Ok(response)
     }
 
     pub async fn get_receipt(
@@ -547,6 +588,74 @@ impl ServiceNetClient {
             status: None,
             message: format!("{error:#}"),
         }
+    }
+
+    async fn resolve_service_identity(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<Value, ServiceNetClientError> {
+        let now = Instant::now();
+        if let Some(record) = self
+            .service_identity_cache
+            .lock()
+            .map_err(|_| Self::client_error(&anyhow!("ServiceNet identity cache lock poisoned")))?
+            .get(agent_id)
+            .filter(|cached| cached.expires_at > now)
+            .map(|cached| cached.record.clone())
+        {
+            return Ok(record);
+        }
+        self.get_agent(agent_id).await
+    }
+
+    fn cache_service_identity(&self, agent_id: &str, record: &Value) -> Result<()> {
+        let now = Instant::now();
+        let mut cache = self
+            .service_identity_cache
+            .lock()
+            .map_err(|_| anyhow!("ServiceNet identity cache lock poisoned"))?;
+        cache.retain(|_, cached| cached.expires_at > now);
+        if cache.len() >= SERVICE_IDENTITY_CACHE_MAX_ENTRIES && !cache.contains_key(agent_id) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.expires_at)
+                .map(|(agent_id, _)| agent_id.clone());
+            if let Some(oldest) = oldest {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(
+            agent_id.to_owned(),
+            CachedServiceIdentity {
+                record: record.clone(),
+                expires_at: now + SERVICE_IDENTITY_CACHE_TTL,
+            },
+        );
+        Ok(())
+    }
+
+    fn record_service_response_nonce(&self, response: &ServiceNetInvokeResponse) -> Result<()> {
+        let signature = response
+            .service_signature
+            .as_ref()
+            .context("ServiceNet response is missing the Service Agent signature")?;
+        let now = Instant::now();
+        let key = format!("{}:{}", signature.service_did, signature.nonce);
+        let mut cache = self
+            .service_response_nonce_cache
+            .lock()
+            .map_err(|_| anyhow!("ServiceNet response nonce cache lock poisoned"))?;
+        cache.retain(|_, expires_at| *expires_at > now);
+        if cache.contains_key(&key) {
+            bail!("ServiceNet response nonce has already been used; refusing replay");
+        }
+        if cache.len() >= SERVICE_RESPONSE_NONCE_CACHE_MAX_ENTRIES {
+            bail!(
+                "ServiceNet response nonce cache is at capacity; retry through another client instance"
+            );
+        }
+        cache.insert(key, now + SERVICE_RESPONSE_NONCE_CACHE_TTL);
+        Ok(())
     }
 
     async fn request_json<T, B>(
@@ -587,6 +696,133 @@ impl ServiceNetClient {
                 status: Some(status),
                 message: format!("{error:#}"),
             })
+    }
+}
+
+fn service_agent_task_request_digest(
+    task_id: &str,
+    request: &ServiceNetGetAgentTaskRequest,
+) -> Result<String> {
+    let params = build_service_agent_get_task_signature_params(task_id, request.history_length);
+    Ok(format!(
+        "sha256:{:x}",
+        Sha256::digest(
+            serde_jcs::to_vec(&params).context("canonicalize Service Agent task request")?
+        )
+    ))
+}
+
+fn build_service_agent_get_task_signature_params(
+    task_id: &str,
+    history_length: Option<u32>,
+) -> Value {
+    json!({
+        "id": task_id,
+        "historyLength": history_length
+            .unwrap_or(SERVICE_AGENT_GET_TASK_DEFAULT_HISTORY_LENGTH),
+    })
+}
+
+pub fn verify_service_agent_invoke_response(
+    published_agent: &Value,
+    response: &ServiceNetInvokeResponse,
+    expected_request_digest: Option<&str>,
+    expected_request_nonce: Option<&str>,
+    signature_required: bool,
+) -> Result<()> {
+    let Some(service_signature) = response.service_signature.as_ref() else {
+        if signature_required {
+            bail!("ServiceNet response is missing the Service Agent signature");
+        }
+        return Ok(());
+    };
+    if service_signature.protocol != SERVICE_RESPONSE_SIGNATURE_PROTOCOL {
+        bail!("ServiceNet response uses an unsupported Service Agent signature protocol");
+    }
+    let published_agent_id = published_agent
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .context("published Service Agent is missing agent_id")?;
+    if response.agent_id != published_agent_id || service_signature.agent_id != published_agent_id {
+        bail!("ServiceNet response agent_id does not match the published Service Agent");
+    }
+    let published_service_did = published_agent
+        .get("service_did")
+        .and_then(Value::as_str)
+        .context("published Service Agent is missing service_did")?;
+    if service_signature.service_did != published_service_did {
+        bail!("ServiceNet response DID does not match the published Service Agent");
+    }
+    if let Some(expected_request_digest) = expected_request_digest
+        && service_signature.request_digest != expected_request_digest
+    {
+        bail!("ServiceNet response request digest does not match the invocation");
+    }
+    if service_signature.request_nonce.as_deref() != expected_request_nonce {
+        bail!("ServiceNet response request nonce does not match the invocation");
+    }
+    if service_signature.nonce.trim().is_empty() {
+        bail!("ServiceNet response signature nonce is missing");
+    }
+    let issued_at_ms =
+        i64::try_from(service_signature.issued_at_ms).context("invalid response timestamp")?;
+    if (chrono::Utc::now().timestamp_millis() - issued_at_ms).abs()
+        > SERVICE_RESPONSE_MAX_CLOCK_SKEW_MS
+    {
+        bail!("ServiceNet response signature timestamp is outside the accepted window");
+    }
+    let result = response.raw.get("result").cloned().unwrap_or(Value::Null);
+    let result_digest = format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_jcs::to_vec(&result).context("canonicalize Service Agent result")?)
+    );
+    if service_signature.result_digest != result_digest {
+        bail!("ServiceNet response result digest does not match its signed value");
+    }
+
+    let public_key = service_agent_response_public_key(published_service_did, service_signature)?;
+    let signature_bytes = STANDARD
+        .decode(&service_signature.signature)
+        .context("decode Service Agent signature")?;
+    let signature_bytes: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| anyhow!("Service Agent signature must contain 64 bytes"))?;
+    let payload = json!({
+        "protocol": service_signature.protocol,
+        "service_did": service_signature.service_did,
+        "agent_id": service_signature.agent_id,
+        "verification_method": service_signature.verification_method,
+        "request_digest": service_signature.request_digest,
+        "request_nonce": service_signature.request_nonce,
+        "result_digest": service_signature.result_digest,
+        "nonce": service_signature.nonce,
+        "issued_at_ms": service_signature.issued_at_ms,
+    });
+    let payload =
+        serde_jcs::to_vec(&payload).context("canonicalize Service Agent signature payload")?;
+    VerifyingKey::from_bytes(&public_key)
+        .context("parse Service Agent public key")?
+        .verify(&payload, &Signature::from_bytes(&signature_bytes))
+        .context("verify Service Agent response signature")?;
+    Ok(())
+}
+
+fn service_agent_response_public_key(
+    published_service_did: &str,
+    service_signature: &ServiceNetServiceAgentSignature,
+) -> Result<[u8; 32]> {
+    let did = Did::parse(published_service_did).context("parse Service Agent did:key")?;
+    let did_key = DidKey::from_did(did).context("Service Agent identity must use did:key")?;
+    let expected_verification_method = format!("{}#{}", did_key.did, did_key.public_key_multibase);
+    if service_signature.verification_method != expected_verification_method {
+        bail!("Service Agent signature references the wrong did:key verification method");
+    }
+    match did_key
+        .decode_public_key()
+        .context("decode Service Agent did:key public key")?
+    {
+        DidKeyPublicKey::Ed25519(public_key) => Ok(public_key),
+        _ => bail!("Service Agent did:key must use Ed25519"),
     }
 }
 
@@ -642,34 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn servicenet_agent_did_document_uses_servicenet_address_not_runtime_endpoint() {
-        let binding = json!({
-            "agent_did": "did:key:z6MkWallet",
-            "rail": "x402",
-            "network": "base",
-            "payment_address": "0x1111111111111111111111111111111111111111",
-        });
-        let document = servicenet_agent_did_document(
-            "did:key:z6MkProvider",
-            "agent-one",
-            Some("dumpling@wattetheria"),
-            Some(&binding),
-        );
-
-        assert_eq!(document["id"].as_str(), Some("did:key:z6MkWallet"));
-        assert_eq!(
-            document["alsoKnownAs"].as_array().unwrap(),
-            &[json!("dumpling@wattetheria")]
-        );
-        assert_eq!(
-            document["service"][0]["serviceEndpoint"].as_str(),
-            Some("wattetheria://servicenet/dumpling@wattetheria")
-        );
-        assert_eq!(document["payment_account_bindings"][0], binding);
-    }
-
-    #[test]
-    fn attach_servicenet_agent_did_document_adds_payment_binding_to_existing_pay_to_extension() {
+    fn attach_service_agent_payment_binding_updates_existing_pay_to_extension() {
         let binding = json!({
             "agent_did": "did:key:z6MkWallet",
             "rail": "x402",
@@ -695,21 +904,12 @@ mod tests {
             }
         });
 
-        attach_servicenet_agent_did_document(
-            &mut agent_card,
-            "did:key:z6MkProvider",
-            "agent-one",
-            Some("dumpling@wattetheria"),
-            Some(&binding),
-        );
+        attach_service_agent_payment_binding(&mut agent_card, Some(&binding));
 
         assert!(agent_card.get("payment_account_bindings").is_none());
+        assert!(agent_card.get("didDocument").is_none());
         assert_eq!(
             agent_card["capabilities"]["extensions"][0]["params"]["payment_account_bindings"][0],
-            binding
-        );
-        assert_eq!(
-            agent_card["didDocument"]["payment_account_bindings"][0],
             binding
         );
     }
@@ -723,6 +923,60 @@ mod tests {
         assert!(
             validate_servicenet_agent_name(&"名".repeat(MAX_SERVICENET_AGENT_NAME_CHARS + 1))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn get_task_signature_params_match_protocol_vector() {
+        let params = build_service_agent_get_task_signature_params("task-123", None);
+        let digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(serde_jcs::to_vec(&params).unwrap())
+        );
+        assert_eq!(
+            digest,
+            "sha256:58ed7275f0789912a6589b6103ba2a5a21a84ac396f7e93a86d504df0cac401a"
+        );
+    }
+
+    #[test]
+    fn client_response_nonce_cache_rejects_replay() {
+        let client = ServiceNetClient::new("http://127.0.0.1:1").unwrap();
+        let response = ServiceNetInvokeResponse {
+            agent_id: "ride".to_owned(),
+            status: "completed".to_owned(),
+            receipt_id: None,
+            task_id: None,
+            context_id: None,
+            message: None,
+            output: None,
+            settlement: None,
+            payment_receipt: None,
+            service_signature: Some(ServiceNetServiceAgentSignature {
+                protocol: SERVICE_RESPONSE_SIGNATURE_PROTOCOL.to_owned(),
+                service_did:
+                    "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM".to_owned(),
+                agent_id: "ride".to_owned(),
+                verification_method:
+                    "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM#z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM"
+                        .to_owned(),
+                request_digest: "sha256:request".to_owned(),
+                request_nonce: Some("request-nonce".to_owned()),
+                result_digest: "sha256:result".to_owned(),
+                nonce: "response-nonce".to_owned(),
+                issued_at_ms: 1,
+                signature: "unused".to_owned(),
+            }),
+            raw: Value::Null,
+        };
+
+        client.record_service_response_nonce(&response).unwrap();
+        assert!(
+            client
+                .record_service_response_nonce(&response)
+                .unwrap_err()
+                .to_string()
+                .contains("refusing replay")
         );
     }
 }
