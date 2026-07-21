@@ -1,6 +1,61 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+async fn signed_servicenet_bridge_request(
+    state: &ControlPlaneState,
+    target_agent_id: &str,
+    message: &str,
+) -> Value {
+    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let signed_message = json!({"message": message});
+    let request_digest = format!(
+        "sha256:{:x}",
+        sha2::Sha256::digest(
+            serde_jcs::to_vec(&signed_message).expect("signed message should canonicalize")
+        )
+    );
+    let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
+    let agent_envelope = crate::social_host::build_signed_agent_envelope_for_nodes_with_protocol(
+        state,
+        "a2a_v1",
+        crate::social_host::SignedAgentEnvelopeArgs {
+            source_agent_id: state.agent_did.clone(),
+            source_public_id: Some("pub_caller".to_owned()),
+            source_display_name: Some("Caller Agent".to_owned()),
+            target_agent_id: Some(target_agent_id.to_owned()),
+            source_node_id,
+            target_node_id: None,
+            capability: "servicenet.agents.invoke".to_owned(),
+            message: signed_message,
+            extensions: Some(json!({
+                "caller_public_id": "pub_caller",
+                "nonce": uuid::Uuid::new_v4().to_string(),
+                "issued_at_ms": issued_at_ms,
+                "expires_at_ms": issued_at_ms + 300_000,
+                "request_digest": request_digest,
+            })),
+        },
+    )
+    .expect("agent envelope should sign");
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "role": "ROLE_USER",
+                "parts": [
+                    {"text": message}
+                ]
+            },
+            "metadata": {
+                "agent_envelope": agent_envelope
+            }
+        }
+    })
+}
+
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() {
@@ -67,6 +122,7 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
                     card_hash: "sha256:test".to_owned(),
                     version: "0.1.0".to_owned(),
                     updated_at: Utc::now().to_rfc3339(),
+                    execution: wattetheria_kernel::servicenet::ServiceAgentExecution::default(),
                     agent_card: json!({}),
                     deployment: json!({"runtime": "wattetheria_adapter"}),
                     review: json!({}),
@@ -76,53 +132,13 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
     )
     .expect("publisher state should save");
     let caller_agent_id = state.agent_did.clone();
-    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
-    let signed_message = json!({"message": "hello service"});
-    let request_digest = format!(
-        "sha256:{:x}",
-        sha2::Sha256::digest(
-            serde_jcs::to_vec(&signed_message).expect("signed message should canonicalize")
-        )
+    let request_body =
+        signed_servicenet_bridge_request(&state, "stripe-agent", "hello service").await;
+    assert_eq!(
+        request_body["params"]["metadata"]["agent_envelope"]["protocol"],
+        "a2a_v1"
     );
-    let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
-    let agent_envelope = crate::social_host::build_signed_agent_envelope_for_nodes(
-        &state,
-        crate::social_host::SignedAgentEnvelopeArgs {
-            source_agent_id: caller_agent_id.clone(),
-            source_public_id: Some("pub_caller".to_owned()),
-            source_display_name: Some("Caller Agent".to_owned()),
-            target_agent_id: Some("stripe-agent".to_owned()),
-            source_node_id,
-            target_node_id: None,
-            capability: "servicenet.agents.invoke".to_owned(),
-            message: signed_message,
-            extensions: Some(json!({
-                "caller_public_id": "pub_caller",
-                "nonce": uuid::Uuid::new_v4().to_string(),
-                "issued_at_ms": issued_at_ms,
-                "expires_at_ms": issued_at_ms + 300_000,
-                "request_digest": request_digest,
-            })),
-        },
-    )
-    .expect("agent envelope should sign");
     let app = app(state);
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "SendMessage",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [
-                    {"kind": "text", "text": "hello service"}
-                ]
-            },
-            "extensions": {
-                "agent_envelope": agent_envelope
-            }
-        }
-    });
     let body = request_json(
         app.clone(),
         axum::http::Request::post("/a2a/stripe-agent")
@@ -139,6 +155,13 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
         body["result"]["task"]["artifacts"][0]["parts"][0]["text"].as_str(),
         Some("bridge response")
     );
+    assert!(
+        body["result"]["task"]["metadata"]["wattetheriaServiceAgentSignature"]
+            .as_str()
+            .is_some()
+    );
+    let _: a2a::Task = serde_json::from_value(body["result"]["task"].clone())
+        .expect("Wattetheria Runtime response must be a valid A2A v1 Task");
     let expected_session =
         format!("wattetheria:servicenet:{caller_agent_id}:stripe-agent:mainnet:watt-etheria");
     assert_eq!(
@@ -163,6 +186,112 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
     );
 
     runtime_server.abort();
+}
+
+#[tokio::test]
+async fn servicenet_a2a_bridge_forwards_customized_agent_through_a2a_v1() {
+    let forwarded_request = Arc::new(Mutex::new(None::<Value>));
+    let captured = Arc::clone(&forwarded_request);
+    let customized_app = Router::new().route(
+        "/jsonrpc",
+        post(move |Json(body): Json<Value>| {
+            let captured = Arc::clone(&captured);
+            async move {
+                *captured.lock().await = Some(body.clone());
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "task": {
+                            "id": "custom-task",
+                            "contextId": "custom-context",
+                            "status": {"state": "TASK_STATE_COMPLETED"},
+                            "artifacts": [{"artifactId": "artifact-1", "parts": [{"text": "custom response"}]}]
+                        }
+                    }
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Customized Agent listener should bind");
+    let customized_addr = listener.local_addr().expect("Customized Agent address");
+    let customized_server = tokio::spawn(async move {
+        axum::serve(listener, customized_app)
+            .await
+            .expect("Customized Agent server should run");
+    });
+
+    let (_dir, _router, _token, _, state) = build_test_app(20);
+    let service_identity = FileServiceAgentIdentityStore::new(&state.data_dir)
+        .load_or_create("custom-agent", "http://127.0.0.1/a2a")
+        .expect("Service Agent identity should initialize");
+    crate::routes::servicenet::publish::save_publisher_state(
+        &state.data_dir,
+        &crate::routes::servicenet::publish::ServiceNetPublisherState {
+            registrations: vec![
+                crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
+                    provider_id: "provider-test".to_owned(),
+                    provider_did: state.agent_did.clone(),
+                    agent_id: "custom-agent".to_owned(),
+                    service_did: service_identity.service_did,
+                    service_address: Some("custom@wattetheria".to_owned()),
+                    card_hash: "sha256:custom".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    updated_at: Utc::now().to_rfc3339(),
+                    execution:
+                        wattetheria_kernel::servicenet::ServiceAgentExecution::CustomizedAgent {
+                            protocol:
+                                wattetheria_kernel::servicenet::CustomizedAgentProtocol::A2aV1,
+                            customized_agent_url: format!("http://{customized_addr}/jsonrpc"),
+                        },
+                    agent_card: json!({}),
+                    deployment: json!({"runtime": "wattetheria_adapter"}),
+                    review: json!({}),
+                },
+            ],
+        },
+    )
+    .expect("publisher state should save");
+    let request_body =
+        signed_servicenet_bridge_request(&state, "custom-agent", "hello customized").await;
+    let app = app(state);
+
+    let body = request_json(
+        app,
+        axum::http::Request::post("/a2a")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(request_body.to_string()))
+            .expect("request should build"),
+    )
+    .await;
+
+    assert_eq!(body["result"]["task"]["id"], "custom-task");
+    let service_signature: Value = serde_json::from_str(
+        body["result"]["task"]["metadata"]["wattetheriaServiceAgentSignature"]
+            .as_str()
+            .expect("Service Agent signature metadata should be present"),
+    )
+    .expect("Service Agent signature metadata should be JSON");
+    assert_eq!(service_signature["agent_id"], "custom-agent");
+    let forwarded = forwarded_request
+        .lock()
+        .await
+        .clone()
+        .expect("Customized Agent should receive request");
+    assert_eq!(forwarded["method"], "SendMessage");
+    assert_eq!(
+        forwarded["params"]["message"]["parts"][0]["text"],
+        "hello customized"
+    );
+    assert!(
+        forwarded
+            .pointer("/params/metadata/agent_envelope")
+            .is_none()
+    );
+
+    customized_server.abort();
 }
 
 #[tokio::test]
@@ -1083,6 +1212,7 @@ async fn servicenet_unpublish_cleans_local_state_when_remote_agent_is_missing() 
                     card_hash: "sha256:missing-remote-agent".to_owned(),
                     version: "0.1.0".to_owned(),
                     updated_at: "2026-06-04T00:00:00Z".to_owned(),
+                    execution: wattetheria_kernel::servicenet::ServiceAgentExecution::default(),
                     agent_card: json!({
                         "name": "Missing Remote Agent",
                         "description": "Previously removed from ServiceNet",

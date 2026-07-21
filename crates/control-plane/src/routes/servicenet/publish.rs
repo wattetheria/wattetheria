@@ -6,10 +6,13 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::net::IpAddr;
 use std::path::Path as FsPath;
 use uuid::Uuid;
 
+use super::publish_validation::{
+    default_agent_card, normalize_agent_card_skills, real_world_domains, validate_agent_card,
+    wattetheria_native_domains,
+};
 use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
@@ -18,10 +21,10 @@ use wattetheria_kernel::agent_identity::service_agent::{
 };
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
-    ServiceNetClient, attach_service_agent_payment_binding, load_servicenet_publisher_state,
-    normalize_service_address, rollback_servicenet_publisher_registration,
-    save_servicenet_publisher_state, stage_servicenet_publisher_registration,
-    validate_servicenet_agent_name,
+    CustomizedAgentProtocol, ServiceAgentExecution, ServiceAgentPublicationInput, ServiceNetClient,
+    ServiceNetConnectionMode, attach_service_agent_payment_binding,
+    load_servicenet_publisher_state, normalize_service_address, prepare_service_agent_publication,
+    save_servicenet_publisher_state, submit_service_agent_publication,
 };
 pub(crate) use wattetheria_kernel::servicenet::{
     ServiceNetPublisherRegistration, ServiceNetPublisherState,
@@ -45,7 +48,23 @@ pub(crate) struct PublishAgentBody {
     risk_level: Option<String>,
     #[serde(default)]
     ttl_minutes: Option<u64>,
+    #[serde(default)]
+    execution_mode: PublishExecutionMode,
+    #[serde(default)]
+    connection_mode: ServiceNetConnectionMode,
+    #[serde(default)]
+    protocol: Option<CustomizedAgentProtocol>,
+    #[serde(default)]
+    customized_agent_url: Option<String>,
     agent_card: Value,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum PublishExecutionMode {
+    #[default]
+    WattetheriaRuntime,
+    CustomizedAgent,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,68 +89,6 @@ fn forbidden(message: impl Into<String>) -> Response {
         Json(json!({"error": message.into()})),
     )
         .into_response()
-}
-
-fn default_agent_card() -> Value {
-    json!({
-        "name": "",
-        "description": "",
-        "url": "",
-        "preferredTransport": "JSONRPC",
-        "protocolVersion": "1.0",
-        "scope": "real_world",
-        "origin": "custom_built",
-        "domain": "GENERAL",
-        "cost": 0,
-        "currency": "USDC",
-        "supportsTask": false,
-        "skills": [{"name": "", "description": ""}],
-        "securitySchemes": {"none": {"type": "none"}},
-        "security": [{"none": []}],
-    })
-}
-
-fn normalize_agent_card_skills(mut card: Value) -> Value {
-    if let Some(skills) = card.get_mut("skills").and_then(Value::as_array_mut) {
-        for skill in skills {
-            if let Some(skill_object) = skill.as_object_mut() {
-                skill_object
-                    .entry("description")
-                    .or_insert_with(|| Value::String(String::new()));
-            }
-        }
-    }
-    card
-}
-
-fn real_world_domains() -> Vec<&'static str> {
-    vec![
-        "GENERAL",
-        "TRANSPORTATION",
-        "FOOD",
-        "CLOTHING",
-        "HOUSING",
-        "PAYMENTS",
-        "COMMERCE",
-        "MEDIA",
-        "HEALTH",
-        "EDUCATION",
-        "TRAVEL",
-    ]
-}
-
-fn wattetheria_native_domains() -> Vec<&'static str> {
-    vec![
-        "GENERAL",
-        "GOVERNANCE",
-        "PRODUCTION",
-        "TRADING",
-        "AUTOMATION",
-        "SECURITY",
-        "EXPLORATION",
-        "DISCOVERY",
-        "SERVICENET",
-    ]
 }
 
 pub(crate) fn registration_matches_identity(
@@ -255,205 +212,25 @@ async fn resolve_provider_id(
         .to_owned())
 }
 
-fn validate_agent_card(card: &Value) -> Result<(), String> {
-    let object = card
-        .as_object()
-        .ok_or_else(|| "agent card must be a JSON object".to_owned())?;
-    validate_agent_card_required_fields(object)?;
-    validate_agent_card_strings(object)?;
-    validate_endpoint(
-        object
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )?;
-    if object.get("preferredTransport").and_then(Value::as_str) != Some("JSONRPC") {
-        return Err("agent card `preferredTransport` must be `JSONRPC`".to_owned());
-    }
-    if object.get("protocolVersion").and_then(Value::as_str) != Some("1.0") {
-        return Err("agent card `protocolVersion` must be `1.0`".to_owned());
-    }
-    validate_scope_origin_domain(
-        object
-            .get("scope")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        object
-            .get("origin")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        object
-            .get("domain")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )?;
-    validate_agent_card_pricing(object)?;
-    if object
-        .get("supportsTask")
-        .and_then(Value::as_bool)
-        .is_none()
-    {
-        return Err("agent card `supportsTask` must be a boolean".to_owned());
-    }
-    validate_agent_card_skills(object)?;
-    validate_agent_card_no_secrets(card)
-}
-
-fn validate_agent_card_required_fields(
-    object: &serde_json::Map<String, Value>,
-) -> Result<(), String> {
-    for field in [
-        "name",
-        "description",
-        "url",
-        "preferredTransport",
-        "protocolVersion",
-        "scope",
-        "origin",
-        "domain",
-        "cost",
-        "currency",
-        "supportsTask",
-        "skills",
-        "securitySchemes",
-        "security",
-    ] {
-        if !object.contains_key(field) {
-            return Err(format!("agent card is missing required field `{field}`"));
+fn service_agent_execution(body: &PublishAgentBody) -> Result<ServiceAgentExecution, String> {
+    match body.execution_mode {
+        PublishExecutionMode::WattetheriaRuntime => Ok(ServiceAgentExecution::WattetheriaRuntime),
+        PublishExecutionMode::CustomizedAgent => {
+            let protocol = body
+                .protocol
+                .ok_or_else(|| "protocol is required for Customized Agent execution".to_owned())?;
+            let customized_agent_url = body
+                .customized_agent_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    "customized_agent_url is required for Customized Agent execution".to_owned()
+                })?;
+            ServiceAgentExecution::customized(protocol, customized_agent_url)
+                .map_err(|error| error.to_string())
         }
     }
-    Ok(())
-}
-
-fn validate_agent_card_strings(object: &serde_json::Map<String, Value>) -> Result<(), String> {
-    for field in ["name", "description"] {
-        if object
-            .get(field)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty()
-        {
-            return Err(format!("agent card `{field}` must not be empty"));
-        }
-    }
-    validate_servicenet_agent_name(
-        object
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn validate_agent_card_pricing(object: &serde_json::Map<String, Value>) -> Result<(), String> {
-    let cost = object
-        .get("cost")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "agent card `cost` must be a non-negative integer".to_owned())?;
-    if cost > u64::from(u32::MAX) {
-        return Err(format!(
-            "agent card `cost` must be a non-negative integer up to {}",
-            u32::MAX
-        ));
-    }
-    if !matches!(
-        object.get("currency").and_then(Value::as_str),
-        Some("USDC" | "USDT")
-    ) {
-        return Err("agent card `currency` must be `USDC` or `USDT`".to_owned());
-    }
-    Ok(())
-}
-
-fn validate_agent_card_skills(object: &serde_json::Map<String, Value>) -> Result<(), String> {
-    let skills = object
-        .get("skills")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "agent card `skills` must be an array".to_owned())?;
-    if skills.is_empty() {
-        return Err("agent card `skills` must list at least one skill".to_owned());
-    }
-    for (index, skill) in skills.iter().enumerate() {
-        if skill
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty()
-        {
-            return Err(format!("skill[{index}] is missing required field `name`"));
-        }
-    }
-    Ok(())
-}
-
-fn validate_agent_card_no_secrets(card: &Value) -> Result<(), String> {
-    let card_text = serde_json::to_string(card).unwrap_or_default();
-    if card_text.contains("sk-") || card_text.contains("BEGIN PRIVATE KEY") {
-        return Err(
-            "agent card appears to contain a secret; remove it before publishing".to_owned(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_endpoint(endpoint: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(endpoint)
-        .map_err(|error| format!("endpoint is not a valid URL: {error}"))?;
-    if url.scheme() != "https" {
-        return Err(format!(
-            "endpoint must use https:// (got scheme `{}`)",
-            url.scheme()
-        ));
-    }
-    let host = url
-        .host_str()
-        .ok_or_else(|| "endpoint must include a host".to_owned())?;
-    if host.eq_ignore_ascii_case("localhost") {
-        return Err("endpoint host must not be localhost".to_owned());
-    }
-    if host.parse::<IpAddr>().is_ok() {
-        return Err(format!(
-            "endpoint host is an IP literal ({host}); use a DNS hostname instead"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_scope_origin_domain(scope: &str, origin: &str, domain: &str) -> Result<(), String> {
-    match scope {
-        "real_world" if !matches!(origin, "established_service" | "custom_built") => {
-            return Err(
-                "agent card `origin` must be `established_service` or `custom_built` for `real_world` scope"
-                    .to_owned(),
-            );
-        }
-        "wattetheria_native" if origin != "native_published" => {
-            return Err(
-                "agent card `origin` must be `native_published` for `wattetheria_native` scope"
-                    .to_owned(),
-            );
-        }
-        "real_world" | "wattetheria_native" => {}
-        _ => {
-            return Err(
-                "agent card `scope` must be `real_world` or `wattetheria_native`".to_owned(),
-            );
-        }
-    }
-    let allowed = if scope == "real_world" {
-        real_world_domains()
-    } else {
-        wattetheria_native_domains()
-    };
-    if !allowed.contains(&domain) {
-        return Err(format!(
-            "agent card `domain` is not supported for `{scope}` scope"
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn load_publisher_state(data_dir: &FsPath) -> anyhow::Result<ServiceNetPublisherState> {
@@ -475,11 +252,6 @@ fn remove_registration(
     publisher_state.registrations.retain(|registration| {
         registration.agent_id != agent_id || !registration_matches_identity(registration, owner_did)
     });
-}
-
-fn hash_agent_card(card: &Value) -> String {
-    let canonical = serde_jcs::to_string(card).unwrap_or_else(|_| card.to_string());
-    format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 fn derive_agent_id(agent_card: &Value, provider_id: &str) -> String {
@@ -530,10 +302,14 @@ pub(crate) async fn agent_card_template(
     Json(json!({
         "defaults": default_agent_card(),
         "fields": [
+            {"name": "execution_mode", "label": "Execution Mode", "kind": "select", "required": true, "options": ["wattetheria_runtime", "customized_agent"]},
+            {"name": "connection_mode", "label": "Connection Mode", "kind": "select", "required": true, "options": ["servicenet_relay", "wattetheria_direct"]},
+            {"name": "protocol", "label": "Protocol", "kind": "select", "required": false, "options": ["a2a_v1"], "note": "Required only for Customized Agent execution."},
+            {"name": "customized_agent_url", "label": "Customized Agent URL", "kind": "url", "required": false, "note": "Private upstream URL used only by the local Wattetheria Adapter."},
             {"name": "name", "label": "Name", "kind": "text", "required": true, "note": "Public agent name used in ServiceNet listings."},
             {"name": "service_address", "label": "Service Address", "kind": "text", "required": false, "note": "Unique ServiceNet alias stored in DID alsoKnownAs. Use <name>@wattetheria."},
             {"name": "description", "label": "Description", "kind": "textarea", "required": true, "note": "Short summary shown before invocation."},
-            {"name": "url", "label": "Endpoint URL", "kind": "url", "required": true, "note": "Public HTTPS A2A JSON-RPC endpoint. Do not use localhost or private IPs."},
+            {"name": "url", "label": "Adapter URL", "kind": "url", "required": true, "note": "Public HTTPS URL mapped by the publisher to this Wattetheria Adapter. No path is added automatically."},
             {"name": "scope", "label": "Scope", "kind": "select", "required": true, "options": ["real_world", "wattetheria_native"], "note": "real_world is for public services; wattetheria_native is for agents published from a Wattetheria node."},
             {"name": "origin", "label": "Origin", "kind": "select", "required": true, "options_by_scope": {"real_world": ["established_service", "custom_built"], "wattetheria_native": ["native_published"]}},
             {"name": "domain", "label": "Domain", "kind": "select", "required": true, "options_by_scope": {"real_world": real_world_domains(), "wattetheria_native": wattetheria_native_domains()}},
@@ -564,6 +340,11 @@ pub(crate) async fn publish_agent(
     if let Err(message) = validate_agent_card(&agent_card) {
         return bad_request(message);
     }
+    let execution = match service_agent_execution(&body) {
+        Ok(execution) => execution,
+        Err(message) => return bad_request(message),
+    };
+    let connection_mode = body.connection_mode;
     let mut publisher_state = match load_publisher_state(&state.data_dir) {
         Ok(state) => state,
         Err(error) => return internal_error(&error),
@@ -624,109 +405,31 @@ pub(crate) async fn publish_agent(
         Err(error) => return internal_error(&error),
     };
     attach_service_agent_payment_binding(&mut agent_card, Some(&payment_account_binding));
-    let deployment = json!({
-        "runtime": "wattetheria_adapter",
-        "endpoint": {
-            "url": endpoint,
-            "protocol_binding": "JSONRPC",
-            "protocol_version": "1.0",
-            "interaction_protocol": "google_a2a",
+    let publication = match prepare_service_agent_publication(
+        ServiceAgentPublicationInput {
+            provider_id: &provider_id,
+            agent_id: &agent_id,
+            service_did: &service_identity.service_did,
+            service_address: service_address.as_deref(),
+            version: &version,
+            risk_level: &risk_level,
+            agent_card,
+            connection_mode,
+            execution: execution.clone(),
+            provider_attester_did: &state.agent_did,
+            ttl_minutes: body.ttl_minutes.unwrap_or(DEFAULT_SERVICENET_TTL_MINUTES),
         },
-    });
-    let review = json!({
-        "risk_level": risk_level,
-        "human_approval_required": false,
-    });
-    let artifacts = json!({});
-    let issued_at_ms = now_ms();
-    let expires_at_ms = issued_at_ms.saturating_add(
-        body.ttl_minutes
-            .unwrap_or(DEFAULT_SERVICENET_TTL_MINUTES)
-            .saturating_mul(60_000),
-    );
-    let nonce = Uuid::new_v4().to_string();
-    let attestation_payload = json!({
-        "provider_id": provider_id,
-        "agent_id": agent_id,
-        "service_did": service_identity.service_did,
-        "service_address": service_address.clone(),
-        "version": version,
-        "agent_card": agent_card,
-        "deployment": deployment,
-        "review": review,
-        "artifacts": artifacts,
-        "provider_attester_did": state.agent_did,
-        "delegation_token": Value::Null,
-        "source_commit": Value::Null,
-        "build_digest": Value::Null,
-        "nonce": nonce,
-        "issued_at_ms": issued_at_ms,
-        "expires_at_ms": expires_at_ms,
-    });
-    let attestation_bytes = match serde_jcs::to_vec(&attestation_payload) {
-        Ok(bytes) => bytes,
-        Err(error) => return internal_error(&anyhow::anyhow!(error)),
-    };
-    let signature = match state.signer.sign_bytes(&attestation_bytes) {
-        Ok(signature) => signature,
-        Err(error) => return internal_error(&error),
-    };
-    let request = json!({
-        "provider_id": provider_id,
-        "agent_id": agent_id,
-        "service_did": service_identity.service_did,
-        "service_address": service_address.clone(),
-        "version": version,
-        "agent_card": agent_card,
-        "deployment": deployment,
-        "review": review,
-        "artifacts": artifacts,
-        "attestations": {
-            "attestation_signature": signature,
-            "provider_attester_did": state.agent_did,
-            "nonce": nonce,
-            "issued_at_ms": issued_at_ms,
-            "expires_at_ms": expires_at_ms,
-        },
-    });
-    let previous_registration = match stage_servicenet_publisher_registration(
-        &state.data_dir,
-        ServiceNetPublisherRegistration {
-            provider_id: request["provider_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned(),
-            provider_did: state.agent_did.clone(),
-            agent_id: request["agent_id"].as_str().unwrap_or_default().to_owned(),
-            service_did: request["service_did"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned(),
-            service_address: request["service_address"].as_str().map(ToOwned::to_owned),
-            card_hash: hash_agent_card(&request["agent_card"]),
-            version: request["version"].as_str().unwrap_or_default().to_owned(),
-            updated_at: Utc::now().to_rfc3339(),
-            agent_card: request["agent_card"].clone(),
-            deployment: request["deployment"].clone(),
-            review: request["review"].clone(),
-        },
+        state.signer.as_ref(),
     ) {
-        Ok(previous) => previous,
+        Ok(publication) => publication,
         Err(error) => return internal_error(&error),
     };
-    let response = match client.submit_agent(&request).await {
-        Ok(response) => response,
-        Err(error) => {
-            if let Err(rollback_error) = rollback_servicenet_publisher_registration(
-                &state.data_dir,
-                &agent_id,
-                previous_registration,
-            ) {
-                return internal_error(&rollback_error);
-            }
-            return servicenet_error_response(&error);
-        }
-    };
+    let request = &publication.request;
+    let response =
+        match submit_service_agent_publication(client, &state.data_dir, &publication).await {
+            Ok(response) => response,
+            Err(error) => return servicenet_error_response(&error),
+        };
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: Utc::now().timestamp(),
@@ -752,6 +455,8 @@ pub(crate) async fn publish_agent(
         "service_address": request["service_address"],
         "provider_id": request["provider_id"],
         "provider_did": state.agent_did,
+        "connection_mode": connection_mode,
+        "execution": execution,
         "submission": response,
     }))
     .into_response()

@@ -146,7 +146,7 @@ async fn spawn_servicenet_with_binding_payment(
             "runtime": "wattetheria_adapter",
             "endpoint": {
                 "url": "https://binding.example.com/a2a",
-                "interaction_protocol": "google_a2a",
+                "interaction_protocol": "a2a_v1",
                 "protocol_binding": "JSONRPC"
             }
         },
@@ -602,7 +602,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(beta["version"].as_str(), Some("0.2.0"));
     assert_eq!(beta["provider_id"].as_str(), Some("provider-two"));
     assert_eq!(beta["runtime"].as_str(), Some("wattetheria_adapter"));
-    assert_eq!(beta["protocol"].as_str(), Some("google_a2a / JSONRPC"));
+    assert_eq!(beta["protocol"].as_str(), Some("a2a_v1 / JSONRPC"));
     assert!(beta.get("url").is_none());
     assert_eq!(beta["risk_level"].as_str(), Some("medium"));
     assert_eq!(beta["reputation_score"].as_f64(), Some(500.0));
@@ -652,7 +652,7 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
     assert_eq!(agent["version"].as_str(), Some("0.1.0"));
     assert_eq!(agent["provider_id"].as_str(), Some("provider-one"));
     assert_eq!(agent["runtime"].as_str(), Some("wattetheria_adapter"));
-    assert_eq!(agent["protocol"].as_str(), Some("google_a2a / JSONRPC"));
+    assert_eq!(agent["protocol"].as_str(), Some("a2a_v1 / JSONRPC"));
     assert!(agent.get("url").is_none());
     assert_eq!(agent["risk_level"].as_str(), Some("low"));
     assert_eq!(agent["reputation_score"].as_f64(), Some(750.0));
@@ -1615,6 +1615,7 @@ async fn mcp_delete_servicenet_agent_resolves_service_address() {
                     card_hash: "sha256:agent-alpha".to_string(),
                     version: "0.1.0".to_string(),
                     updated_at: "2026-06-04T00:00:00Z".to_string(),
+                    execution: wattetheria_kernel::servicenet::ServiceAgentExecution::default(),
                     agent_card: json!({}),
                     deployment: json!({}),
                     review: json!({}),

@@ -342,14 +342,47 @@ __SUPERVISION_CONSOLE_CSS__  </style>
                     <span class="field-note">Use lowercase letters, numbers, and hyphens.</span>
                   </label>
                   <label>
-                    Endpoint URL
+                    Adapter URL
                     <input id="servicenet-url" required type="url" placeholder="https://agent.example.com">
-                    <span class="field-note">Public HTTPS JSON-RPC endpoint. Localhost and private IPs are rejected.</span>
+                    <span class="field-note">Public HTTPS URL mapped to this node. No path is added automatically.</span>
                   </label>
                   <label class="wide">
                     Description
                     <textarea id="servicenet-description" required rows="3" placeholder="What this agent can do."></textarea>
                     <span class="field-note">Short summary shown before invocation.</span>
+                  </label>
+                </div>
+              </section>
+
+              <section class="form-section">
+                <div class="form-section-title">Execution And Connection</div>
+                <div class="form-grid">
+                  <label>
+                    Execution Mode
+                    <select id="servicenet-execution-mode">
+                      <option value="wattetheria_runtime">Wattetheria Runtime</option>
+                      <option value="customized_agent">Customized Agent</option>
+                    </select>
+                  </label>
+                  <label>
+                    Connection Mode
+                    <select id="servicenet-connection-mode">
+                      <option value="servicenet_relay">Relay</option>
+                      <option value="wattetheria_direct">Direct</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="servicenet-customized-fields" class="form-grid" hidden>
+                  <label>
+                    Protocol
+                    <select id="servicenet-protocol">
+                      <option value="a2a_v1">A2A v1</option>
+                    </select>
+                  </label>
+                  <label>
+                    Customized Agent URL
+                    <input id="servicenet-customized-agent-url" type="url" placeholder="http://127.0.0.1:8080">
+                    <span class="field-note">Private upstream URL called by the local Adapter.</span>
                   </label>
                 </div>
               </section>

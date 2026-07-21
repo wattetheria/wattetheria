@@ -3,9 +3,10 @@ use chrono::Utc;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use wattetheria_kernel::servicenet::SERVICENET_A2A_V1_PROTOCOL;
 
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes_with_protocol, public_agent_id,
     resolve_social_local_context,
 };
 use crate::state::ControlPlaneState;
@@ -22,8 +23,9 @@ pub(crate) async fn servicenet_invoke_agent_envelope(
     let message = servicenet_invoke_envelope_message(body);
     let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
     let expires_at_ms = issued_at_ms.saturating_add(SERVICENET_INVOCATION_ENVELOPE_TTL_MS);
-    let envelope = build_signed_agent_envelope_for_nodes(
+    let envelope = build_signed_agent_envelope_for_nodes_with_protocol(
         state,
+        SERVICENET_A2A_V1_PROTOCOL,
         SignedAgentEnvelopeArgs {
             source_agent_id: local.agent_id,
             source_public_id: public_agent_id(&local.public_id),

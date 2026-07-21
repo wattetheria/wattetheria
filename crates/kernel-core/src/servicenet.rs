@@ -14,10 +14,19 @@ use std::{
 use uuid::Uuid;
 use watt_did::{Did, DidKey, DidKeyPublicKey};
 
+mod direct;
+mod publication;
 mod publisher_state;
 
+pub use publication::{
+    PreparedServiceAgentPublication, ServiceAgentPublicationInput,
+    prepare_service_agent_publication, service_agent_card_requires_auth,
+    submit_service_agent_publication,
+};
 pub use publisher_state::{
-    ServiceNetPublisherRegistration, ServiceNetPublisherState, load_servicenet_publisher_state,
+    CustomizedAgentProtocol, ServiceAgentExecution, ServiceNetConnectionMode,
+    ServiceNetPublisherRegistration, ServiceNetPublisherState,
+    find_servicenet_publisher_registration, load_servicenet_publisher_state,
     rollback_servicenet_publisher_registration, save_servicenet_publisher_state,
     stage_servicenet_publisher_registration, upsert_servicenet_publisher_registration,
 };
@@ -30,6 +39,7 @@ const SERVICE_RESPONSE_NONCE_CACHE_MAX_ENTRIES: usize = 262_144;
 const SERVICE_RESPONSE_SIGNATURE_PROTOCOL: &str = "wattetheria.servicenet.response.v1";
 const SERVICE_RESPONSE_MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 const SERVICE_AGENT_GET_TASK_DEFAULT_HISTORY_LENGTH: u32 = 10;
+pub const SERVICENET_A2A_V1_PROTOCOL: &str = "a2a_v1";
 pub const MAX_SERVICENET_AGENT_NAME_CHARS: usize = 40;
 
 pub fn validate_servicenet_agent_name(name: &str) -> Result<()> {
@@ -310,6 +320,13 @@ impl ServiceNetClientError {
     pub fn status(&self) -> Option<reqwest::StatusCode> {
         self.status
     }
+
+    fn local(error: impl std::fmt::Display) -> Self {
+        Self {
+            status: None,
+            message: error.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for ServiceNetClientError {
@@ -482,6 +499,9 @@ impl ServiceNetClient {
         request: &ServiceNetInvokeRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
         let identity = self.resolve_service_identity(agent_id).await?;
+        if direct::uses_wattetheria_direct(&identity) {
+            return direct::invoke_agent(self, agent_id, request, &identity).await;
+        }
         let response = self
             .request_json(
                 Method::POST,
@@ -518,6 +538,12 @@ impl ServiceNetClient {
         agent_id: &str,
         request: &ServiceNetInvokeRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
+        let identity = self.resolve_service_identity(agent_id).await?;
+        if direct::uses_wattetheria_direct(&identity) {
+            return Err(Self::client_error(&anyhow!(
+                "wattetheria_direct agents do not support ServiceNet invoke-async; use synchronous direct invocation"
+            )));
+        }
         self.request_json(
             Method::POST,
             self.endpoint(&["v1", "agents", agent_id, "invoke-async"])
@@ -534,6 +560,11 @@ impl ServiceNetClient {
         request: &ServiceNetGetAgentTaskRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
         let identity = self.resolve_service_identity(agent_id).await?;
+        if direct::uses_wattetheria_direct(&identity) {
+            return Err(Self::client_error(&anyhow!(
+                "wattetheria_direct agents do not support ServiceNet task polling"
+            )));
+        }
         let expected_request_digest = service_agent_task_request_digest(task_id, request)
             .map_err(|error| Self::client_error(&error))?;
         let response = self

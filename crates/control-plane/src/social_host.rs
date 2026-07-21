@@ -526,7 +526,15 @@ pub(crate) fn build_signed_agent_envelope_with_optional_target(
     state: &ControlPlaneState,
     args: SignedAgentEnvelopeArgs,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
-    let protocol = "google_a2a".to_string();
+    build_signed_agent_envelope_with_protocol(state, "google_a2a", args)
+}
+
+fn build_signed_agent_envelope_with_protocol(
+    state: &ControlPlaneState,
+    protocol: &str,
+    args: SignedAgentEnvelopeArgs,
+) -> anyhow::Result<SwarmAgentEnvelope> {
+    let protocol = protocol.to_owned();
     let transport_profile = Some("wattswarm_mesh".to_string());
     let message_json = serde_json::to_string(&args.message)?;
     let extensions_json = args
@@ -581,6 +589,14 @@ pub(crate) fn build_signed_agent_envelope_for_nodes(
     args: SignedAgentEnvelopeArgs,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     build_signed_agent_envelope_with_optional_target(state, args)
+}
+
+pub(crate) fn build_signed_agent_envelope_for_nodes_with_protocol(
+    state: &ControlPlaneState,
+    protocol: &str,
+    args: SignedAgentEnvelopeArgs,
+) -> anyhow::Result<SwarmAgentEnvelope> {
+    build_signed_agent_envelope_with_protocol(state, protocol, args)
 }
 
 pub async fn public_source_agent_card(

@@ -467,7 +467,7 @@ fn mock_published_service_agent(agent_id: &str) -> Value {
             "runtime": "wattetheria_adapter",
             "endpoint": {
                 "url": "https://example.com/a2a",
-                "interaction_protocol": "google_a2a",
+                "interaction_protocol": "a2a_v1",
                 "protocol_binding": "JSONRPC",
                 "protocol_version": "1.0",
             }
@@ -582,7 +582,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
-                                "interaction_protocol": "google_a2a",
+                                "interaction_protocol": "a2a_v1",
                                 "protocol_binding": "JSONRPC"
                             }
                         },
@@ -611,7 +611,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.net/a2a",
-                                "interaction_protocol": "google_a2a",
+                                "interaction_protocol": "a2a_v1",
                                 "protocol_binding": "JSONRPC"
                             }
                         },
@@ -663,7 +663,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
-                                "interaction_protocol": "google_a2a",
+                                "interaction_protocol": "a2a_v1",
                                 "protocol_binding": "JSONRPC"
                             }
                         },
@@ -828,7 +828,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "runtime": "wattetheria_adapter",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
-                                "interaction_protocol": "google_a2a",
+                                "interaction_protocol": "a2a_v1",
                                 "protocol_binding": "JSONRPC"
                             }
                         },
@@ -883,7 +883,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "runtime": "wattetheria_adapter",
                         "endpoint": {
                             "url": "https://example.com/a2a",
-                            "interaction_protocol": "google_a2a",
+                            "interaction_protocol": "a2a_v1",
                             "protocol_binding": "JSONRPC"
                         }
                     },

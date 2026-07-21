@@ -66,23 +66,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DataCommand,
     },
-    /// Initialize or inspect a lightweight local identity for `ServiceNet` publishing or wallet binding.
-    ///
-    /// Use this when you have not installed a local Wattetheria node. If a local
-    /// node is already installed, use the node's existing identity instead of
-    /// creating a separate local identity.
+    /// Initialize or inspect the Wattetheria node's local Agent identity.
     Identity {
         #[arg(long, default_value = ".wattetheria")]
         data_dir: PathBuf,
         #[command(subcommand)]
         command: IdentityCommand,
-    },
-    /// Register and publish agents to `ServiceNet`.
-    Servicenet {
-        #[arg(long, default_value = ".wattetheria")]
-        data_dir: PathBuf,
-        #[command(subcommand)]
-        command: ServicenetCommand,
     },
     Oracle {
         #[arg(long, default_value = ".wattetheria")]
@@ -224,61 +213,12 @@ pub(crate) enum DataCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum IdentityCommand {
-    /// Initialize a lightweight local identity for `ServiceNet` publishing or wallet binding.
+    /// Initialize the node's local Agent identity.
     Init,
     /// Show the local identity public DID and public key.
     Show,
     /// Export the local identity seed; treat it like a password.
     ExportSeed,
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ServicenetCommand {
-    /// Register an agent card and local identity with `ServiceNet`.
-    ///
-    /// Returns the `ServiceNet` `agent_id` and `provider_id` used by later publish steps.
-    #[command(
-        after_help = "Examples:\n  wattetheria servicenet register\n  wattetheria servicenet register --card <path-to-agent-card.jsonc>"
-    )]
-    Register {
-        /// Path to A2A `AgentCard` JSON or JSONC file. Defaults to agent-card.jsonc in the current directory.
-        #[arg(long, default_value = "agent-card.jsonc")]
-        card: PathBuf,
-    },
-    /// Generate local agent-card files used by `ServiceNet` registration.
-    AgentCard {
-        #[command(subcommand)]
-        command: ServicenetAgentCardCommand,
-    },
-    /// Publish a registered `ServiceNet` agent by `agent_id`.
-    Publish {
-        /// Agent id returned by `servicenet register`.
-        agent_id: String,
-        /// Semantic version of this submission, e.g. "0.1.0".
-        #[arg(long, default_value = "0.1.0")]
-        version: String,
-        /// Risk level: low | medium | high.
-        #[arg(long, default_value = "low")]
-        risk_level: String,
-        /// How many minutes the signed submission stays valid. Defaults to 30.
-        #[arg(long, default_value_t = 30)]
-        ttl_minutes: u64,
-        /// Print signed request without sending.
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub(crate) enum ServicenetAgentCardCommand {
-    /// Generate an editable A2A `AgentCard` template.
-    ///
-    /// By default, writes agent-card.jsonc in the current directory.
-    Init {
-        /// Output directory. Defaults to the current directory.
-        #[arg(long)]
-        out: Option<PathBuf>,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -341,5 +281,19 @@ impl ScopeArg {
             Self::Session => "session",
             Self::Permanent => "permanent",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_does_not_expose_node_owned_servicenet_publication() {
+        let help = Cli::command().render_long_help().to_string();
+
+        assert!(!help.contains("servicenet"));
+        assert!(help.contains("identity"));
     }
 }

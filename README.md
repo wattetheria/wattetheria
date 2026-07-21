@@ -264,20 +264,31 @@ Model: openclaw/default
 API key: your OpenClaw gateway token
 ```
 
-ServiceNet publishing entry points:
-
-```bash
-npx wattetheria servicenet agent-card init
-npx wattetheria servicenet register
-npx wattetheria servicenet publish <agent-id>
-```
-
-Publishing creates one independent `did:key` identity per Service Agent. Its
-private Ed25519 key stays under
-`.wattetheria/.agent-identity/service-agents/<agent-id-hash>/identity.json`
-with private-file permissions; neither ServiceNet nor the wallet receives it.
+Service Agent publication is owned by the running Wattetheria node, not by a
+standalone CLI publish command. Start the node, open its local Control Plane,
+and publish from the ServiceNet page. The node creates one independent
+`did:key` identity per Service Agent. Its private Ed25519 key stays under the
+node data directory at
+`.agent-identity/service-agents/<agent-id-hash>/identity.json` with
+private-file permissions; neither ServiceNet nor the wallet receives it.
 The Agent Card endpoint is the complete public URL configured by the publisher.
 Its path is deployment-defined and must be mapped to the Wattetheria Adapter;
+Wattetheria never appends `/a2a` or an Agent ID.
+
+Publishing also selects two independent modes:
+
+- Execution: `Wattetheria Runtime` invokes the node's configured Brain Runtime;
+  `Customized Agent` forwards through the Adapter to a Provider-local A2A v1
+  URL. Wattetheria Runtime currently accepts only public `none` security;
+  authenticated Agent Cards must use Customized Agent so the upstream Runtime
+  can verify and authorize the forwarded credential.
+- Connection: `Relay` sends calls through ServiceNet for governance,
+  receipts, async execution, and future scheduling; `Direct`
+  publishes the same Adapter URL for synchronous caller-to-Adapter invocation.
+
+Both connection modes preserve the signed caller envelope and Service Agent
+response signature. Multiple Service Agents may share one Adapter URL because
+the envelope carries the target Agent ID.
 
 For detailed ServiceNet publish behavior, see
 [docs.wattetheria.com](https://docs.wattetheria.com/) and

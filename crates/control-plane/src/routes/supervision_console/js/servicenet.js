@@ -70,6 +70,14 @@
       setSelectOptions("servicenet-domain", domains, domains.includes(domain) ? domain : domains[0]);
     }
 
+    function syncServiceNetExecution() {
+      const customized = qs("servicenet-execution-mode")?.value === "customized_agent";
+      const fields = qs("servicenet-customized-fields");
+      const url = qs("servicenet-customized-agent-url");
+      if (fields) fields.hidden = !customized;
+      if (url) url.required = customized;
+    }
+
     function serviceNetSkillCard(skill = {}, index = 0) {
       return `
         <div class="skill-card">
@@ -174,6 +182,13 @@
       qs("servicenet-form-title").textContent = agent ? "Update Agent" : "Publish Agent";
       qs("servicenet-form-mode").textContent = agent ? "update" : "new";
       qs("servicenet-submit").textContent = agent ? "Update" : "Publish";
+      qs("servicenet-execution-mode").value = agent?.execution?.mode || "wattetheria_runtime";
+      qs("servicenet-connection-mode").value = agent?.connection_mode
+        || agent?.deployment?.connection_mode
+        || "servicenet_relay";
+      qs("servicenet-protocol").value = agent?.execution?.protocol || "a2a_v1";
+      qs("servicenet-customized-agent-url").value = agent?.execution?.customized_agent_url || "";
+      syncServiceNetExecution();
       qs("servicenet-name").value = nextCard.name || "";
       qs("servicenet-service-address").value = normalizeServiceAddressLocalPart(serviceAddressLocalPart(agent?.service_address));
       qs("servicenet-description").value = nextCard.description || "";
@@ -261,6 +276,8 @@
         const extraSkills = skills.length - shownSkills.length;
         const chipValues = [
           row.version ? `v ${row.version}` : "",
+          row.execution?.mode === "customized_agent" ? "Customized Agent" : "Wattetheria Runtime",
+          row.connection_mode === "wattetheria_direct" ? "Direct" : "Relay",
           card.domain || "",
           card.currency ? `${card.currency} ${valueOrDash(card.cost)}` : "",
           ...shownSkills,
@@ -374,6 +391,14 @@
         service_address: serviceAddressFromLocalPart(serviceAddressName),
         version: qs("servicenet-version").value.trim() || "0.1.0",
         risk_level: qs("servicenet-risk").value,
+        execution_mode: qs("servicenet-execution-mode").value,
+        connection_mode: qs("servicenet-connection-mode").value,
+        protocol: qs("servicenet-execution-mode").value === "customized_agent"
+          ? qs("servicenet-protocol").value
+          : null,
+        customized_agent_url: qs("servicenet-execution-mode").value === "customized_agent"
+          ? qs("servicenet-customized-agent-url").value.trim()
+          : null,
         agent_card: serviceNetAgentCardFromForm(),
       };
       const response = await fetchJson("/v1/wattetheria/servicenet/publish", {
@@ -404,6 +429,7 @@
         resetServiceNetForm().catch((error) => serviceNetStatus(error.message, true));
       });
       qs("servicenet-scope")?.addEventListener("change", syncServiceNetClassification);
+      qs("servicenet-execution-mode")?.addEventListener("change", syncServiceNetExecution);
       qs("servicenet-service-address")?.addEventListener("input", (event) => {
         const normalized = normalizeServiceAddressLocalPart(event.target.value);
         if (event.target.value !== normalized) {

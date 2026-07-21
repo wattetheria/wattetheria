@@ -13,6 +13,11 @@ use crate::state::ControlPlaneState;
 use wattetheria_kernel::audit::AuditEntry;
 
 fn published_registration_json(registration: &ServiceNetPublisherRegistration) -> Value {
+    let connection_mode = registration
+        .deployment
+        .get("connection_mode")
+        .cloned()
+        .unwrap_or_else(|| json!("servicenet_relay"));
     json!({
         "agent_id": registration.agent_id,
         "provider_id": registration.provider_id,
@@ -22,6 +27,8 @@ fn published_registration_json(registration: &ServiceNetPublisherRegistration) -
         "version": registration.version,
         "card_hash": registration.card_hash,
         "updated_at": registration.updated_at,
+        "connection_mode": connection_mode,
+        "execution": registration.execution,
         "agent_card": registration.agent_card,
         "deployment": registration.deployment,
         "review": registration.review,

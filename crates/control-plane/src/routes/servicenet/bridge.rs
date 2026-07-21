@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header::AUTHORIZATION};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -9,11 +9,15 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
+use super::wire;
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::agent_identity::service_agent::{
-    FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
+    FileServiceAgentIdentityStore, ServiceAgentIdentity, ServiceAgentIdentityStore,
 };
-use wattetheria_kernel::brain::RuntimeSessionContext;
+use wattetheria_kernel::servicenet::{
+    ServiceNetPublisherRegistration, find_servicenet_publisher_registration,
+    service_agent_card_requires_auth,
+};
 use wattetheria_kernel::signing::verify_payload;
 use wattetheria_kernel::swarm_bridge::{SwarmAgentEnvelope, SwarmSourceAgentCard};
 
@@ -71,22 +75,25 @@ struct ServiceAgentResponseSignaturePayload<'a> {
 
 pub(crate) async fn a2a_root(
     State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    handle_a2a(state, None, body).await
+    handle_a2a(state, None, authorization_header(&headers), body).await
 }
 
 pub(crate) async fn a2a_agent(
     State(state): State<ControlPlaneState>,
     Path(agent_id): Path<String>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    handle_a2a(state, Some(agent_id), body).await
+    handle_a2a(state, Some(agent_id), authorization_header(&headers), body).await
 }
 
 async fn handle_a2a(
     state: ControlPlaneState,
     path_agent_id: Option<String>,
+    authorization: Option<String>,
     body: Value,
 ) -> Response {
     let id = body.get("id").cloned().unwrap_or(Value::Null);
@@ -95,7 +102,9 @@ async fn handle_a2a(
         .and_then(Value::as_str)
         .unwrap_or_default();
     match method {
-        "SendMessage" | "message/send" => send_message(state, path_agent_id, id, &body).await,
+        "SendMessage" | "message/send" => {
+            send_message(state, path_agent_id, authorization.as_deref(), id, &body).await
+        }
         "GetTask" | "tasks/get" => jsonrpc_error(
             &id,
             -32601,
@@ -108,6 +117,7 @@ async fn handle_a2a(
 async fn send_message(
     state: ControlPlaneState,
     path_agent_id: Option<String>,
+    authorization: Option<&str>,
     id: Value,
     body: &Value,
 ) -> Response {
@@ -116,61 +126,35 @@ async fn send_message(
     if message.trim().is_empty() {
         return jsonrpc_error(&id, -32602, "A2A message text is required");
     }
-    let envelope = match value_at(params, &["extensions", "agent_envelope"]) {
+    let envelope = match wire::agent_envelope(params) {
         Some(value) => match verified_agent_envelope(value) {
             Ok(envelope) => envelope,
             Err(message) => return jsonrpc_error(&id, -32602, &message),
         },
         None => return jsonrpc_error(&id, -32602, "A2A agent_envelope is required"),
     };
-    let (published_agent_id, invocation_security) =
+    let (target, invocation_security) =
         match validate_target_invocation(&state, params, path_agent_id.as_deref(), &envelope) {
             Ok(validated) => validated,
             Err(message) => return jsonrpc_error(&id, -32602, &message),
         };
-    let context_id = string_at(params, &["contextId"]);
-    let session_context = context_id
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .map(RuntimeSessionContext::precomputed)
-        .or_else(|| service_session_from_envelope(&envelope, published_agent_id));
-    let prompt = bridge_prompt(params, &message, &envelope);
-    let output = {
-        let engine = state.brain_engine.read().await;
-        match engine
-            .generate_text_with_session(&prompt, session_context.as_ref())
-            .await
-        {
-            Ok(output) => output,
-            Err(error) => return jsonrpc_error(&id, -32000, &error.to_string()),
-        }
+    if service_agent_card_requires_auth(&target.registration.agent_card) && authorization.is_none()
+    {
+        return jsonrpc_error(&id, -32001, "Service Agent authorization is required");
+    }
+    let result = match super::execution::execute_service_agent(
+        &state,
+        &target.registration,
+        params,
+        &message,
+        &envelope,
+        authorization,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return jsonrpc_error(&id, -32000, &error),
     };
-    let text = bridge_output_text(&output);
-    let task_id = string_at(params, &["taskId"]).unwrap_or_else(|| Uuid::new_v4().to_string());
-    let response_context_id = context_id.or_else(|| {
-        session_context
-            .as_ref()
-            .map(RuntimeSessionContext::session_id)
-    });
-    let result = json!({
-        "task": {
-            "id": task_id,
-            "contextId": response_context_id,
-            "status": {
-                "state": "TASK_STATE_COMPLETED"
-            },
-            "artifacts": [
-                {
-                    "parts": [
-                        {
-                            "kind": "text",
-                            "text": text
-                        }
-                    ]
-                }
-            ]
-        }
-    });
     let request_digest = envelope
         .extensions
         .as_ref()
@@ -185,8 +169,8 @@ async fn send_message(
         );
     }
     let service_signature = match sign_service_agent_response(
-        &state,
-        published_agent_id,
+        &target.identity,
+        &target.registration.agent_id,
         request_digest,
         &invocation_security.request_nonce,
         &result,
@@ -194,25 +178,70 @@ async fn send_message(
         Ok(signature) => signature,
         Err(error) => return jsonrpc_error(&id, -32000, &error.to_string()),
     };
-    Json(json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-        "extensions": {
-            "service_agent_signature": service_signature,
-        },
-    }))
-    .into_response()
+    if wire::uses_standard_metadata(params) {
+        let mut result = result;
+        if let Err(error) = attach_service_signature_metadata(&mut result, &service_signature) {
+            return jsonrpc_error(&id, -32000, &error);
+        }
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        }))
+        .into_response()
+    } else {
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+            "extensions": {
+                "service_agent_signature": service_signature,
+            },
+        }))
+        .into_response()
+    }
+}
+
+fn attach_service_signature_metadata(result: &mut Value, signature: &Value) -> Result<(), String> {
+    let payload_name = if result.get("task").is_some() {
+        "task"
+    } else {
+        "message"
+    };
+    let payload = result
+        .get_mut(payload_name)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "A2A response must contain a Task or Message".to_owned())?;
+    let metadata = payload
+        .entry("metadata")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "A2A response metadata must be an object".to_owned())?;
+    let signature = serde_json::to_string(&signature)
+        .map_err(|error| format!("serialize Service Agent signature metadata: {error}"))?;
+    metadata.insert(
+        "wattetheriaServiceAgentSignature".to_owned(),
+        Value::String(signature),
+    );
+    Ok(())
+}
+
+fn authorization_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn sign_service_agent_response(
-    state: &ControlPlaneState,
+    identity: &ServiceAgentIdentity,
     agent_id: &str,
     request_digest: &str,
     request_nonce: &str,
     result: &Value,
 ) -> anyhow::Result<Value> {
-    let identity = FileServiceAgentIdentityStore::new(&state.data_dir).load(agent_id)?;
     let verification_method = identity.verification_method();
     let result_digest = format!("sha256:{:x}", Sha256::digest(serde_jcs::to_vec(result)?));
     let nonce = Uuid::new_v4().to_string();
@@ -247,12 +276,17 @@ struct InvocationSecurity {
     request_nonce: String,
 }
 
-fn validate_target_invocation<'a>(
+struct ValidatedInvocationTarget {
+    registration: ServiceNetPublisherRegistration,
+    identity: ServiceAgentIdentity,
+}
+
+fn validate_target_invocation(
     state: &ControlPlaneState,
     params: &Value,
-    path_agent_id: Option<&'a str>,
-    envelope: &'a SwarmAgentEnvelope,
-) -> Result<(&'a str, InvocationSecurity), String> {
+    path_agent_id: Option<&str>,
+    envelope: &SwarmAgentEnvelope,
+) -> Result<(ValidatedInvocationTarget, InvocationSecurity), String> {
     let published_agent_id = path_agent_id
         .or(envelope.target_agent_id.as_deref())
         .ok_or_else(|| "target Service Agent id is required".to_owned())?;
@@ -261,34 +295,36 @@ fn validate_target_invocation<'a>(
             "A2A target agent does not match signed agent_envelope.target_agent_id".to_owned(),
         );
     }
-    validate_local_service_agent(state, published_agent_id)?;
+    let target = validate_local_service_agent(state, published_agent_id)?;
     let security = validate_invocation_security(state, params, envelope, published_agent_id)?;
-    Ok((published_agent_id, security))
+    Ok((target, security))
 }
 
 fn validate_local_service_agent(
     state: &ControlPlaneState,
     published_agent_id: &str,
-) -> Result<(), String> {
-    let publisher_state = super::publish::load_publisher_state(&state.data_dir)
+) -> Result<ValidatedInvocationTarget, String> {
+    let registration = find_servicenet_publisher_registration(&state.data_dir, published_agent_id)
         .map_err(|error| format!("load Service Agent publisher state failed: {error}"))?;
-    if !publisher_state
-        .registrations
-        .iter()
-        .any(|registration| registration.agent_id == published_agent_id)
-    {
-        return Err(format!(
-            "Service Agent `{published_agent_id}` is not published by this Wattetheria Adapter"
-        ));
-    }
-    FileServiceAgentIdentityStore::new(&state.data_dir)
+    let registration = registration.ok_or_else(|| {
+        format!("Service Agent `{published_agent_id}` is not published by this Wattetheria Adapter")
+    })?;
+    let identity = FileServiceAgentIdentityStore::new(&state.data_dir)
         .load(published_agent_id)
         .map_err(|error| {
             format!(
                 "load Service Agent identity failed; publish from this node data directory first: {error}"
             )
         })?;
-    Ok(())
+    if identity.service_did != registration.service_did {
+        return Err(format!(
+            "local Service Agent identity does not match the published DID for `{published_agent_id}`"
+        ));
+    }
+    Ok(ValidatedInvocationTarget {
+        registration,
+        identity,
+    })
 }
 
 fn validate_invocation_security(
@@ -383,14 +419,11 @@ fn validate_a2a_params_match_signed_message(
     published_agent_id: &str,
 ) -> Result<(), String> {
     let actual = json!({
-        "taskId": params.get("taskId").cloned().unwrap_or(Value::Null),
-        "contextId": params.get("contextId").cloned().unwrap_or(Value::Null),
-        "skillId": params.get("skillId").cloned().unwrap_or(Value::Null),
-        "message": params.get("message").cloned().unwrap_or(Value::Null),
-        "settlement": params
-            .pointer("/extensions/settlement")
-            .cloned()
-            .unwrap_or(Value::Null),
+        "taskId": wire::message_field(params, "taskId").cloned().unwrap_or(Value::Null),
+        "contextId": wire::message_field(params, "contextId").cloned().unwrap_or(Value::Null),
+        "skillId": wire::skill_id(params).cloned().unwrap_or(Value::Null),
+        "message": normalized_request_message(params.get("message")),
+        "settlement": wire::settlement(params).cloned().unwrap_or(Value::Null),
     });
     let mut expected = expected_a2a_core_params(&envelope.message);
     if expected["contextId"].is_null()
@@ -407,6 +440,40 @@ fn validate_a2a_params_match_signed_message(
         return Ok(());
     }
     Err("A2A request params do not match the signed agent_envelope.message".to_owned())
+}
+
+fn normalized_request_message(message: Option<&Value>) -> Value {
+    let Some(message) = message else {
+        return Value::Null;
+    };
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .map(|role| match role {
+            "ROLE_USER" | "user" => "user",
+            "ROLE_AGENT" | "agent" => "agent",
+            other => other,
+        })
+        .unwrap_or_default();
+    let parts = message
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .map(|part| {
+                    if let Some(text) = part.get("text") {
+                        json!({"kind": "text", "text": text})
+                    } else if let Some(data) = part.get("data") {
+                        json!({"kind": "data", "data": data})
+                    } else {
+                        part.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    json!({"role": role, "parts": parts})
 }
 
 fn expected_a2a_core_params(signed_message: &Value) -> Value {
@@ -504,36 +571,6 @@ fn required_string(value: Option<&Value>, name: &str) -> Result<String, String> 
         .and_then(non_empty_text)
         .map(ToOwned::to_owned)
         .ok_or_else(|| format!("A2A agent_envelope.extensions.{name} is required"))
-}
-
-fn service_session_from_envelope(
-    envelope: &SwarmAgentEnvelope,
-    published_agent_id: &str,
-) -> Option<RuntimeSessionContext> {
-    let caller_agent_did = envelope.source_agent_id.clone()?;
-    Some(RuntimeSessionContext::servicenet(
-        caller_agent_did,
-        published_agent_id.to_owned(),
-        DEFAULT_SERVICENET_NETWORK_ID,
-    ))
-}
-
-fn bridge_prompt(params: &Value, message: &str, envelope: &SwarmAgentEnvelope) -> String {
-    let caller = envelope
-        .source_agent_id
-        .clone()
-        .unwrap_or_else(|| "unknown".to_owned());
-    let caller_public_id = envelope
-        .extensions
-        .as_ref()
-        .and_then(|value| string_at(value, &["caller_public_id"]))
-        .unwrap_or_else(|| "unknown".to_owned());
-    let input = value_at(params, &["message", "parts"])
-        .cloned()
-        .unwrap_or(Value::Null);
-    format!(
-        "You are the published Wattetheria ServiceNet agent. Return strict JSON object {{\"message\":\"...\"}}. Caller agent DID: {caller}. Caller public id: {caller_public_id}. User message: {message}. A2A parts: {input}"
-    )
 }
 
 fn verified_agent_envelope(value: &Value) -> Result<SwarmAgentEnvelope, String> {
@@ -640,17 +677,6 @@ fn extract_message_text(params: &Value) -> String {
         .join("\n")
 }
 
-fn bridge_output_text(output: &str) -> String {
-    serde_json::from_str::<Value>(output)
-        .ok()
-        .and_then(|value| {
-            string_at(&value, &["message"])
-                .or_else(|| string_at(&value, &["answer"]))
-                .or_else(|| string_at(&value, &["response"]))
-        })
-        .unwrap_or_else(|| output.to_owned())
-}
-
 fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Response {
     (
         StatusCode::OK,
@@ -708,7 +734,7 @@ mod tests {
             }
         });
         let envelope = SwarmAgentEnvelope {
-            protocol: "google_a2a".to_owned(),
+            protocol: "a2a_v1".to_owned(),
             transport_profile: None,
             source_agent_id: Some("did:key:caller".to_owned()),
             target_agent_id: Some("ride-agent".to_owned()),
@@ -721,6 +747,23 @@ mod tests {
             signature: None,
         };
         assert!(validate_a2a_params_match_signed_message(&params, &envelope, "ride-agent").is_ok());
+
+        let sdk_params = json!({
+            "message": {
+                "messageId": "message-1",
+                "taskId": "task-1",
+                "contextId": "context-1",
+                "role": "ROLE_USER",
+                "parts": [
+                    {"text": "book a ride"},
+                    {"data": {"pickup": "airport"}},
+                ]
+            },
+            "metadata": {"skillId": "rides.book"}
+        });
+        assert!(
+            validate_a2a_params_match_signed_message(&sdk_params, &envelope, "ride-agent").is_ok()
+        );
 
         let mut tampered = params;
         tampered["message"]["parts"][0]["text"] = json!("send money instead");
@@ -741,7 +784,7 @@ mod tests {
             }
         });
         let envelope = SwarmAgentEnvelope {
-            protocol: "google_a2a".to_owned(),
+            protocol: "a2a_v1".to_owned(),
             transport_profile: None,
             source_agent_id: Some("did:key:caller".to_owned()),
             target_agent_id: Some("pay-agent".to_owned()),
@@ -768,5 +811,17 @@ mod tests {
         });
 
         assert!(validate_a2a_params_match_signed_message(&params, &envelope, "pay-agent").is_err());
+    }
+
+    #[test]
+    fn adapter_requires_authorization_when_agent_card_declares_security() {
+        assert!(service_agent_card_requires_auth(&json!({
+            "securitySchemes": {"oauth2": {"type": "oauth2"}},
+            "security": [{"oauth2": []}]
+        })));
+        assert!(!service_agent_card_requires_auth(&json!({
+            "securitySchemes": {"none": {"type": "none"}},
+            "security": [{"none": []}]
+        })));
     }
 }

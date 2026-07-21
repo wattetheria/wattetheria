@@ -12,6 +12,8 @@ name = "wattetheria_control_plane"
 path = "src/lib.rs"
 
 [dependencies]
+a2a.workspace = true
+a2a-client.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -31,6 +33,7 @@ tonic = { version = "0.12", features = ["transport"] }
 tower = "0.5"
 tracing.workspace = true
 reqwest.workspace = true
+reqwest-a2a.workspace = true
 uuid.workspace = true
 wattetheria-social = { path = "../social" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }

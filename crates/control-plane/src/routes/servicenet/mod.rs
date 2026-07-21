@@ -25,8 +25,11 @@ use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
 pub(crate) mod async_jobs;
 pub(crate) mod bridge;
 pub(crate) mod envelope;
+mod execution;
 pub(crate) mod publish;
+mod publish_validation;
 pub(crate) mod published;
+mod wire;
 
 const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
 const DEFAULT_AGENT_LIST_LIMIT: usize = 50;
