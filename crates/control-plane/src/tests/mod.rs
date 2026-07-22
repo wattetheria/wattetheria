@@ -609,11 +609,15 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "connection_mode": "wattetheria_direct",
                             "endpoint": {
-                                "url": "https://example.net/a2a",
                                 "interaction_protocol": "a2a_v1",
                                 "protocol_binding": "JSONRPC"
                             }
+                        },
+                        "invoke": {
+                            "transport": "wattetheria_direct",
+                            "direct_url": "https://example.net/adapter"
                         },
                         "review": {"risk_level": "medium"},
                     }),
@@ -781,6 +785,40 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
         .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
+                if agent_id == "agent-beta" {
+                    return Json(json!({
+                        "agent_id": agent_id,
+                        "service_did": mock_service_did("agent-beta"),
+                        "service_address": "beta@wattetheria",
+                        "provider_id": "provider-two",
+                        "version": "0.2.0",
+                        "status": "approved",
+                        "agent_card": {
+                            "name": "Agent Beta",
+                            "description": "Beta test agent",
+                            "cost": 7,
+                            "currency": "USDT",
+                            "supportsTask": false,
+                            "skills": [{
+                                "id": "address.name",
+                                "name": "Name address"
+                            }]
+                        },
+                        "deployment": {
+                            "runtime": "wattetheria_adapter",
+                            "connection_mode": "wattetheria_direct",
+                            "endpoint": {
+                                "interaction_protocol": "a2a_v1",
+                                "protocol_binding": "JSONRPC"
+                            }
+                        },
+                        "invoke": {
+                            "transport": "wattetheria_direct",
+                            "direct_url": "https://example.net/adapter"
+                        },
+                        "review": {"risk_level": "medium"},
+                    }));
+                }
                 if agent_id == "agent-oauth" {
                     return Json(json!({
                         "agent_id": agent_id,
@@ -920,7 +958,12 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
             "/v1/agents/{agent_id}/invoke",
             post(
                 |Path(agent_id): Path<String>, Json(body): Json<Value>| async move {
-                    let result = json!({"kind": "invoke"});
+                    let unsigned_result = json!({
+                        "task": {
+                            "id": "task-42",
+                            "status": {"state": "TASK_STATE_COMPLETED"}
+                        }
+                    });
                     let request_digest = body
                         .pointer("/agent_envelope/extensions/request_digest")
                         .and_then(Value::as_str)
@@ -932,8 +975,14 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         &agent_id,
                         request_digest,
                         request_nonce,
-                        &result,
+                        &unsigned_result,
                     );
+                    let mut signed_result = unsigned_result;
+                    signed_result["task"]["metadata"]["wattetheriaServiceAgentSignature"] =
+                        Value::String(
+                            serde_json::to_string(&service_signature)
+                                .expect("service signature should serialize"),
+                        );
                     Json(json!({
                         "agent_id": agent_id,
                         "status": "completed",
@@ -954,7 +1003,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "service_signature": service_signature,
                         "raw": {
                             "jsonrpc": "2.0",
-                            "result": result,
+                            "result": signed_result,
                         },
                     }))
                 },
@@ -994,7 +1043,12 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
             "/v1/agents/{agent_id}/tasks/{task_id}/get",
             post(
                 |Path((agent_id, task_id)): Path<(String, String)>, Json(body): Json<Value>| async move {
-                    let result = json!({"kind": "task"});
+                    let unsigned_result = json!({
+                        "task": {
+                            "id": task_id,
+                            "status": {"state": "TASK_STATE_COMPLETED"}
+                        }
+                    });
                     let request_params = json!({
                         "id": task_id,
                         "historyLength": body["history_length"].as_u64().unwrap_or(10),
@@ -1007,7 +1061,13 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         )
                     );
                     let service_signature =
-                        mock_service_signature(&agent_id, &request_digest, None, &result);
+                        mock_service_signature(&agent_id, &request_digest, None, &unsigned_result);
+                    let mut signed_result = unsigned_result;
+                    signed_result["task"]["metadata"]["wattetheriaServiceAgentSignature"] =
+                        Value::String(
+                            serde_json::to_string(&service_signature)
+                                .expect("service signature should serialize"),
+                        );
                     Json(json!({
                         "agent_id": agent_id,
                         "status": "completed",
@@ -1019,7 +1079,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "service_signature": service_signature,
                         "raw": {
                             "jsonrpc": "2.0",
-                            "result": result,
+                            "result": signed_result,
                         },
                     }))
                 },

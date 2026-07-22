@@ -127,11 +127,12 @@ async fn send_message(
         return jsonrpc_error(&id, -32602, "A2A message text is required");
     }
     let envelope = match wire::agent_envelope(params) {
-        Some(value) => match verified_agent_envelope(value) {
+        Ok(Some(value)) => match verified_agent_envelope(&value) {
             Ok(envelope) => envelope,
             Err(message) => return jsonrpc_error(&id, -32602, &message),
         },
-        None => return jsonrpc_error(&id, -32602, "A2A agent_envelope is required"),
+        Ok(None) => return jsonrpc_error(&id, -32602, "A2A agent_envelope is required"),
+        Err(message) => return jsonrpc_error(&id, -32602, &message),
     };
     let (target, invocation_security) =
         match validate_target_invocation(&state, params, path_agent_id.as_deref(), &envelope) {

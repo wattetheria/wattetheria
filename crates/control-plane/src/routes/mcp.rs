@@ -1223,6 +1223,13 @@ fn servicenet_agent_detail_summary(
         if let Some(payment) = servicenet_agent_payment(agent) {
             object.insert("payment".to_owned(), payment);
         }
+        if field_str(agent, &["invoke", "transport"]) == Some("wattetheria_direct")
+            && let Some(url) = field_str(agent, &["invoke", "direct_url"])
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+        {
+            object.insert("url".to_owned(), json!(url));
+        }
     }
     summary
 }

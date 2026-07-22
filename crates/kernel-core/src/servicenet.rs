@@ -802,7 +802,7 @@ pub fn verify_service_agent_invoke_response(
     {
         bail!("ServiceNet response signature timestamp is outside the accepted window");
     }
-    let result = response.raw.get("result").cloned().unwrap_or(Value::Null);
+    let result = unsigned_service_agent_result(&response.raw);
     let result_digest = format!(
         "sha256:{:x}",
         Sha256::digest(serde_jcs::to_vec(&result).context("canonicalize Service Agent result")?)
@@ -836,6 +836,23 @@ pub fn verify_service_agent_invoke_response(
         .verify(&payload, &Signature::from_bytes(&signature_bytes))
         .context("verify Service Agent response signature")?;
     Ok(())
+}
+
+fn unsigned_service_agent_result(raw_response: &Value) -> Value {
+    let mut result = raw_response.get("result").cloned().unwrap_or(Value::Null);
+    for payload_name in ["task", "message"] {
+        let Some(payload) = result.get_mut(payload_name).and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let Some(metadata) = payload.get_mut("metadata").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        metadata.remove("wattetheriaServiceAgentSignature");
+        if metadata.is_empty() {
+            payload.remove("metadata");
+        }
+    }
+    result
 }
 
 fn service_agent_response_public_key(
@@ -967,6 +984,31 @@ mod tests {
         assert_eq!(
             digest,
             "sha256:58ed7275f0789912a6589b6103ba2a5a21a84ac396f7e93a86d504df0cac401a"
+        );
+    }
+
+    #[test]
+    fn unsigned_service_agent_result_removes_only_embedded_signature_metadata() {
+        let raw = json!({
+            "result": {
+                "task": {
+                    "id": "task-1",
+                    "metadata": {
+                        "trace_id": "trace-1",
+                        "wattetheriaServiceAgentSignature": "signed-json"
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            unsigned_service_agent_result(&raw),
+            json!({
+                "task": {
+                    "id": "task-1",
+                    "metadata": {"trace_id": "trace-1"}
+                }
+            })
         );
     }
 

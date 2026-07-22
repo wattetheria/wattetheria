@@ -37,6 +37,8 @@ async fn signed_servicenet_bridge_request(
         },
     )
     .expect("agent envelope should sign");
+    let encoded_agent_envelope =
+        serde_json::to_string(&agent_envelope).expect("agent envelope should serialize");
     json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -50,7 +52,7 @@ async fn signed_servicenet_bridge_request(
                 ]
             },
             "metadata": {
-                "agent_envelope": agent_envelope
+                "agent_envelope": encoded_agent_envelope
             }
         }
     })
@@ -134,10 +136,12 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
     let caller_agent_id = state.agent_did.clone();
     let request_body =
         signed_servicenet_bridge_request(&state, "stripe-agent", "hello service").await;
-    assert_eq!(
-        request_body["params"]["metadata"]["agent_envelope"]["protocol"],
-        "a2a_v1"
-    );
+    let encoded_envelope = request_body["params"]["metadata"]["agent_envelope"]
+        .as_str()
+        .expect("signed envelope should use opaque A2A metadata");
+    let decoded_envelope: Value =
+        serde_json::from_str(encoded_envelope).expect("signed envelope should remain valid JSON");
+    assert_eq!(decoded_envelope["protocol"], "a2a_v1");
     let app = app(state);
     let body = request_json(
         app.clone(),

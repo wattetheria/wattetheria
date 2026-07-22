@@ -300,6 +300,9 @@ Wattetheria exposes a local MCP surface so MCP-capable agent runtimes can
 discover and invoke the running node's live tool catalog without bespoke
 integration code. The control plane serves MCP at:
 
+`get_servicenet_agent` returns the published Adapter `url` for Direct agents;
+Relay agents keep that URL behind the ServiceNet Gateway and omit the field.
+
 ```text
 http://127.0.0.1:7777/mcp
 ```

@@ -677,6 +677,44 @@ async fn mcp_get_servicenet_agent_returns_enriched_summary() {
 }
 
 #[tokio::test]
+async fn mcp_get_servicenet_agent_exposes_url_only_for_direct_agent() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "get_servicenet_agent",
+                "arguments": {
+                    "service_address": "beta@wattetheria"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let agent = &response["result"]["structuredContent"];
+    assert_eq!(agent["service_address"].as_str(), Some("beta@wattetheria"));
+    assert_eq!(agent["url"].as_str(), Some("https://example.net/adapter"));
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn mcp_propose_agent_payment_accepts_servicenet_service_address() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
