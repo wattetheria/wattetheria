@@ -14,21 +14,32 @@ use std::{
 use uuid::Uuid;
 use watt_did::{Did, DidKey, DidKeyPublicKey};
 
+mod a2a_tasks;
 mod direct;
+mod direct_tasks;
 mod publication;
 mod publisher_state;
 
+pub use a2a_tasks::{
+    DispatchedServiceAgentMessage, ServiceAgentMessageDispatch, ServiceNetCancelAgentTaskRequest,
+    ServiceNetListAgentTasksRequest, ServiceNetSubscribeAgentTaskRequest,
+    cancel_agent_task_envelope_message, get_agent_task_envelope_message,
+    list_agent_tasks_envelope_message, published_agent_uses_wattetheria_runtime,
+    subscribe_agent_task_envelope_message,
+};
+
 pub use publication::{
     PreparedServiceAgentPublication, ServiceAgentPublicationInput,
-    prepare_service_agent_publication, service_agent_card_requires_auth,
-    submit_service_agent_publication,
+    ServiceAgentPublicationSubmitError, prepare_service_agent_publication,
+    service_agent_card_requires_auth, submit_service_agent_publication,
 };
 pub use publisher_state::{
     CustomizedAgentProtocol, ServiceAgentExecution, ServiceNetConnectionMode,
     ServiceNetPublisherRegistration, ServiceNetPublisherState,
     find_servicenet_publisher_registration, load_servicenet_publisher_state,
-    rollback_servicenet_publisher_registration, save_servicenet_publisher_state,
-    stage_servicenet_publisher_registration, upsert_servicenet_publisher_registration,
+    remove_servicenet_publisher_registration, rollback_servicenet_publisher_registration,
+    save_servicenet_publisher_state, stage_servicenet_publisher_registration,
+    upsert_servicenet_publisher_registration,
 };
 
 const DEFAULT_TIMEOUT_SEC: u64 = 120;
@@ -191,6 +202,8 @@ pub struct ServiceNetInvokeRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_immediately: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_context_id: Option<Uuid>,
@@ -214,6 +227,8 @@ pub struct ServiceNetGetAgentTaskRequest {
     pub auth_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_context_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_envelope: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -321,11 +336,9 @@ impl ServiceNetClientError {
         self.status
     }
 
-    fn local(error: impl std::fmt::Display) -> Self {
-        Self {
-            status: None,
-            message: error.to_string(),
-        }
+    #[must_use]
+    pub fn is_definitive_rejection(&self) -> bool {
+        self.status.is_some_and(|status| status.is_client_error())
     }
 }
 
@@ -499,8 +512,18 @@ impl ServiceNetClient {
         request: &ServiceNetInvokeRequest,
     ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
         let identity = self.resolve_service_identity(agent_id).await?;
-        if direct::uses_wattetheria_direct(&identity) {
-            return direct::invoke_agent(self, agent_id, request, &identity).await;
+        self.invoke_agent_with_identity(agent_id, request, &identity)
+            .await
+    }
+
+    async fn invoke_agent_with_identity(
+        &self,
+        agent_id: &str,
+        request: &ServiceNetInvokeRequest,
+        identity: &Value,
+    ) -> std::result::Result<ServiceNetInvokeResponse, ServiceNetClientError> {
+        if direct::uses_wattetheria_direct(identity) {
+            return direct::invoke_agent(self, agent_id, request, identity).await;
         }
         let response = self
             .request_json(
@@ -521,7 +544,7 @@ impl ServiceNetClient {
             .and_then(|envelope| envelope.pointer("/extensions/nonce"))
             .and_then(Value::as_str);
         verify_service_agent_invoke_response(
-            &identity,
+            identity,
             &response,
             expected_request_digest,
             expected_request_nonce,
@@ -541,7 +564,7 @@ impl ServiceNetClient {
         let identity = self.resolve_service_identity(agent_id).await?;
         if direct::uses_wattetheria_direct(&identity) {
             return Err(Self::client_error(&anyhow!(
-                "wattetheria_direct agents do not support ServiceNet invoke-async; use synchronous direct invocation"
+                "Wattetheria Runtime Direct agents do not support ServiceNet async receipts; use return_immediately=false or publish with Relay"
             )));
         }
         self.request_json(
@@ -562,7 +585,7 @@ impl ServiceNetClient {
         let identity = self.resolve_service_identity(agent_id).await?;
         if direct::uses_wattetheria_direct(&identity) {
             return Err(Self::client_error(&anyhow!(
-                "wattetheria_direct agents do not support ServiceNet task polling"
+                "wattetheria_direct agents do not support legacy ServiceNet task polling"
             )));
         }
         let expected_request_digest = service_agent_task_request_digest(task_id, request)
@@ -749,8 +772,7 @@ fn build_service_agent_get_task_signature_params(
 ) -> Value {
     json!({
         "id": task_id,
-        "historyLength": history_length
-            .unwrap_or(SERVICE_AGENT_GET_TASK_DEFAULT_HISTORY_LENGTH),
+        "historyLength": history_length.unwrap_or(SERVICE_AGENT_GET_TASK_DEFAULT_HISTORY_LENGTH),
     })
 }
 
@@ -840,7 +862,7 @@ pub fn verify_service_agent_invoke_response(
 
 fn unsigned_service_agent_result(raw_response: &Value) -> Value {
     let mut result = raw_response.get("result").cloned().unwrap_or(Value::Null);
-    for payload_name in ["task", "message"] {
+    for payload_name in ["task", "message", "statusUpdate", "artifactUpdate"] {
         let Some(payload) = result.get_mut(payload_name).and_then(Value::as_object_mut) else {
             continue;
         };
@@ -852,7 +874,30 @@ fn unsigned_service_agent_result(raw_response: &Value) -> Value {
             payload.remove("metadata");
         }
     }
+    let remove_root_metadata = result
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|metadata| {
+            metadata.remove("wattetheriaServiceAgentSignature");
+            metadata.is_empty()
+        });
+    if remove_root_metadata && let Some(object) = result.as_object_mut() {
+        object.remove("metadata");
+    }
     result
+}
+
+pub(super) fn service_signature_from_raw(raw: &Value) -> Option<ServiceNetServiceAgentSignature> {
+    raw.pointer("/result/task/metadata/wattetheriaServiceAgentSignature")
+        .or_else(|| raw.pointer("/result/message/metadata/wattetheriaServiceAgentSignature"))
+        .or_else(|| raw.pointer("/result/statusUpdate/metadata/wattetheriaServiceAgentSignature"))
+        .or_else(|| raw.pointer("/result/artifactUpdate/metadata/wattetheriaServiceAgentSignature"))
+        .or_else(|| raw.pointer("/result/metadata/wattetheriaServiceAgentSignature"))
+        .or_else(|| raw.pointer("/extensions/service_agent_signature"))
+        .and_then(|value| match value {
+            Value::String(encoded) => serde_json::from_str(encoded).ok(),
+            value => serde_json::from_value(value.clone()).ok(),
+        })
 }
 
 fn service_agent_response_public_key(
@@ -975,15 +1020,16 @@ mod tests {
     }
 
     #[test]
-    fn get_task_signature_params_match_protocol_vector() {
-        let params = build_service_agent_get_task_signature_params("task-123", None);
-        let digest = format!(
-            "sha256:{:x}",
-            Sha256::digest(serde_jcs::to_vec(&params).unwrap())
-        );
+    fn get_task_envelope_message_has_explicit_a2a_operation() {
+        let message =
+            get_agent_task_envelope_message("task-123", &ServiceNetGetAgentTaskRequest::default());
         assert_eq!(
-            digest,
-            "sha256:58ed7275f0789912a6589b6103ba2a5a21a84ac396f7e93a86d504df0cac401a"
+            message,
+            json!({
+                "operation": "GetTask",
+                "task_id": "task-123",
+                "history_length": null,
+            })
         );
     }
 

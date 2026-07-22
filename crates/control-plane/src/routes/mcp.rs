@@ -300,12 +300,9 @@ async fn direct_mcp_tool_result(
         "get_agent_card" => Some(agent_card_result(state, arguments).await),
         "list_servicenet_agents" => Some(servicenet_agents_result(state, arguments).await),
         "get_servicenet_agent" => Some(servicenet_agent_result(state, arguments).await),
-        "invoke_servicenet_agent_sync" => {
-            Some(servicenet_invoke_agent_result(state, arguments, ServiceNetInvokeMode::Sync).await)
+        "send_service_agent_message" => {
+            Some(servicenet_invoke_agent_result(state, arguments).await)
         }
-        "invoke_servicenet_agent_async" => Some(
-            servicenet_invoke_agent_result(state, arguments, ServiceNetInvokeMode::Async).await,
-        ),
         "get_servicenet_receipt" => Some(servicenet_receipt_result(state, arguments).await),
         "list_hives" => Some(network_hive_market_result(state, arguments).await),
         "list_private_hives" => Some(local_private_hives_result(state, arguments).await),
@@ -562,9 +559,11 @@ fn mcp_receipt_key_is_sensitive(key: &str) -> bool {
 
 fn mcp_success_action_type(tool_name: &str) -> &'static str {
     match tool_name {
-        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => {
-            "servicenet.agent.invoke.success"
-        }
+        "send_service_agent_message"
+        | "get_service_agent_task"
+        | "list_service_agent_tasks"
+        | "cancel_service_agent_task"
+        | "subscribe_service_agent_task" => "servicenet.agent.invoke.success",
         _ => "mcp.tool.success",
     }
 }
@@ -854,17 +853,7 @@ async fn servicenet_agent_result(state: &ControlPlaneState, arguments: &Value) -
     tool_success(&summary)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ServiceNetInvokeMode {
-    Sync,
-    Async,
-}
-
-async fn servicenet_invoke_agent_result(
-    state: &ControlPlaneState,
-    arguments: &Value,
-    mode: ServiceNetInvokeMode,
-) -> Value {
+async fn servicenet_invoke_agent_result(state: &ControlPlaneState, arguments: &Value) -> Value {
     let Some(client) = state.servicenet_client.as_deref() else {
         return tool_error(&json!({"error": "servicenet is not configured"}));
     };
@@ -873,10 +862,12 @@ async fn servicenet_invoke_agent_result(
             Ok(resolved) => resolved,
             Err(error) => return tool_error(&json!({"error": error})),
         };
-    let mut body = arguments
-        .get("body")
-        .cloned()
-        .unwrap_or_else(|| object_without_path_vars(arguments, servicenet_invoke_tool_path(mode)));
+    let mut body = arguments.get("body").cloned().unwrap_or_else(|| {
+        object_without_path_vars(
+            arguments,
+            "/v1/wattetheria/servicenet/agents/{agent_id}/messages/send",
+        )
+    });
     if !body.is_object() {
         return tool_error(&json!({"error": "invoke body must be a JSON object"}));
     }
@@ -912,39 +903,25 @@ async fn servicenet_invoke_agent_result(
     {
         return tool_error(&json!({"error": error}));
     }
-    let response = match mode {
-        ServiceNetInvokeMode::Sync => client.invoke_agent(&agent_id, &request).await,
-        ServiceNetInvokeMode::Async => client.invoke_agent_async(&agent_id, &request).await,
-    };
-    match response {
-        Ok(response) => {
-            if matches!(mode, ServiceNetInvokeMode::Async)
-                && let Err(error) =
-                    crate::routes::servicenet::async_jobs::record_servicenet_async_invocation(
-                        state,
-                        &agent_id,
-                        &request,
-                        &response,
-                        agent_envelope.clone(),
-                    )
+    let dispatched = client.send_service_agent_message(&agent_id, &request).await;
+    match dispatched {
+        Ok(dispatched) => {
+            let canonical_payload =
+                serde_json::to_value(&dispatched.response).unwrap_or(Value::Null);
+            if let Err(error) = crate::routes::servicenet::finalize_service_agent_message_dispatch(
+                state,
+                &agent_id,
+                &request,
+                &agent_envelope,
+                &dispatched,
+                &canonical_payload,
+            )
+            .await
             {
                 return tool_error(&json!({"error": error.to_string()}));
             }
-            let mut payload = serde_json::to_value(response).unwrap_or(Value::Null);
+            let mut payload = canonical_payload;
             externalize_servicenet_agent_payload(&mut payload, &service_address);
-            if matches!(mode, ServiceNetInvokeMode::Sync) {
-                Box::pin(
-                    crate::routes::servicenet::notify_local_agent_of_third_party_result(
-                        state,
-                        "invoke",
-                        &agent_id,
-                        None,
-                        &payload,
-                        Some(&agent_envelope),
-                    ),
-                )
-                .await;
-            }
             tool_success(&payload)
         }
         Err(error) => tool_error(&json!({"error": error.to_string()})),
@@ -1056,13 +1033,6 @@ fn externalize_servicenet_agent_payload(payload: &mut Value, service_address: &s
             "service_address".to_owned(),
             Value::String(service_address.to_owned()),
         );
-    }
-}
-
-fn servicenet_invoke_tool_path(mode: ServiceNetInvokeMode) -> &'static str {
-    match mode {
-        ServiceNetInvokeMode::Sync => "/v1/wattetheria/servicenet/agents/{agent_id}/invoke",
-        ServiceNetInvokeMode::Async => "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async",
     }
 }
 
@@ -2211,7 +2181,12 @@ async fn tool_arguments_with_resolved_path_vars(
     normalize_mcp_payment_target_arguments(state, tool, &mut arguments).await?;
     if matches!(
         tool.name,
-        "delete_servicenet_agent" | "get_servicenet_agent_task"
+        "delete_servicenet_agent"
+            | "get_servicenet_agent_task"
+            | "get_service_agent_task"
+            | "list_service_agent_tasks"
+            | "cancel_service_agent_task"
+            | "subscribe_service_agent_task"
     ) && required_string(&arguments, "agent_id").is_none()
     {
         let Some(client) = state.servicenet_client.as_deref() else {
@@ -2548,14 +2523,20 @@ fn mcp_tool_display_path(tool: &AgentTool) -> &'static str {
         "delete_servicenet_agent" => {
             "/v1/wattetheria/servicenet/agents/{service_address}/unpublish"
         }
-        "invoke_servicenet_agent_sync" => {
-            "/v1/wattetheria/servicenet/agents/{service_address}/invoke"
-        }
-        "invoke_servicenet_agent_async" => {
-            "/v1/wattetheria/servicenet/agents/{service_address}/invoke-async"
-        }
-        "get_servicenet_agent_task" => {
+        "get_servicenet_agent_task" | "get_service_agent_task" => {
             "/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/get"
+        }
+        "list_service_agent_tasks" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/tasks/list"
+        }
+        "cancel_service_agent_task" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/cancel"
+        }
+        "subscribe_service_agent_task" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/subscribe"
+        }
+        "send_service_agent_message" => {
+            "/v1/wattetheria/servicenet/agents/{service_address}/messages/send"
         }
         _ => tool.path,
     }
@@ -2563,6 +2544,13 @@ fn mcp_tool_display_path(tool: &AgentTool) -> &'static str {
 
 fn mcp_tool_is_read_only(tool: &AgentTool) -> bool {
     tool.method == Method::GET
+        || matches!(
+            tool.name,
+            "get_servicenet_agent_task"
+                | "get_service_agent_task"
+                | "list_service_agent_tasks"
+                | "subscribe_service_agent_task"
+        )
 }
 
 fn tool_uri(tool: &AgentTool, arguments: &Value) -> Result<String, String> {
@@ -2683,7 +2671,12 @@ fn present_tool_response_payload(tool_name: &str, arguments: &Value, mut payload
     }
     if matches!(
         tool_name,
-        "delete_servicenet_agent" | "get_servicenet_agent_task"
+        "delete_servicenet_agent"
+            | "get_servicenet_agent_task"
+            | "get_service_agent_task"
+            | "list_service_agent_tasks"
+            | "cancel_service_agent_task"
+            | "subscribe_service_agent_task"
     ) && let Some(service_address) = required_string(arguments, "service_address")
     {
         externalize_servicenet_agent_payload(&mut payload, &service_address);
@@ -2913,11 +2906,17 @@ fn agent_tools() -> &'static [AgentTool] {
 }
 
 fn is_visible_agent_tool(name: &str) -> bool {
-    !matches!(name, "client_export" | "client_task_activity")
+    !matches!(
+        name,
+        "client_export"
+            | "client_task_activity"
+            | "delete_servicenet_agent"
+            | "get_servicenet_agent_task"
+    )
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 49] = [
+const AGENT_TOOLS: [AgentTool; 52] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -2963,8 +2962,11 @@ const AGENT_TOOLS: [AgentTool; 49] = [
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },
-    AgentTool { name: "invoke_servicenet_agent_sync", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke", description: "Synchronously invoke an external ServiceNet agent.", availability: Availability::ServiceNet },
-    AgentTool { name: "invoke_servicenet_agent_async", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/invoke-async", description: "Submit an external ServiceNet agent invocation and poll the returned receipt.", availability: Availability::ServiceNet },
+    AgentTool { name: "send_service_agent_message", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/messages/send", description: "Send a message to a Service Agent using its published execution and connection modes.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },
+    AgentTool { name: "get_service_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get an A2A Task owned by a Customized Agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "list_service_agent_tasks", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/list", description: "List A2A Tasks visible to the caller for a Customized Agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "cancel_service_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/cancel", description: "Cancel an A2A Task owned by a Customized Agent.", availability: Availability::ServiceNet },
+    AgentTool { name: "subscribe_service_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/subscribe", description: "Wait for a bounded batch of A2A Task subscription events from a Customized Agent.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_receipt", method: Method::GET, path: "/v1/wattetheria/servicenet/receipts/{receipt_id}", description: "Get a ServiceNet invocation receipt.", availability: Availability::ServiceNet },
 ];

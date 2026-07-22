@@ -358,8 +358,24 @@ fn servicenet_router() -> Router<ControlPlaneState> {
             post(routes::servicenet::invoke_agent_async),
         )
         .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/messages/send",
+            post(routes::servicenet::send_service_agent_message),
+        )
+        .route(
             "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get",
-            post(routes::servicenet::get_agent_task),
+            post(routes::servicenet::tasks::get_agent_task),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/list",
+            post(routes::servicenet::tasks::list_agent_tasks),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/cancel",
+            post(routes::servicenet::tasks::cancel_agent_task),
+        )
+        .route(
+            "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/subscribe",
+            post(routes::servicenet::tasks::subscribe_agent_task),
         )
         .route(
             "/v1/wattetheria/servicenet/receipts/{receipt_id}",

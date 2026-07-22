@@ -3401,12 +3401,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams 0.4.2",
  "web-sys",
  "webpki-roots",
 ]
@@ -3455,7 +3457,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.5.0",
  "web-sys",
 ]
 
@@ -4966,6 +4968,19 @@ dependencies = [
 
 [[package]]
 name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "wasm-streams"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
@@ -5057,6 +5072,7 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
+ "futures-util",
  "hex",
  "http-body-util",
  "k256",
@@ -5113,11 +5129,13 @@ dependencies = [
  "axum 0.8.8",
  "base64",
  "bs58 0.5.1",
+ "bytes",
  "chrono",
  "clap",
  "ed25519-dalek",
  "flate2",
  "fs2",
+ "futures-util",
  "hex",
  "http-body-util",
  "jsonschema",

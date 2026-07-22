@@ -18,6 +18,38 @@ pub struct FileServiceAgentIdentityStore {
     root: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct ServiceAgentIdentityProvision {
+    identity: ServiceAgentIdentity,
+    rollback: ProvisionRollback,
+    _lock: ServiceAgentOperationLock,
+}
+
+#[derive(Debug)]
+pub struct ServiceAgentOperationLock {
+    file: fs::File,
+}
+
+impl Drop for ServiceAgentOperationLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+#[derive(Debug)]
+enum ProvisionRollback {
+    None,
+    RemoveCreated,
+    Restore(ServiceAgentIdentity),
+}
+
+impl ServiceAgentIdentityProvision {
+    #[must_use]
+    pub fn identity(&self) -> &ServiceAgentIdentity {
+        &self.identity
+    }
+}
+
 impl FileServiceAgentIdentityStore {
     pub fn new(data_dir: impl AsRef<Path>) -> Self {
         Self {
@@ -38,12 +70,25 @@ impl FileServiceAgentIdentityStore {
 
     fn save(&self, identity: &ServiceAgentIdentity) -> Result<()> {
         let path = self.identity_path(&identity.agent_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).context("create Service Agent identity directory")?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(identity)?)
-            .context("write Service Agent identity")?;
-        restrict_private_identity_permissions(&path)
+        let parent = path
+            .parent()
+            .context("Service Agent identity path has no parent")?;
+        fs::create_dir_all(parent).context("create Service Agent identity directory")?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .context("create temporary Service Agent identity")?;
+        temporary
+            .write_all(serde_json::to_string_pretty(identity)?.as_bytes())
+            .context("write temporary Service Agent identity")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("sync temporary Service Agent identity")?;
+        restrict_private_identity_permissions(temporary.path())?;
+        temporary
+            .persist(&path)
+            .map_err(|error| error.error)
+            .context("install updated Service Agent identity")?;
+        Ok(())
     }
 
     fn create(&self, identity: &ServiceAgentIdentity) -> Result<bool> {
@@ -66,13 +111,129 @@ impl FileServiceAgentIdentityStore {
         let linked = fs::hard_link(&temporary_path, &path);
         let _ = fs::remove_file(&temporary_path);
         match linked {
-            Ok(()) => {
-                restrict_private_identity_permissions(&path)?;
-                Ok(true)
-            }
+            Ok(()) => Ok(true),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(error).context("install Service Agent identity"),
         }
+    }
+
+    pub fn lock_agent_operation(&self, agent_id: &str) -> Result<ServiceAgentOperationLock> {
+        let digest = Sha256::digest(agent_id.as_bytes());
+        let lock_dir = self.root.join(".locks");
+        fs::create_dir_all(&lock_dir).context("create Service Agent identity lock directory")?;
+        let lock_path = lock_dir.join(format!("{}.lock", hex::encode(digest)));
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options
+            .open(lock_path)
+            .context("open Service Agent identity lock")?;
+        fs2::FileExt::lock_exclusive(&file).context("lock Service Agent identity")?;
+        Ok(ServiceAgentOperationLock { file })
+    }
+
+    pub fn provision(
+        &self,
+        agent_id: &str,
+        endpoint_url: &str,
+    ) -> Result<ServiceAgentIdentityProvision> {
+        let lock = self.lock_agent_operation(agent_id)?;
+        self.provision_locked(agent_id, endpoint_url, lock)
+    }
+
+    fn provision_locked(
+        &self,
+        agent_id: &str,
+        endpoint_url: &str,
+        lock: ServiceAgentOperationLock,
+    ) -> Result<ServiceAgentIdentityProvision> {
+        let path = self.identity_path(agent_id);
+        if path.exists() {
+            let previous = self.load(agent_id)?;
+            if previous.endpoint_url == endpoint_url {
+                return Ok(ServiceAgentIdentityProvision {
+                    identity: previous,
+                    rollback: ProvisionRollback::None,
+                    _lock: lock,
+                });
+            }
+            ServiceAgentIdentity::validate_endpoint_url(endpoint_url)?;
+            let mut identity = previous.clone();
+            endpoint_url.clone_into(&mut identity.endpoint_url);
+            self.save(&identity)?;
+            return Ok(ServiceAgentIdentityProvision {
+                identity,
+                rollback: ProvisionRollback::Restore(previous),
+                _lock: lock,
+            });
+        }
+
+        let identity = ServiceAgentIdentity::generate(agent_id, endpoint_url)?;
+        if self.create(&identity)? {
+            return Ok(ServiceAgentIdentityProvision {
+                identity,
+                rollback: ProvisionRollback::RemoveCreated,
+                _lock: lock,
+            });
+        }
+        self.provision_locked(agent_id, endpoint_url, lock)
+    }
+
+    pub fn rollback_provision(&self, provision: ServiceAgentIdentityProvision) -> Result<()> {
+        let ServiceAgentIdentityProvision {
+            identity,
+            rollback,
+            _lock: lock,
+        } = provision;
+        let result = match rollback {
+            ProvisionRollback::None => Ok(()),
+            ProvisionRollback::RemoveCreated => self.remove_created_identity(&identity),
+            ProvisionRollback::Restore(previous) => self.restore_identity(&identity, &previous),
+        };
+        drop(lock);
+        result
+    }
+
+    fn remove_created_identity(&self, identity: &ServiceAgentIdentity) -> Result<()> {
+        let path = self.identity_path(&identity.agent_id);
+        if !path.exists() {
+            return Ok(());
+        }
+        let current = self.load(&identity.agent_id)?;
+        if current != *identity {
+            bail!("refuse to remove a Service Agent identity changed after provisioning");
+        }
+        fs::remove_file(&path).context("remove provisioned Service Agent identity")?;
+        if let Some(parent) = path.parent() {
+            match fs::remove_dir(parent) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(error) => {
+                    return Err(error).context("remove empty Service Agent identity directory");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_identity(
+        &self,
+        provisioned: &ServiceAgentIdentity,
+        previous: &ServiceAgentIdentity,
+    ) -> Result<()> {
+        let path = self.identity_path(&provisioned.agent_id);
+        if path.exists() {
+            let current = self.load(&provisioned.agent_id)?;
+            if current != *provisioned {
+                bail!("refuse to restore a Service Agent identity changed after provisioning");
+            }
+        }
+        self.save(previous)
     }
 }
 
@@ -92,21 +253,7 @@ impl ServiceAgentIdentityStore for FileServiceAgentIdentityStore {
     }
 
     fn load_or_create(&self, agent_id: &str, endpoint_url: &str) -> Result<ServiceAgentIdentity> {
-        let path = self.identity_path(agent_id);
-        if path.exists() {
-            let mut identity = self.load(agent_id)?;
-            if identity.endpoint_url != endpoint_url {
-                ServiceAgentIdentity::validate_endpoint_url(endpoint_url)?;
-                endpoint_url.clone_into(&mut identity.endpoint_url);
-                self.save(&identity)?;
-            }
-            return Ok(identity);
-        }
-        let identity = ServiceAgentIdentity::generate(agent_id, endpoint_url)?;
-        if self.create(&identity)? {
-            return Ok(identity);
-        }
-        self.load_or_create(agent_id, endpoint_url)
+        Ok(self.provision(agent_id, endpoint_url)?.identity)
     }
 }
 
@@ -124,7 +271,8 @@ fn restrict_private_identity_permissions(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -189,6 +337,70 @@ mod tests {
         assert_eq!(updated.service_did, original.service_did);
         assert_eq!(updated.private_key, original.private_key);
         assert_eq!(updated.endpoint_url, "https://agent.example.com/v2/a2a");
+    }
+
+    #[test]
+    fn rolls_back_a_newly_provisioned_identity() {
+        let dir = tempdir().unwrap();
+        let store = FileServiceAgentIdentityStore::new(dir.path());
+        let provision = store
+            .provision("ride-agent", "https://agent.example.com/a2a")
+            .unwrap();
+        let path = store.identity_path("ride-agent");
+        assert!(path.exists());
+
+        store.rollback_provision(provision).unwrap();
+
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn rollback_restores_an_existing_identity_endpoint() {
+        let dir = tempdir().unwrap();
+        let store = FileServiceAgentIdentityStore::new(dir.path());
+        let original = store
+            .load_or_create("ride-agent", "https://agent.example.com/a2a")
+            .unwrap();
+        let provision = store
+            .provision("ride-agent", "https://other.example.com/a2a")
+            .unwrap();
+        assert_eq!(
+            provision.identity().endpoint_url,
+            "https://other.example.com/a2a"
+        );
+
+        store.rollback_provision(provision).unwrap();
+
+        assert_eq!(store.load("ride-agent").unwrap(), original);
+    }
+
+    #[test]
+    fn provision_blocks_other_operations_for_the_same_agent() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(FileServiceAgentIdentityStore::new(dir.path()));
+        let first = store
+            .provision("ride-agent", "https://agent.example.com/a2a")
+            .unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let second_store = Arc::clone(&store);
+        let thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _operation = second_store.lock_agent_operation("ride-agent").unwrap();
+            finished_tx.send(()).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        drop(first);
+
+        finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread.join().unwrap();
     }
 
     #[test]

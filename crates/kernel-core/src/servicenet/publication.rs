@@ -31,6 +31,13 @@ pub struct PreparedServiceAgentPublication {
     pub registration: ServiceNetPublisherRegistration,
 }
 
+#[derive(Debug)]
+pub enum ServiceAgentPublicationSubmitError {
+    BeforeSubmission(anyhow::Error),
+    Remote(ServiceNetClientError),
+    LocalRollback(anyhow::Error),
+}
+
 pub fn prepare_service_agent_publication(
     input: ServiceAgentPublicationInput<'_>,
     signer: &(impl PayloadSigner + ?Sized),
@@ -49,6 +56,10 @@ pub fn prepare_service_agent_publication(
         .context("Service Agent Card is missing Adapter URL")?;
     let deployment = json!({
         "runtime": "wattetheria_adapter",
+        "execution_mode": match &input.execution {
+            ServiceAgentExecution::WattetheriaRuntime => "wattetheria_runtime",
+            ServiceAgentExecution::CustomizedAgent { .. } => "customized_agent",
+        },
         "connection_mode": input.connection_mode,
         "endpoint": {
             "url": endpoint,
@@ -152,21 +163,22 @@ pub async fn submit_service_agent_publication(
     client: &ServiceNetClient,
     data_dir: &Path,
     publication: &PreparedServiceAgentPublication,
-) -> std::result::Result<Value, ServiceNetClientError> {
+) -> std::result::Result<Value, ServiceAgentPublicationSubmitError> {
     let previous =
         stage_servicenet_publisher_registration(data_dir, publication.registration.clone())
-            .map_err(ServiceNetClientError::local)?;
+            .map_err(ServiceAgentPublicationSubmitError::BeforeSubmission)?;
     match client.submit_agent(&publication.request).await {
         Ok(response) => Ok(response),
-        Err(error) => {
+        Err(error) if error.is_definitive_rejection() => {
             rollback_servicenet_publisher_registration(
                 data_dir,
                 &publication.registration.agent_id,
                 previous,
             )
-            .map_err(ServiceNetClientError::local)?;
-            Err(error)
+            .map_err(ServiceAgentPublicationSubmitError::LocalRollback)?;
+            Err(ServiceAgentPublicationSubmitError::Remote(error))
         }
+        Err(error) => Err(ServiceAgentPublicationSubmitError::Remote(error)),
     }
 }
 

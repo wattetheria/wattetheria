@@ -26,6 +26,7 @@ const SERVICE_RESPONSE_SIGNATURE_PROTOCOL: &str = "wattetheria.servicenet.respon
 const INVOCATION_MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 const INVOCATION_MAX_TTL_MS: u64 = 5 * 60 * 1000;
 const INVOCATION_REPLAY_CACHE_MAX_ENTRIES: usize = 262_144;
+const AGENT_ENVELOPE_HEADER: &str = "x-wattetheria-agent-envelope";
 
 static INVOCATION_REPLAY_CACHE: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
@@ -78,7 +79,14 @@ pub(crate) async fn a2a_root(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    handle_a2a(state, None, authorization_header(&headers), body).await
+    handle_a2a(
+        state,
+        None,
+        authorization_header(&headers),
+        encoded_agent_envelope_header(&headers),
+        body,
+    )
+    .await
 }
 
 pub(crate) async fn a2a_agent(
@@ -87,13 +95,21 @@ pub(crate) async fn a2a_agent(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
-    handle_a2a(state, Some(agent_id), authorization_header(&headers), body).await
+    handle_a2a(
+        state,
+        Some(agent_id),
+        authorization_header(&headers),
+        encoded_agent_envelope_header(&headers),
+        body,
+    )
+    .await
 }
 
 async fn handle_a2a(
     state: ControlPlaneState,
     path_agent_id: Option<String>,
     authorization: Option<String>,
+    encoded_agent_envelope: Option<String>,
     body: Value,
 ) -> Response {
     let id = body.get("id").cloned().unwrap_or(Value::Null);
@@ -105,11 +121,29 @@ async fn handle_a2a(
         "SendMessage" | "message/send" => {
             send_message(state, path_agent_id, authorization.as_deref(), id, &body).await
         }
-        "GetTask" | "tasks/get" => jsonrpc_error(
-            &id,
-            -32601,
-            "GetTask is not supported by the Wattetheria ServiceNet bridge",
-        ),
+        "GetTask" | "tasks/get" | "ListTasks" | "tasks/list" | "CancelTask" | "tasks/cancel" => {
+            super::bridge_tasks::task_operation(
+                state,
+                path_agent_id,
+                authorization.as_deref(),
+                encoded_agent_envelope.as_deref(),
+                id,
+                method,
+                &body,
+            )
+            .await
+        }
+        "SubscribeToTask" | "tasks/subscribe" => {
+            super::bridge_tasks::subscribe_to_task(
+                state,
+                path_agent_id,
+                authorization.as_deref(),
+                encoded_agent_envelope.as_deref(),
+                id,
+                &body,
+            )
+            .await
+        }
         _ => jsonrpc_error(&id, -32601, "unsupported A2A method"),
     }
 }
@@ -203,16 +237,22 @@ async fn send_message(
     }
 }
 
-fn attach_service_signature_metadata(result: &mut Value, signature: &Value) -> Result<(), String> {
-    let payload_name = if result.get("task").is_some() {
-        "task"
-    } else {
-        "message"
+pub(super) fn attach_service_signature_metadata(
+    result: &mut Value,
+    signature: &Value,
+) -> Result<(), String> {
+    let payload_name = ["task", "message", "statusUpdate", "artifactUpdate"]
+        .into_iter()
+        .find(|name| result.get(*name).is_some());
+    let payload = match payload_name {
+        Some(payload_name) => result
+            .get_mut(payload_name)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "A2A response payload must be an object".to_owned())?,
+        None => result
+            .as_object_mut()
+            .ok_or_else(|| "A2A response result must be an object".to_owned())?,
     };
-    let payload = result
-        .get_mut(payload_name)
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| "A2A response must contain a Task or Message".to_owned())?;
     let metadata = payload
         .entry("metadata")
         .or_insert_with(|| json!({}))
@@ -236,7 +276,16 @@ fn authorization_header(headers: &HeaderMap) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn sign_service_agent_response(
+fn encoded_agent_envelope_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AGENT_ENVELOPE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub(super) fn sign_service_agent_response(
     identity: &ServiceAgentIdentity,
     agent_id: &str,
     request_digest: &str,
@@ -273,13 +322,14 @@ fn sign_service_agent_response(
     }))
 }
 
-struct InvocationSecurity {
-    request_nonce: String,
+pub(super) struct InvocationSecurity {
+    pub(super) request_nonce: String,
+    pub(super) request_digest: String,
 }
 
-struct ValidatedInvocationTarget {
-    registration: ServiceNetPublisherRegistration,
-    identity: ServiceAgentIdentity,
+pub(super) struct ValidatedInvocationTarget {
+    pub(super) registration: ServiceNetPublisherRegistration,
+    pub(super) identity: ServiceAgentIdentity,
 }
 
 fn validate_target_invocation(
@@ -301,7 +351,7 @@ fn validate_target_invocation(
     Ok((target, security))
 }
 
-fn validate_local_service_agent(
+pub(super) fn validate_local_service_agent(
     state: &ControlPlaneState,
     published_agent_id: &str,
 ) -> Result<ValidatedInvocationTarget, String> {
@@ -335,6 +385,14 @@ fn validate_invocation_security(
     published_agent_id: &str,
 ) -> Result<InvocationSecurity, String> {
     validate_a2a_params_match_signed_message(params, envelope, published_agent_id)?;
+    validate_signed_envelope_security(state, envelope, published_agent_id)
+}
+
+pub(super) fn validate_signed_envelope_security(
+    state: &ControlPlaneState,
+    envelope: &SwarmAgentEnvelope,
+    published_agent_id: &str,
+) -> Result<InvocationSecurity, String> {
     let extensions = envelope
         .extensions
         .as_ref()
@@ -411,7 +469,10 @@ fn validate_invocation_security(
         cache_key,
         expires_at_ms.saturating_add(INVOCATION_MAX_CLOCK_SKEW_MS as u64),
     );
-    Ok(InvocationSecurity { request_nonce })
+    Ok(InvocationSecurity {
+        request_nonce,
+        request_digest,
+    })
 }
 
 fn validate_a2a_params_match_signed_message(
@@ -423,6 +484,10 @@ fn validate_a2a_params_match_signed_message(
         "taskId": wire::message_field(params, "taskId").cloned().unwrap_or(Value::Null),
         "contextId": wire::message_field(params, "contextId").cloned().unwrap_or(Value::Null),
         "skillId": wire::skill_id(params).cloned().unwrap_or(Value::Null),
+        "returnImmediately": params
+            .pointer("/configuration/returnImmediately")
+            .cloned()
+            .unwrap_or(Value::Null),
         "message": normalized_request_message(params.get("message")),
         "settlement": wire::settlement(params).cloned().unwrap_or(Value::Null),
     });
@@ -499,6 +564,10 @@ fn expected_a2a_core_params(signed_message: &Value) -> Value {
         "taskId": signed_message.get("task_id").cloned().unwrap_or(Value::Null),
         "contextId": signed_message.get("context_id").cloned().unwrap_or(Value::Null),
         "skillId": signed_message.get("skill_id").cloned().unwrap_or(Value::Null),
+        "returnImmediately": signed_message
+            .get("return_immediately")
+            .cloned()
+            .unwrap_or(Value::Null),
         "message": {"role": "user", "parts": parts},
         "settlement": normalized_signed_settlement(signed_message),
     })
@@ -574,7 +643,7 @@ fn required_string(value: Option<&Value>, name: &str) -> Result<String, String> 
         .ok_or_else(|| format!("A2A agent_envelope.extensions.{name} is required"))
 }
 
-fn verified_agent_envelope(value: &Value) -> Result<SwarmAgentEnvelope, String> {
+pub(super) fn verified_agent_envelope(value: &Value) -> Result<SwarmAgentEnvelope, String> {
     let envelope: SwarmAgentEnvelope = serde_json::from_value(value.clone())
         .map_err(|error| format!("invalid A2A agent_envelope: {error}"))?;
     let signature = envelope
@@ -678,19 +747,19 @@ fn extract_message_text(params: &Value) -> String {
         .join("\n")
 }
 
-fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Response {
-    (
-        StatusCode::OK,
-        Json(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        })),
-    )
-        .into_response()
+pub(super) fn jsonrpc_error(id: &Value, code: i64, message: &str) -> Response {
+    (StatusCode::OK, Json(jsonrpc_error_value(id, code, message))).into_response()
+}
+
+pub(super) fn jsonrpc_error_value(id: &Value, code: i64, message: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message,
+        }
+    })
 }
 
 fn string_at(value: &Value, path: &[&str]) -> Option<String> {
@@ -701,7 +770,7 @@ fn string_at(value: &Value, path: &[&str]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+pub(super) fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = value;
     for segment in path {
         current = current.get(segment)?;

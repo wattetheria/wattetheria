@@ -12,7 +12,9 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use watt_did::{Did, DidKey};
 
-pub use file_store::FileServiceAgentIdentityStore;
+pub use file_store::{
+    FileServiceAgentIdentityStore, ServiceAgentIdentityProvision, ServiceAgentOperationLock,
+};
 pub use store::ServiceAgentIdentityStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

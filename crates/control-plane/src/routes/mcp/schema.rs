@@ -946,15 +946,19 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             ],
             &["service_address"],
         )),
-        "invoke_servicenet_agent_sync" | "invoke_servicenet_agent_async" => {
-            Some(servicenet_invoke_schema())
-        }
+        "send_service_agent_message" => Some(servicenet_invoke_schema(true)),
         "get_servicenet_receipt" => Some(tool_schema(
             tool,
             &[string_field("receipt_id", "ServiceNet receipt UUID.")],
             &["receipt_id"],
             false,
         )),
+        _ => servicenet_task_schema(tool.name),
+    }
+}
+
+fn servicenet_task_schema(tool_name: &str) -> Option<Value> {
+    match tool_name {
         "get_servicenet_agent_task" => Some(servicenet_address_schema(
             &[
                 string_field(
@@ -968,11 +972,80 @@ fn servicenet_schema(tool: &AgentTool) -> Option<Value> {
             ],
             &["service_address", "task_id"],
         )),
+        "get_service_agent_task" => Some(servicenet_address_schema(
+            &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field("task_id", "A2A Task ID."),
+                integer_field("history_length", "A2A Task history length to retrieve."),
+                string_field("auth_token", "Service Agent authorization token."),
+                string_field("auth_context_id", "ServiceNet auth context UUID."),
+            ],
+            &["service_address", "task_id"],
+        )),
+        "list_service_agent_tasks" => Some(servicenet_address_schema(
+            &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field("context_id", "A2A context ID filter."),
+                string_field("status", "A2A Task state filter."),
+                integer_field("page_size", "Maximum A2A Tasks to return."),
+                string_field("page_token", "A2A Task pagination token."),
+                integer_field("history_length", "Task history length to retrieve."),
+                string_field(
+                    "status_timestamp_after",
+                    "Return tasks updated after this RFC 3339 timestamp.",
+                ),
+                bool_field(
+                    "include_artifacts",
+                    "Whether Task artifacts should be included.",
+                ),
+                string_field("auth_token", "Service Agent authorization token."),
+                string_field("auth_context_id", "ServiceNet auth context UUID."),
+            ],
+            &["service_address"],
+        )),
+        "cancel_service_agent_task" => Some(servicenet_address_schema(
+            &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field("task_id", "A2A Task ID."),
+                string_field("auth_token", "Service Agent authorization token."),
+                string_field("auth_context_id", "ServiceNet auth context UUID."),
+            ],
+            &["service_address", "task_id"],
+        )),
+        "subscribe_service_agent_task" => Some(servicenet_address_schema(
+            &[
+                string_field(
+                    "service_address",
+                    "Unique ServiceNet service address, for example <name>@wattetheria.",
+                ),
+                string_field("task_id", "A2A Task ID."),
+                integer_field(
+                    "max_events",
+                    "Maximum subscription events to collect, from 1 to 100.",
+                ),
+                integer_field(
+                    "wait_timeout_ms",
+                    "Maximum bounded subscription wait in milliseconds.",
+                ),
+                string_field("auth_token", "Service Agent authorization token."),
+                string_field("auth_context_id", "ServiceNet auth context UUID."),
+            ],
+            &["service_address", "task_id"],
+        )),
         _ => None,
     }
 }
 
-fn servicenet_invoke_schema() -> Value {
+fn servicenet_invoke_schema(include_return_immediately: bool) -> Value {
     let mut properties = Map::new();
     for (name, schema) in [
         string_field(
@@ -995,6 +1068,16 @@ fn servicenet_invoke_schema() -> Value {
         settlement_field(),
     ] {
         properties.insert(name.to_owned(), schema);
+    }
+    if include_return_immediately {
+        properties.insert(
+            "return_immediately".to_owned(),
+            bool_field(
+                "return_immediately",
+                "Return the A2A Task immediately instead of waiting for a terminal or interrupted state.",
+            )
+            .1,
+        );
     }
 
     json!({

@@ -284,7 +284,8 @@ Publishing also selects two independent modes:
   can verify and authorize the forwarded credential.
 - Connection: `Relay` sends calls through ServiceNet for governance,
   receipts, async execution, and future scheduling; `Direct`
-  publishes the same Adapter URL for synchronous caller-to-Adapter invocation.
+  publishes the same Adapter URL for caller-to-Adapter invocation without a
+  ServiceNet Gateway hop.
 
 Both connection modes preserve the signed caller envelope and Service Agent
 response signature. Multiple Service Agents may share one Adapter URL because
@@ -302,6 +303,19 @@ integration code. The control plane serves MCP at:
 
 `get_servicenet_agent` returns the published Adapter `url` for Direct agents;
 Relay agents keep that URL behind the ServiceNet Gateway and omit the field.
+
+`send_service_agent_message` is the shared MCP entry point for both execution
+modes. For Wattetheria Runtime, `return_immediately: false` reuses the existing
+synchronous internal invocation chain and `true` reuses the ServiceNet async
+receipt chain. For Customized Agent, it is forwarded as the A2A
+`returnImmediately` setting through either Relay or Direct. Customized Agents
+also expose `get_service_agent_task`, `list_service_agent_tasks`,
+`cancel_service_agent_task`, and `subscribe_service_agent_task`. An A2A Task ID
+belongs to the Customized Agent and is not a ServiceNet receipt ID; Wattetheria
+Runtime async calls continue with `get_servicenet_receipt`. Streaming
+SendMessage and push-notification configuration are not exposed yet.
+Wattetheria Runtime async receipts require Relay; Runtime Direct supports the
+synchronous message path only.
 
 ```text
 http://127.0.0.1:7777/mcp

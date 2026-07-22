@@ -465,11 +465,44 @@ fn mock_published_service_agent(agent_id: &str) -> Value {
         },
         "deployment": {
             "runtime": "wattetheria_adapter",
+            "execution_mode": "customized_agent",
             "endpoint": {
                 "url": "https://example.com/a2a",
                 "interaction_protocol": "a2a_v1",
                 "protocol_binding": "JSONRPC",
                 "protocol_version": "1.0",
+            }
+        },
+        "review": {"risk_level": "low"},
+    })
+}
+
+fn mock_wattetheria_runtime_service_agent() -> Value {
+    json!({
+        "agent_id": "agent-runtime",
+        "service_did": mock_service_did("agent-runtime"),
+        "service_address": "runtime@wattetheria",
+        "provider_id": "provider-runtime",
+        "version": "0.1.0",
+        "status": "approved",
+        "agent_card": {
+            "name": "Runtime Agent",
+            "description": "Wattetheria Runtime test agent",
+            "cost": 0,
+            "currency": "USDC",
+            "supportsTask": true,
+            "skills": [],
+            "securitySchemes": {"none": {"type": "none"}},
+            "security": [{"none": []}],
+        },
+        "deployment": {
+            "runtime": "wattetheria_adapter",
+            "execution_mode": "wattetheria_runtime",
+            "connection_mode": "servicenet_relay",
+            "endpoint": {
+                "url": "https://runtime.example.com/adapter",
+                "interaction_protocol": "a2a_v1",
+                "protocol_binding": "JSONRPC",
             }
         },
         "review": {"risk_level": "low"},
@@ -580,6 +613,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "execution_mode": "customized_agent",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "a2a_v1",
@@ -609,6 +643,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "execution_mode": "customized_agent",
                             "connection_mode": "wattetheria_direct",
                             "endpoint": {
                                 "interaction_protocol": "a2a_v1",
@@ -665,6 +700,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "execution_mode": "customized_agent",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "a2a_v1",
@@ -673,6 +709,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "review": {"risk_level": "low"},
                     }),
+                    mock_wattetheria_runtime_service_agent(),
                 ];
                 let known_count = agents.len();
                 let items = agents
@@ -785,6 +822,9 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
         .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
+                if agent_id == "agent-runtime" {
+                    return Json(mock_wattetheria_runtime_service_agent());
+                }
                 if agent_id == "agent-beta" {
                     return Json(json!({
                         "agent_id": agent_id,
@@ -806,6 +846,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "execution_mode": "customized_agent",
                             "connection_mode": "wattetheria_direct",
                             "endpoint": {
                                 "interaction_protocol": "a2a_v1",
@@ -864,6 +905,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         },
                         "deployment": {
                             "runtime": "wattetheria_adapter",
+                            "execution_mode": "customized_agent",
                             "endpoint": {
                                 "url": "https://example.com/a2a",
                                 "interaction_protocol": "a2a_v1",
@@ -919,6 +961,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                     },
                     "deployment": {
                         "runtime": "wattetheria_adapter",
+                        "execution_mode": "customized_agent",
                         "endpoint": {
                             "url": "https://example.com/a2a",
                             "interaction_protocol": "a2a_v1",
@@ -992,6 +1035,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                         "message": "ok",
                         "output": {
                             "echo": body["message"].clone(),
+                            "return_immediately": body["return_immediately"].clone(),
                             "agent_envelope_source": body["agent_envelope"]["source_agent_id"].clone(),
                             "caller_public_id": body["agent_envelope"]["extensions"]["caller_public_id"].clone(),
                         },
@@ -1049,19 +1093,33 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                             "status": {"state": "TASK_STATE_COMPLETED"}
                         }
                     });
-                    let request_params = json!({
-                        "id": task_id,
-                        "historyLength": body["history_length"].as_u64().unwrap_or(10),
-                    });
-                    let request_digest = format!(
-                        "sha256:{:x}",
-                        sha2::Sha256::digest(
-                            serde_jcs::to_vec(&request_params)
-                                .expect("task request should canonicalize")
+                    let signed_request_digest = body
+                        .pointer("/agent_envelope/extensions/request_digest")
+                        .and_then(Value::as_str);
+                    let request_nonce = body
+                        .pointer("/agent_envelope/extensions/nonce")
+                        .and_then(Value::as_str);
+                    let legacy_digest = || {
+                        let request_params = json!({
+                            "id": task_id,
+                            "historyLength": body["history_length"].as_u64().unwrap_or(10),
+                        });
+                        format!(
+                            "sha256:{:x}",
+                            sha2::Sha256::digest(
+                                serde_jcs::to_vec(&request_params)
+                                    .expect("task request should canonicalize")
+                            )
                         )
+                    };
+                    let request_digest =
+                        signed_request_digest.map_or_else(legacy_digest, ToOwned::to_owned);
+                    let service_signature = mock_service_signature(
+                        &agent_id,
+                        &request_digest,
+                        request_nonce,
+                        &unsigned_result,
                     );
-                    let service_signature =
-                        mock_service_signature(&agent_id, &request_digest, None, &unsigned_result);
                     let mut signed_result = unsigned_result;
                     signed_result["task"]["metadata"]["wattetheriaServiceAgentSignature"] =
                         Value::String(
@@ -2325,6 +2383,7 @@ mod diagnostics_tests;
 mod galaxy_tests;
 mod mcp_tests;
 mod organization_tests;
+mod servicenet_publication_tests;
 mod servicenet_tests;
 mod social_tests;
 mod swarm_tests;

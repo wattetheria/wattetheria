@@ -18,17 +18,20 @@ use crate::state::{
 use envelope::servicenet_invoke_agent_envelope;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
-    ServiceNetClient, ServiceNetClientError, ServiceNetGetAgentTaskRequest, ServiceNetInvokeRequest,
+    DispatchedServiceAgentMessage, ServiceAgentMessageDispatch, ServiceNetClient,
+    ServiceNetClientError, ServiceNetInvokeRequest, published_agent_uses_wattetheria_runtime,
 };
 use wattetheria_kernel::swarm_bridge::SwarmAgentEnvelope;
 
 pub(crate) mod async_jobs;
 pub(crate) mod bridge;
+mod bridge_tasks;
 pub(crate) mod envelope;
 mod execution;
 pub(crate) mod publish;
 mod publish_validation;
 pub(crate) mod published;
+pub(crate) mod tasks;
 mod wire;
 
 const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
@@ -437,7 +440,40 @@ pub(crate) async fn invoke_agent(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-    Json(mut body): Json<ServiceNetInvokeRequest>,
+    Json(body): Json<ServiceNetInvokeRequest>,
+) -> Response {
+    execute_service_agent_message(
+        state,
+        headers,
+        agent_id,
+        body,
+        AgentMessageMode::LegacyInvoke,
+    )
+    .await
+}
+
+pub(crate) async fn send_service_agent_message(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Json(body): Json<ServiceNetInvokeRequest>,
+) -> Response {
+    execute_service_agent_message(state, headers, agent_id, body, AgentMessageMode::A2a).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentMessageMode {
+    LegacyInvoke,
+    LegacyInvokeAsync,
+    A2a,
+}
+
+async fn execute_service_agent_message(
+    state: ControlPlaneState,
+    headers: HeaderMap,
+    agent_id: String,
+    mut body: ServiceNetInvokeRequest,
+    mode: AgentMessageMode,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
@@ -446,34 +482,139 @@ pub(crate) async fn invoke_agent(
     let Some(client) = servicenet_client(&state) else {
         return servicenet_unavailable_response();
     };
+    if matches!(
+        mode,
+        AgentMessageMode::LegacyInvoke | AgentMessageMode::LegacyInvokeAsync
+    ) && let Err(response) = require_wattetheria_runtime(client, &agent_id).await
+    {
+        return response;
+    }
     let agent_envelope = match ensure_agent_envelope(&state, &agent_id, &mut body).await {
         Ok(agent_envelope) => agent_envelope,
         Err(error) => return internal_error(&error),
     };
-    let response = match client.invoke_agent(&agent_id, &body).await {
-        Ok(response) => response,
+    let dispatched = match mode {
+        AgentMessageMode::LegacyInvoke => {
+            client.invoke_agent(&agent_id, &body).await.map(|response| {
+                DispatchedServiceAgentMessage {
+                    dispatch: ServiceAgentMessageDispatch::WattetheriaRuntimeSync,
+                    response,
+                }
+            })
+        }
+        AgentMessageMode::LegacyInvokeAsync => client
+            .invoke_agent_async(&agent_id, &body)
+            .await
+            .map(|response| DispatchedServiceAgentMessage {
+                dispatch: ServiceAgentMessageDispatch::WattetheriaRuntimeAsync,
+                response,
+            }),
+        AgentMessageMode::A2a => client.send_service_agent_message(&agent_id, &body).await,
+    };
+    let dispatched = match dispatched {
+        Ok(dispatched) => dispatched,
         Err(error) => return servicenet_error_response(&error),
     };
-    let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
-    Box::pin(notify_local_agent_of_third_party_result(
+    let payload = serde_json::to_value(&dispatched.response).unwrap_or(Value::Null);
+    if let Err(error) = finalize_service_agent_message_dispatch(
         &state,
-        "invoke",
         &agent_id,
-        None,
+        &body,
+        &agent_envelope,
+        &dispatched,
         &payload,
-        Some(&agent_envelope),
-    ))
-    .await;
+    )
+    .await
+    {
+        return internal_error(&error);
+    }
+    record_service_agent_message_audit(&state, auth, &agent_id, &payload, dispatched.dispatch);
+    Json(payload).into_response()
+}
+
+async fn require_wattetheria_runtime(
+    client: &ServiceNetClient,
+    agent_id: &str,
+) -> Result<(), Response> {
+    let agent = client
+        .get_agent(agent_id)
+        .await
+        .map_err(|error| servicenet_error_response(&error))?;
+    match published_agent_uses_wattetheria_runtime(&agent) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "Customized Agents must use the Service Agent message and A2A Task endpoints"
+            })),
+        )
+            .into_response()),
+        Err(error) => Err(internal_error(&error)),
+    }
+}
+
+pub(crate) async fn finalize_service_agent_message_dispatch(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    request: &ServiceNetInvokeRequest,
+    agent_envelope: &Value,
+    dispatched: &DispatchedServiceAgentMessage,
+    payload: &Value,
+) -> anyhow::Result<()> {
+    match dispatched.dispatch {
+        ServiceAgentMessageDispatch::WattetheriaRuntimeSync => {
+            Box::pin(notify_local_agent_of_third_party_result(
+                state,
+                "invoke",
+                agent_id,
+                None,
+                payload,
+                Some(agent_envelope),
+            ))
+            .await;
+            Ok(())
+        }
+        ServiceAgentMessageDispatch::WattetheriaRuntimeAsync => {
+            async_jobs::record_servicenet_async_invocation(
+                state,
+                agent_id,
+                request,
+                &dispatched.response,
+                agent_envelope.clone(),
+            )?;
+            Ok(())
+        }
+        ServiceAgentMessageDispatch::CustomizedAgent => Ok(()),
+    }
+}
+
+fn record_service_agent_message_audit(
+    state: &ControlPlaneState,
+    auth: String,
+    agent_id: &str,
+    payload: &Value,
+    dispatch: ServiceAgentMessageDispatch,
+) {
+    let (action, reason) = match dispatch {
+        ServiceAgentMessageDispatch::WattetheriaRuntimeSync => {
+            ("servicenet.agents.invoke", Some("servicenet.invoke"))
+        }
+        ServiceAgentMessageDispatch::WattetheriaRuntimeAsync => (
+            "servicenet.agents.invoke_async",
+            Some("servicenet.invoke_async"),
+        ),
+        ServiceAgentMessageDispatch::CustomizedAgent => ("servicenet.agents.messages.send", None),
+    };
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
         category: "servicenet".to_string(),
-        action: "servicenet.agents.invoke".to_string(),
+        action: action.to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(agent_id),
+        subject: Some(agent_id.to_owned()),
         capability: Some("net.outbound".to_string()),
-        reason: Some("servicenet.invoke".to_string()),
+        reason: reason.map(ToOwned::to_owned),
         duration_ms: None,
         details: Some(json!({
             "status": payload["status"],
@@ -481,103 +622,22 @@ pub(crate) async fn invoke_agent(
             "receipt_id": payload["receipt_id"],
         })),
     });
-    Json(payload).into_response()
 }
 
 pub(crate) async fn invoke_agent_async(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
     Path(agent_id): Path<String>,
-    Json(mut body): Json<ServiceNetInvokeRequest>,
+    Json(body): Json<ServiceNetInvokeRequest>,
 ) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let Some(client) = servicenet_client(&state) else {
-        return servicenet_unavailable_response();
-    };
-    let agent_envelope = match ensure_agent_envelope(&state, &agent_id, &mut body).await {
-        Ok(agent_envelope) => agent_envelope,
-        Err(error) => return internal_error(&error),
-    };
-    let response = match client.invoke_agent_async(&agent_id, &body).await {
-        Ok(response) => response,
-        Err(error) => return servicenet_error_response(&error),
-    };
-    if let Err(error) = async_jobs::record_servicenet_async_invocation(
-        &state,
-        &agent_id,
-        &body,
-        &response,
-        agent_envelope,
-    ) {
-        return internal_error(&error);
-    }
-    let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "servicenet".to_string(),
-        action: "servicenet.agents.invoke_async".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(agent_id),
-        capability: Some("net.outbound".to_string()),
-        reason: Some("servicenet.invoke_async".to_string()),
-        duration_ms: None,
-        details: Some(json!({
-            "status": payload["status"],
-            "receipt_id": payload["receipt_id"],
-        })),
-    });
-    Json(payload).into_response()
-}
-
-pub(crate) async fn get_agent_task(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Path((agent_id, task_id)): Path<(String, String)>,
-    Json(body): Json<ServiceNetGetAgentTaskRequest>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let Some(client) = servicenet_client(&state) else {
-        return servicenet_unavailable_response();
-    };
-    let response = match client.get_agent_task(&agent_id, &task_id, &body).await {
-        Ok(response) => response,
-        Err(error) => return servicenet_error_response(&error),
-    };
-    let payload = serde_json::to_value(&response).unwrap_or(Value::Null);
-    Box::pin(notify_local_agent_of_third_party_result(
-        &state,
-        "task_get",
-        &agent_id,
-        Some(&task_id),
-        &payload,
-        None,
-    ))
-    .await;
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "servicenet".to_string(),
-        action: "servicenet.agents.task.get".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(agent_id),
-        capability: Some("net.outbound".to_string()),
-        reason: Some("servicenet.task.get".to_string()),
-        duration_ms: None,
-        details: Some(json!({
-            "task_id": task_id,
-            "status": payload["status"],
-        })),
-    });
-    Json(payload).into_response()
+    execute_service_agent_message(
+        state,
+        headers,
+        agent_id,
+        body,
+        AgentMessageMode::LegacyInvokeAsync,
+    )
+    .await
 }
 
 pub(crate) async fn get_receipt(
@@ -627,6 +687,7 @@ pub(crate) fn servicenet_error_response(error: &ServiceNetClientError) -> Respon
     }
     let status = error
         .status()
+        .filter(|status| !status.is_success())
         .and_then(|status| StatusCode::from_u16(status.as_u16()).ok())
         .unwrap_or(StatusCode::BAD_GATEWAY);
     (status, Json(json!({"error": error.to_string()}))).into_response()

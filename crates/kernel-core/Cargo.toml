@@ -16,6 +16,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
+bytes.workspace = true
 bs58.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -40,12 +41,13 @@ walkdir.workspace = true
 jsonschema.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+futures-util.workspace = true
+tempfile.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 watt-did = { path = "../../../watt-did" }
 watt-wallet = { path = "../../../watt-wallet" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
 [dev-dependencies]
-tempfile.workspace = true
 tower = "0.5"
 http-body-util = "0.1"

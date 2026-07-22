@@ -233,10 +233,11 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "send_agent_dm_message",
     "list_servicenet_agents",
     "get_servicenet_agent",
-    "delete_servicenet_agent",
-    "invoke_servicenet_agent_sync",
-    "invoke_servicenet_agent_async",
-    "get_servicenet_agent_task",
+    "send_service_agent_message",
+    "get_service_agent_task",
+    "list_service_agent_tasks",
+    "cancel_service_agent_task",
+    "subscribe_service_agent_task",
     "get_servicenet_receipt",
 ];
 
@@ -357,6 +358,7 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     assert_eq!(actual, expected);
     assert!(!actual.iter().any(|name| name == "client_export"));
     assert!(!actual.iter().any(|name| name == "client_task_activity"));
+    assert!(!actual.iter().any(|name| name == "delete_servicenet_agent"));
 }
 
 #[tokio::test]
@@ -420,7 +422,7 @@ async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
                     "message": "hello servicenet",
@@ -591,7 +593,7 @@ async fn mcp_list_servicenet_agents_reads_configured_servicenet() {
     assert_eq!(content["offset"].as_u64(), Some(1));
     assert_eq!(content["next_offset"].as_u64(), Some(2));
     assert_eq!(content["has_more"].as_bool(), Some(true));
-    assert_eq!(content["known_count"].as_u64(), Some(3));
+    assert_eq!(content["known_count"].as_u64(), Some(4));
     let agents = content["items"].as_array().unwrap();
     assert_eq!(agents.len(), 1);
     let beta = &agents[0];
@@ -1299,7 +1301,7 @@ async fn mcp_agent_payments_support_network_agent_target_address() {
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_rejects_paid_agent_without_settlement_receipt() {
+async fn mcp_send_service_agent_message_rejects_paid_agent_without_settlement_receipt() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1318,7 +1320,7 @@ async fn mcp_invoke_servicenet_agent_sync_rejects_paid_agent_without_settlement_
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
                     "message": "hello without payment proof"
@@ -1340,7 +1342,8 @@ async fn mcp_invoke_servicenet_agent_sync_rejects_paid_agent_without_settlement_
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_agent() {
+#[allow(clippy::too_many_lines)]
+async fn mcp_send_service_agent_message_reuses_runtime_sync_chain() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
     let callback_app = Router::new().route(
@@ -1387,11 +1390,10 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
-                    "service_address": "alpha@wattetheria",
-                    "message": "hello servicenet",
-                    "settlement": alpha_servicenet_settlement()
+                    "service_address": "runtime@wattetheria",
+                    "message": "hello servicenet"
                 }
             }
         }),
@@ -1412,6 +1414,15 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
     let callback_events = callback_events.lock().await;
     assert_eq!(callback_events.len(), 1);
     assert_eq!(
+        callback_events[0]["event"]["payload"]["response"]["agent_id"].as_str(),
+        Some("agent-runtime")
+    );
+    assert!(
+        callback_events[0]["event"]["payload"]["response"]
+            .get("service_address")
+            .is_none()
+    );
+    assert_eq!(
         callback_events[0]["event"]["payload"]["operation"].as_str(),
         Some("invoke")
     );
@@ -1421,7 +1432,7 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
     );
     assert_eq!(
         callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
-        Some("agent-alpha")
+        Some("agent-runtime")
     );
     let envelope_extensions = &callback_events[0]["event"]["agent_envelope"]["extensions"];
     assert!(
@@ -1447,7 +1458,35 @@ async fn mcp_invoke_servicenet_agent_sync_attaches_agent_envelope_for_public_age
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_normalizes_query_to_message() {
+async fn mcp_rejects_removed_servicenet_invoke_tools() {
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let app = app(state);
+
+    for tool_name in [
+        "invoke_servicenet_agent_sync",
+        "invoke_servicenet_agent_async",
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": tool_name,
+                "method": "tools/call",
+                "params": {"name": tool_name, "arguments": {}}
+            }),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+        assert_eq!(
+            response["result"]["structuredContent"]["error"].as_str(),
+            Some(format!("unknown tool: {tool_name}").as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_send_service_agent_message_normalizes_query_to_message() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1466,7 +1505,7 @@ async fn mcp_invoke_servicenet_agent_sync_normalizes_query_to_message() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
                     "query": "Recommend dishes",
@@ -1488,7 +1527,7 @@ async fn mcp_invoke_servicenet_agent_sync_normalizes_query_to_message() {
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_resolves_service_address() {
+async fn mcp_send_service_agent_message_resolves_service_address() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1507,7 +1546,7 @@ async fn mcp_invoke_servicenet_agent_sync_resolves_service_address() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
                     "message": "hello by service address",
@@ -1533,7 +1572,48 @@ async fn mcp_invoke_servicenet_agent_sync_resolves_service_address() {
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
+async fn mcp_send_service_agent_message_selects_async_a2a_semantics() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state);
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "send_service_agent_message",
+                "arguments": {
+                    "service_address": "alpha@wattetheria",
+                    "message": "start a background task",
+                    "return_immediately": true,
+                    "settlement": alpha_servicenet_settlement()
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(content["service_address"], "alpha@wattetheria");
+    assert_eq!(content["output"]["echo"], "start a background task");
+    assert_eq!(content["output"]["return_immediately"], true);
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn mcp_send_service_agent_message_reuses_runtime_async_chain() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1552,11 +1632,11 @@ async fn mcp_invoke_servicenet_agent_async_returns_receipt_id() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_async",
+                "name": "send_service_agent_message",
                 "arguments": {
-                    "service_address": "alpha@wattetheria",
+                    "service_address": "runtime@wattetheria",
                     "message": "hello servicenet",
-                    "settlement": alpha_servicenet_settlement()
+                    "return_immediately": true
                 }
             }
         }),
@@ -1701,7 +1781,7 @@ async fn mcp_delete_servicenet_agent_resolves_service_address() {
 }
 
 #[tokio::test]
-async fn mcp_get_servicenet_agent_task_resolves_service_address() {
+async fn mcp_get_service_agent_task_resolves_service_address() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1720,7 +1800,7 @@ async fn mcp_get_servicenet_agent_task_resolves_service_address() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "get_servicenet_agent_task",
+                "name": "get_service_agent_task",
                 "arguments": {
                     "service_address": "alpha@wattetheria",
                     "task_id": "task-42",
@@ -1746,7 +1826,7 @@ async fn mcp_get_servicenet_agent_task_resolves_service_address() {
 }
 
 #[tokio::test]
-async fn mcp_invoke_servicenet_agent_sync_returns_authorization_url_when_oauth_is_required() {
+async fn mcp_send_service_agent_message_returns_authorization_url_when_oauth_is_required() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
@@ -1765,7 +1845,7 @@ async fn mcp_invoke_servicenet_agent_sync_returns_authorization_url_when_oauth_i
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "invoke_servicenet_agent_sync",
+                "name": "send_service_agent_message",
                 "arguments": {
                     "service_address": "oauth@wattetheria",
                     "message": "request ride"
@@ -4304,53 +4384,52 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         Some("/v1/wattetheria/servicenet/agents/{service_address}")
     );
 
-    let delete_servicenet_agent = find_tool(tools, "delete_servicenet_agent");
-    assert_schema_requires(delete_servicenet_agent, &["service_address"]);
-    assert_schema_omits(delete_servicenet_agent, &["agent_id"]);
+    let send_service_agent_message = find_tool(tools, "send_service_agent_message");
+    assert_schema_requires(send_service_agent_message, &["service_address"]);
+    assert_schema_omits(send_service_agent_message, &["agent_id", "agent_name"]);
+    assert_schema_optional(send_service_agent_message, "return_immediately");
     assert_eq!(
-        delete_servicenet_agent["_meta"]["wattetheria"]["path"].as_str(),
-        Some("/v1/wattetheria/servicenet/agents/{service_address}/unpublish")
+        send_service_agent_message["_meta"]["wattetheria"]["path"].as_str(),
+        Some("/v1/wattetheria/servicenet/agents/{service_address}/messages/send")
     );
 
-    let invoke_servicenet_agent = find_tool(tools, "invoke_servicenet_agent_sync");
-    assert_schema_requires(invoke_servicenet_agent, &["service_address"]);
-    assert!(
-        !invoke_servicenet_agent["inputSchema"]["properties"]
-            .as_object()
-            .unwrap()
-            .contains_key("agent_id")
-    );
-    assert!(
-        !invoke_servicenet_agent["inputSchema"]["properties"]
-            .as_object()
-            .unwrap()
-            .contains_key("agent_name")
-    );
+    let get_service_agent_task = find_tool(tools, "get_service_agent_task");
+    assert_schema_requires(get_service_agent_task, &["service_address", "task_id"]);
+    assert_schema_omits(get_service_agent_task, &["agent_id"]);
     assert_eq!(
-        invoke_servicenet_agent["_meta"]["wattetheria"]["path"].as_str(),
-        Some("/v1/wattetheria/servicenet/agents/{service_address}/invoke")
-    );
-
-    let invoke_servicenet_agent_async = find_tool(tools, "invoke_servicenet_agent_async");
-    assert_schema_requires(invoke_servicenet_agent_async, &["service_address"]);
-    assert_schema_omits(invoke_servicenet_agent_async, &["agent_id", "agent_name"]);
-    assert_eq!(
-        invoke_servicenet_agent_async["_meta"]["wattetheria"]["path"].as_str(),
-        Some("/v1/wattetheria/servicenet/agents/{service_address}/invoke-async")
-    );
-
-    let get_servicenet_agent_task = find_tool(tools, "get_servicenet_agent_task");
-    assert_schema_requires(get_servicenet_agent_task, &["service_address", "task_id"]);
-    assert_schema_omits(get_servicenet_agent_task, &["agent_id"]);
-    assert_eq!(
-        get_servicenet_agent_task["_meta"]["wattetheria"]["path"].as_str(),
+        get_service_agent_task["_meta"]["wattetheria"]["path"].as_str(),
         Some("/v1/wattetheria/servicenet/agents/{service_address}/tasks/{task_id}/get")
     );
+    assert_eq!(
+        get_service_agent_task["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(true)
+    );
+
+    let list_service_agent_tasks = find_tool(tools, "list_service_agent_tasks");
+    assert_schema_requires(list_service_agent_tasks, &["service_address"]);
+    assert_schema_optional(list_service_agent_tasks, "context_id");
+
+    let cancel_service_agent_task = find_tool(tools, "cancel_service_agent_task");
+    assert_schema_requires(cancel_service_agent_task, &["service_address", "task_id"]);
+    assert_eq!(
+        cancel_service_agent_task["_meta"]["wattetheria"]["readOnly"].as_bool(),
+        Some(false)
+    );
+
+    let subscribe_service_agent_task = find_tool(tools, "subscribe_service_agent_task");
+    assert_schema_requires(
+        subscribe_service_agent_task,
+        &["service_address", "task_id"],
+    );
+    assert_schema_optional(subscribe_service_agent_task, "max_events");
 
     for hidden_tool in [
         "send_mailbox_message",
         "list_mailbox_messages",
         "ack_mailbox_message",
+        "invoke_servicenet_agent_sync",
+        "invoke_servicenet_agent_async",
+        "get_servicenet_agent_task",
     ] {
         assert!(tools.iter().all(|tool| tool["name"] != hidden_tool));
     }

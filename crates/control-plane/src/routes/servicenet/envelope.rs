@@ -47,6 +47,40 @@ pub(crate) async fn servicenet_invoke_agent_envelope(
     Ok(serde_json::to_value(envelope)?)
 }
 
+pub(crate) async fn servicenet_task_agent_envelope(
+    state: &ControlPlaneState,
+    agent_id: &str,
+    capability: &str,
+    message: Value,
+) -> Result<Value> {
+    let source_node_id = state.swarm_bridge.local_node_id().await.ok();
+    let local = resolve_social_local_context(state, None).await;
+    let issued_at_ms = Utc::now().timestamp_millis().max(0).cast_unsigned();
+    let expires_at_ms = issued_at_ms.saturating_add(SERVICENET_INVOCATION_ENVELOPE_TTL_MS);
+    let envelope = build_signed_agent_envelope_for_nodes_with_protocol(
+        state,
+        SERVICENET_A2A_V1_PROTOCOL,
+        SignedAgentEnvelopeArgs {
+            source_agent_id: local.agent_id,
+            source_public_id: public_agent_id(&local.public_id),
+            source_display_name: local.display_name,
+            target_agent_id: Some(agent_id.to_owned()),
+            source_node_id,
+            target_node_id: None,
+            capability: capability.to_owned(),
+            message: message.clone(),
+            extensions: Some(json!({
+                "caller_public_id": local.public_id,
+                "nonce": Uuid::new_v4().to_string(),
+                "issued_at_ms": issued_at_ms,
+                "expires_at_ms": expires_at_ms,
+                "request_digest": servicenet_invoke_request_digest(&message)?,
+            })),
+        },
+    )?;
+    Ok(serde_json::to_value(envelope)?)
+}
+
 pub(crate) fn normalize_servicenet_invoke_body(body: &mut Value, arguments: &Value) {
     let message = body
         .as_object()

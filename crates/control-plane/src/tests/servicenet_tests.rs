@@ -369,7 +369,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     let app = app(state);
 
     let list_json = authed_get_json(app.clone(), &token, "/v1/wattetheria/servicenet/agents").await;
-    assert_eq!(list_json["count"].as_u64(), Some(3));
+    assert_eq!(list_json["count"].as_u64(), Some(4));
     assert_eq!(
         list_json["items"][0]["agent_id"].as_str(),
         Some("agent-alpha")
@@ -386,7 +386,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     let invoke_json = authed_post_json(
         app.clone(),
         &token,
-        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
+        "/v1/wattetheria/servicenet/agents/agent-runtime/invoke",
         json!({
             "message": "hello servicenet",
             "input": {"amount": 7},
@@ -429,7 +429,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     let async_json = authed_post_json(
         app.clone(),
         &token,
-        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke-async",
+        "/v1/wattetheria/servicenet/agents/agent-runtime/invoke-async",
         json!({
             "message": "hello async servicenet"
         }),
@@ -479,7 +479,7 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
     );
     assert_eq!(
         callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
-        Some("agent-alpha")
+        Some("agent-runtime")
     );
     assert!(
         callback_events[0]["event"]["agent_envelope"]["signature"]
@@ -500,6 +500,119 @@ async fn servicenet_routes_list_agents_and_return_invoke_feedback() {
 }
 
 #[tokio::test]
+async fn customized_agent_uses_only_the_unified_message_chain() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let callback_events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let callback_app = axum::Router::new().route(
+        "/agent-events",
+        axum::routing::post({
+            let callback_events = Arc::clone(&callback_events);
+            move |Json(payload): Json<Value>| {
+                let callback_events = Arc::clone(&callback_events);
+                async move {
+                    callback_events.lock().await.push(payload);
+                    Json(json!({"ok": true, "acked_at": 1}))
+                }
+            }
+        }),
+    );
+    let callback_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let callback_addr = callback_listener.local_addr().unwrap();
+    let callback_server = tokio::spawn(async move {
+        axum::serve(callback_listener, callback_app).await.unwrap();
+    });
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        agent_event_callback_base_url: Some(format!("http://{callback_addr}")),
+        ..state
+    };
+    let app = app(state);
+
+    for legacy_path in ["invoke", "invoke-async"] {
+        let rejected = authed_post_json(
+            app.clone(),
+            &token,
+            &format!("/v1/wattetheria/servicenet/agents/agent-alpha/{legacy_path}"),
+            json!({"message": "must not use legacy runtime path"}),
+        )
+        .await;
+        assert!(
+            rejected["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("Customized Agents must use"))
+        );
+    }
+
+    for return_immediately in [false, true] {
+        let response = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/wattetheria/servicenet/agents/agent-alpha/messages/send",
+            json!({
+                "message": "use customized A2A",
+                "return_immediately": return_immediately,
+            }),
+        )
+        .await;
+        assert_eq!(response["status"].as_str(), Some("completed"));
+        assert_eq!(
+            response["output"]["return_immediately"].as_bool(),
+            Some(return_immediately)
+        );
+    }
+
+    assert!(callback_events.lock().await.is_empty());
+    callback_server.abort();
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn runtime_agent_unified_message_reuses_sync_and_async_chains() {
+    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let app = app(state.clone());
+
+    let sync_response = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-runtime/messages/send",
+        json!({"message": "run now", "return_immediately": false}),
+    )
+    .await;
+    assert_eq!(sync_response["status"].as_str(), Some("completed"));
+    assert_eq!(sync_response["output"]["echo"].as_str(), Some("run now"));
+
+    let async_response = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/servicenet/agents/agent-runtime/messages/send",
+        json!({"message": "run later", "return_immediately": true}),
+    )
+    .await;
+    assert_eq!(async_response["status"].as_str(), Some("running"));
+    let receipt_id = async_response["receipt_id"]
+        .as_str()
+        .expect("runtime async response should include a receipt id");
+    let pending: crate::routes::servicenet::async_jobs::ServiceNetAsyncInvocationStore = state
+        .local_db
+        .load_domain(wattetheria_kernel::local_db::domain::SERVICENET_ASYNC_INVOCATIONS)
+        .expect("load async invocation store")
+        .expect("async invocation store exists");
+    assert!(pending.invocations.contains_key(receipt_id));
+
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn servicenet_continue_decision_invokes_agent_again_with_context() {
     let invoke_bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -508,7 +621,11 @@ async fn servicenet_continue_decision_invokes_agent_again_with_context() {
         .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
-                Json(mock_published_service_agent(&agent_id))
+                if agent_id == "agent-runtime" {
+                    Json(mock_wattetheria_runtime_service_agent())
+                } else {
+                    Json(mock_published_service_agent(&agent_id))
+                }
             }),
         )
         .route(
@@ -614,7 +731,7 @@ async fn servicenet_continue_decision_invokes_agent_again_with_context() {
     let invoke_json = authed_post_json(
         app,
         &token,
-        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
+        "/v1/wattetheria/servicenet/agents/agent-runtime/invoke",
         json!({
             "message": "hello servicenet",
             "input": {"topic": "order"}
@@ -641,7 +758,7 @@ async fn servicenet_continue_decision_invokes_agent_again_with_context() {
     );
     assert_eq!(
         invoke_bodies[1]["agent_envelope"]["target_agent_id"].as_str(),
-        Some("agent-alpha")
+        Some("agent-runtime")
     );
     assert!(
         invoke_bodies[1]["agent_envelope"]["signature"]
@@ -678,7 +795,11 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
         .route(
             "/v1/agents/{agent_id}",
             get(|Path(agent_id): Path<String>| async move {
-                Json(mock_published_service_agent(&agent_id))
+                if agent_id == "agent-runtime" {
+                    Json(mock_wattetheria_runtime_service_agent())
+                } else {
+                    Json(mock_published_service_agent(&agent_id))
+                }
             }),
         )
         .route(
@@ -775,7 +896,7 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
     let async_json = authed_post_json(
         app,
         &token,
-        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke-async",
+        "/v1/wattetheria/servicenet/agents/agent-runtime/invoke-async",
         json!({
             "message": "start async",
             "context_id": "ctx-async"
@@ -815,7 +936,7 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
     );
     assert_eq!(
         callback_events[0]["event"]["agent_envelope"]["target_agent_id"].as_str(),
-        Some("agent-alpha")
+        Some("agent-runtime")
     );
 
     callback_server.abort();
@@ -1377,7 +1498,7 @@ async fn servicenet_callback_decision_routes_into_mission_commit() {
     let invoke_json = authed_post_json(
         app,
         &token,
-        "/v1/wattetheria/servicenet/agents/agent-alpha/invoke",
+        "/v1/wattetheria/servicenet/agents/agent-runtime/invoke",
         json!({
             "message": "claim the mission",
             "input": {"mode": "analysis"}

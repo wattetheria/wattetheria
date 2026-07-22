@@ -1,8 +1,12 @@
-use a2a::{Message, Part, Role, SendMessageRequest};
+use a2a::{
+    CancelTaskRequest, GetTaskRequest, ListTasksRequest, Message, Part, Role,
+    SendMessageConfiguration, SendMessageRequest, SubscribeToTaskRequest,
+};
 use a2a_client::{
     A2AClient, auth::AuthInterceptor, jsonrpc::JsonRpcTransport, middleware::CallInterceptor,
 };
 use async_trait::async_trait;
+use futures_util::{StreamExt, stream::BoxStream};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -47,6 +51,65 @@ pub(super) async fn execute_service_agent(
                 .send_message(customized_agent_url, params, authorization)
                 .await
         }
+    }
+}
+
+pub(super) async fn get_customized_agent_task(
+    registration: &ServiceNetPublisherRegistration,
+    params: &Value,
+    authorization: Option<&str>,
+) -> Result<Value, String> {
+    let (protocol, endpoint) = customized_target(registration)?;
+    customized_agent_executor(protocol)
+        .get_task(endpoint, params, authorization)
+        .await
+}
+
+pub(super) async fn list_customized_agent_tasks(
+    registration: &ServiceNetPublisherRegistration,
+    params: &Value,
+    authorization: Option<&str>,
+) -> Result<Value, String> {
+    let (protocol, endpoint) = customized_target(registration)?;
+    customized_agent_executor(protocol)
+        .list_tasks(endpoint, params, authorization)
+        .await
+}
+
+pub(super) async fn cancel_customized_agent_task(
+    registration: &ServiceNetPublisherRegistration,
+    params: &Value,
+    authorization: Option<&str>,
+) -> Result<Value, String> {
+    let (protocol, endpoint) = customized_target(registration)?;
+    customized_agent_executor(protocol)
+        .cancel_task(endpoint, params, authorization)
+        .await
+}
+
+pub(super) async fn subscribe_customized_agent_task(
+    registration: &ServiceNetPublisherRegistration,
+    params: &Value,
+    authorization: Option<&str>,
+) -> Result<BoxStream<'static, Result<Value, String>>, String> {
+    let (protocol, endpoint) = customized_target(registration)?;
+    customized_agent_executor(protocol)
+        .subscribe_to_task(endpoint, params, authorization)
+        .await
+}
+
+fn customized_target(
+    registration: &ServiceNetPublisherRegistration,
+) -> Result<(CustomizedAgentProtocol, &str), String> {
+    match &registration.execution {
+        ServiceAgentExecution::CustomizedAgent {
+            protocol,
+            customized_agent_url,
+        } => Ok((*protocol, customized_agent_url)),
+        ServiceAgentExecution::WattetheriaRuntime => Err(
+            "A2A Task operations require Customized Agent execution; Wattetheria Runtime uses the internal invocation flow"
+                .to_owned(),
+        ),
     }
 }
 
@@ -113,6 +176,34 @@ trait CustomizedAgentExecutor: Send + Sync {
         params: &Value,
         authorization: Option<&str>,
     ) -> Result<Value, String>;
+
+    async fn get_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String>;
+
+    async fn list_tasks(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String>;
+
+    async fn cancel_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String>;
+
+    async fn subscribe_to_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<BoxStream<'static, Result<Value, String>>, String>;
 }
 
 struct A2aV1Executor;
@@ -125,16 +216,7 @@ impl CustomizedAgentExecutor for A2aV1Executor {
         params: &Value,
         authorization: Option<&str>,
     ) -> Result<Value, String> {
-        let http = shared_a2a_http_client()?;
-        let transport = JsonRpcTransport::new(http, endpoint.to_owned());
-        let mut client = A2AClient::new(transport);
-        if let Some(authorization) = authorization {
-            let interceptor: Arc<dyn CallInterceptor> = Arc::new(AuthInterceptor::custom(
-                "Authorization",
-                authorization.to_owned(),
-            ));
-            client = client.with_interceptors(vec![interceptor]);
-        }
+        let client = a2a_v1_client(endpoint, authorization)?;
         let request = a2a_v1_request(params)?;
         let response = timeout(Duration::from_mins(2), client.send_message(&request))
             .await
@@ -145,6 +227,90 @@ impl CustomizedAgentExecutor for A2aV1Executor {
         serde_json::to_value(response)
             .map_err(|error| format!("serialize Customized Agent A2A v1 response: {error}"))
     }
+
+    async fn get_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String> {
+        let request: GetTaskRequest = serde_json::from_value(params.clone())
+            .map_err(|error| format!("invalid A2A GetTask request: {error}"))?;
+        let task = a2a_v1_client(endpoint, authorization)?
+            .get_task(&request)
+            .await
+            .map_err(|error| format!("Customized Agent A2A GetTask failed: {error}"))?;
+        serde_json::to_value(task).map_err(|error| format!("serialize A2A Task: {error}"))
+    }
+
+    async fn list_tasks(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String> {
+        let request: ListTasksRequest = serde_json::from_value(params.clone())
+            .map_err(|error| format!("invalid A2A ListTasks request: {error}"))?;
+        let response = a2a_v1_client(endpoint, authorization)?
+            .list_tasks(&request)
+            .await
+            .map_err(|error| format!("Customized Agent A2A ListTasks failed: {error}"))?;
+        serde_json::to_value(response)
+            .map_err(|error| format!("serialize A2A ListTasks response: {error}"))
+    }
+
+    async fn cancel_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<Value, String> {
+        let request: CancelTaskRequest = serde_json::from_value(params.clone())
+            .map_err(|error| format!("invalid A2A CancelTask request: {error}"))?;
+        let task = a2a_v1_client(endpoint, authorization)?
+            .cancel_task(&request)
+            .await
+            .map_err(|error| format!("Customized Agent A2A CancelTask failed: {error}"))?;
+        serde_json::to_value(task).map_err(|error| format!("serialize cancelled A2A Task: {error}"))
+    }
+
+    async fn subscribe_to_task(
+        &self,
+        endpoint: &str,
+        params: &Value,
+        authorization: Option<&str>,
+    ) -> Result<BoxStream<'static, Result<Value, String>>, String> {
+        let request: SubscribeToTaskRequest = serde_json::from_value(params.clone())
+            .map_err(|error| format!("invalid A2A SubscribeToTask request: {error}"))?;
+        let stream = a2a_v1_client(endpoint, authorization)?
+            .subscribe_to_task(&request)
+            .await
+            .map_err(|error| format!("Customized Agent A2A SubscribeToTask failed: {error}"))?;
+        Ok(Box::pin(stream.map(|event| {
+            event
+                .map_err(|error| format!("Customized Agent A2A task event failed: {error}"))
+                .and_then(|event| {
+                    serde_json::to_value(event)
+                        .map_err(|error| format!("serialize A2A task event: {error}"))
+                })
+        })))
+    }
+}
+
+fn a2a_v1_client(
+    endpoint: &str,
+    authorization: Option<&str>,
+) -> Result<A2AClient<JsonRpcTransport>, String> {
+    let transport = JsonRpcTransport::new(shared_a2a_http_client()?, endpoint.to_owned());
+    let mut client = A2AClient::new(transport);
+    if let Some(authorization) = authorization {
+        let interceptor: Arc<dyn CallInterceptor> = Arc::new(AuthInterceptor::custom(
+            "Authorization",
+            authorization.to_owned(),
+        ));
+        client = client.with_interceptors(vec![interceptor]);
+    }
+    Ok(client)
 }
 
 fn shared_a2a_http_client() -> Result<reqwest_a2a::Client, String> {
@@ -192,7 +358,15 @@ fn a2a_v1_request(params: &Value) -> Result<SendMessageRequest, String> {
     }
     Ok(SendMessageRequest {
         message,
-        configuration: None,
+        configuration: params
+            .pointer("/configuration/returnImmediately")
+            .and_then(Value::as_bool)
+            .map(|return_immediately| SendMessageConfiguration {
+                accepted_output_modes: None,
+                task_push_notification_config: None,
+                history_length: None,
+                return_immediately: Some(return_immediately),
+            }),
         metadata: (!metadata.is_empty()).then_some(metadata),
         tenant: None,
     })

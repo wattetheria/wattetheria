@@ -1,16 +1,23 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
-    collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, OnceLock, RwLock},
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
 };
-use uuid::Uuid;
 
-static PUBLISHER_STATE_CACHE: OnceLock<RwLock<HashMap<PathBuf, Arc<ServiceNetPublisherState>>>> =
-    OnceLock::new();
+struct PublisherStateLock {
+    file: fs::File,
+}
+
+impl Drop for PublisherStateLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServiceNetPublisherState {
@@ -85,36 +92,44 @@ pub struct ServiceNetPublisherRegistration {
 }
 
 pub fn load_servicenet_publisher_state(data_dir: &Path) -> Result<ServiceNetPublisherState> {
-    Ok((*cached_servicenet_publisher_state(data_dir)?).clone())
-}
-
-fn cached_servicenet_publisher_state(data_dir: &Path) -> Result<Arc<ServiceNetPublisherState>> {
-    let cache = PUBLISHER_STATE_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
-    if let Some(state) = cache
-        .read()
-        .map_err(|_| anyhow::anyhow!("ServiceNet publisher state cache lock poisoned"))?
-        .get(data_dir)
-        .cloned()
-    {
-        return Ok(state);
-    }
-    let path = data_dir.join("servicenet").join("publisher-state.json");
-    let state = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("read ServiceNet publisher state {}", path.display()))?;
-        serde_json::from_str(&raw)
-            .with_context(|| format!("parse ServiceNet publisher state {}", path.display()))?
-    } else {
-        ServiceNetPublisherState::default()
-    };
-    cache
-        .write()
-        .map_err(|_| anyhow::anyhow!("ServiceNet publisher state cache lock poisoned"))?
-        .insert(data_dir.to_path_buf(), Arc::new(state.clone()));
-    Ok(Arc::new(state))
+    read_servicenet_publisher_state(data_dir)
 }
 
 pub fn save_servicenet_publisher_state(
+    data_dir: &Path,
+    state: &ServiceNetPublisherState,
+) -> Result<()> {
+    let _lock = lock_servicenet_publisher_state(data_dir)?;
+    save_servicenet_publisher_state_locked(data_dir, state)
+}
+
+fn lock_servicenet_publisher_state(data_dir: &Path) -> Result<PublisherStateLock> {
+    let directory = data_dir.join("servicenet");
+    fs::create_dir_all(&directory)
+        .with_context(|| format!("create ServiceNet state directory {}", directory.display()))?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options
+        .open(directory.join(".publisher-state.lock"))
+        .context("open ServiceNet publisher state lock")?;
+    fs2::FileExt::lock_exclusive(&file).context("lock ServiceNet publisher state")?;
+    Ok(PublisherStateLock { file })
+}
+
+fn read_servicenet_publisher_state(data_dir: &Path) -> Result<ServiceNetPublisherState> {
+    let path = data_dir.join("servicenet").join("publisher-state.json");
+    if !path.exists() {
+        return Ok(ServiceNetPublisherState::default());
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read ServiceNet publisher state {}", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("parse ServiceNet publisher state {}", path.display()))
+}
+
+fn save_servicenet_publisher_state_locked(
     data_dir: &Path,
     state: &ServiceNetPublisherState,
 ) -> Result<()> {
@@ -123,23 +138,22 @@ pub fn save_servicenet_publisher_state(
         fs::create_dir_all(parent)
             .with_context(|| format!("create ServiceNet state directory {}", parent.display()))?;
     }
-    let temporary_path = path.with_file_name(format!(".publisher-state-{}.tmp", Uuid::new_v4()));
-    fs::write(&temporary_path, serde_json::to_vec_pretty(state)?).with_context(|| {
-        format!(
-            "write temporary ServiceNet publisher state {}",
-            temporary_path.display()
-        )
-    })?;
-    if let Err(error) = fs::rename(&temporary_path, &path) {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error)
-            .with_context(|| format!("install ServiceNet publisher state {}", path.display()));
-    }
-    PUBLISHER_STATE_CACHE
-        .get_or_init(|| RwLock::new(HashMap::new()))
-        .write()
-        .map_err(|_| anyhow::anyhow!("ServiceNet publisher state cache lock poisoned"))?
-        .insert(data_dir.to_path_buf(), Arc::new(state.clone()));
+    let parent = path
+        .parent()
+        .context("ServiceNet publisher state path has no parent")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .context("create temporary ServiceNet publisher state")?;
+    temporary
+        .write_all(&serde_json::to_vec_pretty(state)?)
+        .context("write temporary ServiceNet publisher state")?;
+    temporary
+        .as_file()
+        .sync_all()
+        .context("sync temporary ServiceNet publisher state")?;
+    temporary
+        .persist(&path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("install ServiceNet publisher state {}", path.display()))?;
     Ok(())
 }
 
@@ -147,7 +161,7 @@ pub fn find_servicenet_publisher_registration(
     data_dir: &Path,
     agent_id: &str,
 ) -> Result<Option<ServiceNetPublisherRegistration>> {
-    let state = cached_servicenet_publisher_state(data_dir)?;
+    let state = load_servicenet_publisher_state(data_dir)?;
     Ok(state
         .registrations
         .iter()
@@ -169,14 +183,15 @@ pub fn stage_servicenet_publisher_registration(
     data_dir: &Path,
     registration: ServiceNetPublisherRegistration,
 ) -> Result<Option<ServiceNetPublisherRegistration>> {
-    let mut state = load_servicenet_publisher_state(data_dir)?;
+    let _lock = lock_servicenet_publisher_state(data_dir)?;
+    let mut state = read_servicenet_publisher_state(data_dir)?;
     let previous = state
         .registrations
         .iter()
         .find(|item| item.agent_id == registration.agent_id)
         .cloned();
     upsert_servicenet_publisher_registration(&mut state, registration);
-    save_servicenet_publisher_state(data_dir, &state)?;
+    save_servicenet_publisher_state_locked(data_dir, &state)?;
     Ok(previous)
 }
 
@@ -185,18 +200,33 @@ pub fn rollback_servicenet_publisher_registration(
     agent_id: &str,
     previous: Option<ServiceNetPublisherRegistration>,
 ) -> Result<()> {
-    let mut state = load_servicenet_publisher_state(data_dir)?;
+    let _lock = lock_servicenet_publisher_state(data_dir)?;
+    let mut state = read_servicenet_publisher_state(data_dir)?;
     state.registrations.retain(|item| item.agent_id != agent_id);
     if let Some(previous) = previous {
         state.registrations.push(previous);
     }
-    save_servicenet_publisher_state(data_dir, &state)
+    save_servicenet_publisher_state_locked(data_dir, &state)
+}
+
+pub fn remove_servicenet_publisher_registration(
+    data_dir: &Path,
+    agent_id: &str,
+    provider_did: &str,
+) -> Result<()> {
+    let _lock = lock_servicenet_publisher_state(data_dir)?;
+    let mut state = read_servicenet_publisher_state(data_dir)?;
+    state.registrations.retain(|registration| {
+        registration.agent_id != agent_id || registration.provider_did != provider_did
+    });
+    save_servicenet_publisher_state_locked(data_dir, &state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Arc, Barrier};
 
     fn registration(agent_id: &str, version: &str) -> ServiceNetPublisherRegistration {
         ServiceNetPublisherRegistration {
@@ -227,6 +257,58 @@ mod tests {
         let state = load_servicenet_publisher_state(dir.path()).unwrap();
         assert_eq!(state.registrations.len(), 1);
         assert_eq!(state.registrations[0].version, "0.1.0");
+    }
+
+    #[test]
+    fn concurrent_agents_do_not_overwrite_each_others_registrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = Arc::new(dir.path().to_path_buf());
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|index| {
+                let data_dir = Arc::clone(&data_dir);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    stage_servicenet_publisher_registration(
+                        &data_dir,
+                        registration(&format!("agent-{index}"), "0.1.0"),
+                    )
+                    .unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let state = read_servicenet_publisher_state(&data_dir).unwrap();
+        assert_eq!(state.registrations.len(), 8);
+    }
+
+    #[test]
+    fn load_observes_publisher_state_written_outside_the_process_view() {
+        let dir = tempfile::tempdir().unwrap();
+        save_servicenet_publisher_state(
+            dir.path(),
+            &ServiceNetPublisherState {
+                registrations: vec![registration("first", "0.1.0")],
+            },
+        )
+        .unwrap();
+        let path = dir.path().join("servicenet").join("publisher-state.json");
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&ServiceNetPublisherState {
+                registrations: vec![registration("external", "0.2.0")],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let state = load_servicenet_publisher_state(dir.path()).unwrap();
+        assert_eq!(state.registrations.len(), 1);
+        assert_eq!(state.registrations[0].agent_id, "external");
     }
 
     #[test]

@@ -16,15 +16,14 @@ use super::publish_validation::{
 use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
-use wattetheria_kernel::agent_identity::service_agent::{
-    FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
-};
+use wattetheria_kernel::agent_identity::service_agent::FileServiceAgentIdentityStore;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
-    CustomizedAgentProtocol, ServiceAgentExecution, ServiceAgentPublicationInput, ServiceNetClient,
-    ServiceNetConnectionMode, attach_service_agent_payment_binding,
-    load_servicenet_publisher_state, normalize_service_address, prepare_service_agent_publication,
-    save_servicenet_publisher_state, submit_service_agent_publication,
+    CustomizedAgentProtocol, ServiceAgentExecution, ServiceAgentPublicationInput,
+    ServiceAgentPublicationSubmitError, ServiceNetClient, ServiceNetConnectionMode,
+    attach_service_agent_payment_binding, load_servicenet_publisher_state,
+    normalize_service_address, prepare_service_agent_publication,
+    remove_servicenet_publisher_registration, submit_service_agent_publication,
 };
 pub(crate) use wattetheria_kernel::servicenet::{
     ServiceNetPublisherRegistration, ServiceNetPublisherState,
@@ -237,21 +236,12 @@ pub(crate) fn load_publisher_state(data_dir: &FsPath) -> anyhow::Result<ServiceN
     load_servicenet_publisher_state(data_dir)
 }
 
+#[cfg(test)]
 pub(crate) fn save_publisher_state(
     data_dir: &FsPath,
     publisher_state: &ServiceNetPublisherState,
 ) -> anyhow::Result<()> {
-    save_servicenet_publisher_state(data_dir, publisher_state)
-}
-
-fn remove_registration(
-    publisher_state: &mut ServiceNetPublisherState,
-    agent_id: &str,
-    owner_did: &str,
-) {
-    publisher_state.registrations.retain(|registration| {
-        registration.agent_id != agent_id || !registration_matches_identity(registration, owner_did)
-    });
+    wattetheria_kernel::servicenet::save_servicenet_publisher_state(data_dir, publisher_state)
 }
 
 fn derive_agent_id(agent_card: &Value, provider_id: &str) -> String {
@@ -400,10 +390,21 @@ pub(crate) async fn publish_agent(
         .unwrap_or_default()
         .to_owned();
     let service_identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
-    let service_identity = match service_identity_store.load_or_create(&agent_id, &endpoint) {
-        Ok(identity) => identity,
-        Err(error) => return internal_error(&error),
+    let identity_provision = {
+        let store = service_identity_store.clone();
+        let agent_id = agent_id.clone();
+        let endpoint = endpoint.clone();
+        match tokio::task::spawn_blocking(move || store.provision(&agent_id, &endpoint)).await {
+            Ok(Ok(provision)) => provision,
+            Ok(Err(error)) => return internal_error(&error),
+            Err(error) => {
+                return internal_error(&anyhow::anyhow!(
+                    "Service Agent identity provisioning task failed: {error}"
+                ));
+            }
+        }
     };
+    let service_identity = identity_provision.identity();
     attach_service_agent_payment_binding(&mut agent_card, Some(&payment_account_binding));
     let publication = match prepare_service_agent_publication(
         ServiceAgentPublicationInput {
@@ -422,14 +423,43 @@ pub(crate) async fn publish_agent(
         state.signer.as_ref(),
     ) {
         Ok(publication) => publication,
-        Err(error) => return internal_error(&error),
+        Err(error) => {
+            return match service_identity_store.rollback_provision(identity_provision) {
+                Ok(()) => internal_error(&error),
+                Err(rollback_error) => internal_error(&anyhow::anyhow!(
+                    "prepare Service Agent publication failed: {error:#}; identity rollback failed: {rollback_error:#}"
+                )),
+            };
+        }
     };
     let request = &publication.request;
-    let response =
-        match submit_service_agent_publication(client, &state.data_dir, &publication).await {
-            Ok(response) => response,
-            Err(error) => return servicenet_error_response(&error),
-        };
+    let response = match submit_service_agent_publication(client, &state.data_dir, &publication)
+        .await
+    {
+        Ok(response) => response,
+        Err(ServiceAgentPublicationSubmitError::BeforeSubmission(error)) => {
+            return match service_identity_store.rollback_provision(identity_provision) {
+                Ok(()) => internal_error(&error),
+                Err(rollback_error) => internal_error(&anyhow::anyhow!(
+                    "stage Service Agent publication failed: {error:#}; identity rollback failed: {rollback_error:#}"
+                )),
+            };
+        }
+        Err(ServiceAgentPublicationSubmitError::Remote(error)) => {
+            if error.is_definitive_rejection() {
+                return match service_identity_store.rollback_provision(identity_provision) {
+                    Ok(()) => servicenet_error_response(&error),
+                    Err(rollback_error) => internal_error(&anyhow::anyhow!(
+                        "ServiceNet publication failed: {error}; identity rollback failed: {rollback_error:#}"
+                    )),
+                };
+            }
+            return servicenet_error_response(&error);
+        }
+        Err(ServiceAgentPublicationSubmitError::LocalRollback(error)) => {
+            return internal_error(&error);
+        }
+    };
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: Utc::now().timestamp(),
@@ -476,7 +506,21 @@ pub(crate) async fn unpublish_agent(
     let Some(client) = servicenet_client(&state) else {
         return super::servicenet_unavailable_response();
     };
-    let mut publisher_state = match load_publisher_state(&state.data_dir) {
+    let _agent_operation_lock = {
+        let store = FileServiceAgentIdentityStore::new(&state.data_dir);
+        let lock_agent_id = agent_id.clone();
+        match tokio::task::spawn_blocking(move || store.lock_agent_operation(&lock_agent_id)).await
+        {
+            Ok(Ok(lock)) => lock,
+            Ok(Err(error)) => return internal_error(&error),
+            Err(error) => {
+                return internal_error(&anyhow::anyhow!(
+                    "Service Agent operation lock task failed: {error}"
+                ));
+            }
+        }
+    };
+    let publisher_state = match load_publisher_state(&state.data_dir) {
         Ok(state) => state,
         Err(error) => return internal_error(&error),
     };
@@ -547,8 +591,9 @@ pub(crate) async fn unpublish_agent(
         }
         Err(error) => return servicenet_error_response(&error),
     };
-    remove_registration(&mut publisher_state, &agent_id, &state.agent_did);
-    if let Err(error) = save_publisher_state(&state.data_dir, &publisher_state) {
+    if let Err(error) =
+        remove_servicenet_publisher_registration(&state.data_dir, &agent_id, &state.agent_did)
+    {
         return internal_error(&error);
     }
     let _ = state.audit_log.append(AuditEntry {

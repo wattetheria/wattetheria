@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     ServiceNetClient, ServiceNetClientError, ServiceNetInvokeRequest, ServiceNetInvokeResponse,
-    ServiceNetServiceAgentSignature, verify_service_agent_invoke_response,
+    verify_service_agent_invoke_response,
 };
 
 pub(super) fn uses_wattetheria_direct(record: &Value) -> bool {
@@ -123,6 +123,12 @@ fn build_send_message_params(request: &ServiceNetInvokeRequest) -> Value {
         "message".to_owned(),
         json!({"role": "user", "parts": parts}),
     );
+    if let Some(return_immediately) = request.return_immediately {
+        params.insert(
+            "configuration".to_owned(),
+            json!({"returnImmediately": return_immediately}),
+        );
+    }
     let mut extensions = Map::new();
     if let Some(settlement) = request.settlement.as_ref() {
         extensions.insert(
@@ -187,7 +193,7 @@ fn invoke_message_text(request: &ServiceNetInvokeRequest) -> Option<String> {
         })
 }
 
-fn build_direct_response(
+pub(super) fn build_direct_response(
     agent_id: &str,
     request: &ServiceNetInvokeRequest,
     raw: Value,
@@ -195,14 +201,11 @@ fn build_direct_response(
     let result = raw
         .get("result")
         .context("A2A response is missing result")?;
-    let task = result.get("task");
+    let task = result.get("task").or_else(|| {
+        (result.get("id").is_some() && result.get("status").is_some()).then_some(result)
+    });
     let message = result.get("message");
-    let service_signature = raw
-        .pointer("/extensions/service_agent_signature")
-        .cloned()
-        .map(serde_json::from_value::<ServiceNetServiceAgentSignature>)
-        .transpose()
-        .context("parse Service Agent response signature")?;
+    let service_signature = super::service_signature_from_raw(&raw);
     Ok(ServiceNetInvokeResponse {
         agent_id: agent_id.to_owned(),
         status: task
@@ -230,13 +233,22 @@ fn build_direct_response(
 }
 
 fn response_text(result: &Value) -> Option<String> {
-    let parts = result.pointer("/message/parts").or_else(|| {
-        result
-            .pointer("/task/messages")
-            .and_then(Value::as_array)
-            .and_then(|messages| messages.last())
-            .and_then(|message| message.get("parts"))
-    });
+    let parts = result
+        .pointer("/message/parts")
+        .or_else(|| {
+            result
+                .pointer("/task/messages")
+                .and_then(Value::as_array)
+                .and_then(|messages| messages.last())
+                .and_then(|message| message.get("parts"))
+        })
+        .or_else(|| {
+            result
+                .pointer("/history")
+                .and_then(Value::as_array)
+                .and_then(|messages| messages.last())
+                .and_then(|message| message.get("parts"))
+        });
     parts
         .and_then(Value::as_array)
         .and_then(|parts| {
@@ -250,6 +262,7 @@ fn response_text(result: &Value) -> Option<String> {
 fn response_output(result: &Value) -> Option<Value> {
     result
         .pointer("/task/artifacts/0/parts/0")
+        .or_else(|| result.pointer("/artifacts/0/parts/0"))
         .and_then(|part| {
             part.get("data")
                 .cloned()
@@ -367,6 +380,7 @@ mod tests {
             message: Some("book a ride".to_owned()),
             input: json!({"pickup": "airport"}),
             skill_id: Some("rides.book".to_owned()),
+            return_immediately: Some(true),
             agent_envelope: Some(json!({"target_agent_id": "ride-agent"})),
             ..ServiceNetInvokeRequest::default()
         };
@@ -380,6 +394,7 @@ mod tests {
             params["extensions"]["agent_envelope"]["target_agent_id"],
             "ride-agent"
         );
+        assert_eq!(params["configuration"]["returnImmediately"], true);
     }
 
     #[test]
