@@ -1,6 +1,6 @@
 {
   "name": "wattetheria",
-  "version": "0.4.18",
+  "version": "0.1.0",
   "description": "Wattetheria deployment CLI",
   "license": "AGPL-3.0-only",
   "type": "commonjs",
@@ -24,15 +24,15 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@wattetheria/cli-darwin-arm64": "0.3.0",
-    "@wattetheria/cli-darwin-x64": "0.3.0",
-    "@wattetheria/cli-linux-arm64": "0.3.0",
-    "@wattetheria/cli-linux-x64": "0.3.0",
-    "@wattetheria/cli-win32-arm64": "0.3.0",
-    "@wattetheria/cli-win32-x64": "0.3.0"
+    "@wattetheria/cli-darwin-arm64": "0.1.0",
+    "@wattetheria/cli-darwin-x64": "0.1.0",
+    "@wattetheria/cli-linux-arm64": "0.1.0",
+    "@wattetheria/cli-linux-x64": "0.1.0",
+    "@wattetheria/cli-win32-arm64": "0.1.0",
+    "@wattetheria/cli-win32-x64": "0.1.0"
   },
   "scripts": {
-    "check": "node --check bin/wattetheria.js && node --check lib/cli.js && node --check scripts/stage-native-cli.js && node --check scripts/check-native-package-binary.js",
+    "check": "node --check bin/wattetheria.js && node --check lib/cli.js && node --check scripts/stage-native-cli.js && node --check scripts/check-native-package-binary.js && node --test tests/npm-cli.test.js",
     "stage:native-cli": "node scripts/stage-native-cli.js"
   },
   "keywords": [
