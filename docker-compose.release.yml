@@ -103,9 +103,10 @@ services:
       wattswarm-runtime:
         condition: service_healthy
     environment:
+      WATTSWARM_STORAGE_BACKEND: ${WATTSWARM_STORAGE_BACKEND:-postgres}
       WATTSWARM_PG_URL: postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:?WATTSWARM_PG_PASSWORD must be set}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}
       WATTSWARM_STATE_DIR: /var/lib/wattswarm
-      WATTSWARM_STORE_NAME: wattswarm.state
+      WATTSWARM_STORE_NAME: wattswarm.db
       WATTSWARM_UI_LISTEN: 0.0.0.0:7788
       WATTSWARM_WATTETHERIA_SYNC_GRPC_LISTEN: "0.0.0.0:7791"
       WATTSWARM_P2P_ENABLED: ${WATTSWARM_P2P_ENABLED:-true}
@@ -152,9 +153,10 @@ services:
       wattswarm-kernel:
         condition: service_started
     environment:
+      WATTSWARM_STORAGE_BACKEND: ${WATTSWARM_STORAGE_BACKEND:-postgres}
       WATTSWARM_PG_URL: postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:?WATTSWARM_PG_PASSWORD must be set}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}
       WATTSWARM_STATE_DIR: /var/lib/wattswarm
-      WATTSWARM_STORE_NAME: wattswarm.state
+      WATTSWARM_STORE_NAME: wattswarm.db
       WATTSWARM_WORKER_CONCURRENCY: ${WATTSWARM_WORKER_CONCURRENCY:-16}
       WATTSWARM_WORKER_POLL_MS: ${WATTSWARM_WORKER_POLL_MS:-250}
       WATTSWARM_WORKER_LEASE_MS: ${WATTSWARM_WORKER_LEASE_MS:-30000}
@@ -173,7 +175,7 @@ services:
       - --state-dir
       - /var/lib/wattswarm
       - --store
-      - wattswarm.state
+      - wattswarm.db
       - run
       - --pg-url
       - postgres://${WATTSWARM_PG_USER:-postgres}:${WATTSWARM_PG_PASSWORD:?WATTSWARM_PG_PASSWORD must be set}@wattswarm-postgres:5432/${WATTSWARM_PG_DB:-wattswarm}

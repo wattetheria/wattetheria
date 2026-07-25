@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="title description">
+<title id="title">wattetheria/wattetheria star history</title>
+<desc id="description">1 current GitHub stars shown over time.</desc>
+<style>
+.background{fill:#ffffff}.axis,.tick{fill:none;stroke:#171717;stroke-linecap:round}.axis{stroke-width:3}.axis-sketch{fill:none;stroke:#171717;stroke-width:1.2;stroke-linecap:round;opacity:.45}.title,.legend-label,.axis-label,.axis-title,.empty{fill:#171717;font-family:'Comic Sans MS','Bradley Hand',cursive}.title{font-size:24px;font-weight:700}.legend{fill:#ffffff;stroke:#171717;stroke-width:2.2}.legend-label{font-size:15px}.axis-label{font-size:14px}.axis-title{font-size:16px;font-weight:700}.history-line-shadow{fill:none;stroke:#c52f17;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;opacity:.18}.history-line{fill:none;stroke:#f4512c;stroke-width:3.4;stroke-linecap:round;stroke-linejoin:round}.point,.legend-dot{fill:#f4512c}.point{stroke:#ffffff;stroke-width:2}.title-dot{fill:#35c84a}
+@media(prefers-color-scheme:dark){.background{fill:#0d1117}.axis,.tick,.axis-sketch{stroke:#e6edf3}.title,.legend-label,.axis-label,.axis-title,.empty{fill:#e6edf3}.legend{fill:#161b22;stroke:#e6edf3}.history-line{stroke:#ff6842}.history-line-shadow{stroke:#ff6842}.point,.legend-dot{fill:#ff6842}.point{stroke:#0d1117}.title-dot{fill:#3fb950}}
+</style>
+<rect class="background" width="960" height="540" />
+<circle class="title-dot" cx="310" cy="31" r="5" />
+<text class="title" x="480" y="39" text-anchor="middle">Wattetheria Star History</text>
+<rect class="legend" x="108" y="65" width="312" height="38" rx="5" />
+<circle class="legend-dot" cx="125" cy="84" r="5" />
+<text class="legend-label" x="138" y="90">wattetheria/wattetheria - 1 star</text>
+<line class="axis" x1="96" y1="128" x2="96" y2="454" />
+<line class="axis-sketch" x1="98" y1="126" x2="97" y2="456" />
+<line class="axis" x1="96" y1="454" x2="912" y2="454" />
+<line class="axis-sketch" x1="94" y1="456" x2="914" y2="455" />
+<line class="tick" x1="89" y1="454" x2="96" y2="454" /><text class="axis-label" x="79" y="459" text-anchor="end">0</text><line class="tick" x1="89" y1="128" x2="96" y2="128" /><text class="axis-label" x="79" y="133" text-anchor="end">1</text>
+<line class="tick" x1="504" y1="454" x2="504" y2="461" /><text class="axis-label" x="504" y="482" text-anchor="middle">Jun 14, 2026</text>
+<path class="history-line-shadow" d="M 96 454 L 504 128 L 912 128" transform="translate(0 1.5)" /><path class="history-line" d="M 96 454 L 504 128 L 912 128" /><circle class="point" cx="504" cy="128" r="5" />
+<text class="axis-title" x="504" y="516" text-anchor="middle">Date</text>
+<text class="axis-title" x="28" y="291" text-anchor="middle" transform="rotate(-90 28 291)">GitHub Stars</text>
+</svg>

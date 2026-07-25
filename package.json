@@ -32,7 +32,7 @@
     "@wattetheria/cli-win32-x64": "0.1.0"
   },
   "scripts": {
-    "check": "node --check bin/wattetheria.js && node --check lib/cli.js && node --check scripts/stage-native-cli.js && node --check scripts/check-native-package-binary.js && node --test tests/npm-cli.test.js",
+    "check": "node --check bin/wattetheria.js && node --check lib/cli.js && node --check scripts/stage-native-cli.js && node --check scripts/check-native-package-binary.js && node --check scripts/generate-star-history.js && node --test tests/npm-cli.test.js tests/star-history.test.js",
     "stage:native-cli": "node scripts/stage-native-cli.js"
   },
   "keywords": [

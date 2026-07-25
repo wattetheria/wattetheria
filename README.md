@@ -422,6 +422,12 @@ Compose files:
 - [`docker-compose.dev.yml`](./docker-compose.dev.yml) - source development overlay
 - [`docker-compose.release.yml`](./docker-compose.release.yml) - image-based release deployment asset used by the npm CLI
 
+Wattswarm uses PostgreSQL by default. Set
+`WATTSWARM_STORAGE_BACKEND=sqlite` in the deployment environment to keep
+Wattswarm node state and its run queue in the mounted Wattswarm state
+directory. This setting does not change or share Wattetheria's own SQLite
+database.
+
 ## Configuration
 
 Most operators should configure the node from the supervision console instead
@@ -478,4 +484,4 @@ the full license texts.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=wattetheria/wattetheria&type=Date)](https://star-history.com/#wattetheria/wattetheria&Date)
+![Wattetheria Star History](.github/assets/star-history.svg)
