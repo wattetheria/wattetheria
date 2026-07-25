@@ -1204,6 +1204,7 @@ fn friend_request_direction_from_str(value: &str) -> SocialResult<FriendRequestD
 fn friend_request_state_to_str(value: FriendRequestState) -> &'static str {
     match value {
         FriendRequestState::Pending => "pending",
+        FriendRequestState::DecisionPending => "decision_pending",
         FriendRequestState::Accepted => "accepted",
         FriendRequestState::Rejected => "rejected",
         FriendRequestState::Blocked => "blocked",
@@ -1215,6 +1216,7 @@ fn friend_request_state_to_str(value: FriendRequestState) -> &'static str {
 fn friend_request_state_from_str(value: &str) -> SocialResult<FriendRequestState> {
     match value {
         "pending" => Ok(FriendRequestState::Pending),
+        "decision_pending" => Ok(FriendRequestState::DecisionPending),
         "accepted" => Ok(FriendRequestState::Accepted),
         "rejected" => Ok(FriendRequestState::Rejected),
         "blocked" => Ok(FriendRequestState::Blocked),
@@ -1712,6 +1714,51 @@ mod tests {
             store
                 .due_outbound_pending_friend_requests(2000, 300, 10)
                 .expect("query active friendship")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn store_tracks_due_queued_friend_request_decisions() {
+        let store = SocialStore::open_in_memory().expect("open store");
+        store
+            .upsert_friend_request(&FriendRequest {
+                request_id: "decision-1".to_owned(),
+                local_public_id: "did:key:alice".to_owned(),
+                remote_public_id: "did:key:bob".to_owned(),
+                remote_node_id: Some("node-bob".to_owned()),
+                direction: FriendRequestDirection::Inbound,
+                state: FriendRequestState::DecisionPending,
+                decision_reason: Some(
+                    crate::domain::friend_requests::DECISION_PENDING_ACCEPT_REASON.to_owned(),
+                ),
+                correlation_id: Some("correlation-1".to_owned()),
+                created_at: 100,
+                updated_at: 100,
+                expires_at: None,
+            })
+            .expect("save queued decision");
+
+        assert!(
+            store
+                .due_pending_friend_request_decisions(399, 300, 10)
+                .expect("query not due")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .due_pending_friend_request_decisions(400, 300, 10)
+                .expect("query due")[0]
+                .request_id,
+            "decision-1"
+        );
+        store
+            .record_reliability_attempt("friend_request", "decision-1", 400, 700, None)
+            .expect("record decision attempt");
+        assert!(
+            store
+                .due_pending_friend_request_decisions(699, 300, 10)
+                .expect("query deferred decision")
                 .is_empty()
         );
     }

@@ -1,5 +1,7 @@
 use super::{SocialStore, row_to_friend_request};
-use crate::domain::friend_requests::FriendRequest;
+use crate::domain::friend_requests::{
+    DECISION_PENDING_ACCEPT_REASON, DECISION_PENDING_REJECT_REASON, FriendRequest,
+};
 use crate::domain::reliability_tasks::ReliabilityTask;
 use crate::ports::repositories::ReliabilityTaskRepository;
 use crate::types::{SocialError, SocialResult};
@@ -84,6 +86,76 @@ impl SocialStore {
             .map_err(|error| SocialError::Storage(format!("query due friend requests: {error}")))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| SocialError::Storage(format!("collect due friend requests: {error}")))
+    }
+
+    pub fn due_pending_friend_request_decisions(
+        &self,
+        now: i64,
+        min_retry_delay_sec: i64,
+        limit: usize,
+    ) -> SocialResult<Vec<FriendRequest>> {
+        let conn = self.conn()?;
+        let normalized_updated_at = "CASE
+            WHEN friend_requests.updated_at > 10000000000 THEN friend_requests.updated_at / 1000
+            ELSE friend_requests.updated_at
+        END";
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT friend_requests.request_id,
+                        friend_requests.local_public_id,
+                        friend_requests.remote_public_id,
+                        friend_requests.remote_node_id,
+                        friend_requests.direction,
+                        friend_requests.state,
+                        friend_requests.decision_reason,
+                        friend_requests.correlation_id,
+                        friend_requests.created_at,
+                        friend_requests.updated_at,
+                        friend_requests.expires_at
+                 FROM friend_requests
+                 LEFT JOIN reliability_tasks
+                    ON reliability_tasks.object_kind = 'friend_request'
+                   AND reliability_tasks.object_id = friend_requests.request_id
+                 WHERE friend_requests.direction = 'inbound'
+                   AND friend_requests.state = 'decision_pending'
+                   AND friend_requests.decision_reason IN (?1, ?2)
+                   AND friend_requests.remote_node_id IS NOT NULL
+                   AND trim(friend_requests.remote_node_id) <> ''
+                   AND COALESCE(reliability_tasks.status, 'pending') = 'pending'
+                   AND COALESCE(
+                        reliability_tasks.next_attempt_at,
+                        ({normalized_updated_at}) + ?3
+                   ) <= ?4
+                 ORDER BY COALESCE(
+                        reliability_tasks.next_attempt_at,
+                        ({normalized_updated_at}) + ?3
+                    ) ASC,
+                    friend_requests.updated_at ASC,
+                    friend_requests.request_id ASC
+                 LIMIT ?5"
+            ))
+            .map_err(|error| {
+                SocialError::Storage(format!(
+                    "prepare due friend request decision query: {error}"
+                ))
+            })?;
+        let rows = stmt
+            .query_map(
+                params![
+                    DECISION_PENDING_ACCEPT_REASON,
+                    DECISION_PENDING_REJECT_REASON,
+                    min_retry_delay_sec,
+                    now,
+                    limit as i64
+                ],
+                row_to_friend_request,
+            )
+            .map_err(|error| {
+                SocialError::Storage(format!("query due friend request decisions: {error}"))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            SocialError::Storage(format!("collect due friend request decisions: {error}"))
+        })
     }
 
     pub fn get_reliability_task(

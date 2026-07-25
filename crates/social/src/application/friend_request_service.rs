@@ -12,6 +12,17 @@ pub struct FriendRequestCounterpartRef<'a> {
     pub target_agent: &'a str,
 }
 
+#[derive(Debug, Clone)]
+pub struct QueueFriendRequestDecisionInput {
+    pub local_public_id: String,
+    pub request_id: String,
+    pub remote_public_id: String,
+    pub remote_node_id: String,
+    pub decision_reason: String,
+    pub correlation_id: Option<String>,
+    pub occurred_at: i64,
+}
+
 pub fn upsert_friend_request<R>(repository: &R, request: &FriendRequest) -> SocialResult<()>
 where
     R: FriendRequestRepository,
@@ -37,6 +48,20 @@ where
     let Some(coalesced) = coalesce_friend_request(&existing_items, request) else {
         return Ok(());
     };
+    if request.state == FriendRequestState::Pending {
+        for existing_pending in existing_items.iter().filter(|item| {
+            item.request_id != request.request_id
+                && same_request_pair(item, request)
+                && item.state == FriendRequestState::Pending
+        }) {
+            repository.upsert_friend_request(&FriendRequest {
+                state: FriendRequestState::Cancelled,
+                decision_reason: Some("superseded_by_new_request".to_owned()),
+                updated_at: existing_pending.updated_at.max(request.updated_at),
+                ..existing_pending.clone()
+            })?;
+        }
+    }
     repository.upsert_friend_request(&coalesced)
 }
 
@@ -55,6 +80,55 @@ where
     repository
         .list_friend_requests(local_public_id)
         .map(dedupe_friend_requests)
+}
+
+pub fn queue_friend_request_decision<R>(
+    repository: &R,
+    input: QueueFriendRequestDecisionInput,
+) -> SocialResult<()>
+where
+    R: FriendRequestRepository,
+{
+    let existing = list_friend_requests(repository, &input.local_public_id)?
+        .into_iter()
+        .find(|request| request.request_id == input.request_id);
+    if existing.as_ref().is_some_and(|request| {
+        !matches!(
+            request.state,
+            FriendRequestState::Pending | FriendRequestState::DecisionPending
+        )
+    }) {
+        return Ok(());
+    }
+    upsert_friend_request(
+        repository,
+        &FriendRequest {
+            request_id: input.request_id,
+            local_public_id: input.local_public_id,
+            remote_public_id: input.remote_public_id,
+            remote_node_id: Some(input.remote_node_id),
+            direction: FriendRequestDirection::Inbound,
+            state: FriendRequestState::DecisionPending,
+            decision_reason: Some(input.decision_reason),
+            correlation_id: input.correlation_id.or_else(|| {
+                existing
+                    .as_ref()
+                    .and_then(|request| request.correlation_id.clone())
+            }),
+            created_at: existing.as_ref().map_or(input.occurred_at, |request| {
+                request.created_at.min(input.occurred_at)
+            }),
+            updated_at: input.occurred_at,
+            expires_at: existing.as_ref().and_then(|request| request.expires_at),
+        },
+    )
+}
+
+pub fn clear_friend_request_retry<R>(repository: &R, request_id: &str) -> SocialResult<()>
+where
+    R: ReliabilityTaskRepository,
+{
+    repository.clear_reliability_task(FRIEND_REQUEST_OBJECT_KIND, request_id)
 }
 
 pub fn settle_related_outbound_friend_requests<R>(
@@ -86,7 +160,7 @@ where
                 ..request.clone()
             },
         )?;
-        repository.clear_reliability_task(FRIEND_REQUEST_OBJECT_KIND, &request.request_id)?;
+        clear_friend_request_retry(repository, &request.request_id)?;
     }
     Ok(())
 }
@@ -121,15 +195,18 @@ fn coalesce_friend_request(
     request: &FriendRequest,
 ) -> Option<FriendRequest> {
     if request.state == FriendRequestState::Pending {
-        if existing_items.iter().any(|item| {
-            same_request_pair(item, request) && item.state != FriendRequestState::Pending
-        }) {
+        if existing_items
+            .iter()
+            .any(|item| same_identity_pair(item, request) && blocks_new_pending_request(item.state))
+        {
             return None;
         }
         return existing_items
             .iter()
             .find(|item| {
-                same_request_pair(item, request) && item.state == FriendRequestState::Pending
+                item.request_id == request.request_id
+                    && same_request_pair(item, request)
+                    && item.state == FriendRequestState::Pending
             })
             .map(|existing| merge_friend_request(existing, request))
             .or_else(|| Some(request.clone()));
@@ -181,17 +258,28 @@ fn merge_friend_request(existing: &FriendRequest, incoming: &FriendRequest) -> F
     }
 }
 
+fn same_identity_pair(left: &FriendRequest, right: &FriendRequest) -> bool {
+    left.local_public_id == right.local_public_id && left.remote_public_id == right.remote_public_id
+}
+
 fn same_request_pair(left: &FriendRequest, right: &FriendRequest) -> bool {
-    left.local_public_id == right.local_public_id
-        && left.remote_public_id == right.remote_public_id
-        && left.direction == right.direction
+    same_identity_pair(left, right) && left.direction == right.direction
+}
+
+fn blocks_new_pending_request(state: FriendRequestState) -> bool {
+    matches!(
+        state,
+        FriendRequestState::DecisionPending
+            | FriendRequestState::Accepted
+            | FriendRequestState::Blocked
+    )
 }
 
 fn dedupe_friend_requests(mut items: Vec<FriendRequest>) -> Vec<FriendRequest> {
-    let terminal_pairs = items
+    let blocking_pairs = items
         .iter()
-        .filter(|item| item.state != FriendRequestState::Pending)
-        .map(request_pair_key)
+        .filter(|item| blocks_new_pending_request(item.state))
+        .map(identity_pair_key)
         .collect::<HashSet<_>>();
     let mut pending_pairs = HashSet::new();
     items.sort_by(|left, right| {
@@ -208,9 +296,16 @@ fn dedupe_friend_requests(mut items: Vec<FriendRequest>) -> Vec<FriendRequest> {
                 return true;
             }
             let key = request_pair_key(item);
-            !terminal_pairs.contains(&key) && pending_pairs.insert(key)
+            !blocking_pairs.contains(&identity_pair_key(item)) && pending_pairs.insert(key)
         })
         .collect()
+}
+
+fn identity_pair_key(request: &FriendRequest) -> (String, String) {
+    (
+        request.local_public_id.clone(),
+        request.remote_public_id.clone(),
+    )
 }
 
 fn request_pair_key(request: &FriendRequest) -> (String, String, &'static str) {
@@ -327,25 +422,55 @@ mod tests {
     }
 
     #[test]
-    fn coalesces_duplicate_pending_request_for_same_pair() {
+    fn new_request_id_supersedes_pending_request_for_same_pair() {
         let repository = FakeRepository::default();
         let request = pending_request();
         upsert_friend_request(&repository, &request).expect("save pending");
 
-        let mut duplicate = request;
-        duplicate.request_id = "request-2".to_owned();
-        duplicate.updated_at = 2;
-        upsert_friend_request(&repository, &duplicate).expect("coalesce duplicate pending");
+        let mut next_request = request;
+        next_request.request_id = "request-2".to_owned();
+        next_request.updated_at = 2;
+        upsert_friend_request(&repository, &next_request).expect("save new pending request");
+
+        let requests =
+            list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().any(|request| {
+            request.request_id == "request-1"
+                && request.state == FriendRequestState::Cancelled
+                && request.decision_reason.as_deref() == Some("superseded_by_new_request")
+        }));
+        assert!(requests.iter().any(|request| {
+            request.request_id == "request-2"
+                && request.state == FriendRequestState::Pending
+                && request.updated_at == 2
+        }));
+    }
+
+    #[test]
+    fn same_request_id_pending_replay_is_idempotent() {
+        let repository = FakeRepository::default();
+        let request = pending_request();
+        upsert_friend_request(&repository, &request).expect("save pending");
+
+        let mut replay = request;
+        replay.correlation_id = Some("correlation-retry".to_owned());
+        replay.updated_at = 2;
+        upsert_friend_request(&repository, &replay).expect("apply pending replay");
 
         let requests =
             list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].request_id, "request-1");
+        assert_eq!(
+            requests[0].correlation_id.as_deref(),
+            Some("correlation-retry")
+        );
         assert_eq!(requests[0].updated_at, 2);
     }
 
     #[test]
-    fn ignores_pending_replay_after_terminal_decision() {
+    fn ignores_same_request_id_replay_after_terminal_decision() {
         let repository = FakeRepository::default();
         let mut request = pending_request();
         upsert_friend_request(&repository, &request).expect("save pending");
@@ -355,7 +480,6 @@ mod tests {
         upsert_friend_request(&repository, &request).expect("save rejected");
 
         let mut replay = pending_request();
-        replay.request_id = "request-2".to_owned();
         replay.updated_at = 3;
         upsert_friend_request(&repository, &replay).expect("ignore pending replay");
 
@@ -364,5 +488,158 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].request_id, "request-1");
         assert_eq!(requests[0].state, FriendRequestState::Rejected);
+    }
+
+    #[test]
+    fn allows_new_request_id_after_retryable_terminal_state() {
+        for state in [
+            FriendRequestState::Rejected,
+            FriendRequestState::Cancelled,
+            FriendRequestState::Expired,
+        ] {
+            let repository = FakeRepository::default();
+            let mut request = pending_request();
+            upsert_friend_request(&repository, &request).expect("save pending");
+            request.state = state;
+            request.decision_reason = Some(format!("{state:?}"));
+            request.updated_at = 2;
+            upsert_friend_request(&repository, &request).expect("save terminal state");
+
+            let mut retry = pending_request();
+            retry.request_id = "request-2".to_owned();
+            retry.updated_at = 3;
+            upsert_friend_request(&repository, &retry).expect("save new request");
+
+            let requests =
+                list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+            assert_eq!(requests.len(), 2, "state: {state:?}");
+            assert!(requests.iter().any(|item| {
+                item.request_id == "request-2" && item.state == FriendRequestState::Pending
+            }));
+        }
+    }
+
+    #[test]
+    fn ignores_new_request_id_for_blocking_pair_state() {
+        for state in [
+            FriendRequestState::DecisionPending,
+            FriendRequestState::Accepted,
+            FriendRequestState::Blocked,
+        ] {
+            let repository = FakeRepository::default();
+            let mut request = pending_request();
+            upsert_friend_request(&repository, &request).expect("save pending");
+            request.state = state;
+            request.decision_reason = Some(format!("{state:?}"));
+            request.updated_at = 2;
+            upsert_friend_request(&repository, &request).expect("save blocking state");
+
+            let mut retry = pending_request();
+            retry.request_id = "request-2".to_owned();
+            retry.direction = FriendRequestDirection::Inbound;
+            retry.updated_at = 3;
+            upsert_friend_request(&repository, &retry).expect("ignore new request");
+
+            let requests =
+                list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+            assert_eq!(requests.len(), 1, "state: {state:?}");
+            assert_eq!(requests[0].request_id, "request-1");
+            assert_eq!(requests[0].state, state);
+        }
+    }
+
+    #[test]
+    fn hides_stored_pending_request_when_blocking_pair_state_exists() {
+        for state in [
+            FriendRequestState::DecisionPending,
+            FriendRequestState::Accepted,
+            FriendRequestState::Blocked,
+        ] {
+            let repository = FakeRepository::default();
+            let mut blocking = pending_request();
+            blocking.state = state;
+            blocking.decision_reason = Some(format!("{state:?}"));
+            blocking.updated_at = 2;
+            repository
+                .upsert_friend_request(&blocking)
+                .expect("store blocking state");
+
+            let mut pending = pending_request();
+            pending.request_id = "request-2".to_owned();
+            pending.direction = FriendRequestDirection::Inbound;
+            pending.updated_at = 3;
+            repository
+                .upsert_friend_request(&pending)
+                .expect("store pending row");
+
+            let requests =
+                list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+            assert_eq!(requests.len(), 1, "state: {state:?}");
+            assert_eq!(requests[0].request_id, "request-1");
+            assert_eq!(requests[0].state, state);
+        }
+    }
+
+    #[test]
+    fn queued_decision_can_be_cancelled_by_authoritative_remote_state() {
+        let repository = FakeRepository::default();
+        let mut request = pending_request();
+        request.direction = FriendRequestDirection::Inbound;
+        upsert_friend_request(&repository, &request).expect("save pending");
+        queue_friend_request_decision(
+            &repository,
+            QueueFriendRequestDecisionInput {
+                local_public_id: request.local_public_id.clone(),
+                request_id: request.request_id.clone(),
+                remote_public_id: request.remote_public_id.clone(),
+                remote_node_id: request.remote_node_id.clone().expect("remote node"),
+                decision_reason: crate::domain::friend_requests::DECISION_PENDING_ACCEPT_REASON
+                    .to_owned(),
+                correlation_id: None,
+                occurred_at: 2,
+            },
+        )
+        .expect("queue decision");
+
+        request.state = FriendRequestState::Cancelled;
+        request.decision_reason = Some("cancelled".to_owned());
+        request.updated_at = 3;
+        upsert_friend_request(&repository, &request).expect("apply authoritative cancellation");
+
+        let requests =
+            list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+        assert_eq!(requests[0].state, FriendRequestState::Cancelled);
+    }
+
+    #[test]
+    fn queued_decision_does_not_regress_authoritative_terminal_state() {
+        let repository = FakeRepository::default();
+        let mut request = pending_request();
+        request.direction = FriendRequestDirection::Inbound;
+        upsert_friend_request(&repository, &request).expect("save pending");
+        request.state = FriendRequestState::Accepted;
+        request.decision_reason = Some("accepted".to_owned());
+        request.updated_at = 2;
+        upsert_friend_request(&repository, &request).expect("save accepted");
+
+        queue_friend_request_decision(
+            &repository,
+            QueueFriendRequestDecisionInput {
+                local_public_id: request.local_public_id.clone(),
+                request_id: request.request_id.clone(),
+                remote_public_id: request.remote_public_id.clone(),
+                remote_node_id: request.remote_node_id.clone().expect("remote node"),
+                decision_reason: crate::domain::friend_requests::DECISION_PENDING_ACCEPT_REASON
+                    .to_owned(),
+                correlation_id: None,
+                occurred_at: 3,
+            },
+        )
+        .expect("ignore late queued response");
+
+        let requests =
+            list_friend_requests(&repository, "did:key:alice").expect("list friend requests");
+        assert_eq!(requests[0].state, FriendRequestState::Accepted);
+        assert_eq!(requests[0].updated_at, 2);
     }
 }

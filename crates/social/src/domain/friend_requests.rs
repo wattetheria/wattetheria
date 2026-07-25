@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub const DECISION_PENDING_ACCEPT_REASON: &str = "accept_queued";
+pub const DECISION_PENDING_REJECT_REASON: &str = "reject_queued";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FriendRequestDirection {
@@ -11,6 +14,7 @@ pub enum FriendRequestDirection {
 #[serde(rename_all = "snake_case")]
 pub enum FriendRequestState {
     Pending,
+    DecisionPending,
     Accepted,
     Rejected,
     Blocked,
@@ -41,6 +45,15 @@ impl FriendRequest {
         }
         match self.state {
             FriendRequestState::Pending => matches!(
+                next,
+                FriendRequestState::DecisionPending
+                    | FriendRequestState::Accepted
+                    | FriendRequestState::Rejected
+                    | FriendRequestState::Blocked
+                    | FriendRequestState::Cancelled
+                    | FriendRequestState::Expired
+            ),
+            FriendRequestState::DecisionPending => matches!(
                 next,
                 FriendRequestState::Accepted
                     | FriendRequestState::Rejected

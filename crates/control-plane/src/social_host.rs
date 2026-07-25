@@ -442,7 +442,7 @@ pub(crate) async fn resolve_social_counterpart_target_by_remote_node(
     let target_agent = identities
         .get(&counterpart_public_id)
         .and_then(|identity| identity.agent_did.clone())
-        .unwrap_or_else(|| counterpart_public_id.clone());
+        .unwrap_or_default();
     Ok(SocialCounterpartTarget {
         counterpart_public_id,
         remote_node: remote_node_id.to_owned(),
@@ -754,6 +754,11 @@ pub(crate) fn public_agent_id(value: &str) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
+}
+
+pub(crate) fn agent_did(value: &str) -> Option<String> {
+    let value = value.trim();
+    is_did(value).then(|| value.to_owned())
 }
 
 fn is_did(value: &str) -> bool {

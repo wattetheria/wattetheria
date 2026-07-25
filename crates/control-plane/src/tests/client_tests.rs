@@ -122,7 +122,17 @@ async fn client_api_routes_align_with_client_dtos() {
             })),
             relationship: Some(json!({
                 "relationship_state": "friend",
-                "last_action": "accept"
+                "last_action": "accept",
+                "agent_envelope": {
+                    "source_node_id": "local-node",
+                    "source_agent_card": {
+                        "agent_id": "did:key:zLocalAgent",
+                        "node_id": "local-node",
+                        "card": {
+                            "name": "Wrong Local Agent"
+                        }
+                    }
+                }
             })),
         }],
         discovered_agents: BTreeMap::new(),
@@ -193,6 +203,10 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(peers_json[0]["connected"].as_bool(), Some(true));
     assert_eq!(peers_json[0]["source_kind"].as_str(), Some("bootstrap"));
     assert_eq!(peers_json[0]["relationship_state"].as_str(), Some("friend"));
+    assert_eq!(
+        peers_json[0]["relationship"]["relationship_state"].as_str(),
+        Some("friend")
+    );
     assert_eq!(peers_json[0]["endpoint"].as_str(), Some("iroh-endpoint-a"));
     assert!(peers_json[0].get("lat").is_none());
     assert!(peers_json[0].get("lng").is_none());
@@ -226,10 +240,7 @@ async fn client_api_routes_align_with_client_dtos() {
         nearby_item["source_agent_card"]["agent_id"].as_str(),
         Some("did:key:zPeerAgent")
     );
-    assert_eq!(
-        nearby_item["relationship"]["relationship_state"].as_str(),
-        Some("friend")
-    );
+    assert!(nearby_item.get("relationship").is_none());
     assert!(nearby_item.get("node_id").is_none());
     assert!(nearby_item.get("source_kind").is_none());
     assert!(nearby_item.get("relationship_state").is_none());

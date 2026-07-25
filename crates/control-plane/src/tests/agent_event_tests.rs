@@ -1290,7 +1290,7 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
             Json(json!({
                 "choices": [{
                     "message": {
-                        "content": "{\"action\":\"accept\",\"reason\":\"trusted peer\",\"payload\":{\"message\":{\"request_id\":\"req-auto-accept\",\"correlation_id\":\"corr-auto-accept\",\"text\":\"happy to connect\"}}}"
+                        "content": "{\"action\":\"accept\",\"reason\":\"trusted peer\",\"payload\":{\"request_id\":\"req-auto-accept\",\"correlation_id\":\"corr-auto-accept\",\"message\":{\"mock_transport_response\":\"queued\"}}}"
                     }
                 }]
             }))
@@ -1347,7 +1347,7 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
         "social.relationship.request",
         json!({
             "source_public_id": remote_public_id,
-            "target_public_id": local_public_id,
+            "target_public_id": "local-node-id",
             "request_id": "req-auto-accept",
             "correlation_id": "corr-auto-accept"
         }),
@@ -1419,14 +1419,80 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
         commands[0].agent_envelope.target_node_id.as_deref(),
         Some("remote-node")
     );
+    assert_eq!(
+        commands[0].agent_envelope.message["source_public_id"].as_str(),
+        Some(local_public_id.as_str())
+    );
+    assert_eq!(
+        commands[0].agent_envelope.message["request_id"].as_str(),
+        Some("req-auto-accept")
+    );
+    assert_eq!(
+        commands[0].agent_envelope.message["correlation_id"].as_str(),
+        Some("corr-auto-accept")
+    );
     drop(commands);
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list friend requests");
+    assert_eq!(friend_requests.len(), 1);
+    assert_eq!(
+        friend_requests[0].state,
+        wattetheria_social::domain::friend_requests::FriendRequestState::DecisionPending
+    );
+    assert_eq!(
+        friend_requests[0].decision_reason.as_deref(),
+        Some(wattetheria_social::domain::friend_requests::DECISION_PENDING_ACCEPT_REASON)
+    );
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
         .expect("list friendships");
+    assert!(friendships.is_empty());
+
+    wattetheria_social::application::orchestration_service::reconcile_relationship_views(
+        &*state.social_store,
+        &local_public_id,
+        &[
+            wattetheria_social::application::orchestration_service::RelationshipSyncView {
+                counterpart:
+                    wattetheria_social::application::orchestration_service::CounterpartSnapshot {
+                        counterpart_public_id: remote_public_id.clone(),
+                        target_agent: remote_identity.agent_did.clone(),
+                        remote_node_id: "remote-node".to_owned(),
+                        known_identity: None,
+                        known_binding: None,
+                        observed_at: 2,
+                    },
+                relationship_state: "accepted".to_owned(),
+                last_action: Some("accept".to_owned()),
+                initiated_by: "local".to_owned(),
+                request_id: Some("req-auto-accept".to_owned()),
+                correlation_id: Some("corr-auto-accept".to_owned()),
+                requested_at: Some(1),
+                responded_at: Some(2),
+                updated_at: 2,
+            },
+        ],
+    )
+    .expect("reconcile accepted relationship projection");
+
+    let friend_requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list accepted friend requests");
+    assert_eq!(
+        friend_requests[0].state,
+        wattetheria_social::domain::friend_requests::FriendRequestState::Accepted
+    );
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("list accepted friendships");
     assert_eq!(friendships.len(), 1);
     assert_eq!(friendships[0].remote_public_id, remote_public_id);
     assert_eq!(
         friendships[0].state,
         wattetheria_social::domain::friendships::FriendshipState::Active
+    );
+    assert_eq!(
+        friendships[0].established_from_request_id.as_deref(),
+        Some("req-auto-accept")
     );
 
     server.abort();

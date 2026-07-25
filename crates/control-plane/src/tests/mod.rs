@@ -1397,10 +1397,24 @@ impl SwarmBridge for MockSwarmBridge {
         &self,
         command: SwarmRelationshipActionCommand,
     ) -> anyhow::Result<Value> {
+        let queued = command
+            .agent_envelope
+            .message
+            .get("mock_transport_response")
+            .and_then(Value::as_str)
+            == Some("queued");
         self.relationship_commands
             .lock()
             .await
             .push(command.clone());
+        if queued {
+            return Ok(json!({
+                "ok": true,
+                "queued": true,
+                "remote_node_id": command.remote_node_id,
+                "action": command.action,
+            }));
+        }
         Ok(json!({
             "ok": true,
             "remote_node_id": command.remote_node_id,

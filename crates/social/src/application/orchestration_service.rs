@@ -380,7 +380,7 @@ where
                         remote_public_id: view.counterpart.counterpart_public_id.clone(),
                         display_name: counterpart_display_name(&view.counterpart),
                         state: FriendshipState::Active,
-                        established_from_request_id: Some(request_id),
+                        established_from_request_id: Some(request_id.clone()),
                         thread_id: Some(thread_id),
                         created_at: requested_at,
                         updated_at,
@@ -404,12 +404,13 @@ where
                     "accepted",
                     updated_at,
                 )?;
+                friend_request_service::clear_friend_request_retry(repository, &request_id)?;
             }
             ("rejected", _) => {
                 ignore_conflict(friend_request_service::upsert_friend_request(
                     repository,
                     &FriendRequest {
-                        request_id,
+                        request_id: request_id.clone(),
                         local_public_id: local_public_id.to_string(),
                         remote_public_id: view.counterpart.counterpart_public_id.clone(),
                         remote_node_id: Some(view.counterpart.remote_node_id.clone()),
@@ -434,6 +435,7 @@ where
                     "rejected",
                     updated_at,
                 )?;
+                friend_request_service::clear_friend_request_retry(repository, &request_id)?;
             }
             ("blocked", _) => {
                 ignore_conflict(friend_request_service::upsert_friend_request(
@@ -478,7 +480,7 @@ where
                         remote_public_id: view.counterpart.counterpart_public_id.clone(),
                         display_name: counterpart_display_name(&view.counterpart),
                         state: FriendshipState::Blocked,
-                        established_from_request_id: Some(request_id),
+                        established_from_request_id: Some(request_id.clone()),
                         thread_id: Some(thread_id),
                         created_at: requested_at,
                         updated_at,
@@ -496,6 +498,7 @@ where
                     "blocked",
                     updated_at,
                 )?;
+                friend_request_service::clear_friend_request_retry(repository, &request_id)?;
             }
             ("none", Some("remove")) => {
                 let existing_friendship =
@@ -597,7 +600,7 @@ where
                 ignore_conflict(friend_request_service::upsert_friend_request(
                     repository,
                     &FriendRequest {
-                        request_id,
+                        request_id: request_id.clone(),
                         local_public_id: local_public_id.to_string(),
                         remote_public_id: view.counterpart.counterpart_public_id.clone(),
                         remote_node_id: Some(view.counterpart.remote_node_id.clone()),
@@ -610,6 +613,7 @@ where
                         expires_at: None,
                     },
                 ))?;
+                friend_request_service::clear_friend_request_retry(repository, &request_id)?;
             }
             ("none", Some("unblock")) => {
                 ignore_conflict(block_service::remove_block(
@@ -630,10 +634,7 @@ pub fn reconcile_dm_threads<R>(
     views: &[DmThreadSyncView],
 ) -> SocialResult<()>
 where
-    R: RemoteIdentityRepository
-        + TransportBindingRepository
-        + ThreadRepository
-        + FriendshipRepository,
+    R: RemoteIdentityRepository + TransportBindingRepository + ThreadRepository,
 {
     for view in views {
         cache_counterpart(repository, &view.counterpart)?;
@@ -669,7 +670,7 @@ where
         ignore_conflict(thread_service::upsert_thread(
             repository,
             &DirectThread {
-                thread_id: social_thread_id.clone(),
+                thread_id: social_thread_id,
                 local_public_id: local_public_id.to_string(),
                 remote_public_id: view.counterpart.counterpart_public_id.clone(),
                 transport_thread_id: view.transport_thread_id.clone(),
@@ -679,26 +680,6 @@ where
                 updated_at,
             },
         ))?;
-        if view.relationship_established_at.is_some() {
-            ignore_conflict(friendship_service::upsert_friendship(
-                repository,
-                &Friendship {
-                    friendship_id: stable_pair_id(
-                        "friendship",
-                        local_public_id,
-                        &view.counterpart.counterpart_public_id,
-                    ),
-                    local_public_id: local_public_id.to_string(),
-                    remote_public_id: view.counterpart.counterpart_public_id.clone(),
-                    display_name: counterpart_display_name(&view.counterpart),
-                    state: FriendshipState::Active,
-                    established_from_request_id: None,
-                    thread_id: Some(social_thread_id),
-                    created_at,
-                    updated_at,
-                },
-            ))?;
-        }
     }
     Ok(())
 }
@@ -1684,6 +1665,92 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_relationship_finalizes_queued_decision_without_request_regression() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        friend_request_service::upsert_friend_request(
+            &store,
+            &FriendRequest {
+                request_id: "req-decision-pending".to_owned(),
+                local_public_id: "did:key:alice".to_owned(),
+                remote_public_id: "did:key:bob".to_owned(),
+                remote_node_id: Some("node-bob".to_owned()),
+                direction: FriendRequestDirection::Inbound,
+                state: FriendRequestState::DecisionPending,
+                decision_reason: Some(
+                    crate::domain::friend_requests::DECISION_PENDING_ACCEPT_REASON.to_owned(),
+                ),
+                correlation_id: Some("corr-decision-pending".to_owned()),
+                created_at: 10,
+                updated_at: 20,
+                expires_at: None,
+            },
+        )
+        .expect("seed queued decision");
+        store
+            .record_reliability_attempt("friend_request", "req-decision-pending", 20, 300, None)
+            .expect("seed queued decision retry");
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                counterpart: counterpart(10),
+                relationship_state: "requested".to_owned(),
+                last_action: Some("request".to_owned()),
+                initiated_by: "remote".to_owned(),
+                request_id: Some("req-decision-pending".to_owned()),
+                correlation_id: Some("corr-decision-pending".to_owned()),
+                requested_at: Some(10),
+                responded_at: None,
+                updated_at: 21,
+            }],
+        )
+        .expect("reconcile stale requested relationship");
+        let pending = friend_request_service::list_friend_requests(&store, "did:key:alice")
+            .expect("pending decision");
+        assert_eq!(pending[0].state, FriendRequestState::DecisionPending);
+        assert!(
+            store
+                .get_reliability_task("friend_request", "req-decision-pending")
+                .expect("queued decision retry")
+                .is_some()
+        );
+
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                counterpart: counterpart(10),
+                relationship_state: "accepted".to_owned(),
+                last_action: Some("accept".to_owned()),
+                initiated_by: "local".to_owned(),
+                request_id: Some("req-decision-pending".to_owned()),
+                correlation_id: Some("corr-decision-pending".to_owned()),
+                requested_at: Some(10),
+                responded_at: Some(30),
+                updated_at: 30,
+            }],
+        )
+        .expect("reconcile accepted queued decision");
+
+        let requests = friend_request_service::list_friend_requests(&store, "did:key:alice")
+            .expect("settled decision");
+        assert_eq!(requests[0].state, FriendRequestState::Accepted);
+        let friendships =
+            friendship_service::list_friendships(&store, "did:key:alice").expect("friendships");
+        assert_eq!(friendships.len(), 1);
+        assert_eq!(
+            friendships[0].established_from_request_id.as_deref(),
+            Some("req-decision-pending")
+        );
+        assert!(
+            store
+                .get_reliability_task("friend_request", "req-decision-pending")
+                .expect("settled decision retry")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn reconcile_relationship_request_clamps_out_of_order_update_time() {
         let store = SocialStore::open_in_memory().expect("social store");
         reconcile_relationship_views(
@@ -1861,6 +1928,33 @@ mod tests {
         assert_eq!(identities.len(), 1);
         assert!(!identities[0].active);
         assert_eq!(identities[0].updated_at, 30);
+    }
+
+    #[test]
+    fn reconcile_dm_thread_does_not_create_friendship_from_transport_metadata() {
+        let store = SocialStore::open_in_memory().expect("social store");
+
+        reconcile_dm_threads(
+            &store,
+            "did:key:alice",
+            &[DmThreadSyncView {
+                counterpart: counterpart(30),
+                transport_thread_id: "dm:alice:bob".to_string(),
+                session_state: "ready".to_string(),
+                relationship_established_at: Some(30),
+                created_at: 30,
+                updated_at: 30,
+                last_message_at: None,
+            }],
+        )
+        .expect("reconcile dm thread");
+
+        let friendships =
+            friendship_service::list_friendships(&store, "did:key:alice").expect("friendships");
+        let threads = thread_service::list_threads(&store, "did:key:alice").expect("threads");
+        assert!(friendships.is_empty());
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].transport_thread_id, "dm:alice:bob");
     }
 
     #[test]

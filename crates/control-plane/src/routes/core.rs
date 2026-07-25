@@ -12,9 +12,10 @@ use crate::auth::{authorize, internal_error, unauthorized};
 use crate::autonomy::{build_brain_state, load_night_shift_report, run_autonomy_tick_once};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::collective_skills::collective_skill_gate;
-use crate::routes::identity::identity_context_value;
+use crate::routes::identity::{identity_context_value, resolve_identity_context};
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
+    SignedAgentEnvelopeArgs, agent_did, build_signed_agent_envelope_for_nodes, public_agent_id,
+    with_social_defaults,
 };
 use crate::state::{
     ActionRequest, AgentActionCommitBody, AgentDmSendBody, AgentPaymentAuthorizeBody,
@@ -32,6 +33,7 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmRelationshipAction, SwarmTaskClaimDecisionCommand, SwarmTaskCompletionDecisionCommand,
     SwarmTopicMessageView,
 };
+use wattetheria_social::application::friend_request_service;
 
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -306,6 +308,103 @@ fn event_message_public_id(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+async fn friend_request_local_public_id(
+    state: &ControlPlaneState,
+    body: &AgentActionCommitBody,
+) -> Result<Option<String>, &'static str> {
+    let target_agent_did = body
+        .event
+        .target_agent_id
+        .as_deref()
+        .and_then(agent_did)
+        .or_else(|| {
+            body.event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.target_agent_id.as_deref())
+                .and_then(agent_did)
+        });
+    let request_id = body
+        .decision
+        .payload
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            body.event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.message.get("request_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        });
+    if let Some(request_id) = request_id {
+        let identities = state.public_identity_registry.lock().await.list();
+        let mut matching_identities = Vec::new();
+        for identity in identities {
+            let Ok(requests) = friend_request_service::list_friend_requests(
+                &*state.social_store,
+                &identity.public_id,
+            ) else {
+                continue;
+            };
+            if requests
+                .iter()
+                .any(|request| request.request_id == request_id)
+            {
+                matching_identities.push(identity);
+            }
+        }
+        match matching_identities.as_slice() {
+            [identity] => {
+                if target_agent_did
+                    .as_deref()
+                    .is_some_and(|target| identity.agent_did.as_deref() != Some(target))
+                {
+                    return Err("friend_request target_agent_id conflicts with request_id");
+                }
+                return Ok(public_agent_id(&identity.public_id));
+            }
+            [] => {}
+            identities => {
+                let mut matching_target = identities.iter().filter(|identity| {
+                    target_agent_did
+                        .as_deref()
+                        .is_some_and(|target| identity.agent_did.as_deref() == Some(target))
+                });
+                if let Some(identity) = matching_target.next()
+                    && matching_target.next().is_none()
+                {
+                    return Ok(public_agent_id(&identity.public_id));
+                }
+                return Err("friend_request request_id matches multiple local identities");
+            }
+        }
+    }
+    if let Some(candidate) =
+        event_message_public_id(body, "target_public_id").and_then(|value| public_agent_id(&value))
+    {
+        let context = resolve_identity_context(state, Some(&candidate), None).await;
+        if let Some(public_id) = context
+            .public_identity
+            .and_then(|identity| public_agent_id(&identity.public_id))
+        {
+            return Ok(Some(public_id));
+        }
+    }
+    let Some(target_agent_did) = target_agent_did else {
+        return Ok(None);
+    };
+    Ok(
+        resolve_identity_context(state, None, Some(&target_agent_did))
+            .await
+            .public_identity
+            .and_then(|identity| public_agent_id(&identity.public_id)),
+    )
 }
 
 fn event_message_id(event: &crate::state::AgentActionCommitBody) -> Option<String> {
@@ -743,17 +842,30 @@ async fn commit_friend_request(
         "block" => SwarmRelationshipAction::Block,
         _ => unreachable!("friend_request action already matched"),
     };
+    let mut message = body.decision.payload.get("message").cloned();
+    for key in ["request_id", "correlation_id"] {
+        if let Some(value) = body.decision.payload.get(key).cloned() {
+            message = Some(with_social_defaults(
+                message.unwrap_or_else(|| json!({})),
+                [(key, value)],
+            ));
+        }
+    }
+    let local_public_id = match friend_request_local_public_id(&state, &body).await {
+        Ok(public_id) => public_id,
+        Err(error) => return bad_request(error),
+    };
     crate::routes::civilization::agent_relationship_action(
         State(state),
         commit_headers,
         Json(AgentRelationshipActionBody {
-            public_id: event_message_public_id(&body, "target_public_id"),
+            public_id: local_public_id,
             counterpart_public_id: Some(counterpart_public_id),
             remote_node_id: event_source_node_id(&body),
             target_agent_did: None,
             display_name: None,
             action,
-            message: body.decision.payload.get("message").cloned(),
+            message,
             extensions: body.decision.payload.get("extensions").cloned(),
         }),
     )

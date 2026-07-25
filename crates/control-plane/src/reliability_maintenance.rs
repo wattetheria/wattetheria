@@ -4,8 +4,9 @@ use crate::routes::mcp::collective::{
 };
 use crate::routes::servicenet::async_jobs::maintain_servicenet_async_invocations;
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, load_social_identity_maps,
-    public_agent_id, resolve_social_local_context, with_social_defaults,
+    SignedAgentEnvelopeArgs, agent_did, build_signed_agent_envelope_for_nodes,
+    capability_for_relationship_action, load_social_identity_maps, public_agent_id,
+    resolve_social_local_context, with_social_defaults,
 };
 use crate::state::ControlPlaneState;
 use anyhow::Context;
@@ -17,7 +18,9 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmPeerRelationshipView, SwarmRelationshipAction,
     SwarmRelationshipActionCommand,
 };
-use wattetheria_social::domain::friend_requests::FriendRequest;
+use wattetheria_social::domain::friend_requests::{
+    DECISION_PENDING_ACCEPT_REASON, DECISION_PENDING_REJECT_REASON, FriendRequest,
+};
 
 const FRIEND_REQUEST_OBJECT_KIND: &str = "friend_request";
 pub const RELIABILITY_MAINTENANCE_INTERVAL_SEC: u64 = 60;
@@ -97,12 +100,62 @@ pub async fn run_reliability_maintenance_tick_once(
         }
     }
     let remaining = limit.saturating_sub(processed);
+    processed += maintain_pending_friend_request_decisions(state, now, remaining).await?;
+    let remaining = limit.saturating_sub(processed);
     processed += maintain_servicenet_async_invocations(state, now, remaining).await?;
     let remaining = limit.saturating_sub(processed);
     processed += start_due_collective_missions(state, remaining).await?;
     let remaining = limit.saturating_sub(processed);
     processed +=
         publish_finalized_collective_mission_results(state, &state.auth_token, remaining).await?;
+    Ok(processed)
+}
+
+async fn maintain_pending_friend_request_decisions(
+    state: &ControlPlaneState,
+    now: i64,
+    limit: usize,
+) -> anyhow::Result<usize> {
+    if limit == 0 {
+        return Ok(0);
+    }
+    let mut due = state
+        .social_store
+        .due_pending_friend_request_decisions(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
+        .map_err(anyhow::Error::msg)?;
+    if due.is_empty() {
+        return Ok(0);
+    }
+    let (identities, bindings) = load_social_identity_maps(state).await;
+    let relationship_views = state
+        .swarm_bridge
+        .list_peer_relationships()
+        .await
+        .unwrap_or_default();
+    let pending_local_public_ids = due
+        .iter()
+        .map(|request| request.local_public_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for local_public_id in pending_local_public_ids {
+        reconcile_swarm_relationship_views(
+            state,
+            local_public_id,
+            &identities,
+            &bindings,
+            &relationship_views,
+        )?;
+    }
+    due = state
+        .social_store
+        .due_pending_friend_request_decisions(now, FRIEND_REQUEST_MIN_RETRY_DELAY_SEC, limit)
+        .map_err(anyhow::Error::msg)?;
+    let mut processed = 0;
+    for request in due {
+        maintain_pending_friend_request_decision(state, &request, now)
+            .await
+            .with_context(|| format!("maintain friend request decision {}", request.request_id))?;
+        processed += 1;
+    }
     Ok(processed)
 }
 
@@ -135,7 +188,14 @@ async fn maintain_outbound_friend_request(
     {
         envelope
     } else {
-        build_retry_friend_request_envelope(state, request, remote_node_id, now).await?
+        build_retry_relationship_envelope(
+            state,
+            request,
+            remote_node_id,
+            SwarmRelationshipAction::Request,
+            now,
+        )
+        .await?
     };
 
     let result = state
@@ -163,6 +223,61 @@ async fn maintain_outbound_friend_request(
     Ok(())
 }
 
+async fn maintain_pending_friend_request_decision(
+    state: &ControlPlaneState,
+    request: &FriendRequest,
+    now: i64,
+) -> anyhow::Result<()> {
+    let remote_node_id = request
+        .remote_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("pending friend request decision missing remote_node_id")?;
+    let action = match request.decision_reason.as_deref() {
+        Some(DECISION_PENDING_ACCEPT_REASON) => SwarmRelationshipAction::Accept,
+        Some(DECISION_PENDING_REJECT_REASON) => SwarmRelationshipAction::Reject,
+        _ => return Ok(()),
+    };
+    let attempt_count = state
+        .social_store
+        .get_reliability_task(FRIEND_REQUEST_OBJECT_KIND, &request.request_id)
+        .map_err(anyhow::Error::msg)?
+        .map_or(0, |task| task.attempt_count);
+    let next_attempt_at = now + retry_delay_after_attempt(attempt_count);
+    let envelope =
+        build_retry_relationship_envelope(state, request, remote_node_id, action.clone(), now)
+            .await?;
+    let result = state
+        .swarm_bridge
+        .send_peer_relationship_action(SwarmRelationshipActionCommand {
+            remote_node_id: remote_node_id.to_owned(),
+            action,
+            agent_envelope: envelope,
+        })
+        .await;
+    let last_error = result.as_ref().err().map(ToString::to_string);
+    state
+        .social_store
+        .record_reliability_attempt(
+            FRIEND_REQUEST_OBJECT_KIND,
+            &request.request_id,
+            now,
+            next_attempt_at,
+            last_error.as_deref(),
+        )
+        .map_err(anyhow::Error::msg)?;
+    if let Err(error) = result {
+        debug!(
+            %error,
+            request_id = %request.request_id,
+            remote_node_id,
+            "friend request decision retry failed"
+        );
+    }
+    Ok(())
+}
+
 fn retry_delay_after_attempt(attempt_count: i64) -> i64 {
     let index = usize::try_from((attempt_count + 1).max(0)).unwrap_or(usize::MAX);
     FRIEND_REQUEST_RETRY_DELAY_SEC
@@ -171,10 +286,11 @@ fn retry_delay_after_attempt(attempt_count: i64) -> i64 {
         .unwrap_or(*FRIEND_REQUEST_RETRY_DELAY_SEC.last().unwrap_or(&3600))
 }
 
-async fn build_retry_friend_request_envelope(
+async fn build_retry_relationship_envelope(
     state: &ControlPlaneState,
     request: &FriendRequest,
     remote_node_id: &str,
+    action: SwarmRelationshipAction,
     now: i64,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     let local = resolve_social_local_context(state, Some(&request.local_public_id)).await;
@@ -182,9 +298,9 @@ async fn build_retry_friend_request_envelope(
     let target_agent_id = identities
         .get(&request.remote_public_id)
         .and_then(|identity| identity.agent_did.clone())
-        .unwrap_or_else(|| request.remote_public_id.clone());
+        .and_then(|value| agent_did(&value));
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
-    let message = with_social_defaults(
+    let mut message = with_social_defaults(
         json!({
             "kind": "friend_request",
             "request_id": request.request_id,
@@ -197,26 +313,30 @@ async fn build_retry_friend_request_envelope(
                 Value::String(request.local_public_id.clone()),
             ),
             (
-                "target_public_id",
-                Value::String(request.remote_public_id.clone()),
-            ),
-            (
                 "action",
-                serde_json::to_value(&SwarmRelationshipAction::Request).unwrap_or(Value::Null),
+                serde_json::to_value(&action).unwrap_or(Value::Null),
             ),
             ("sent_at", json!(now)),
         ],
     );
+    if let Some(target_public_id) = public_agent_id(&request.remote_public_id)
+        && let Some(object) = message.as_object_mut()
+    {
+        object.insert(
+            "target_public_id".to_owned(),
+            Value::String(target_public_id),
+        );
+    }
     build_signed_agent_envelope_for_nodes(
         state,
         SignedAgentEnvelopeArgs {
             source_agent_id: local.agent_id,
             source_public_id: public_agent_id(&request.local_public_id),
             source_display_name: local.display_name,
-            target_agent_id: Some(target_agent_id),
+            target_agent_id,
             source_node_id: local_node_id,
             target_node_id: Some(remote_node_id.to_owned()),
-            capability: "social.friend.request".to_owned(),
+            capability: capability_for_relationship_action(&action).to_owned(),
             message,
             extensions: None,
         },

@@ -12,7 +12,7 @@ use crate::auth::{authorize, internal_error};
 use crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship;
 use crate::routes::mcp::collective::record_collective_participation_from_dm;
 use crate::social_host::{
-    SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext,
+    SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext, agent_did,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
     counterpart_public_id_for_remote_node, load_social_identity_maps, public_agent_id,
     resolve_dm_counterpart_target, resolve_social_counterpart_target,
@@ -40,7 +40,8 @@ use wattetheria_social::application::{
 };
 use wattetheria_social::domain::blocks::SocialBlock;
 use wattetheria_social::domain::friend_requests::{
-    FriendRequest, FriendRequestDirection, FriendRequestState,
+    DECISION_PENDING_ACCEPT_REASON, DECISION_PENDING_REJECT_REASON, FriendRequest,
+    FriendRequestDirection, FriendRequestState,
 };
 use wattetheria_social::domain::friendships::{Friendship, FriendshipState};
 use wattetheria_social::domain::messages::{
@@ -93,6 +94,7 @@ struct FinalizeDmArgs {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct FriendRequestsQuery {
+    pub public_id: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
@@ -150,17 +152,31 @@ async fn finalize_agent_relationship_action(
     headers: &HeaderMap,
     args: FinalizeRelationshipActionArgs,
 ) -> Response {
-    if let Err(error) = persist_social_relationship_action(
-        state,
-        &args.local_public_id,
-        &args.counterpart_public_id,
-        &args.target_agent,
-        &args.remote_node_id,
-        &args.action,
-        &args.message,
-    )
-    .await
-    {
+    let action_is_queued = args.response_json.get("queued").and_then(Value::as_bool) == Some(true);
+    let persist_result = if action_is_queued {
+        persist_queued_social_relationship_action(
+            state,
+            &args.local_public_id,
+            &args.counterpart_public_id,
+            &args.target_agent,
+            &args.remote_node_id,
+            &args.action,
+            &args.message,
+        )
+        .await
+    } else {
+        persist_social_relationship_action(
+            state,
+            &args.local_public_id,
+            &args.counterpart_public_id,
+            &args.target_agent,
+            &args.remote_node_id,
+            &args.action,
+            &args.message,
+        )
+        .await
+    };
+    if let Err(error) = persist_result {
         return internal_error(&error);
     }
 
@@ -577,6 +593,7 @@ fn request_direction_label(direction: FriendRequestDirection) -> &'static str {
 fn request_state_label(state: FriendRequestState) -> &'static str {
     match state {
         FriendRequestState::Pending => "pending",
+        FriendRequestState::DecisionPending => "decision_pending",
         FriendRequestState::Accepted => "accepted",
         FriendRequestState::Rejected => "rejected",
         FriendRequestState::Blocked => "blocked",
@@ -650,6 +667,28 @@ fn relationship_remote_public_id(view: &SwarmPeerRelationshipView) -> Option<Str
     } else {
         message_public_id
     }
+}
+
+fn relationship_local_public_id(view: &SwarmPeerRelationshipView) -> Option<String> {
+    let envelope = view.agent_envelope.as_ref()?;
+    let key = if source_agent_card_is_remote(view, envelope) {
+        "target_public_id"
+    } else {
+        "source_public_id"
+    };
+    envelope
+        .message
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(public_agent_id)
+}
+
+fn relationship_view_belongs_to_local_identity(
+    view: &SwarmPeerRelationshipView,
+    local_public_id: &str,
+) -> bool {
+    relationship_local_public_id(view)
+        .is_none_or(|view_local_public_id| view_local_public_id == local_public_id)
 }
 
 fn relationship_remote_agent_id(view: &SwarmPeerRelationshipView) -> Option<String> {
@@ -1466,6 +1505,9 @@ pub(crate) fn reconcile_swarm_relationship_views(
 ) -> anyhow::Result<()> {
     let mut synced = Vec::with_capacity(views.len());
     for view in views {
+        if !relationship_view_belongs_to_local_identity(view, local_public_id) {
+            continue;
+        }
         let counterpart_public_id = relationship_remote_public_id(view)
             .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
             .unwrap_or_else(|| view.remote_node_id.clone());
@@ -1527,6 +1569,7 @@ pub(crate) fn reconcile_swarm_relationship_views(
     .map_err(anyhow::Error::msg)?;
     for view in views
         .iter()
+        .filter(|view| relationship_view_belongs_to_local_identity(view, local_public_id))
         .filter(|view| view.relationship_state == "accepted" || view.relationship_state == "active")
     {
         let counterpart_public_id = relationship_remote_public_id(view)
@@ -1761,6 +1804,58 @@ async fn persist_social_relationship_action(
     Ok(())
 }
 
+async fn persist_queued_social_relationship_action(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    counterpart_public_id: &str,
+    target_agent: &str,
+    remote_node_id: &str,
+    action: &SwarmRelationshipAction,
+    message: &Value,
+) -> anyhow::Result<()> {
+    if *action == SwarmRelationshipAction::Request {
+        return persist_social_relationship_action(
+            state,
+            local_public_id,
+            counterpart_public_id,
+            target_agent,
+            remote_node_id,
+            action,
+            message,
+        )
+        .await;
+    }
+    let decision_reason = match action {
+        SwarmRelationshipAction::Accept => DECISION_PENDING_ACCEPT_REASON,
+        SwarmRelationshipAction::Reject => DECISION_PENDING_REJECT_REASON,
+        _ => return Ok(()),
+    };
+    let request_id = message
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("queued friend request decision requires request_id"))?;
+    let correlation_id = message
+        .get("correlation_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let now = Utc::now().timestamp();
+    friend_request_service::queue_friend_request_decision(
+        &*state.social_store,
+        friend_request_service::QueueFriendRequestDecisionInput {
+            request_id: request_id.to_owned(),
+            local_public_id: local_public_id.to_owned(),
+            remote_public_id: counterpart_public_id.to_owned(),
+            remote_node_id: remote_node_id.to_owned(),
+            decision_reason: decision_reason.to_owned(),
+            correlation_id,
+            occurred_at: now,
+        },
+    )
+    .map_err(anyhow::Error::msg)
+}
+
 struct PersistSocialDmMessageArgs {
     local_public_id: String,
     counterpart_public_id: String,
@@ -1815,20 +1910,6 @@ fn policy_denied_response(reason: &str) -> Response {
 
 struct OutboundFriendRequestGate {
     denied_response: Option<Response>,
-    pending_request_id: Option<String>,
-}
-
-fn message_with_request_id(
-    base_message: Option<Value>,
-    request_id: Option<String>,
-) -> Option<Value> {
-    let Some(request_id) = request_id else {
-        return base_message;
-    };
-    Some(with_social_defaults(
-        base_message.unwrap_or_else(|| json!({})),
-        [("request_id", Value::String(request_id))],
-    ))
 }
 
 fn build_relationship_action_message(
@@ -1838,16 +1919,12 @@ fn build_relationship_action_message(
     base_message: Option<Value>,
     now: i64,
 ) -> Value {
-    with_social_defaults(
+    let mut message = with_social_defaults(
         base_message.unwrap_or_else(|| json!({})),
         [
             (
                 "source_public_id",
                 Value::String(local_public_id.to_string()),
-            ),
-            (
-                "target_public_id",
-                Value::String(counterpart_public_id.to_string()),
             ),
             (
                 "action",
@@ -1857,7 +1934,31 @@ fn build_relationship_action_message(
             ("correlation_id", Value::String(Uuid::new_v4().to_string())),
             ("sent_at", json!(now)),
         ],
-    )
+    );
+    if let Some(object) = message.as_object_mut() {
+        if let Some(target_public_id) = public_agent_id(counterpart_public_id) {
+            object.insert(
+                "target_public_id".to_owned(),
+                Value::String(target_public_id),
+            );
+        } else if object
+            .get("target_public_id")
+            .and_then(Value::as_str)
+            .and_then(public_agent_id)
+            .is_none()
+        {
+            object.remove("target_public_id");
+        }
+    }
+    if *action == SwarmRelationshipAction::Request
+        && let Some(object) = message.as_object_mut()
+    {
+        object.insert(
+            "request_id".to_owned(),
+            Value::String(Uuid::new_v4().to_string()),
+        );
+    }
+    message
 }
 
 fn friend_request_message_char_count(message: &Value) -> usize {
@@ -1924,7 +2025,7 @@ async fn send_signed_relationship_action_command(
             source_agent_id: args.local_agent_id,
             source_public_id: public_agent_id(&args.local_public_id),
             source_display_name: args.local_display_name,
-            target_agent_id: Some(args.target_agent_id),
+            target_agent_id: agent_did(&args.target_agent_id),
             source_node_id: local_node_id,
             target_node_id: Some(remote_node_id.clone()),
             capability: args.capability,
@@ -1986,16 +2087,6 @@ async fn ensure_outbound_friend_request_allowed(
     if let Ok(views) = state.swarm_bridge.list_peer_relationships().await {
         reconcile_swarm_relationship_views(state, local_public_id, &identities, &bindings, &views)?;
     }
-    let pending_request_id =
-        friend_request_service::list_friend_requests(&*state.social_store, local_public_id)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|request| {
-                request.remote_public_id == counterpart_public_id
-                    && request.direction == FriendRequestDirection::Outbound
-                    && request.state == FriendRequestState::Pending
-            })
-            .map(|request| request.request_id);
     let evaluation = policy_service::evaluate_outbound_friend_request_policy(
         &*state.social_store,
         local_public_id,
@@ -2007,7 +2098,6 @@ async fn ensure_outbound_friend_request_allowed(
     Ok(OutboundFriendRequestGate {
         denied_response: (evaluation.decision == PolicyDecision::Deny)
             .then(|| policy_denied_response(&evaluation.reason)),
-        pending_request_id,
     })
 }
 
@@ -2796,7 +2886,7 @@ pub(crate) async fn list_friend_requests(
         Err(response) => return response,
     };
     let (local_public_id, identities, friend_requests, relationship_views, peers) =
-        match load_friend_request_views(&state, None).await {
+        match load_friend_request_views(&state, query.public_id.as_deref()).await {
             Ok(result) => result,
             Err(error) => return internal_error(&error),
         };
@@ -3384,6 +3474,40 @@ async fn resolve_agent_relationship_counterpart_by_display_name(
     }
 }
 
+fn queued_friend_request_decision_conflict(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    action: &SwarmRelationshipAction,
+    message: &Value,
+) -> Option<Response> {
+    if !matches!(
+        action,
+        SwarmRelationshipAction::Accept | SwarmRelationshipAction::Reject
+    ) {
+        return None;
+    }
+    let request_id = message.get("request_id").and_then(Value::as_str)?;
+    let is_queued =
+        friend_request_service::list_friend_requests(&*state.social_store, local_public_id)
+            .unwrap_or_default()
+            .iter()
+            .any(|request| {
+                request.request_id == request_id
+                    && request.state == FriendRequestState::DecisionPending
+            });
+    is_queued.then(|| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "friend request decision is already queued",
+                "request_id": request_id,
+                "state": "decision_pending"
+            })),
+        )
+            .into_response()
+    })
+}
+
 async fn handle_agent_relationship_action(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -3412,7 +3536,7 @@ async fn handle_agent_relationship_action(
         .unwrap_or_else(|| counterpart_public_id.clone());
     let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
-    let mut base_message = body.message;
+    let base_message = body.message;
     if body.action == SwarmRelationshipAction::Request {
         if let Some(response) = friend_request_message_error(base_message.as_ref()) {
             return response;
@@ -3430,7 +3554,6 @@ async fn handle_agent_relationship_action(
                 if let Some(response) = gate.denied_response {
                     return response;
                 }
-                base_message = message_with_request_id(base_message, gate.pending_request_id);
             }
             Err(error) => return internal_error(&error),
         }
@@ -3442,6 +3565,11 @@ async fn handle_agent_relationship_action(
         base_message,
         now,
     );
+    if let Some(response) =
+        queued_friend_request_decision_conflict(&state, &local_public_id, &body.action, &message)
+    {
+        return response;
+    }
     let response_json = match send_signed_relationship_action_command(
         &state,
         SignedRelationshipActionArgs {

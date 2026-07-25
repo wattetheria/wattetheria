@@ -11,9 +11,8 @@
     }
 
     function nearbyStatus(row) {
-      const relationshipStatus = String(row.relationship_state || row.relationship_kind || "").toLowerCase();
-      const status = String(row.status || relationshipStatus || "").toLowerCase();
-      if (status === "blocked" || relationshipStatus === "blocked") return "blocked";
+      const status = String(row.status || "").toLowerCase();
+      if (status === "blocked") return "blocked";
       if (row.pending_inbound || row.pending_outbound || status === "requested" || status === "pending") return "pending";
       if (row.connected === true) return "online";
       if (row.stale === true || status === "stale") return "stale";
@@ -35,15 +34,8 @@
       return 70;
     }
 
-    function nodeRelationshipState(node) {
-      return node.relationship_state
-        || at(node, ["relationship", "relationship_state"])
-        || at(node, ["relationship", "last_action"]);
-    }
-
     function nearbySourceAgentCard(node) {
       return node.source_agent_card
-        || at(node, ["relationship", "agent_envelope", "source_agent_card"])
         || at(node, ["metadata", "contact_material", "source_agent_card"])
         || at(node, ["discovery", "source_agent_card"])
         || {};
@@ -79,7 +71,6 @@
         const key = `node:${nodeId}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const relationshipState = nodeRelationshipState(node);
         const connected = node.connected === true;
         const stale = node.stale === true;
         const recentlySeen = node.recently_seen === true;
@@ -102,12 +93,11 @@
           name: displayName,
           agent_card: agentCard,
           source_agent_card: sourceAgentCard,
-          status: node.status || relationshipState || (connected ? "online" : (stale ? "stale" : "discovered")),
+          status: node.status || (connected ? "online" : (stale ? "stale" : "discovered")),
           connected,
           recently_seen: recentlySeen,
           stale,
           last_seen_age_ms: node.last_seen_age_ms,
-          relationship_state: relationshipState,
           source_kind: sourceKind,
           detail: connectionLabel,
           meta_lines: metaLines,
@@ -219,8 +209,6 @@
         at(sourceAgentCard, ["card", "metadata", "public_id"]),
         metadata.public_id,
         node.public_id,
-        at(node, ["relationship", "counterpart_agent_public_id"]),
-        at(node, ["relationship", "counterpart_public_id"]),
         at(node, ["metadata", "public_id"]),
         at(node, ["discovery", "public_id"])
       );
@@ -248,7 +236,6 @@
             { label: "Connection", value: connection },
             { label: "Last Seen", value: lastSeen },
             { label: "Source", value: row.source_kind },
-            { label: "Relationship", value: row.relationship_state },
             { label: "Updated", value: updatedAt },
           ] },
         ],

@@ -259,11 +259,7 @@ fn insert_if_some(object: &mut Map<String, Value>, key: &str, value: Option<Valu
 }
 
 fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
-    let source_agent_card = peer_source_agent_card(
-        peer.relationship.as_ref(),
-        peer.metadata.as_ref(),
-        peer.discovery.as_ref(),
-    );
+    let source_agent_card = peer_source_agent_card(peer.metadata.as_ref(), peer.discovery.as_ref());
     let agent_card = source_agent_card
         .as_ref()
         .and_then(|card| card.get("card"))
@@ -272,11 +268,6 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
     let connected = peer.connected.unwrap_or(true);
     let recently_seen = peer.recently_seen.unwrap_or(connected);
     let stale = peer.stale.unwrap_or(false);
-    let relationship_state = peer
-        .relationship
-        .as_ref()
-        .and_then(|value| value.get("relationship_state"))
-        .and_then(Value::as_str);
     let endpoint = peer
         .metadata
         .as_ref()
@@ -284,8 +275,6 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
         .or_else(|| peer.discovery.as_ref().and_then(iroh_endpoint_id));
     let status = if connected {
         "online"
-    } else if relationship_state == Some("blocked") {
-        "blocked"
     } else if stale {
         "stale"
     } else if peer.discovery.is_some() {
@@ -310,21 +299,14 @@ fn compact_nearby_peer_payload(peer: SwarmPeerView) -> Value {
     );
     insert_if_some(&mut object, "discovery", peer.discovery);
     insert_if_some(&mut object, "metadata", peer.metadata);
-    insert_if_some(&mut object, "relationship", peer.relationship);
     insert_if_some(&mut object, "source_agent_card", source_agent_card);
     insert_if_some(&mut object, "agent_card", agent_card);
     Value::Object(object)
 }
 
-fn peer_source_agent_card(
-    relationship: Option<&Value>,
-    metadata: Option<&Value>,
-    discovery: Option<&Value>,
-) -> Option<Value> {
-    relationship
-        .and_then(|value| value.pointer("/agent_envelope/source_agent_card"))
-        .or_else(|| relationship.and_then(|value| value.get("source_agent_card")))
-        .or_else(|| metadata.and_then(|value| value.pointer("/contact_material/source_agent_card")))
+fn peer_source_agent_card(metadata: Option<&Value>, discovery: Option<&Value>) -> Option<Value> {
+    metadata
+        .and_then(|value| value.pointer("/contact_material/source_agent_card"))
         .or_else(|| metadata.and_then(|value| value.get("source_agent_card")))
         .or_else(|| discovery.and_then(|value| value.get("source_agent_card")))
         .cloned()
@@ -1746,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn blocked_peer_status_takes_priority_over_stale() {
+    fn compact_nearby_payload_ignores_wattswarm_relationship_state() {
         let peer = SwarmPeerView {
             node_id: "peer-a".to_owned(),
             connected: Some(false),
@@ -1766,6 +1748,12 @@ mod tests {
         let compact_payload = compact_nearby_peer_payload(peer);
 
         assert_eq!(full_payload["status"].as_str(), Some("blocked"));
-        assert_eq!(compact_payload["status"].as_str(), Some("blocked"));
+        assert_eq!(full_payload["relationship_state"].as_str(), Some("blocked"));
+        assert_eq!(
+            full_payload["relationship"]["relationship_state"].as_str(),
+            Some("blocked")
+        );
+        assert_eq!(compact_payload["status"].as_str(), Some("stale"));
+        assert!(compact_payload.get("relationship").is_none());
     }
 }
