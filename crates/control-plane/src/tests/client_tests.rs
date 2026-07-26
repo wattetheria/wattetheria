@@ -266,14 +266,8 @@ async fn client_api_routes_align_with_client_dtos() {
         Some(identity.agent_did.as_str())
     );
     assert!(self_json["active_payment_account"].is_null());
-    assert_eq!(
-        self_json["wallet_identities"].as_array().map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        self_json["payment_account_binding"]["status"].as_str(),
-        Some("missing_payment_account")
-    );
+    assert!(self_json.get("wallet_identities").is_none());
+    assert!(self_json["payment_account_binding"].is_null());
 
     let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
@@ -656,19 +650,7 @@ async fn wallet_page_can_create_agent_payment_account() {
             .as_array()
             .is_some_and(|capabilities| capabilities.iter().any(|value| value == "send"))
     );
-    assert!(
-        self_json["wallet_identities"]
-            .as_array()
-            .is_some_and(|identities| identities.iter().any(|identity| {
-                identity["active"].as_bool() == Some(true)
-                    && identity["did"]
-                        .as_str()
-                        .is_some_and(|did| did.starts_with("did:key:"))
-                    && identity["purposes"]
-                        .as_array()
-                        .is_some_and(|purposes| purposes.iter().any(|value| value == "general"))
-            }))
-    );
+    assert!(self_json.get("wallet_identities").is_none());
     assert_eq!(
         self_json["payment_account_binding"]["status"].as_str(),
         Some("ready")

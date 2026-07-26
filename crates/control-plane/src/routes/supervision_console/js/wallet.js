@@ -47,13 +47,6 @@
       )) || null;
     }
 
-    function walletActiveIdentity(operator = currentWalletOperator) {
-      const identities = safeArray(operator?.wallet_identities);
-      return identities.find((identity) => identity?.active)
-        || identities.find((identity) => String(identity?.status || "").toLowerCase() === "active")
-        || null;
-    }
-
     function walletTagList(values, emptyLabel = "-") {
       const labels = safeArray(values)
         .map((value) => String(value || "").trim())
@@ -71,30 +64,6 @@
             <em>${escapeHtml(sub)}</em>
           </span>
         </div>
-      `;
-    }
-
-    function renderWalletIdentity(operator) {
-      const identity = walletActiveIdentity(operator);
-      const identities = safeArray(operator?.wallet_identities);
-      return `
-        <section class="wallet-section identity">
-          <div class="wallet-section-head">
-            <div class="wallet-section-title">Wallet Identity</div>
-            ${pill(identity ? "DID backed" : "missing", identity ? "ready" : "pending")}
-          </div>
-          ${walletSummaryRows([
-            ["Active Identity", identity?.identity_id || "none"],
-            ["DID", identity?.did || operator.agent_did || operator.wallet_bound_agent_did],
-            ["Status", identity?.status || (identity ? "active" : "none")],
-            ["Created", formatTime(identity?.created_at_ms)],
-          ])}
-          <div class="wallet-subsection">
-            <div class="wallet-subsection-title">Purposes</div>
-            ${walletTagList(identity?.purposes, "No purposes recorded")}
-          </div>
-          <div class="wallet-subtle-line">${escapeHtml(identities.length ? `${identities.length} local identity record${identities.length === 1 ? "" : "s"}` : "No local wallet identities loaded.")}</div>
-        </section>
       `;
     }
 
@@ -312,10 +281,10 @@
       const selectedPayment = walletPaymentAccountFor(activeNetwork, fallbackRail, operator);
       const activeAddress = selectedPayment?.address || "";
       const hasSigningAccount = Boolean(selectedPayment?.can_sign);
-      const walletIdentity = walletActiveIdentity(operator);
+      const agentDid = operator.agent_did || operator.wallet_bound_agent_did;
       const railValue = selectedPayment?.rail || fallbackRail;
       const publicAlias = operator.id ? `@${operator.id}` : "";
-      const headerHandle = publicAlias || valueOrDash(operator.agent_did || operator.wallet_bound_agent_did);
+      const headerHandle = publicAlias || valueOrDash(agentDid);
       qs("wallet-list").innerHTML = `
         <div class="wallet-cred-head">
           <div class="wallet-cred-top">
@@ -336,7 +305,7 @@
           </div>
           <div class="wallet-cred-trust">
             ${walletTrustItem(true, "Local ledger", `${valueOrDash(operator.watt_balance)} WATT`)}
-            ${walletTrustItem(Boolean(walletIdentity), "DID backed", walletIdentity ? "active identity" : "no identity")}
+            ${walletTrustItem(Boolean(agentDid), "DID backed", agentDid ? "runtime identity" : "no runtime identity")}
             ${walletTrustItem(Boolean(selectedPayment), "Payment bound", selectedPayment ? `${activeNetwork} · ${railValue}` : "unbound")}
           </div>
         </div>
@@ -348,11 +317,10 @@
           ${walletSummaryRows([
             ["WATT", operator.watt_balance],
             ["Reward Policy", operator.reward_policy_version],
-            ["Wallet Agent DID", operator.agent_did || operator.wallet_bound_agent_did],
+            ["Wallet Agent DID", agentDid],
             ["Controller", operator.controller_id],
           ])}
         </section>
-        ${renderWalletIdentity(operator)}
         <section class="wallet-section web3">
           <div class="wallet-section-head">
             <div class="wallet-section-title">Agent Payment Account</div>

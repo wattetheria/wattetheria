@@ -162,37 +162,6 @@ pub(crate) fn wallet_payment_accounts_payload(state: &ControlPlaneState) -> Valu
     }
 }
 
-pub(crate) fn wallet_identities_payload(state: &ControlPlaneState) -> Value {
-    let wallet_dir = state.data_dir.join(".watt-wallet");
-    if !wallet_dir.join("metadata.json").exists() || !wallet_dir.join("keystore.json").exists() {
-        return json!([]);
-    }
-    match open_local_wallet(&state.data_dir) {
-        Ok(wallet_state) => json!(
-            wallet_state
-                .profile
-                .identities
-                .iter()
-                .map(|identity| {
-                    json!({
-                        "identity_id": identity.identity_id,
-                        "did": identity.did.to_string(),
-                        "algorithm": identity.algorithm,
-                        "purposes": identity.purposes,
-                        "status": identity.status,
-                        "label": identity.label,
-                        "created_at_ms": identity.created_at_ms,
-                        "rotated_from": identity.rotated_from,
-                        "active": wallet_state.profile.active_identity_id.as_deref()
-                            == Some(identity.identity_id.as_str()),
-                    })
-                })
-                .collect::<Vec<_>>()
-        ),
-        Err(_) => json!([]),
-    }
-}
-
 pub(crate) fn wallet_payment_binding_payload(state: &ControlPlaneState) -> Value {
     let wallet_dir = state.data_dir.join(".watt-wallet");
     if !wallet_dir.join("metadata.json").exists() || !wallet_dir.join("keystore.json").exists() {
