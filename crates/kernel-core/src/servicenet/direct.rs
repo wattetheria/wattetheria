@@ -280,6 +280,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::sync::Arc;
     use tokio::sync::Mutex;
+    use watt_did::DidKey;
 
     use crate::servicenet::SERVICE_RESPONSE_SIGNATURE_PROTOCOL;
 
@@ -477,12 +478,10 @@ mod tests {
     #[tokio::test]
     async fn client_selects_direct_transport_and_verifies_adapter_signature() {
         let signing_key = Arc::new(SigningKey::from_bytes(&[71u8; 32]));
-        let multicodec = [
-            [0xed, 0x01].as_slice(),
-            signing_key.verifying_key().as_bytes(),
-        ]
-        .concat();
-        let service_did = format!("did:key:z{}", bs58::encode(multicodec).into_string());
+        let service_did = DidKey::from_ed25519_public_key(*signing_key.verifying_key().as_bytes())
+            .unwrap()
+            .did
+            .to_string();
         let adapter = Router::new()
             .route("/custom-adapter", post(signed_adapter_response))
             .with_state(SignedAdapterState {

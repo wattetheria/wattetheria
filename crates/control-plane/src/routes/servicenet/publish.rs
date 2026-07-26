@@ -5,7 +5,6 @@ use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::path::Path as FsPath;
 use uuid::Uuid;
 
@@ -16,6 +15,7 @@ use super::publish_validation::{
 use super::{servicenet_client, servicenet_error_response};
 use crate::auth::{authorize, internal_error};
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::agent_identity::FileAgentIdentityStore;
 use wattetheria_kernel::agent_identity::service_agent::FileServiceAgentIdentityStore;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::servicenet::{
@@ -32,11 +32,15 @@ use wattetheria_kernel::wallet_identity::active_payment_account_binding_proof;
 
 const DEFAULT_SERVICENET_VERSION: &str = "0.1.0";
 const DEFAULT_SERVICENET_TTL_MINUTES: u64 = 30;
+const PENDING_RUNTIME_IMPORT: &str =
+    "restart to activate the pending Runtime Agent DID before publishing a Service Agent";
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct PublishAgentBody {
     #[serde(default)]
     agent_id: Option<String>,
+    #[serde(default, alias = "identity_id")]
+    service_agent_identity_id: Option<String>,
     #[serde(default)]
     provider_id: Option<String>,
     #[serde(default)]
@@ -88,6 +92,10 @@ fn forbidden(message: impl Into<String>) -> Response {
         Json(json!({"error": message.into()})),
     )
         .into_response()
+}
+
+fn conflict(message: impl Into<String>) -> Response {
+    (StatusCode::CONFLICT, Json(json!({"error": message.into()}))).into_response()
 }
 
 pub(crate) fn registration_matches_identity(
@@ -154,7 +162,7 @@ async fn resolve_provider_id(
         if publisher_state.registrations.iter().any(|registration| {
             registration_matches_provider(
                 registration,
-                &state.agent_did,
+                &state.servicenet_provider.did,
                 provider_id,
                 body_agent_id,
             )
@@ -162,8 +170,13 @@ async fn resolve_provider_id(
             return Ok(provider_id.to_owned());
         }
         if let Some(agent_id) = body_agent_id
-            && remote_agent_matches_provider(client, agent_id, provider_id, &state.agent_did)
-                .await?
+            && remote_agent_matches_provider(
+                client,
+                agent_id,
+                provider_id,
+                &state.servicenet_provider.did,
+            )
+            .await?
         {
             return Ok(provider_id.to_owned());
         }
@@ -173,7 +186,8 @@ async fn resolve_provider_id(
     }
     if let Some(agent_id) = body_agent_id
         && let Some(registration) = publisher_state.registrations.iter().find(|record| {
-            record.agent_id == agent_id && registration_matches_identity(record, &state.agent_did)
+            record.agent_id == agent_id
+                && registration_matches_identity(record, &state.servicenet_provider.did)
         })
     {
         return Ok(registration.provider_id.clone());
@@ -181,22 +195,23 @@ async fn resolve_provider_id(
     if let Some(registration) = publisher_state
         .registrations
         .iter()
-        .find(|record| registration_matches_identity(record, &state.agent_did))
+        .find(|record| registration_matches_identity(record, &state.servicenet_provider.did))
     {
         return Ok(registration.provider_id.clone());
     }
     let challenge = client
-        .create_provider_ownership_challenge(&state.agent_did, "register")
+        .create_provider_ownership_challenge(&state.servicenet_provider.did, "register")
         .await
         .map_err(|error| servicenet_error_response(&error))?;
     let signature = state
+        .servicenet_provider
         .signer
         .sign_bytes(challenge.challenge.as_bytes())
         .map_err(|error| internal_error(&error))?;
     let display_name = body.agent_card.get("name").and_then(Value::as_str);
     let request = json!({
         "provider_id": challenge.provider_id,
-        "provider_did": state.agent_did,
+        "provider_did": state.servicenet_provider.did,
         "display_name": display_name,
         "ownership_challenge_id": challenge.challenge_id,
         "ownership_signature": signature,
@@ -242,40 +257,6 @@ pub(crate) fn save_publisher_state(
     publisher_state: &ServiceNetPublisherState,
 ) -> anyhow::Result<()> {
     wattetheria_kernel::servicenet::save_servicenet_publisher_state(data_dir, publisher_state)
-}
-
-fn derive_agent_id(agent_card: &Value, provider_id: &str) -> String {
-    let name = agent_card
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("agent");
-    let url = agent_card.get("url").and_then(Value::as_str).unwrap_or("");
-    let slug = slugify_agent_name(name);
-    let digest = Sha256::digest(format!("{provider_id}:{url}").as_bytes());
-    let suffix = format!("{digest:x}");
-    format!("{slug}-{}", &suffix[..8])
-}
-
-fn slugify_agent_name(name: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_dash = false;
-    for ch in name.chars().flat_map(char::to_lowercase) {
-        if ch.is_ascii_alphanumeric() {
-            slug.push(ch);
-            last_was_dash = false;
-        } else if !last_was_dash && !slug.is_empty() {
-            slug.push('-');
-            last_was_dash = true;
-        }
-    }
-    while slug.ends_with('-') {
-        slug.pop();
-    }
-    if slug.is_empty() {
-        "agent".to_owned()
-    } else {
-        slug
-    }
 }
 
 fn now_ms() -> u64 {
@@ -335,6 +316,68 @@ pub(crate) async fn publish_agent(
         Err(message) => return bad_request(message),
     };
     let connection_mode = body.connection_mode;
+    let runtime_identity_store = FileAgentIdentityStore::new(&state.data_dir);
+    let _runtime_transition_lock = {
+        let store = runtime_identity_store.clone();
+        match tokio::task::spawn_blocking(move || store.lock_transition()).await {
+            Ok(Ok(lock)) => lock,
+            Ok(Err(error)) => return internal_error(&error),
+            Err(error) => {
+                return internal_error(&anyhow::anyhow!(
+                    "Runtime Agent identity transition lock task failed: {error}"
+                ));
+            }
+        }
+    };
+    let transition_policy = match runtime_identity_store.transition_policy() {
+        Ok(policy) => policy,
+        Err(error) => return internal_error(&error),
+    };
+    if !transition_policy.allows_service_agent_publication() {
+        return conflict(PENDING_RUNTIME_IMPORT);
+    }
+    let service_identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let supplied_agent_id = body
+        .agent_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let service_agent_identity_id = body
+        .service_agent_identity_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            supplied_agent_id
+                .filter(|legacy_id| {
+                    service_identity_store
+                        .service_agent_identity_path(legacy_id)
+                        .exists()
+                })
+                .map(ToOwned::to_owned)
+        });
+    let Some(service_agent_identity_id) = service_agent_identity_id else {
+        return bad_request(
+            "select an existing Service Agent identity before publishing an Agent Card",
+        );
+    };
+    let agent_id = supplied_agent_id.map_or_else(|| Uuid::new_v4().to_string(), ToOwned::to_owned);
+    let _published_agent_operation_lock = {
+        let store = service_identity_store.clone();
+        let agent_id = agent_id.clone();
+        match tokio::task::spawn_blocking(move || store.lock_published_agent_operation(&agent_id))
+            .await
+        {
+            Ok(Ok(lock)) => lock,
+            Ok(Err(error)) => return internal_error(&error),
+            Err(error) => {
+                return internal_error(&anyhow::anyhow!(
+                    "published Service Agent operation lock task failed: {error}"
+                ));
+            }
+        }
+    };
     let mut publisher_state = match load_publisher_state(&state.data_dir) {
         Ok(state) => state,
         Err(error) => return internal_error(&error),
@@ -343,15 +386,6 @@ pub(crate) async fn publish_agent(
         Ok(provider_id) => provider_id,
         Err(response) => return response,
     };
-    let agent_id = body
-        .agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || derive_agent_id(&agent_card, &provider_id),
-            ToOwned::to_owned,
-        );
     let service_address = match body
         .service_address
         .as_deref()
@@ -389,14 +423,18 @@ pub(crate) async fn publish_agent(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let service_identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
     let identity_provision = {
         let store = service_identity_store.clone();
+        let service_agent_identity_id = service_agent_identity_id.clone();
         let agent_id = agent_id.clone();
         let endpoint = endpoint.clone();
-        match tokio::task::spawn_blocking(move || store.provision(&agent_id, &endpoint)).await {
+        match tokio::task::spawn_blocking(move || {
+            store.provision(&service_agent_identity_id, &agent_id, &endpoint)
+        })
+        .await
+        {
             Ok(Ok(provision)) => provision,
-            Ok(Err(error)) => return internal_error(&error),
+            Ok(Err(error)) => return bad_request(error.to_string()),
             Err(error) => {
                 return internal_error(&anyhow::anyhow!(
                     "Service Agent identity provisioning task failed: {error}"
@@ -405,6 +443,21 @@ pub(crate) async fn publish_agent(
         }
     };
     let service_identity = identity_provision.identity();
+    if let Some(registration) = publisher_state
+        .registrations
+        .iter()
+        .find(|registration| registration.agent_id == agent_id)
+        && registration.service_did != service_identity.service_did
+    {
+        return match service_identity_store.rollback_provision(identity_provision) {
+            Ok(()) => conflict(
+                "published Service Agent cannot be rebound to a different Service Agent DID",
+            ),
+            Err(rollback_error) => internal_error(&anyhow::anyhow!(
+                "reject Service Agent DID rebinding failed; identity rollback failed: {rollback_error:#}"
+            )),
+        };
+    }
     attach_service_agent_payment_binding(&mut agent_card, Some(&payment_account_binding));
     let publication = match prepare_service_agent_publication(
         ServiceAgentPublicationInput {
@@ -417,10 +470,10 @@ pub(crate) async fn publish_agent(
             agent_card,
             connection_mode,
             execution: execution.clone(),
-            provider_attester_did: &state.agent_did,
+            provider_attester_did: &state.servicenet_provider.did,
             ttl_minutes: body.ttl_minutes.unwrap_or(DEFAULT_SERVICENET_TTL_MINUTES),
         },
-        state.signer.as_ref(),
+        state.servicenet_provider.signer.as_ref(),
     ) {
         Ok(publication) => publication,
         Err(error) => {
@@ -473,18 +526,20 @@ pub(crate) async fn publish_agent(
         duration_ms: None,
         details: Some(json!({
             "provider_id": request["provider_id"],
+            "service_agent_identity_id": service_agent_identity_id.clone(),
             "version": request["version"],
         })),
     });
     Json(json!({
         "status": "ok",
         "agent_id": request["agent_id"],
+        "service_agent_identity_id": service_agent_identity_id,
         "service_did": request["service_did"],
         "service_identity_path": service_identity_store
-            .identity_path(request["agent_id"].as_str().unwrap_or_default()),
+            .service_agent_identity_path(&service_agent_identity_id),
         "service_address": request["service_address"],
         "provider_id": request["provider_id"],
-        "provider_did": state.agent_did,
+        "provider_did": state.servicenet_provider.did,
         "connection_mode": connection_mode,
         "execution": execution,
         "submission": response,
@@ -506,16 +561,20 @@ pub(crate) async fn unpublish_agent(
     let Some(client) = servicenet_client(&state) else {
         return super::servicenet_unavailable_response();
     };
-    let _agent_operation_lock = {
-        let store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let service_identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let _published_agent_operation_lock = {
+        let store = service_identity_store.clone();
         let lock_agent_id = agent_id.clone();
-        match tokio::task::spawn_blocking(move || store.lock_agent_operation(&lock_agent_id)).await
+        match tokio::task::spawn_blocking(move || {
+            store.lock_published_agent_operation(&lock_agent_id)
+        })
+        .await
         {
             Ok(Ok(lock)) => lock,
             Ok(Err(error)) => return internal_error(&error),
             Err(error) => {
                 return internal_error(&anyhow::anyhow!(
-                    "Service Agent operation lock task failed: {error}"
+                    "published Service Agent operation lock task failed: {error}"
                 ));
             }
         }
@@ -529,11 +588,31 @@ pub(crate) async fn unpublish_agent(
         .iter()
         .find(|registration| {
             registration.agent_id == agent_id
-                && registration_matches_identity(registration, &state.agent_did)
+                && registration_matches_identity(registration, &state.servicenet_provider.did)
         })
         .cloned()
     else {
         return forbidden("agent is not published by the current Wattetheria identity");
+    };
+    let _agent_operation_lock = {
+        let store = service_identity_store.clone();
+        let service_agent_identity_id = store.publication_service_agent_identity_id(
+            &registration.service_did,
+            &registration.agent_id,
+        );
+        match tokio::task::spawn_blocking(move || {
+            store.lock_service_agent_identity_operation(&service_agent_identity_id)
+        })
+        .await
+        {
+            Ok(Ok(lock)) => lock,
+            Ok(Err(error)) => return internal_error(&error),
+            Err(error) => {
+                return internal_error(&anyhow::anyhow!(
+                    "Service Agent operation lock task failed: {error}"
+                ));
+            }
+        }
     };
     let reason = body
         .reason
@@ -551,7 +630,7 @@ pub(crate) async fn unpublish_agent(
     let unpublish_payload = json!({
         "action": "unpublish_agent",
         "provider_id": registration.provider_id.clone(),
-        "provider_did": state.agent_did.clone(),
+        "provider_did": state.servicenet_provider.did.clone(),
         "agent_id": agent_id.clone(),
         "nonce": nonce.clone(),
         "issued_at_ms": issued_at_ms,
@@ -562,13 +641,17 @@ pub(crate) async fn unpublish_agent(
         Ok(bytes) => bytes,
         Err(error) => return internal_error(&anyhow::anyhow!(error)),
     };
-    let signature = match state.signer.sign_bytes(&unpublish_bytes) {
+    let signature = match state
+        .servicenet_provider
+        .signer
+        .sign_bytes(&unpublish_bytes)
+    {
         Ok(signature) => signature,
         Err(error) => return internal_error(&error),
     };
     let request = json!({
         "provider_id": registration.provider_id,
-        "provider_did": state.agent_did.clone(),
+        "provider_did": state.servicenet_provider.did.clone(),
         "signature": signature,
         "nonce": nonce,
         "issued_at_ms": issued_at_ms,
@@ -591,9 +674,11 @@ pub(crate) async fn unpublish_agent(
         }
         Err(error) => return servicenet_error_response(&error),
     };
-    if let Err(error) =
-        remove_servicenet_publisher_registration(&state.data_dir, &agent_id, &state.agent_did)
-    {
+    if let Err(error) = remove_servicenet_publisher_registration(
+        &state.data_dir,
+        &agent_id,
+        &state.servicenet_provider.did,
+    ) {
         return internal_error(&error);
     }
     let _ = state.audit_log.append(AuditEntry {
@@ -615,7 +700,7 @@ pub(crate) async fn unpublish_agent(
         "status": "ok",
         "agent_id": agent_id,
         "provider_id": request["provider_id"],
-        "provider_did": state.agent_did,
+        "provider_did": state.servicenet_provider.did,
         "unpublished": response,
     }))
     .into_response()

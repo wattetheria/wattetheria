@@ -108,16 +108,29 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
         brain_config: Arc::new(tokio::sync::RwLock::new(brain_config)),
         ..state
     };
-    let service_identity = FileServiceAgentIdentityStore::new(&state.data_dir)
-        .load_or_create("stripe-agent", "http://127.0.0.1/a2a")
+    let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let generated_identity = identity_store
+        .generate()
         .expect("Service Agent identity should initialize");
+    let service_identity = identity_store
+        .provision(
+            &generated_identity.service_agent_identity_id,
+            "stripe-agent",
+            "http://127.0.0.1/a2a",
+        )
+        .expect("Service Agent identity should bind")
+        .identity()
+        .clone();
+    let unrelated_path = identity_store.service_agent_identity_path("unrelated-malformed-identity");
+    std::fs::create_dir_all(unrelated_path.parent().unwrap()).unwrap();
+    std::fs::write(unrelated_path, b"not json").unwrap();
     crate::routes::servicenet::publish::save_publisher_state(
         &state.data_dir,
         &crate::routes::servicenet::publish::ServiceNetPublisherState {
             registrations: vec![
                 crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
                     provider_id: "provider-test".to_owned(),
-                    provider_did: state.agent_did.clone(),
+                    provider_did: state.servicenet_provider.did.clone(),
                     agent_id: "stripe-agent".to_owned(),
                     service_did: service_identity.service_did,
                     service_address: Some("stripe@wattetheria".to_owned()),
@@ -193,6 +206,7 @@ async fn servicenet_a2a_bridge_reuses_runtime_adapter_with_servicenet_session() 
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn servicenet_a2a_bridge_forwards_customized_agent_through_a2a_v1() {
     let forwarded_request = Arc::new(Mutex::new(None::<Value>));
     let captured = Arc::clone(&forwarded_request);
@@ -228,16 +242,26 @@ async fn servicenet_a2a_bridge_forwards_customized_agent_through_a2a_v1() {
     });
 
     let (_dir, _router, _token, _, state) = build_test_app(20);
-    let service_identity = FileServiceAgentIdentityStore::new(&state.data_dir)
-        .load_or_create("custom-agent", "http://127.0.0.1/a2a")
+    let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let generated_identity = identity_store
+        .generate()
         .expect("Service Agent identity should initialize");
+    let service_identity = identity_store
+        .provision(
+            &generated_identity.service_agent_identity_id,
+            "custom-agent",
+            "http://127.0.0.1/a2a",
+        )
+        .expect("Service Agent identity should bind")
+        .identity()
+        .clone();
     crate::routes::servicenet::publish::save_publisher_state(
         &state.data_dir,
         &crate::routes::servicenet::publish::ServiceNetPublisherState {
             registrations: vec![
                 crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
                     provider_id: "provider-test".to_owned(),
-                    provider_did: state.agent_did.clone(),
+                    provider_did: state.servicenet_provider.did.clone(),
                     agent_id: "custom-agent".to_owned(),
                     service_did: service_identity.service_did,
                     service_address: Some("custom@wattetheria".to_owned()),
@@ -943,8 +967,10 @@ async fn servicenet_async_invocation_is_polled_and_notifies_callback() {
     servicenet_server.abort();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn console_agent_publish_body(
     agent_id: Option<&str>,
+    service_agent_identity_id: Option<&str>,
     provider_id: Option<&str>,
     service_address: Option<&str>,
     version: &str,
@@ -995,6 +1021,9 @@ fn console_agent_publish_body(
     });
     if let Some(agent_id) = agent_id {
         body["agent_id"] = json!(agent_id);
+    }
+    if let Some(service_agent_identity_id) = service_agent_identity_id {
+        body["service_agent_identity_id"] = json!(service_agent_identity_id);
     }
     if let Some(provider_id) = provider_id {
         body["provider_id"] = json!(provider_id);
@@ -1095,7 +1124,7 @@ async fn servicenet_published_agents_uses_local_publisher_state_only() {
         serde_json::to_vec(&json!({
             "registrations": [{
                 "provider_id": "provider-local",
-                "provider_did": state.agent_did,
+                "provider_did": state.servicenet_provider.did,
                 "agent_id": "agent-local-only",
                 "service_did": "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM",
                 "card_hash": "sha256:local",
@@ -1159,9 +1188,13 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     )
     .await;
     assert_servicenet_template(&template);
+    let service_identity = FileServiceAgentIdentityStore::new(&state.data_dir)
+        .generate()
+        .unwrap();
 
     let mut publish_body = console_agent_publish_body(
         None,
+        Some(&service_identity.service_agent_identity_id),
         None,
         Some("Console@Wattetheria"),
         "0.1.0",
@@ -1189,13 +1222,55 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
     );
     assert_eq!(
         publish_json["provider_did"].as_str(),
-        Some(state.agent_did.as_str())
+        Some(state.servicenet_provider.did.as_str())
     );
     let agent_id = publish_json["agent_id"].as_str().unwrap();
-    assert!(agent_id.starts_with("console-agent-"));
+    assert!(!agent_id.is_empty());
+    assert_eq!(
+        publish_json["service_agent_identity_id"].as_str(),
+        Some(service_identity.service_agent_identity_id.as_str())
+    );
+    let managed_identities = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/agent-identities/service-agents",
+    )
+    .await;
+    assert_eq!(
+        managed_identities["items"][0]["bound_agent_id"].as_str(),
+        Some(agent_id)
+    );
+    assert_eq!(
+        managed_identities["items"][0]["binding_status"].as_str(),
+        Some("bound")
+    );
+    assert_eq!(
+        managed_identities["items"][0]["agent_card_status"].as_str(),
+        Some("published")
+    );
+    let credential_path = format!(
+        "/v1/wattetheria/agent-identities/service-agents/{}/credentials",
+        service_identity.service_agent_identity_id
+    );
+    let imported_credential = authed_post_json(
+        app.clone(),
+        &token,
+        &credential_path,
+        json!({ "payload": "{\"type\":[\"VerifiableCredential\"]}" }),
+    )
+    .await;
+    assert_eq!(imported_credential["verification_status"], "pending");
+    let network_agent_credential_status = authed_post(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/agent-identities/service-agents/{agent_id}/credentials"),
+        json!({ "payload": "{\"type\":[\"VerifiableCredential\"]}" }),
+    )
+    .await;
+    assert_eq!(network_agent_credential_status, StatusCode::NOT_FOUND);
     assert_eq!(
         publish_json["submission"]["attestations"]["provider_attester_did"].as_str(),
-        Some(state.agent_did.as_str())
+        Some(state.servicenet_provider.did.as_str())
     );
     let payment_address = created_payment["active_payment_account"]["address"]
         .as_str()
@@ -1242,7 +1317,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         "/v1/wattetheria/servicenet/published-agents",
     )
     .await;
-    assert_published_console_agent(&published_json, agent_id, &state.agent_did);
+    assert_published_console_agent(&published_json, agent_id, &state.servicenet_provider.did);
     assert_eq!(
         published_json["items"][0]["agent_card"]["skills"][0]["description"].as_str(),
         Some("")
@@ -1254,6 +1329,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         "/v1/wattetheria/servicenet/publish",
         console_agent_publish_body(
             Some(agent_id),
+            Some(&service_identity.service_agent_identity_id),
             Some("provider-ui"),
             Some("console@wattetheria"),
             "0.1.1",
@@ -1274,6 +1350,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         "/v1/wattetheria/servicenet/publish",
         console_agent_publish_body(
             Some(agent_id),
+            Some(&service_identity.service_agent_identity_id),
             Some("provider-other"),
             Some("console@wattetheria"),
             "0.1.2",
@@ -1329,7 +1406,7 @@ async fn servicenet_unpublish_cleans_local_state_when_remote_agent_is_missing() 
             registrations: vec![
                 crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
                     provider_id: "provider-ui".to_owned(),
-                    provider_did: state.agent_did.clone(),
+                    provider_did: state.servicenet_provider.did.clone(),
                     agent_id: "missing-remote-agent".to_owned(),
                     service_did: "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM"
                         .to_owned(),
@@ -1406,6 +1483,7 @@ async fn servicenet_publish_rejects_unsafe_agent_name() {
     };
     let app = app(state);
     let mut publish_body = console_agent_publish_body(
+        None,
         None,
         None,
         Some("unsafe-name@wattetheria"),

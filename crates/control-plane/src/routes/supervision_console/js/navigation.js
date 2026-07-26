@@ -43,6 +43,9 @@
           refreshServiceNetAgents().catch((error) => setStatus(error.message, true));
         }
       }
+      if (nextPage === "identity") {
+        loadManagedAgentIdentities().catch((error) => setStatus(error.message, true));
+      }
       if (nextPage === "skills" && !agentSkills.length) {
         loadAgentSkills().catch((error) => setStatus(error.message, true));
       }

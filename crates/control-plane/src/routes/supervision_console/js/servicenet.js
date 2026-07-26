@@ -175,8 +175,21 @@
 
     async function resetServiceNetForm(card = null, agent = null) {
       await loadServiceNetTemplate();
+      if (!serviceAgentIdentities.length) await loadManagedAgentIdentities();
       const defaults = servicenetTemplate.defaults || {};
       const nextCard = card || defaults;
+      const selectedIdentity = serviceAgentIdentities.find(
+        (identity) => identity.service_did === agent?.service_did
+          || identity.bound_agent_id === agent?.agent_id,
+      );
+      syncServiceAgentIdentitySelect(selectedIdentity?.service_agent_identity_id || "");
+      const editingPublishedAgent = Boolean(agent);
+      qs("servicenet-identity-id").disabled = editingPublishedAgent;
+      qs("servicenet-identity-select-field").hidden = editingPublishedAgent;
+      qs("servicenet-identity-readonly-field").hidden = !editingPublishedAgent;
+      qs("servicenet-identity-readonly").value = editingPublishedAgent
+        ? selectedIdentity?.service_did || agent.service_did || ""
+        : "";
       qs("servicenet-agent-id").value = agent?.agent_id || "";
       qs("servicenet-provider-id").value = agent?.provider_id || "";
       qs("servicenet-form-title").textContent = agent ? "Update Agent" : "Publish Agent";
@@ -357,6 +370,7 @@
       const serviceAddress = response?.unpublished?.service_address || agent.service_address || agent.agent_id;
       serviceNetListStatus(`Deleted ${serviceAddress}.`);
       await refreshServiceNetAgents();
+      await loadManagedAgentIdentities();
     }
 
     async function refreshServiceNetAgents() {
@@ -376,6 +390,11 @@
         return;
       }
       const serviceAddressName = qs("servicenet-service-address").value.trim();
+      const selectedIdentityId = qs("servicenet-identity-id").value.trim();
+      if (!selectedIdentityId) {
+        serviceNetStatus("Select an existing Service Agent DID before publishing.", true);
+        return;
+      }
       if (serviceAddressName.includes("@")) {
         serviceNetStatus("Service Address only needs the name before @wattetheria.", true);
         return;
@@ -387,6 +406,7 @@
       }
       const body = {
         agent_id: qs("servicenet-agent-id").value.trim() || null,
+        service_agent_identity_id: selectedIdentityId,
         provider_id: qs("servicenet-provider-id").value.trim() || null,
         service_address: serviceAddressFromLocalPart(serviceAddressName),
         version: qs("servicenet-version").value.trim() || "0.1.0",
@@ -409,6 +429,7 @@
       });
       serviceNetStatus(`Published ${compactId(response.agent_id, 28)}${response.service_address ? ` as ${response.service_address}` : ""}.`);
       await refreshServiceNetAgents();
+      await loadManagedAgentIdentities();
       showServiceNetList();
     }
 

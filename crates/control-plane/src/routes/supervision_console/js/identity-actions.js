@@ -22,11 +22,13 @@
           setStatus("Identity records loaded, but no public_id was present.", true);
           syncIdentityDisplayForm();
           renderIdentities([]);
+          await loadManagedAgentIdentities();
           return;
         }
         selectPreferredIdentity();
         syncIdentityDisplayForm();
         renderIdentities([...identitiesByPublicId.values()]);
+        await loadManagedAgentIdentities();
         setStatus(`Loaded ${publicIdEl.options.length} local identities.`);
       } catch (error) {
         setStatus(error.message, true);

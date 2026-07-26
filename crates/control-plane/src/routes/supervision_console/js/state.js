@@ -33,6 +33,13 @@
     let servicenetAgents = [];
     let selectedIdentityRecord = null;
     let identityDisplayEditing = false;
+    let runtimeAgentIdentity = null;
+    let providerIdentity = null;
+    let runtimeAgentCredentials = [];
+    let providerCredentials = [];
+    let serviceAgentIdentities = [];
+    const serviceAgentCredentialsById = new Map();
+    let selectedServiceAgentIdentityId = "";
 
     const stablecoinContracts = {
       "0x1": [

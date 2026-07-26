@@ -278,6 +278,52 @@ impl ControllerBindingRegistry {
     }
 }
 
+pub fn remove_replaced_local_runtime_identities(
+    public_identities: &mut PublicIdentityRegistry,
+    controller_bindings: &mut ControllerBindingRegistry,
+    active_agent_did: &str,
+) -> usize {
+    let replaced_public_ids = controller_bindings
+        .bindings
+        .values()
+        .filter(|binding| {
+            binding.controller_kind == ControllerKind::LocalWattswarm
+                && binding.controller_ref == "local-default"
+                && binding.ownership_scope == OwnershipScope::Local
+        })
+        .filter_map(|binding| {
+            let identity = public_identities.identities.get(&binding.public_id)?;
+            identity
+                .agent_did
+                .as_deref()
+                .is_some_and(|agent_did| agent_did != active_agent_did)
+                .then(|| binding.public_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for public_id in &replaced_public_ids {
+        public_identities.identities.remove(public_id);
+        controller_bindings.bindings.remove(public_id);
+    }
+    replaced_public_ids.len()
+}
+
+pub fn reconcile_local_runtime_identity(
+    public_identities: &mut PublicIdentityRegistry,
+    controller_bindings: &mut ControllerBindingRegistry,
+    active_agent_did: &str,
+) -> Result<(PublicIdentity, ControllerBinding)> {
+    remove_replaced_local_runtime_identities(
+        public_identities,
+        controller_bindings,
+        active_agent_did,
+    );
+    let public_identity = public_identities
+        .ensure_local_default_for_agent(active_agent_did, Some(active_agent_did))?;
+    let controller_binding =
+        controller_bindings.ensure_local_wattswarm(&public_identity.public_id, active_agent_did);
+    Ok((public_identity, controller_binding))
+}
+
 pub fn normalize_display_name(display_name: &str) -> Result<String> {
     let display_name = display_name.trim();
     if display_name.is_empty() {
@@ -345,6 +391,52 @@ mod tests {
             .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did))
             .unwrap();
         assert_eq!(first.public_id, second.public_id);
+    }
+
+    #[test]
+    fn runtime_identity_replacement_removes_the_previous_local_identity_only() {
+        let previous = Identity::new_random();
+        let active = Identity::new_random();
+        let mut public_identities = PublicIdentityRegistry::default();
+        let previous_public = public_identities
+            .ensure_local_default(&previous.agent_did)
+            .expect("previous public identity");
+        let active_public = public_identities
+            .ensure_local_default(&active.agent_did)
+            .expect("active public identity");
+        let unrelated = public_identities
+            .upsert("observer", "Observer".to_owned(), None, true)
+            .expect("unrelated public identity");
+        let mut controller_bindings = ControllerBindingRegistry::default();
+        controller_bindings.ensure_local_wattswarm(&previous_public.public_id, &previous.agent_did);
+        controller_bindings.ensure_local_wattswarm(&active_public.public_id, &active.agent_did);
+
+        let removed = remove_replaced_local_runtime_identities(
+            &mut public_identities,
+            &mut controller_bindings,
+            &active.agent_did,
+        );
+
+        assert_eq!(removed, 1);
+        assert!(public_identities.get(&previous_public.public_id).is_none());
+        assert!(
+            controller_bindings
+                .get(&previous_public.public_id)
+                .is_none()
+        );
+        assert_eq!(
+            public_identities.get(&active_public.public_id),
+            Some(active_public)
+        );
+        assert_eq!(public_identities.get(&unrelated.public_id), Some(unrelated));
+        assert_eq!(
+            remove_replaced_local_runtime_identities(
+                &mut public_identities,
+                &mut controller_bindings,
+                &active.agent_did,
+            ),
+            0
+        );
     }
 
     #[test]

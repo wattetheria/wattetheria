@@ -67,6 +67,7 @@
     });
 
     bindServiceNetControls();
+    bindAgentIdentityControls();
     bindSkillControls();
     initThemePicker();
     enhanceAllSelects();

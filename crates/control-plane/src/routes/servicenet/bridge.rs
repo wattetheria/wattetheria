@@ -360,13 +360,14 @@ pub(super) fn validate_local_service_agent(
     let registration = registration.ok_or_else(|| {
         format!("Service Agent `{published_agent_id}` is not published by this Wattetheria Adapter")
     })?;
-    let identity = FileServiceAgentIdentityStore::new(&state.data_dir)
-        .load(published_agent_id)
-        .map_err(|error| {
-            format!(
-                "load Service Agent identity failed; publish from this node data directory first: {error}"
-            )
-        })?;
+    let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let service_agent_identity_id = identity_store
+        .publication_service_agent_identity_id(&registration.service_did, published_agent_id);
+    let identity = identity_store.load(&service_agent_identity_id).map_err(|error| {
+        format!(
+            "load Service Agent identity failed; publish from this node data directory first: {error}"
+        )
+    })?;
     if identity.service_did != registration.service_did {
         return Err(format!(
             "local Service Agent identity does not match the published DID for `{published_agent_id}`"

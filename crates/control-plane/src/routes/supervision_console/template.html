@@ -123,24 +123,202 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         </section>
 
         <section class="view-page" data-page="identity" hidden>
-          <article class="panel">
-            <h2>Agent Identities</h2>
-            <div id="identity-display-editor" class="identity-editor" onclick="if(event.target===this)cancelIdentityDisplayNameEdit()">
-              <form id="identity-display-form" class="identity-display-form" hidden>
-                <div class="identity-edit-title">Edit display name</div>
+          <article class="panel agent-identities-panel">
+            <div class="agent-identity-head">
+              <div>
+                <h2>Identities</h2>
+                <div id="agent-identity-status" class="status-text"></div>
+              </div>
+              <div class="agent-identity-tabs" role="tablist" aria-label="Identity type">
+                <button class="agent-identity-tab active" type="button" data-agent-identity-kind="runtime" role="tab" aria-selected="true">Runtime Agent</button>
+                <button class="agent-identity-tab" type="button" data-agent-identity-kind="service" role="tab" aria-selected="false">Service Agents</button>
+                <button class="agent-identity-tab" type="button" data-agent-identity-kind="provider" role="tab" aria-selected="false">Provider Identity</button>
+              </div>
+            </div>
+
+            <section id="runtime-agent-identity-view">
+              <div class="identity-view-toolbar">
+                <div class="identity-view-tabs" role="tablist" aria-label="Runtime Agent identity">
+                  <button class="identity-view-tab active" type="button" data-runtime-identity-tab="overview" aria-selected="true">Overview</button>
+                  <button class="identity-view-tab" type="button" data-runtime-identity-tab="credentials" aria-selected="false">Credentials</button>
+                  <button class="identity-view-tab" type="button" data-runtime-identity-tab="presentations" aria-selected="false">Presentations</button>
+                </div>
+                <div class="section-actions">
+                  <button id="runtime-identity-export" class="secondary" type="button">Export DID</button>
+                  <button id="runtime-identity-import" class="secondary" type="button">Import DID</button>
+                </div>
+              </div>
+              <div id="runtime-identity-pending" class="identity-transition-status" hidden>
+                <span class="identity-transition-state">Restart required</span>
+                <div class="identity-transition-copy">
+                  <strong>Runtime Agent DID change pending</strong>
+                  <span id="runtime-identity-pending-did"></span>
+                </div>
+              </div>
+              <div data-runtime-identity-panel="overview">
+                <div id="identity-display-editor" class="identity-editor" onclick="if(event.target===this)cancelIdentityDisplayNameEdit()">
+                  <form id="identity-display-form" class="identity-display-form" hidden>
+                    <div class="identity-edit-title">Edit display name</div>
+                    <label>
+                      Display Name
+                      <input id="identity-display-name" placeholder="Agent nickname" autocomplete="off" maxlength="40">
+                    </label>
+                    <div id="identity-display-status" class="status-text"></div>
+                    <div class="identity-editor-actions">
+                      <button id="identity-display-cancel" type="button" class="secondary">Cancel</button>
+                      <button id="identity-display-save" type="submit">Save</button>
+                    </div>
+                  </form>
+                </div>
+                <div id="identities-list" class="list"></div>
+              </div>
+              <div data-runtime-identity-panel="credentials" hidden>
+                <div class="credential-toolbar">
+                  <div>
+                    <h3>Runtime Agent Credentials</h3>
+                    <span class="subtle">W3C Verifiable Credentials bound to the active Runtime Agent DID.</span>
+                  </div>
+                  <button id="runtime-credential-import" type="button">Import Credential</button>
+                </div>
+                <div id="runtime-agent-credentials"></div>
+              </div>
+              <div class="identity-empty-state" data-runtime-identity-panel="presentations" hidden>
+                <strong>No verifiable presentations</strong>
+                <span>This Runtime Agent has not created or received a Verifiable Presentation.</span>
+              </div>
+            </section>
+
+            <section id="service-agent-identities-view" hidden>
+              <div class="identity-view-toolbar">
+                <div>
+                  <h3>Service Agent DIDs</h3>
+                  <span id="service-agent-identity-count" class="subtle"></span>
+                </div>
+                <div class="section-actions">
+                  <button id="service-agent-generate" type="button">Generate</button>
+                  <button id="service-agent-import" class="secondary" type="button">Import DID</button>
+                </div>
+              </div>
+              <div id="service-agent-identities-list" class="service-agent-identity-list"></div>
+              <section id="service-agent-identity-detail" class="service-agent-identity-detail" hidden>
+                <div class="identity-view-tabs" role="tablist" aria-label="Selected Service Agent identity">
+                  <button class="identity-view-tab active" type="button" data-service-identity-tab="overview" aria-selected="true">Overview</button>
+                  <button class="identity-view-tab" type="button" data-service-identity-tab="agent-card" aria-selected="false">Agent Card</button>
+                  <button class="identity-view-tab" type="button" data-service-identity-tab="credentials" aria-selected="false">Credentials</button>
+                  <button class="identity-view-tab" type="button" data-service-identity-tab="presentations" aria-selected="false">Presentations</button>
+                </div>
+                <div id="service-agent-identity-detail-body"></div>
+              </section>
+            </section>
+
+            <section id="provider-identity-view" hidden>
+              <div class="identity-view-toolbar">
+                <div class="identity-view-tabs" role="tablist" aria-label="Provider identity">
+                  <button class="identity-view-tab active" type="button" data-provider-identity-tab="overview" aria-selected="true">Overview</button>
+                  <button class="identity-view-tab" type="button" data-provider-identity-tab="credentials" aria-selected="false">Credentials</button>
+                  <button class="identity-view-tab" type="button" data-provider-identity-tab="presentations" aria-selected="false">Presentations</button>
+                </div>
+                <div class="section-actions">
+                  <button id="provider-identity-export" class="secondary" type="button">Export DID</button>
+                </div>
+              </div>
+              <div id="provider-identity-overview" data-provider-identity-panel="overview"></div>
+              <div data-provider-identity-panel="credentials" hidden>
+                <div class="credential-toolbar">
+                  <div>
+                    <h3>Provider Credentials</h3>
+                    <span class="subtle">W3C Verifiable Credentials bound to the Provider DID.</span>
+                  </div>
+                  <button id="provider-credential-import" type="button">Import Credential</button>
+                </div>
+                <div id="provider-agent-credentials"></div>
+              </div>
+              <div class="identity-empty-state" data-provider-identity-panel="presentations" hidden>
+                <strong>No verifiable presentations</strong>
+                <span>This Provider Identity has no Verifiable Presentations.</span>
+              </div>
+            </section>
+          </article>
+
+          <div id="agent-identity-modal" class="agent-identity-modal" hidden>
+            <div class="agent-identity-modal-panel" role="dialog" aria-modal="true" aria-labelledby="agent-identity-modal-title">
+              <div class="section-head">
+                <h2 id="agent-identity-modal-title">Import DID</h2>
+                <button id="agent-identity-modal-close" class="secondary" type="button" aria-label="Close">Close</button>
+              </div>
+                <form id="agent-identity-key-form">
+                  <input id="agent-identity-operation" type="hidden">
+                  <input id="agent-identity-confirmed-did" type="hidden">
+                  <div id="runtime-identity-import-warning" class="identity-import-warning" hidden>
+                    <strong>Use on a newly initialized node only</strong>
+                    <span>Importing after local data exists can make that data inconsistent with the new Runtime Agent identity.</span>
+                  </div>
+                  <label id="agent-identity-did-field">
+                    <span id="agent-identity-did-label">Expected Agent DID (optional)</span>
+                    <input id="agent-identity-did" autocomplete="off" placeholder="did:key:...">
+                  </label>
+                  <label id="agent-identity-private-key-field">
+                    Private Key
+                    <input id="agent-identity-private-key" type="password" autocomplete="new-password" spellcheck="false">
+                  </label>
+                  <div id="agent-identity-import-preview" class="identity-import-preview" hidden>
+                    <div class="identity-spec-section">
+                      <div id="agent-identity-preview-title" class="identity-spec-title">Derived Runtime Agent Identity</div>
+                      <div class="identity-spec-row">
+                        <span id="agent-identity-preview-did-label" class="identity-spec-k">agent_did</span>
+                        <span id="agent-identity-preview-did" class="identity-spec-v mono"></span>
+                      </div>
+                      <div class="identity-spec-row">
+                        <span class="identity-spec-k">identity_uri</span>
+                        <span id="agent-identity-preview-uri" class="identity-spec-v mono"></span>
+                      </div>
+                      <div class="identity-spec-row">
+                        <span class="identity-spec-k">fingerprint</span>
+                        <span id="agent-identity-preview-fingerprint" class="identity-spec-v mono"></span>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="agent-identity-modal-status" class="status-text"></div>
+                  <div class="identity-editor-actions">
+                    <button id="agent-identity-modal-cancel" class="secondary" type="button">Cancel</button>
+                    <button id="agent-identity-modal-back" class="secondary" type="button" hidden>Back</button>
+                    <button id="agent-identity-modal-submit" type="submit">Review Import</button>
+                  </div>
+                </form>
+            </div>
+          </div>
+
+          <div id="agent-credential-modal" class="agent-identity-modal" hidden>
+            <div class="agent-identity-modal-panel" role="dialog" aria-modal="true" aria-labelledby="agent-credential-modal-title">
+              <div class="section-head">
+                <h2 id="agent-credential-modal-title">Import Verifiable Credential</h2>
+                <button id="agent-credential-modal-close" class="secondary" type="button" aria-label="Close">Close</button>
+              </div>
+              <form id="agent-credential-form">
+                <input id="agent-credential-owner-kind" type="hidden">
+                <input id="agent-credential-agent-id" type="hidden">
                 <label>
-                  Display Name
-                  <input id="identity-display-name" placeholder="Agent nickname" autocomplete="off" maxlength="40">
+                  Credential Format
+                  <select id="agent-credential-format">
+                    <option value="w3c_vc_json">W3C VC JSON</option>
+                  </select>
                 </label>
-                <div id="identity-display-status" class="status-text"></div>
+                <label>
+                  Media Type
+                  <input id="agent-credential-media-type" autocomplete="off" value="application/vc+ld+json">
+                </label>
+                <label>
+                  Credential
+                  <textarea id="agent-credential-payload" rows="12" spellcheck="false" placeholder='{"@context":["https://www.w3.org/ns/credentials/v2"], ...}'></textarea>
+                </label>
+                <div id="agent-credential-modal-status" class="status-text"></div>
                 <div class="identity-editor-actions">
-                  <button id="identity-display-cancel" type="button" class="secondary">Cancel</button>
-                  <button id="identity-display-save" type="submit">Save</button>
+                  <button id="agent-credential-modal-cancel" class="secondary" type="button">Cancel</button>
+                  <button type="submit">Import</button>
                 </div>
               </form>
             </div>
-            <div id="identities-list" class="list"></div>
-          </article>
+          </div>
         </section>
 
         <section class="view-page" data-page="wallet" hidden>
@@ -322,8 +500,24 @@ __SUPERVISION_CONSOLE_CSS__  </style>
               <span id="servicenet-form-mode" class="pill ready">new</span>
             </div>
             <form id="servicenet-form" class="servicenet-form">
-              <input id="servicenet-agent-id" type="hidden">
               <input id="servicenet-provider-id" type="hidden">
+              <input id="servicenet-agent-id" type="hidden">
+
+              <section class="form-section">
+                <div class="form-section-title">Agent Identity</div>
+                <div class="form-grid">
+                  <label id="servicenet-identity-select-field">
+                    Agent DID
+                    <select id="servicenet-identity-id" required></select>
+                    <span class="field-note">Select an unbound DID. It will be bound to this Service Agent when publication succeeds.</span>
+                  </label>
+                  <label id="servicenet-identity-readonly-field" hidden>
+                    Agent DID
+                    <input id="servicenet-identity-readonly" type="text" readonly>
+                    <span class="field-note">Agent DID is fixed after publication.</span>
+                  </label>
+                </div>
+              </section>
 
               <section class="form-section">
                 <div class="form-section-title">Agent Card</div>

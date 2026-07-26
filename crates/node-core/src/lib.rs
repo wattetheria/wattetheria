@@ -21,17 +21,17 @@ use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
-    NodeGeoLocation, RateLimiter, StreamEvent, build_signed_node_event, push_signed_node_event,
-    push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
+    NodeGeoLocation, RateLimiter, ServiceNetProviderIdentity, StreamEvent, build_signed_node_event,
+    push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
     spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
 };
-use wattetheria_kernel::agent_identity::load_or_create_agent_identity;
+use wattetheria_kernel::agent_identity::FileAgentIdentityStore;
 use wattetheria_kernel::audit::AuditLog;
 use wattetheria_kernel::brain::{BrainEngine, BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::capabilities::CapabilityPolicy;
 use wattetheria_kernel::civilization::galaxy::GalaxyState;
 use wattetheria_kernel::civilization::identities::{
-    ControllerBindingRegistry, PublicIdentityRegistry,
+    ControllerBindingRegistry, PublicIdentityRegistry, reconcile_local_runtime_identity,
 };
 use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
@@ -49,6 +49,7 @@ use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_positio
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::payments::PaymentLedger;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
+use wattetheria_kernel::provider_identity::FileProviderIdentityStore;
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::PayloadSigner;
 use wattetheria_kernel::swarm_bridge::{HybridSwarmBridge, SwarmBridge};
@@ -127,7 +128,13 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let local_db = Arc::new(LocalDb::open(&local_db_path)?);
     let social_store = Arc::new(SocialStore::open(&local_db_path)?);
     social_store.import_legacy_db(local_db::legacy_social_db_path(&cli.data_dir))?;
-    let runtime_identity = load_or_create_agent_identity(&cli.data_dir)?;
+    let identity_store = FileAgentIdentityStore::new(&cli.data_dir);
+    let provider_identity = FileProviderIdentityStore::new(&cli.data_dir).load_or_create()?;
+    let servicenet_provider = ServiceNetProviderIdentity {
+        did: provider_identity.agent_did.clone(),
+        signer: Arc::new(provider_identity),
+    };
+    let (runtime_identity, _) = identity_store.load_or_create_runtime_identity()?;
     let signer: Arc<dyn PayloadSigner> = Arc::new(runtime_identity.clone());
     let identity = runtime_identity.compat_view();
     let event_log = EventLog::new(events_path)?;
@@ -202,6 +209,7 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         cli,
         &identity,
         signer.clone(),
+        servicenet_provider,
         &event_log,
         control_token,
         swarm_bridge,
@@ -235,6 +243,7 @@ async fn build_control_state(
     cli: &Cli,
     identity: &IdentityCompatView,
     signer: Arc<dyn PayloadSigner>,
+    servicenet_provider: ServiceNetProviderIdentity,
     event_log: &EventLog,
     control_token: String,
     swarm_bridge: Arc<dyn SwarmBridge>,
@@ -258,6 +267,7 @@ async fn build_control_state(
         agent_did: identity.agent_did.clone(),
         identity: identity.clone(),
         signer,
+        servicenet_provider,
         started_at: chrono::Utc::now().timestamp(),
         auth_token: control_token,
         mcp_token_auth_required: cli.mcp_token_auth_required,
@@ -332,8 +342,6 @@ fn load_civilization_runtime_state(
     identity: &IdentityCompatView,
     local_db: &LocalDb,
 ) -> Result<CivilizationRuntimeState> {
-    let agent_did = &identity.agent_did;
-
     let mission_board: MissionBoard = local_db.load_or_migrate(
         local_db::domain::MISSION_BOARD,
         &cli.data_dir.join("missions/state.json"),
@@ -391,10 +399,11 @@ fn load_civilization_runtime_state(
         &cli.data_dir.join("galaxy/travel_state.json"),
     )?;
 
-    let public_identity =
-        public_identity_registry.ensure_local_default_for_agent(agent_did, Some(agent_did))?;
-    let controller_binding =
-        controller_binding_registry.ensure_local_wattswarm(&public_identity.public_id, agent_did);
+    let (public_identity, controller_binding) = reconcile_local_runtime_identity(
+        &mut public_identity_registry,
+        &mut controller_binding_registry,
+        &identity.agent_did,
+    )?;
     if let Some(position) = resolve_anchor_position(
         &galaxy_map_registry.ensure_default_genesis_map(&galaxy_state.zones())?,
         None,
@@ -405,7 +414,7 @@ fn load_civilization_runtime_state(
             controller_binding
                 .controller_node_id
                 .as_deref()
-                .unwrap_or(agent_did),
+                .unwrap_or(identity.agent_did.as_str()),
             position,
         );
     }
@@ -794,6 +803,10 @@ fn normalize_gateway_urls(values: &[String]) -> Vec<String> {
     }
     normalized
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/runtime_identity_reconciliation.rs"]
+mod identity_replacement_tests;
 
 #[cfg(test)]
 mod tests {

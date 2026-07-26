@@ -4993,6 +4993,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "watt-credential"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "watt-did",
+]
+
+[[package]]
 name = "watt-did"
 version = "0.1.0"
 dependencies = [
@@ -5128,7 +5143,6 @@ dependencies = [
  "async-trait",
  "axum 0.8.8",
  "base64",
- "bs58 0.5.1",
  "bytes",
  "chrono",
  "clap",
@@ -5158,6 +5172,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "walkdir",
+ "watt-credential",
  "watt-did",
  "watt-wallet",
  "wattswarm-protocol",

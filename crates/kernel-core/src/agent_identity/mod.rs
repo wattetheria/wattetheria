@@ -8,7 +8,10 @@ use crate::identity::Identity;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-pub use file_store::FileAgentIdentityStore;
+pub use file_store::{
+    FileAgentIdentityStore, RuntimeIdentityActivation, RuntimeIdentityTransitionLock,
+    RuntimeIdentityTransitionPolicy,
+};
 pub use store::AgentIdentityStore;
 
 #[must_use]

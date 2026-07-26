@@ -87,6 +87,12 @@ pub struct AgentCommitContext {
     pub decision_id: String,
 }
 
+#[derive(Clone)]
+pub struct ServiceNetProviderIdentity {
+    pub did: String,
+    pub signer: Arc<dyn PayloadSigner>,
+}
+
 pub fn agent_commit_context_from_headers(headers: &HeaderMap) -> Option<AgentCommitContext> {
     let event_id = headers
         .get("x-agent-event-id")
@@ -112,6 +118,7 @@ pub struct ControlPlaneState {
     pub agent_did: String,
     pub identity: IdentityCompatView,
     pub signer: Arc<dyn PayloadSigner>,
+    pub servicenet_provider: ServiceNetProviderIdentity,
     pub started_at: i64,
     pub auth_token: String,
     pub mcp_token_auth_required: bool,

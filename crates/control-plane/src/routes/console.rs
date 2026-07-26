@@ -92,6 +92,8 @@ const SUPERVISION_CONSOLE_CSS: &str = concat!(
     "\n",
     include_str!("supervision_console/css/identity.css"),
     "\n",
+    include_str!("supervision_console/css/agent-identities.css"),
+    "\n",
     include_str!("supervision_console/css/social.css"),
     "\n",
     include_str!("supervision_console/css/utilities.css"),
@@ -130,6 +132,8 @@ const SUPERVISION_CONSOLE_JS: &str = concat!(
     include_str!("supervision_console/js/message-refresh.js"),
     "\n",
     include_str!("supervision_console/js/identity-list.js"),
+    "\n",
+    include_str!("supervision_console/js/agent-identities.js"),
     "\n",
     include_str!("supervision_console/js/wallet.js"),
     "\n",
@@ -218,5 +222,166 @@ mod tests {
 
         assert!(hives.contains("changed: !hadCachedMessages ||"));
         assert!(refresh.contains("restartMessageRefreshForCurrentView({ immediate: false })"));
+    }
+
+    #[test]
+    fn service_agent_identity_delete_requires_destructive_confirmation() {
+        let script = include_str!("supervision_console/js/agent-identities.js");
+
+        assert!(script.contains("data-service-agent-delete"));
+        assert!(script.contains("confirmDialog({"));
+        assert!(script.contains("Delete Service Agent DID"));
+        assert!(script.contains("This cannot be undone."));
+        assert!(script.contains("{ method: \"DELETE\", auth: true }"));
+        assert!(script.contains("<th>Service Agent</th><th>Service DID</th>"));
+        assert!(
+            !script.contains("[\"service_agent_identity_id\", identity.service_agent_identity_id")
+        );
+        assert!(!script.contains("`Import ${agentId} Credential`"));
+        assert!(script.contains("\"Import Service Agent Credential\""));
+    }
+
+    #[test]
+    fn runtime_identity_import_requires_preview_confirmation_and_uses_theme_tokens() {
+        let template = include_str!("supervision_console/template.html");
+        let script = include_str!("supervision_console/js/agent-identities.js");
+        let styles = include_str!("supervision_console/css/agent-identities.css");
+
+        assert!(template.contains("id=\"agent-identity-import-preview\""));
+        assert!(template.contains("id=\"agent-identity-preview-title\""));
+        assert!(template.contains("id=\"agent-identity-preview-did-label\""));
+        assert!(template.contains("id=\"agent-identity-preview-did\""));
+        assert!(template.contains("id=\"agent-identity-preview-uri\""));
+        assert!(template.contains("id=\"agent-identity-preview-fingerprint\""));
+        assert!(template.contains("id=\"agent-identity-modal-back\""));
+        assert!(template.contains("id=\"agent-identity-confirmed-did\" type=\"hidden\""));
+        assert!(template.contains("id=\"runtime-identity-import-warning\""));
+        assert!(template.contains("Use on a newly initialized node only"));
+        assert!(
+            template
+                .contains("Importing after local data exists can make that data inconsistent with the new Runtime Agent identity.")
+        );
+        assert!(script.contains("/v1/wattetheria/agent-identities/runtime/import/preview"));
+        assert!(script.contains("/v1/wattetheria/agent-identities/service-agents/import/preview"));
+        assert!(script.contains("showRuntimeIdentityImportPreview(result, runtime)"));
+        assert!(script.contains("qs(\"runtime-identity-import-warning\").hidden = !runtime"));
+        assert!(script.contains("agent_did: phase === \"preview\" ? confirmedDid : did || null"));
+        assert!(script.contains("service_did: phase === \"preview\" ? confirmedDid : did || null"));
+        assert!(script.contains("generation !== agentIdentityModalGeneration"));
+        assert!(script.contains("qs(\"agent-identity-operation\").value !== operation"));
+        assert!(script.contains("dataset.phase === \"submitting\""));
+        assert!(script.contains("setAgentIdentityModalDismissalDisabled(true)"));
+        assert!(script.contains(
+            "resetAgentIdentityModal();\n        try {\n          await loadManagedAgentIdentities();"
+        ));
+        assert!(script.contains("Confirm Runtime Agent DID"));
+        assert!(script.contains("Confirm Service Agent DID"));
+        assert!(script.contains("\"Derived Service Agent Identity\""));
+        assert!(script.contains("\"service_did\""));
+        assert!(script.contains("Confirm Import"));
+        assert!(script.contains("Nothing has been imported yet."));
+        assert!(script.contains("Import succeeded, but the identity view could not refresh."));
+        assert!(styles.contains(".identity-transition-status"));
+        assert!(styles.contains("border-left: 3px solid var(--accent)"));
+        assert!(styles.contains("background: var(--accent-soft)"));
+        assert!(styles.contains("color: var(--accent-strong)"));
+        assert!(styles.contains(".identity-import-warning"));
+        assert!(styles.contains(".identity-import-warning[hidden]"));
+        assert!(!styles.contains(".identity-activation-notice"));
+        assert!(!script.contains("Agent Card publication will then use the new DID."));
+        assert!(!script.contains("Runtime Agent DID staged. Restart the node to activate it."));
+    }
+
+    #[test]
+    fn provider_identity_is_separate_and_its_credentials_are_manageable() {
+        let template = include_str!("supervision_console/template.html");
+        let script = include_str!("supervision_console/js/agent-identities.js");
+        let styles = include_str!("supervision_console/css/agent-identities.css");
+        let runtime_tab = template
+            .find("data-agent-identity-kind=\"runtime\"")
+            .expect("Runtime Agent tab");
+        let service_tab = template
+            .find("data-agent-identity-kind=\"service\"")
+            .expect("Service Agents tab");
+        let provider_tab = template
+            .find("data-agent-identity-kind=\"provider\"")
+            .expect("Provider Identity tab");
+
+        assert!(runtime_tab < service_tab);
+        assert!(service_tab < provider_tab);
+        assert!(template.contains("id=\"provider-identity-view\""));
+        assert!(template.contains("data-provider-identity-tab=\"credentials\""));
+        assert!(template.contains("data-provider-identity-tab=\"presentations\""));
+        assert!(template.contains("id=\"provider-credential-import\""));
+        assert!(template.contains("id=\"provider-agent-credentials\""));
+        assert!(template.contains("id=\"provider-identity-export\""));
+        assert!(script.contains("/v1/wattetheria/provider-identity"));
+        assert!(script.contains("/v1/wattetheria/provider-identity/export"));
+        assert!(script.contains("/v1/wattetheria/provider-identity/credentials"));
+        assert!(script.contains("exportIdentityBackup(\"provider\")"));
+        assert!(script.contains("Export ${identityLabel} DID"));
+        assert!(script.contains("openAgentCredentialModal(\"provider\")"));
+        assert!(script.contains("renderProviderIdentityManagement()"));
+        assert!(!template.contains("id=\"provider-identity-import\""));
+        assert!(!script.contains("switchProviderIdentity"));
+        assert!(styles.contains("#provider-identity-view"));
+        assert!(styles.contains("border-bottom-color: var(--accent-strong)"));
+        assert!(styles.contains("color: var(--accent-strong)"));
+        assert!(!styles.contains("border-bottom-color: var(--blue)"));
+    }
+
+    #[test]
+    fn new_servicenet_publication_only_lists_unpublished_unbound_dids() {
+        let script = include_str!("supervision_console/js/agent-identities.js");
+
+        assert!(script.contains("identity.service_agent_identity_id === current"));
+        assert!(
+            script.contains("const current = selected === undefined ? select.value : selected")
+        );
+        assert!(!script.contains("const current = selected || select.value"));
+        assert!(
+            script.contains(
+                "!identity.bound_agent_id && identity.agent_card_status !== \"published\""
+            )
+        );
+        assert!(script.contains("No unpublished Service Agent DID available"));
+        assert!(!script.contains(
+            "identity.bound_agent_id && identity.service_agent_identity_id !== current ? \" disabled\""
+        ));
+    }
+
+    #[test]
+    fn published_servicenet_agent_did_is_read_only_when_editing() {
+        let template = include_str!("supervision_console/template.html");
+        let script = include_str!("supervision_console/js/servicenet.js");
+
+        assert!(template.contains("id=\"servicenet-identity-select-field\""));
+        assert!(template.contains("id=\"servicenet-identity-readonly-field\" hidden"));
+        assert!(template.contains("id=\"servicenet-identity-readonly\" type=\"text\" readonly"));
+        assert!(template.contains("Agent DID is fixed after publication."));
+        assert!(
+            script.contains(
+                "qs(\"servicenet-identity-select-field\").hidden = editingPublishedAgent"
+            )
+        );
+        assert!(script.contains(
+            "qs(\"servicenet-identity-readonly-field\").hidden = !editingPublishedAgent"
+        ));
+        assert!(script.contains("selectedIdentity?.service_did || agent.service_did || \"\""));
+    }
+
+    #[test]
+    fn runtime_and_service_agent_dids_require_confirmation_before_export() {
+        let template = include_str!("supervision_console/template.html");
+        let script = include_str!("supervision_console/js/agent-identities.js");
+
+        assert!(template.contains("id=\"runtime-identity-export\""));
+        assert!(script.contains("data-service-agent-export"));
+        assert!(script.contains("/v1/wattetheria/agent-identities/runtime/export"));
+        assert!(script.contains("/service-agents/${encodeURIComponent(identityId)}/export"));
+        assert!(script.contains("Anyone with this file controls the DID."));
+        assert!(script.contains("confirmText: \"Export DID\""));
+        assert!(script.contains("URL.createObjectURL(blob)"));
+        assert!(script.contains("URL.revokeObjectURL(url)"));
     }
 }

@@ -8,7 +8,9 @@ mod runtime_sessions;
 pub mod social_host;
 mod swarm_sync;
 pub mod routes {
+    pub(crate) mod agent_credentials;
     pub(crate) mod agent_events;
+    pub(crate) mod agent_identities;
     pub(crate) mod agent_skills;
     pub(crate) mod civilization;
     pub(crate) mod client;
@@ -17,10 +19,12 @@ pub mod routes {
     pub(crate) mod collective_skills;
     pub(crate) mod console;
     pub(crate) mod core;
+    pub(crate) mod credentials;
     pub(crate) mod diagnostics;
     pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod identity;
+    pub(crate) mod identity_support;
     pub(crate) mod mailbox;
     pub(crate) mod map;
     pub(crate) mod mcp;
@@ -30,6 +34,8 @@ pub mod routes {
     pub(crate) mod payment_chain;
     pub(crate) mod payments;
     pub(crate) mod policy;
+    pub(crate) mod provider_credentials;
+    pub(crate) mod provider_identity;
     pub(crate) mod reward_events;
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
@@ -59,7 +65,7 @@ pub use routes::client_api::{
 };
 pub use state::{
     ClientExportQuery, ControlPlaneState, GatewayEventSequence, GeoSource, NodeGeoLocation,
-    RateLimiter, StreamEvent,
+    RateLimiter, ServiceNetProviderIdentity, StreamEvent,
 };
 pub use swarm_sync::{DEFAULT_WATTSWARM_SYNC_GRPC_PORT, spawn_wattswarm_sync_bridge};
 
@@ -78,9 +84,99 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(mailbox_router())
         .merge(payments_router())
         .merge(policy_router())
+        .merge(agent_identity_router())
+        .merge(provider_identity_router())
         .merge(servicenet_router())
         .merge(servicenet_bridge_router())
         .with_state(state)
+}
+
+fn agent_identity_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/wattetheria/agent-identities/runtime",
+            get(routes::agent_identities::runtime_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/runtime/import",
+            post(routes::agent_identities::import_runtime_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/runtime/import/preview",
+            post(routes::agent_identities::preview_runtime_identity_import),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/runtime/export",
+            post(routes::agent_identities::export_runtime_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/runtime/credentials",
+            get(routes::agent_credentials::list_runtime_credentials)
+                .post(routes::agent_credentials::import_runtime_credential),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/runtime/credentials/{credential_id}",
+            delete(routes::agent_credentials::delete_runtime_credential),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents",
+            get(routes::agent_identities::list_service_agent_identities),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/generate",
+            post(routes::agent_identities::generate_service_agent_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/import",
+            post(routes::agent_identities::import_service_agent_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/import/preview",
+            post(routes::agent_identities::preview_service_agent_identity_import),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/{service_agent_identity_id}/export",
+            post(routes::agent_identities::export_service_agent_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/{service_agent_identity_id}",
+            delete(routes::agent_identities::delete_service_agent_identity),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/{service_agent_identity_id}/credentials",
+            get(routes::agent_credentials::list_service_agent_credentials)
+                .post(routes::agent_credentials::import_service_agent_credential),
+        )
+        .route(
+            "/v1/wattetheria/agent-identities/service-agents/{service_agent_identity_id}/credentials/{credential_id}",
+            delete(routes::agent_credentials::delete_service_agent_credential),
+        )
+        .route(
+            "/v1/wattetheria/credentials/trust-anchors",
+            get(routes::credentials::list_trust_anchors)
+                .put(routes::credentials::replace_trust_anchors),
+        )
+}
+
+fn provider_identity_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/wattetheria/provider-identity",
+            get(routes::provider_identity::provider_identity),
+        )
+        .route(
+            "/v1/wattetheria/provider-identity/export",
+            post(routes::provider_identity::export_provider_identity),
+        )
+        .route(
+            "/v1/wattetheria/provider-identity/credentials",
+            get(routes::provider_credentials::list_provider_credentials)
+                .post(routes::provider_credentials::import_provider_credential),
+        )
+        .route(
+            "/v1/wattetheria/provider-identity/credentials/{credential_id}",
+            delete(routes::provider_credentials::delete_provider_credential),
+        )
 }
 
 fn mcp_router() -> Router<ControlPlaneState> {

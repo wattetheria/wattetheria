@@ -102,9 +102,14 @@ async fn spawn_publication_servicenet(
     (addr, server)
 }
 
-fn rejected_customized_agent_body(agent_id: &str, adapter_url: &str) -> Value {
+fn rejected_customized_agent_body(
+    agent_id: &str,
+    service_agent_identity_id: &str,
+    adapter_url: &str,
+) -> Value {
     json!({
         "agent_id": agent_id,
+        "service_agent_identity_id": service_agent_identity_id,
         "service_address": format!("{agent_id}@wattetheria"),
         "execution_mode": "customized_agent",
         "connection_mode": "wattetheria_direct",
@@ -129,8 +134,16 @@ fn rejected_customized_agent_body(agent_id: &str, adapter_url: &str) -> Value {
     })
 }
 
+fn generate_service_agent_identity(
+    state: &ControlPlaneState,
+) -> wattetheria_kernel::agent_identity::service_agent::ServiceAgentIdentity {
+    FileServiceAgentIdentityStore::new(&state.data_dir)
+        .generate()
+        .unwrap()
+}
+
 #[tokio::test]
-async fn failed_publication_removes_the_new_service_agent_identity() {
+async fn publication_requires_a_preexisting_service_agent_identity() {
     let (servicenet_addr, servicenet_server) =
         spawn_publication_servicenet(PublicationOutcome::Rejected).await;
     let (_dir, _router, token, _, state) = build_test_app(20);
@@ -141,18 +154,63 @@ async fn failed_publication_removes_the_new_service_agent_identity() {
         ..state
     };
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
-    let identity_path = identity_store.identity_path("rejected-agent");
+    let status = authed_post(
+        app(state.clone()),
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        rejected_customized_agent_body(
+            "rejected-agent",
+            "missing-identity",
+            "https://provider.example.com/adapter",
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        !identity_store
+            .service_agent_identity_path("missing-identity")
+            .exists()
+    );
+    assert!(
+        load_servicenet_publisher_state(&state.data_dir)
+            .unwrap()
+            .registrations
+            .is_empty()
+    );
+    servicenet_server.abort();
+}
+
+#[tokio::test]
+async fn publication_is_blocked_while_a_runtime_did_import_is_pending() {
+    let (servicenet_addr, servicenet_server) =
+        spawn_publication_servicenet(PublicationOutcome::Accepted).await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let identity = generate_service_agent_identity(&state);
+    let imported = Identity::new_random();
+    wattetheria_kernel::agent_identity::FileAgentIdentityStore::new(&state.data_dir)
+        .stage_import(Some(&imported.agent_did), &imported.private_key)
+        .unwrap();
 
     let status = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        rejected_customized_agent_body("rejected-agent", "https://provider.example.com/adapter"),
+        rejected_customized_agent_body(
+            "pending-runtime-agent",
+            &identity.service_agent_identity_id,
+            "https://provider.example.com/adapter",
+        ),
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(!identity_path.exists());
+    assert_eq!(status, StatusCode::CONFLICT);
     assert!(
         load_servicenet_publisher_state(&state.data_dir)
             .unwrap()
@@ -174,12 +232,16 @@ async fn failed_update_restores_the_existing_service_agent_identity() {
         ..state
     };
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
-    let original = identity_store
-        .load_or_create(
+    let identity = generate_service_agent_identity(&state);
+    let provision = identity_store
+        .provision(
+            &identity.service_agent_identity_id,
             "existing-agent",
             "https://provider.example.com/original-adapter",
         )
         .unwrap();
+    let original = provision.identity().clone();
+    drop(provision);
 
     let status = authed_post(
         app(state),
@@ -187,13 +249,19 @@ async fn failed_update_restores_the_existing_service_agent_identity() {
         "/v1/wattetheria/servicenet/publish",
         rejected_customized_agent_body(
             "existing-agent",
+            &identity.service_agent_identity_id,
             "https://provider.example.com/replacement-adapter",
         ),
     )
     .await;
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(identity_store.load("existing-agent").unwrap(), original);
+    assert_eq!(
+        identity_store
+            .load(&identity.service_agent_identity_id)
+            .unwrap(),
+        original
+    );
     servicenet_server.abort();
 }
 
@@ -209,18 +277,24 @@ async fn ambiguous_publication_result_keeps_identity_and_local_registration() {
         ..state
     };
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
-    let identity_path = identity_store.identity_path("ambiguous-agent");
+    let identity = generate_service_agent_identity(&state);
+    let service_agent_identity_path =
+        identity_store.service_agent_identity_path(&identity.service_agent_identity_id);
 
     let status = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        rejected_customized_agent_body("ambiguous-agent", "https://provider.example.com/adapter"),
+        rejected_customized_agent_body(
+            "ambiguous-agent",
+            &identity.service_agent_identity_id,
+            "https://provider.example.com/adapter",
+        ),
     )
     .await;
 
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert!(identity_path.exists());
+    assert!(service_agent_identity_path.exists());
     let publisher_state = load_servicenet_publisher_state(&state.data_dir).unwrap();
     assert_eq!(publisher_state.registrations.len(), 1);
     assert_eq!(publisher_state.registrations[0].agent_id, "ambiguous-agent");
@@ -239,6 +313,7 @@ async fn server_error_keeps_identity_and_local_registration() {
         ..state
     };
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let identity = generate_service_agent_identity(&state);
 
     let status = authed_post(
         app(state.clone()),
@@ -246,13 +321,18 @@ async fn server_error_keeps_identity_and_local_registration() {
         "/v1/wattetheria/servicenet/publish",
         rejected_customized_agent_body(
             "server-error-agent",
+            &identity.service_agent_identity_id,
             "https://provider.example.com/adapter",
         ),
     )
     .await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(identity_store.identity_path("server-error-agent").exists());
+    assert!(
+        identity_store
+            .service_agent_identity_path(&identity.service_agent_identity_id)
+            .exists()
+    );
     assert_eq!(
         load_servicenet_publisher_state(&state.data_dir)
             .unwrap()
@@ -264,7 +344,7 @@ async fn server_error_keeps_identity_and_local_registration() {
 }
 
 #[tokio::test]
-async fn connection_failure_keeps_new_identity_and_staged_registration() {
+async fn connection_failure_keeps_selected_identity_and_staged_registration() {
     let (servicenet_addr, servicenet_server) =
         spawn_publication_servicenet(PublicationOutcome::Accepted).await;
     let (_dir, _router, token, _, state) = build_test_app(20);
@@ -274,12 +354,14 @@ async fn connection_failure_keeps_new_identity_and_staged_registration() {
         )),
         ..state
     };
+    let first_identity = generate_service_agent_identity(&state);
     let bootstrap_status = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
         rejected_customized_agent_body(
             "existing-provider-agent",
+            &first_identity.service_agent_identity_id,
             "https://provider.example.com/adapter",
         ),
     )
@@ -288,12 +370,14 @@ async fn connection_failure_keeps_new_identity_and_staged_registration() {
     servicenet_server.abort();
     let _ = servicenet_server.await;
 
+    let second_identity = generate_service_agent_identity(&state);
     let status = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
         rejected_customized_agent_body(
             "connection-error-agent",
+            &second_identity.service_agent_identity_id,
             "https://provider.example.com/second-adapter",
         ),
     )
@@ -303,7 +387,7 @@ async fn connection_failure_keeps_new_identity_and_staged_registration() {
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
     assert!(
         identity_store
-            .identity_path("connection-error-agent")
+            .service_agent_identity_path(&second_identity.service_agent_identity_id)
             .exists()
     );
     let publisher_state = load_servicenet_publisher_state(&state.data_dir).unwrap();
@@ -317,7 +401,7 @@ async fn connection_failure_keeps_new_identity_and_staged_registration() {
 }
 
 #[tokio::test]
-async fn local_staging_failure_removes_identity_before_remote_submission() {
+async fn local_staging_failure_preserves_selected_identity_before_remote_submission() {
     let (servicenet_addr, servicenet_server) =
         spawn_publication_servicenet(PublicationOutcome::Accepted).await;
     let (_dir, _router, token, _, state) = build_test_app(20);
@@ -329,6 +413,7 @@ async fn local_staging_failure_removes_identity_before_remote_submission() {
     };
     std::fs::write(state.data_dir.join("servicenet"), b"not a directory").unwrap();
     let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    let identity = generate_service_agent_identity(&state);
 
     let status = authed_post(
         app(state.clone()),
@@ -336,13 +421,18 @@ async fn local_staging_failure_removes_identity_before_remote_submission() {
         "/v1/wattetheria/servicenet/publish",
         rejected_customized_agent_body(
             "staging-error-agent",
+            &identity.service_agent_identity_id,
             "https://provider.example.com/adapter",
         ),
     )
     .await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(!identity_store.identity_path("staging-error-agent").exists());
+    assert!(
+        identity_store
+            .service_agent_identity_path(&identity.service_agent_identity_id)
+            .exists()
+    );
     servicenet_server.abort();
 }
 
@@ -357,17 +447,27 @@ async fn concurrent_agent_publications_keep_both_local_registrations() {
         )),
         ..state
     };
+    let first_identity = generate_service_agent_identity(&state);
+    let second_identity = generate_service_agent_identity(&state);
     let first = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        rejected_customized_agent_body("concurrent-one", "https://one.example.com/adapter"),
+        rejected_customized_agent_body(
+            "concurrent-one",
+            &first_identity.service_agent_identity_id,
+            "https://one.example.com/adapter",
+        ),
     );
     let second = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        rejected_customized_agent_body("concurrent-two", "https://two.example.com/adapter"),
+        rejected_customized_agent_body(
+            "concurrent-two",
+            &second_identity.service_agent_identity_id,
+            "https://two.example.com/adapter",
+        ),
     );
 
     let (first_status, second_status) = tokio::join!(first, second);
@@ -392,6 +492,101 @@ async fn concurrent_agent_publications_keep_both_local_registrations() {
 }
 
 #[tokio::test]
+async fn concurrent_rebind_to_the_same_agent_id_is_serialized_and_rejected() {
+    let control = Arc::new(PublicationInterleaveControl::default());
+    let (servicenet_addr, servicenet_server) = spawn_publication_servicenet(
+        PublicationOutcome::BlockSecondSubmission(Arc::clone(&control)),
+    )
+    .await;
+    let (_dir, _router, token, _, state) = build_test_app(20);
+    let state = ControlPlaneState {
+        servicenet_client: Some(Arc::new(
+            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
+        )),
+        ..state
+    };
+    let original_identity = generate_service_agent_identity(&state);
+    let competing_identity = generate_service_agent_identity(&state);
+    let initial_status = authed_post(
+        app(state.clone()),
+        &token,
+        "/v1/wattetheria/servicenet/publish",
+        rejected_customized_agent_body(
+            "serialized-rebind-agent",
+            &original_identity.service_agent_identity_id,
+            "https://provider.example.com/adapter",
+        ),
+    )
+    .await;
+    assert_eq!(initial_status, StatusCode::OK);
+
+    let update_state = state.clone();
+    let update_token = token.clone();
+    let original_service_agent_identity_id = original_identity.service_agent_identity_id.clone();
+    let update = tokio::spawn(async move {
+        authed_post(
+            app(update_state),
+            &update_token,
+            "/v1/wattetheria/servicenet/publish",
+            rejected_customized_agent_body(
+                "serialized-rebind-agent",
+                &original_service_agent_identity_id,
+                "https://provider.example.com/updated-adapter",
+            ),
+        )
+        .await
+    });
+    control.blocked_submission_started.notified().await;
+
+    let rebind_state = state.clone();
+    let rebind_token = token.clone();
+    let competing_service_agent_identity_id = competing_identity.service_agent_identity_id.clone();
+    let mut rebind = tokio::spawn(async move {
+        authed_post(
+            app(rebind_state),
+            &rebind_token,
+            "/v1/wattetheria/servicenet/publish",
+            rejected_customized_agent_body(
+                "serialized-rebind-agent",
+                &competing_service_agent_identity_id,
+                "https://competitor.example.com/adapter",
+            ),
+        )
+        .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut rebind)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        control
+            .submission_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+
+    control.release_submission.notify_one();
+    assert_eq!(update.await.unwrap(), StatusCode::OK);
+    assert_eq!(rebind.await.unwrap(), StatusCode::CONFLICT);
+    let publisher_state = load_servicenet_publisher_state(&state.data_dir).unwrap();
+    assert_eq!(publisher_state.registrations.len(), 1);
+    assert_eq!(
+        publisher_state.registrations[0].service_did,
+        original_identity.service_did
+    );
+    let identity_store = FileServiceAgentIdentityStore::new(&state.data_dir);
+    assert_eq!(
+        identity_store
+            .load(&competing_identity.service_agent_identity_id)
+            .unwrap()
+            .bound_agent_id,
+        None
+    );
+    servicenet_server.abort();
+}
+
+#[tokio::test]
 async fn unpublish_waits_for_an_inflight_publish_of_the_same_agent() {
     let control = Arc::new(PublicationInterleaveControl::default());
     let (servicenet_addr, servicenet_server) = spawn_publication_servicenet(
@@ -405,17 +600,23 @@ async fn unpublish_waits_for_an_inflight_publish_of_the_same_agent() {
         )),
         ..state
     };
+    let identity = generate_service_agent_identity(&state);
     let initial_status = authed_post(
         app(state.clone()),
         &token,
         "/v1/wattetheria/servicenet/publish",
-        rejected_customized_agent_body("serialized-agent", "https://provider.example.com/adapter"),
+        rejected_customized_agent_body(
+            "serialized-agent",
+            &identity.service_agent_identity_id,
+            "https://provider.example.com/adapter",
+        ),
     )
     .await;
     assert_eq!(initial_status, StatusCode::OK);
 
     let update_state = state.clone();
     let update_token = token.clone();
+    let service_agent_identity_id = identity.service_agent_identity_id.clone();
     let update = tokio::spawn(async move {
         authed_post(
             app(update_state),
@@ -423,6 +624,7 @@ async fn unpublish_waits_for_an_inflight_publish_of_the_same_agent() {
             "/v1/wattetheria/servicenet/publish",
             rejected_customized_agent_body(
                 "serialized-agent",
+                &service_agent_identity_id,
                 "https://provider.example.com/updated-adapter",
             ),
         )

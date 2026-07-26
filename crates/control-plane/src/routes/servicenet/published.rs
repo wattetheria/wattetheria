@@ -51,7 +51,9 @@ pub(crate) async fn published_agents(
     let items: Vec<Value> = publisher_state
         .registrations
         .iter()
-        .filter(|registration| registration_matches_identity(registration, &state.agent_did))
+        .filter(|registration| {
+            registration_matches_identity(registration, &state.servicenet_provider.did)
+        })
         .map(published_registration_json)
         .collect();
     let _ = state.audit_log.append(AuditEntry {
@@ -61,7 +63,7 @@ pub(crate) async fn published_agents(
         action: "servicenet.agents.published.list".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(state.agent_did.clone()),
+        subject: Some(state.servicenet_provider.did.clone()),
         capability: Some("net.outbound".to_string()),
         reason: Some("servicenet.publish".to_string()),
         duration_ms: None,
@@ -71,7 +73,7 @@ pub(crate) async fn published_agents(
     Json(json!({
         "items": items,
         "count": count,
-        "provider_did": state.agent_did,
+        "provider_did": state.servicenet_provider.did,
     }))
     .into_response()
 }

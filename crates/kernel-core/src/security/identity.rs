@@ -12,8 +12,6 @@ use std::path::Path;
 use watt_did::{Did, DidKey, DidKeyPublicKey};
 
 const DID_KEY_PREFIX: &str = "did:key:";
-const DID_KEY_BASE58BTC_PREFIX: char = 'z';
-const ED25519_MULTICODEC_PREFIX: [u8; 2] = [0xed, 0x01];
 const FINGERPRINT_BYTES: usize = 8;
 const PUBLIC_ID_SEPARATOR: char = '.';
 
@@ -28,6 +26,13 @@ pub struct Identity {
 pub struct IdentityCompatView {
     pub agent_did: String,
     pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed25519DidKeyMaterial {
+    pub did: String,
+    pub public_key: String,
+    pub private_key: String,
 }
 
 impl Identity {
@@ -140,6 +145,18 @@ impl Identity {
         })
     }
 
+    pub fn import_ed25519_private_key(
+        expected_agent_did: Option<&str>,
+        private_key_b64: &str,
+    ) -> Result<Self> {
+        let material = import_ed25519_did_key(expected_agent_did, private_key_b64)?;
+        Ok(Self {
+            agent_did: material.did,
+            public_key: material.public_key,
+            private_key: material.private_key,
+        })
+    }
+
     #[must_use]
     pub fn compat_view(&self) -> IdentityCompatView {
         IdentityCompatView {
@@ -147,6 +164,33 @@ impl Identity {
             public_key: self.public_key.clone(),
         }
     }
+}
+
+pub fn import_ed25519_did_key(
+    expected_did: Option<&str>,
+    private_key_b64: &str,
+) -> Result<Ed25519DidKeyMaterial> {
+    let bytes = STANDARD
+        .decode(private_key_b64.trim())
+        .context("decode Ed25519 private key")?;
+    let seed: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow!("invalid Ed25519 private key length"))?;
+    let signing_key = SigningKey::from_bytes(&seed);
+    let public_key = STANDARD.encode(signing_key.verifying_key().as_bytes());
+    let did = did_key_from_public_key_b64(&public_key)?;
+    if let Some(expected_did) = expected_did
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && expected_did != did
+    {
+        bail!("imported private key does not match expected DID");
+    }
+    Ok(Ed25519DidKeyMaterial {
+        did,
+        public_key,
+        private_key: STANDARD.encode(seed),
+    })
 }
 
 impl IdentityCompatView {
@@ -315,16 +359,10 @@ pub fn did_key_from_public_key_b64(public_key_b64: &str) -> Result<String> {
     let public_key = STANDARD
         .decode(public_key_b64)
         .context("decode public key base64")?;
-    if public_key.len() != 32 {
-        bail!("invalid public key length");
-    }
-    let mut multicodec = Vec::with_capacity(ED25519_MULTICODEC_PREFIX.len() + public_key.len());
-    multicodec.extend_from_slice(&ED25519_MULTICODEC_PREFIX);
-    multicodec.extend_from_slice(&public_key);
-    Ok(format!(
-        "{DID_KEY_PREFIX}{DID_KEY_BASE58BTC_PREFIX}{}",
-        bs58::encode(multicodec).into_string()
-    ))
+    let public_key: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| anyhow!("invalid public key length"))?;
+    Ok(DidKey::from_ed25519_public_key(public_key)?.did.to_string())
 }
 
 #[cfg(test)]
@@ -352,6 +390,19 @@ mod tests {
 
         let loaded = Identity::load(&path).unwrap();
         assert_eq!(loaded.agent_did, identity.agent_did);
+    }
+
+    #[test]
+    fn shared_private_key_import_derives_and_validates_did_key_material() {
+        let source = Identity::new_random();
+
+        let imported =
+            import_ed25519_did_key(Some(&source.agent_did), &source.private_key).unwrap();
+
+        assert_eq!(imported.did, source.agent_did);
+        assert_eq!(imported.public_key, source.public_key);
+        assert_eq!(imported.private_key, source.private_key);
+        assert!(import_ed25519_did_key(Some("did:key:zWrong"), &source.private_key).is_err());
     }
 
     #[test]

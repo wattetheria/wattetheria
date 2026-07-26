@@ -10,6 +10,7 @@ use wattetheria_kernel::brain::{BrainProviderConfig, RuntimeSessionMode};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mcp::McpRegistry;
+use wattetheria_kernel::provider_identity::FileProviderIdentityStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LocalConfig {
@@ -72,6 +73,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     fs::create_dir_all(data_dir.join("mcp"))?;
     fs::create_dir_all(data_dir.join("policy"))?;
 
+    let provider_identity = FileProviderIdentityStore::new(data_dir).load_or_create()?;
     let identity = load_or_create_agent_identity(data_dir)?;
     let _ = EventLog::new(data_dir.join("events.jsonl"))?;
     let token = load_or_create_control_token(data_dir.join("control.token"))?;
@@ -93,6 +95,7 @@ pub(crate) fn run_init(data_dir: &Path) -> Result<()> {
     let response = serde_json::json!({
         "status": "ok",
         "agent_did": identity.agent_did,
+        "provider_did": provider_identity.agent_did,
         "data_dir": data_dir,
         "control_plane_endpoint": read_config(data_dir)?.control_plane_endpoint,
         "token_file": data_dir.join("control.token"),

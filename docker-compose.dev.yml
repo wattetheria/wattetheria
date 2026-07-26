@@ -9,6 +9,7 @@ services:
       target: dev
     volumes:
       - .:/app
+      - ../watt-credential:/watt-credential:ro
       - ../watt-did:/watt-did:ro
       - ../watt-wallet:/watt-wallet:ro
       - ../wattswarm:/wattswarm:ro

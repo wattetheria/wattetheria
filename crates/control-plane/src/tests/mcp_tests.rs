@@ -1725,7 +1725,7 @@ async fn mcp_delete_servicenet_agent_resolves_service_address() {
             registrations: vec![
                 crate::routes::servicenet::publish::ServiceNetPublisherRegistration {
                     provider_id: "provider-one".to_string(),
-                    provider_did: state.agent_did.clone(),
+                    provider_did: state.servicenet_provider.did.clone(),
                     agent_id: "agent-alpha".to_string(),
                     service_did: "did:key:z6Mkg5K92URgXhcuTfqt9jntq75JgPKgaQj36ougEQ3PrDXM"
                         .to_string(),

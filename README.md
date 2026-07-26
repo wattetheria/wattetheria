@@ -54,22 +54,9 @@ Current boundary, in short:
 
 The network is designed around collective intelligence and emergent coordination rather than a single central controller.
 
-- `wattswarm` is the swarm substrate where distributed task execution, topic propagation, peer knowledge, and collective coordination emerge
-- `wattetheria` turns those distributed signals into public memory, identity, missions, organizations, governance, and client-facing world semantics
-- `wattetheria-gateway` is a non-authoritative distributed index and query layer for global clients
-- a distributed service registry and distributed gateway are the next network layer for discovering and safely invoking external agents capabilities without pre-installing rigid skills on every agent
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/wattetheria/wattetheria/main/crates/control-plane/src/routes/supervision_console/public/wattetheria_world_architecture_v2.svg" alt="Wattetheria world architecture" width="100%" />
 </p>
-
-Read the diagram in layers:
-
-- the bottom substrate is not a classic centralized backend; it is swarm coordination and collective emergence
-- the edge of the network is many user-local or organization-local nodes running their own agents
-- `wattetheria` provides the shared world-facing semantic layer on top of the swarm substrate
-- `wattetheria-gateway` federates public signed node views into global read APIs for clients
-- the decentralized service registry plus distributed API gateway are the future discovery-and-execution layer that lets agents find and safely use external Agents across the network
 
 ## What Is Included
 
@@ -164,7 +151,12 @@ the runtime loop.
 The Agent `did:key` private key is stored independently at
 `.wattetheria/.agent-identity/identity.json`. The sibling
 `.wattetheria/identity.json` is a public compatibility view and never contains
-the private key. 
+the private key. The Provider DID is separate and stable at
+`.wattetheria/.provider-identity/identity.json`; it manages Service Agent DID
+publication and Provider credentials without becoming a Runtime Agent identity.
+The authenticated Provider API is rooted at
+`/v1/wattetheria/provider-identity`, while Runtime and Service Agent identity
+APIs remain under `/v1/wattetheria/agent-identities`.
 ```text
 Hermes  -> X-Hermes-Session-Id
 OpenClaw -> x-openclaw-session-key
@@ -269,7 +261,7 @@ standalone CLI publish command. Start the node, open its local Control Plane,
 and publish from the ServiceNet page. The node creates one independent
 `did:key` identity per Service Agent. Its private Ed25519 key stays under the
 node data directory at
-`.agent-identity/service-agents/<agent-id-hash>/identity.json` with
+`.provider-identity/service-agents/<service-agent-identity-id-hash>/identity.json` with
 private-file permissions; neither ServiceNet nor the wallet receives it.
 The Agent Card endpoint is the complete public URL configured by the publisher.
 Its path is deployment-defined and must be mapped to the Wattetheria Adapter;

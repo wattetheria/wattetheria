@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use tower::ServiceExt;
 use watt_wallet::SignerPurpose;
+use wattetheria_kernel::agent_identity::FileAgentIdentityStore;
 use wattetheria_kernel::agent_identity::service_agent::{
     FileServiceAgentIdentityStore, ServiceAgentIdentityStore,
 };
@@ -46,6 +47,7 @@ use wattetheria_kernel::identity::{
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
+use wattetheria_kernel::provider_identity::FileProviderIdentityStore;
 use wattetheria_kernel::servicenet::ServiceNetClient;
 use wattetheria_kernel::signing::{canonical_bytes, sign_payload, verify_payload};
 use wattetheria_kernel::swarm_bridge::{
@@ -123,6 +125,15 @@ fn build_test_state_with_bridge(
     String,
     Arc<Mutex<PolicyEngine>>,
 ) {
+    let identity_store = FileAgentIdentityStore::new(dir.path());
+    if !identity_store.identity_path().exists() {
+        identity
+            .save(identity_store.identity_path())
+            .expect("save test Runtime identity");
+    }
+    let provider_identity = FileProviderIdentityStore::new(dir.path())
+        .load_or_create()
+        .expect("load test ServiceNet Provider identity");
     let local_db =
         Arc::new(wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"));
     let social_store =
@@ -278,6 +289,10 @@ fn build_test_state_with_bridge(
         agent_did: identity.agent_did.clone(),
         identity: identity.compat_view(),
         signer: Arc::new(identity.clone()),
+        servicenet_provider: ServiceNetProviderIdentity {
+            did: provider_identity.agent_did.clone(),
+            signer: Arc::new(provider_identity),
+        },
         started_at: Utc::now().timestamp(),
         auth_token: token.clone(),
         mcp_token_auth_required: false,
@@ -2393,8 +2408,10 @@ async fn complete_and_settle_mission(
 mod agent_event_tests;
 mod civilization_tests;
 mod client_tests;
+mod credential_tests;
 mod diagnostics_tests;
 mod galaxy_tests;
+mod identity_tests;
 mod mcp_tests;
 mod organization_tests;
 mod servicenet_publication_tests;

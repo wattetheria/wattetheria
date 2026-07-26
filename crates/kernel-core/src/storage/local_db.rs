@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+const SERVICENET_ASYNC_INVOCATIONS_TABLE: &str = "servicenet_async_invocations";
 pub const PRIMARY_DB_FILE: &str = "wattetheria.db";
 pub const LEGACY_SOCIAL_DB_FILE: &str = "social.db";
 
@@ -85,6 +86,10 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::CONTRIBUTION_EVENT_LOG, "contribution_event_log"),
     (domain::COLLECTIVE_MISSION_RUNS, "collective_mission_runs"),
     (domain::NETWORK_MISSION_CLAIMS, "network_mission_claims"),
+    (
+        domain::SERVICENET_ASYNC_INVOCATIONS,
+        SERVICENET_ASYNC_INVOCATIONS_TABLE,
+    ),
 ];
 
 fn domain_table_name(domain: &str) -> String {
@@ -201,8 +206,9 @@ impl LocalDb {
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.conn();
-        conn.execute_batch(
+        let mut conn = self.conn();
+        let tx = conn.transaction().context("begin local db migration")?;
+        tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (
                 version INTEGER NOT NULL
             );",
@@ -210,7 +216,7 @@ impl LocalDb {
         .context("create schema_version table")?;
 
         let current: Option<i64> =
-            match conn.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            match tx.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
                 row.get(0)
             }) {
                 Ok(version) => Some(version),
@@ -218,7 +224,7 @@ impl LocalDb {
                 Err(error) => return Err(error).context("read schema version"),
             };
 
-        conn.execute_batch(
+        tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS agent_action_commit_log (
                 commit_id TEXT PRIMARY KEY,
                 event_id TEXT NOT NULL,
@@ -241,29 +247,41 @@ impl LocalDb {
         .context("create agent_action_commit_log table")?;
 
         for (_, table) in DOMAIN_TABLES {
-            Self::create_domain_table(&conn, table)?;
+            Self::create_domain_table(&tx, table)?;
+        }
+
+        if current.unwrap_or(0) < 5 {
+            let legacy_table = format!(
+                "domain_{}",
+                hex_encode(domain::SERVICENET_ASYNC_INVOCATIONS.as_bytes())
+            );
+            Self::migrate_legacy_domain_table(
+                &tx,
+                &legacy_table,
+                SERVICENET_ASYNC_INVOCATIONS_TABLE,
+            )?;
         }
 
         if current.unwrap_or(0) < SCHEMA_VERSION {
-            conn.execute_batch("DROP TABLE IF EXISTS domain_state;")
+            tx.execute_batch("DROP TABLE IF EXISTS domain_state;")
                 .context("drop legacy domain_state table")?;
         }
 
         if current.is_none() {
-            conn.execute(
+            tx.execute(
                 "INSERT INTO schema_version (version) VALUES (?1)",
                 params![SCHEMA_VERSION],
             )
             .context("insert schema version")?;
         } else {
-            conn.execute(
+            tx.execute(
                 "UPDATE schema_version SET version = ?1",
                 params![SCHEMA_VERSION],
             )
             .context("update schema version")?;
         }
 
-        Ok(())
+        tx.commit().context("commit local db migration")
     }
 
     pub fn load_domain<T: serde::de::DeserializeOwned>(&self, domain: &str) -> Result<Option<T>> {
@@ -583,6 +601,62 @@ impl LocalDb {
             .with_context(|| format!("check domain table exists: {table}"))?;
         Ok(exists != 0)
     }
+
+    fn migrate_legacy_domain_table(
+        conn: &Connection,
+        legacy_table: &str,
+        current_table: &str,
+    ) -> Result<()> {
+        if !Self::table_exists(conn, legacy_table)? {
+            return Ok(());
+        }
+
+        let read_payload = |table: &str| -> Result<Option<(String, String)>> {
+            match conn.query_row(
+                &format!(
+                    "SELECT payload, updated_at FROM {} WHERE id = 1",
+                    quote_ident(table)
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ) {
+                Ok(row) => Ok(Some(row)),
+                Err(QueryReturnedNoRows) => Ok(None),
+                Err(error) => {
+                    Err(error).with_context(|| format!("read domain table migration: {table}"))
+                }
+            }
+        };
+
+        let legacy = read_payload(legacy_table)?;
+        let current = read_payload(current_table)?;
+        match (legacy, current) {
+            (Some((legacy_payload, legacy_updated_at)), None) => {
+                conn.execute(
+                    &format!(
+                        "INSERT INTO {} (id, payload, updated_at) VALUES (1, ?1, ?2)",
+                        quote_ident(current_table)
+                    ),
+                    params![legacy_payload, legacy_updated_at],
+                )
+                .with_context(|| {
+                    format!("copy legacy domain table {legacy_table} to {current_table}")
+                })?;
+            }
+            (Some((legacy_payload, _)), Some((current_payload, _)))
+                if legacy_payload != current_payload =>
+            {
+                anyhow::bail!(
+                    "refusing to overwrite conflicting domain tables {legacy_table} and {current_table}"
+                );
+            }
+            _ => {}
+        }
+
+        conn.execute(&format!("DROP TABLE {}", quote_ident(legacy_table)), [])
+            .with_context(|| format!("drop migrated legacy domain table: {legacy_table}"))?;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for LocalDb {
@@ -689,6 +763,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(saved, "\"hives\"");
+    }
+
+    #[test]
+    fn servicenet_async_invocations_use_readable_table_name() {
+        let db = LocalDb::open_in_memory().unwrap();
+        db.save_domain(domain::SERVICENET_ASYNC_INVOCATIONS, &"invocations")
+            .unwrap();
+
+        let saved: String = db
+            .conn()
+            .query_row(
+                "SELECT payload FROM servicenet_async_invocations WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "\"invocations\"");
+    }
+
+    #[test]
+    fn migrate_preserves_legacy_servicenet_async_invocations() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join(PRIMARY_DB_FILE);
+        let legacy_table = format!(
+            "domain_{}",
+            hex_encode(domain::SERVICENET_ASYNC_INVOCATIONS.as_bytes())
+        );
+        let legacy_state = SampleState {
+            name: "pending-invocation".to_string(),
+            count: 1,
+        };
+        let legacy_payload = serde_json::to_string(&legacy_state).unwrap();
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version (version) VALUES (4);",
+            )
+            .unwrap();
+            LocalDb::create_domain_table(&conn, &legacy_table).unwrap();
+            conn.execute(
+                &format!(
+                    "INSERT INTO {} (id, payload, updated_at) VALUES (1, ?1, ?2)",
+                    quote_ident(&legacy_table)
+                ),
+                params![legacy_payload, "2026-07-26T00:00:00Z"],
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open(&db_path).unwrap();
+        let loaded: SampleState = db
+            .load_domain(domain::SERVICENET_ASYNC_INVOCATIONS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, legacy_state);
+        assert!(
+            !LocalDb::table_exists(&db.conn(), &legacy_table).unwrap(),
+            "legacy encoded table should be removed after migration"
+        );
     }
 
     #[test]
