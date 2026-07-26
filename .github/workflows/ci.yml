@@ -36,12 +36,18 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
+          repository: wattetheria/watt-credential
+          path: deps/watt-credential
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-credential" "$GITHUB_WORKSPACE/../watt-credential"
           ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,12 +70,18 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
+          repository: wattetheria/watt-credential
+          path: deps/watt-credential
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-credential" "$GITHUB_WORKSPACE/../watt-credential"
           ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -93,12 +105,18 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - uses: actions/checkout@v4
         with:
+          repository: wattetheria/watt-credential
+          path: deps/watt-credential
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
           repository: wattetheria/wattswarm
           path: deps/wattswarm
           token: ${{ secrets.CROSS_REPO_TOKEN }}
       - run: |
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-did" "$GITHUB_WORKSPACE/../watt-did"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-credential" "$GITHUB_WORKSPACE/../watt-credential"
           ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
