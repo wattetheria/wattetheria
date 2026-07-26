@@ -23,8 +23,8 @@ COPY crates/node-core/Cargo.toml crates/node-core/Cargo.toml
 COPY crates/social/Cargo.toml crates/social/Cargo.toml
 
 # Replace local path dependencies with git sources for Docker builds.
-# This lets users build the image without cloning watt-did / watt-wallet.
-# 1) kernel-core + control-plane + social: swap path deps to git
+# This lets users build the image without cloning watt-did / watt-wallet / watt-credential.
+# 1) workspace manifests: swap local path deps to git
 RUN sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     -e 's|watt-wallet = { path = "../../../watt-wallet" }|watt-wallet = { git = "https://github.com/wattetheria/watt-wallet.git" }|' \
@@ -39,9 +39,12 @@ RUN sed -i \
     apps/wattetheria-cli/Cargo.toml \
     && sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
-    crates/social/Cargo.toml
-# 2) root Cargo.toml: patch watt-wallet's internal path dep on watt-did
-RUN printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
+    crates/social/Cargo.toml \
+    && sed -i \
+    -e 's|watt-credential = { path = "../watt-credential" }|watt-credential = { git = "https://github.com/wattetheria/watt-credential.git" }|' \
+    Cargo.toml
+# 2) root Cargo.toml: patch git dependencies' internal path deps on watt-did
+RUN printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n\n[patch."https://github.com/wattetheria/watt-credential.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
 # 3) root Cargo.toml: remove local wattswarm path override inside Docker.
 RUN sed -i \
@@ -99,9 +102,12 @@ RUN sed -i \
     -e 's|watt-did = { path = "../../../watt-did" }|watt-did = { git = "https://github.com/wattetheria/watt-did.git" }|' \
     crates/social/Cargo.toml \
     && sed -i \
+    -e 's|watt-credential = { path = "../watt-credential" }|watt-credential = { git = "https://github.com/wattetheria/watt-credential.git" }|' \
+    Cargo.toml \
+    && sed -i \
     '/^\[patch\."https:\/\/github\.com\/wattetheria\/wattswarm\.git"\]$/,+1d' \
     Cargo.toml \
-    && printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
+    && printf '\n[patch."https://github.com/wattetheria/watt-wallet.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n\n[patch."https://github.com/wattetheria/watt-credential.git"]\nwatt-did = { git = "https://github.com/wattetheria/watt-did.git" }\n' \
     >> Cargo.toml
 
 # Fetch wattswarm proto file for gRPC codegen (build.rs uses WATTSWARM_SYNC_PROTO).
