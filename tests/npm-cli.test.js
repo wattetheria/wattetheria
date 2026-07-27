@@ -25,12 +25,15 @@ test("help separates network commands and lists all subcommands", () => {
   assert.doesNotMatch(result.stdout, /Agent subcommands:/);
   assert.doesNotMatch(result.stdout, /^\s+identity\s*$/m);
   assert.doesNotMatch(result.stdout, /^\s+servicenet\s*$/m);
-  const generalCommands = result.stdout.match(/Commands:\n([\s\S]*?)\nNetwork:/);
+  const generalCommands = result.stdout.match(/Commands:\n([\s\S]*?)\nOptions:/);
   assert.ok(generalCommands);
   assert.doesNotMatch(generalCommands[1], /^\s+network\s/m);
 
-  const registrationSection = result.stdout.match(/Network:\n([\s\S]*?)\nOptions:/);
+  const registrationSection = result.stdout.match(/Network:\n([\s\S]*)$/);
   assert.ok(registrationSection);
+  assert.ok(result.stdout.indexOf("Options:") < result.stdout.indexOf("Network:"));
+  assert.match(registrationSection[1], /\n  Commands:\n/);
+  assert.doesNotMatch(registrationSection[1], /Subcommands:/);
   const subcommands = [...registrationSection[1].matchAll(/^    ([a-z][a-z-]+)\s+/gm)]
     .map((match) => match[1]);
   assert.deepEqual(subcommands, [
