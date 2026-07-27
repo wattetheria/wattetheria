@@ -18,19 +18,86 @@ function runCli(args) {
   });
 }
 
-test("help omits removed agent subcommands", () => {
+test("help separates network commands and lists all subcommands", () => {
   const result = runCli(["help"]);
 
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /Agent subcommands:/);
   assert.doesNotMatch(result.stdout, /^\s+identity\s*$/m);
   assert.doesNotMatch(result.stdout, /^\s+servicenet\s*$/m);
+  const generalCommands = result.stdout.match(/Commands:\n([\s\S]*?)\nNetwork:/);
+  assert.ok(generalCommands);
+  assert.doesNotMatch(generalCommands[1], /^\s+network\s/m);
+
+  const registrationSection = result.stdout.match(/Network:\n([\s\S]*?)\nOptions:/);
+  assert.ok(registrationSection);
+  const subcommands = [...registrationSection[1].matchAll(/^    ([a-z][a-z-]+)\s+/gm)]
+    .map((match) => match[1]);
+  assert.deepEqual(subcommands, [
+    "authority-init",
+    "authority-show",
+    "create-request",
+    "inspect-request",
+    "export-trust-bundle",
+    "issue-credential",
+    "verify-credential",
+    "import-credential",
+    "list-credentials",
+    "revoke-credential",
+    "verify-revocation",
+    "import-revocation",
+  ]);
 });
+
+test(
+  "network forwards to the native node CLI",
+  { skip: process.platform === "win32" && "uses a POSIX executable shim" },
+  (context) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-test-"));
+    const marker = path.join(directory, "args.txt");
+    const binary = path.join(directory, "wattetheria-client-cli");
+    fs.writeFileSync(
+      binary,
+      `#!/bin/sh\nif [ "$1" = "--help" ]; then exit 0; fi\nprintf '%s\\n' "$@" > '${marker}'\n`
+    );
+    fs.chmodSync(binary, 0o755);
+    context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        CLI_PATH,
+        "network",
+        "--data-dir",
+        "/tmp/wattetheria",
+        "authority-show",
+      ],
+      {
+        cwd: ROOT_DIR,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          WATTETHERIA_CLI_BIN: binary,
+          WATTETHERIA_NO_BANNER: "1",
+        },
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readFileSync(marker, "utf8").trim().split(/\r?\n/), [
+      "network",
+      "--data-dir",
+      "/tmp/wattetheria",
+      "authority-show",
+    ]);
+  }
+);
 
 const removedCommands = [
   { args: ["identity"], error: /Unknown command: identity/ },
   { args: ["servicenet"], error: /Unknown command: servicenet/ },
   { args: ["register"], error: /Unknown command: register/ },
+  { args: ["network-registration"], error: /Unknown command: network-registration/ },
   { args: ["provider", "register"], error: /Unknown option: register/ },
 ];
 

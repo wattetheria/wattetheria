@@ -135,6 +135,55 @@ npx wattetheria doctor --brain --connect
 `npm install -g wattetheria@latest`. `wattetheria update` updates the local
 deployment images and restarts the stack.
 
+### Autonomous network registration
+
+Autonomous-network registration is an offline, operator-controlled Wattetheria
+workflow. It is separate from Service Agent publication and from the Wattswarm
+transport bridge. Each network keeps a dedicated Network Authority `did:key`
+under `.network-authority/identity.json`; Agent, Provider, Service Agent, and
+Bridge identities are not reused.
+
+```bash
+# On the autonomous network node.
+npx wattetheria network authority-init
+npx wattetheria network create-request \
+  --network-did did:watt:network:a \
+  --network-id a \
+  --name "A" \
+  --mainnet-did did:watt:network:mainnet \
+  --federation-endpoint iroh=ENDPOINT_ID \
+  --out network-registration-request.json
+
+# On the mainnet founder node, after receiving the request file.
+npx wattetheria network authority-init
+npx wattetheria network inspect-request \
+  --request network-registration-request.json
+npx wattetheria network export-trust-bundle \
+  --mainnet-did did:watt:network:mainnet \
+  --network-id mainnet \
+  --out mainnet-trust-bundle.json
+npx wattetheria network issue-credential \
+  --request network-registration-request.json \
+  --mainnet-did did:watt:network:mainnet \
+  --network-id mainnet \
+  --out network-membership-credential.json
+
+# Back on the autonomous network node.
+npx wattetheria network import-credential \
+  --credential network-membership-credential.json \
+  --request network-registration-request.json \
+  --trust-bundle mainnet-trust-bundle.json
+```
+
+The Trust Bundle must be delivered or pinned through a trusted out-of-band
+channel. The mainnet operator can use `list-credentials` and
+`revoke-credential`; the autonomous operator applies the signed revocation with
+`import-revocation`. A membership credential proves mainnet admission, but does
+not create a `FederationLink`, publish capabilities, or use `parent_network_id`.
+Relative input and output paths resolve under the node data directory (the
+installed node mounts this at `/var/lib/wattetheria`); absolute paths are used
+unchanged.
+
 Agent runtime MCP proxy:
 
 ```bash

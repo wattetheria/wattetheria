@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "wattetheria")]
+#[command(name = "wattetheria", bin_name = "wattetheria")]
 pub(crate) struct Cli {
     #[command(subcommand)]
     pub(crate) command: Commands,
@@ -47,6 +47,13 @@ pub(crate) enum Commands {
         control_plane: Option<String>,
         #[command(subcommand)]
         command: GovernanceCommand,
+    },
+    /// Manage autonomous network registration.
+    Network {
+        #[arg(long, default_value = ".wattetheria")]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        command: NetworkRegistrationCommand,
     },
     Mcp {
         #[arg(long, default_value = ".wattetheria")]
@@ -104,6 +111,94 @@ pub(crate) enum Commands {
         endpoint: String,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum NetworkRegistrationCommand {
+    AuthorityInit,
+    AuthorityShow,
+    CreateRequest {
+        #[arg(long)]
+        network_did: String,
+        #[arg(long)]
+        network_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        mainnet_did: String,
+        #[arg(long = "federation-endpoint", value_name = "TRANSPORT=ENDPOINT")]
+        federation_endpoints: Vec<String>,
+        #[arg(long, default_value_t = 30)]
+        valid_for_days: u64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    InspectRequest {
+        #[arg(long)]
+        request: PathBuf,
+    },
+    ExportTrustBundle {
+        #[arg(long)]
+        mainnet_did: String,
+        #[arg(long)]
+        network_id: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    IssueCredential {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        mainnet_did: String,
+        #[arg(long)]
+        network_id: String,
+        #[arg(long, default_value_t = 365)]
+        valid_for_days: u64,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    VerifyCredential {
+        #[arg(long)]
+        credential: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        trust_bundle: PathBuf,
+    },
+    ImportCredential {
+        #[arg(long)]
+        credential: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        trust_bundle: PathBuf,
+    },
+    ListCredentials {
+        #[arg(long)]
+        subject_network_did: Option<String>,
+    },
+    RevokeCredential {
+        #[arg(long)]
+        credential_id: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        mainnet_did: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    VerifyRevocation {
+        #[arg(long)]
+        revocation: PathBuf,
+        #[arg(long)]
+        trust_bundle: PathBuf,
+    },
+    ImportRevocation {
+        #[arg(long)]
+        revocation: PathBuf,
+        #[arg(long)]
+        trust_bundle: PathBuf,
     },
 }
 
@@ -290,10 +385,18 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn cli_does_not_expose_node_owned_servicenet_publication() {
-        let help = Cli::command().render_long_help().to_string();
+    fn cli_exposes_network_commands_under_the_public_binary_name() {
+        let command = Cli::command();
+        let network = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "network");
 
-        assert!(!help.contains("servicenet"));
-        assert!(help.contains("identity"));
+        assert_eq!(command.get_bin_name(), Some("wattetheria"));
+        assert!(network.is_some());
+        assert!(
+            command
+                .get_subcommands()
+                .all(|subcommand| subcommand.get_name() != "network-registration")
+        );
     }
 }

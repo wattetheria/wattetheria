@@ -5,6 +5,7 @@ use clap::Parser;
 mod cli_args;
 mod config;
 mod doctor;
+mod network_registration;
 
 use crate::cli_args::{
     BrainCommand, Cli, Commands, DataCommand, GovernanceCommand, IdentityCommand, McpCommand,
@@ -12,6 +13,7 @@ use crate::cli_args::{
 };
 use crate::config::{read_config, read_control_token, run_init, run_up};
 use crate::doctor::run_doctor;
+use crate::network_registration::run_network_registration;
 use semver::Version;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -70,6 +72,9 @@ async fn main() -> Result<()> {
             control_plane,
             command,
         } => run_governance(&data_dir, control_plane.as_deref(), command).await?,
+        Commands::Network { data_dir, command } => {
+            run_network_registration(&data_dir, command)?;
+        }
         Commands::Mcp { data_dir, command } => run_mcp(&data_dir, command).await?,
         Commands::Brain { data_dir, command } => run_brain(&data_dir, command).await?,
         Commands::Data { data_dir, command } => run_data(&data_dir, command)?,

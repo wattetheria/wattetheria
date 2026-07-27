@@ -8,6 +8,7 @@ pub mod economy;
 pub mod game;
 pub mod governance;
 pub mod map;
+pub mod network_registration;
 pub mod payments;
 pub mod provider_identity;
 pub mod security;
