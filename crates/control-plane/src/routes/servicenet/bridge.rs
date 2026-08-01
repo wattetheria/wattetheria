@@ -485,10 +485,9 @@ fn validate_a2a_params_match_signed_message(
         "taskId": wire::message_field(params, "taskId").cloned().unwrap_or(Value::Null),
         "contextId": wire::message_field(params, "contextId").cloned().unwrap_or(Value::Null),
         "skillId": wire::skill_id(params).cloned().unwrap_or(Value::Null),
-        "returnImmediately": params
-            .pointer("/configuration/returnImmediately")
-            .cloned()
-            .unwrap_or(Value::Null),
+        "returnImmediately": normalized_return_immediately(
+            params.pointer("/configuration/returnImmediately"),
+        ),
         "message": normalized_request_message(params.get("message")),
         "settlement": wire::settlement(params).cloned().unwrap_or(Value::Null),
     });
@@ -565,13 +564,17 @@ fn expected_a2a_core_params(signed_message: &Value) -> Value {
         "taskId": signed_message.get("task_id").cloned().unwrap_or(Value::Null),
         "contextId": signed_message.get("context_id").cloned().unwrap_or(Value::Null),
         "skillId": signed_message.get("skill_id").cloned().unwrap_or(Value::Null),
-        "returnImmediately": signed_message
-            .get("return_immediately")
-            .cloned()
-            .unwrap_or(Value::Null),
+        "returnImmediately": normalized_return_immediately(
+            signed_message.get("return_immediately"),
+        ),
         "message": {"role": "user", "parts": parts},
         "settlement": normalized_signed_settlement(signed_message),
     })
+}
+
+// ProtoJSON omits scalar false values, while A2A defines false as the default.
+fn normalized_return_immediately(value: Option<&Value>) -> Value {
+    value.cloned().unwrap_or(Value::Bool(false))
 }
 
 fn normalized_signed_settlement(signed_message: &Value) -> Value {
@@ -840,6 +843,59 @@ mod tests {
         tampered["message"]["parts"][0]["text"] = json!("send money instead");
         assert!(
             validate_a2a_params_match_signed_message(&tampered, &envelope, "ride-agent").is_err()
+        );
+    }
+
+    #[test]
+    fn a2a_return_immediately_uses_protocol_default_false() {
+        let mut envelope = SwarmAgentEnvelope {
+            protocol: "a2a_v1".to_owned(),
+            transport_profile: None,
+            source_agent_id: Some("did:key:caller".to_owned()),
+            target_agent_id: Some("ride-agent".to_owned()),
+            source_node_id: Some("caller-node".to_owned()),
+            target_node_id: None,
+            capability: None,
+            source_agent_card: None,
+            message: json!({
+                "message": "book a ride",
+                "input": null,
+                "return_immediately": false,
+            }),
+            extensions: None,
+            signature: None,
+        };
+        let omitted_false = json!({
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "book a ride"}]
+            }
+        });
+        let explicit_true = json!({
+            "configuration": {"returnImmediately": true},
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "book a ride"}]
+            }
+        });
+
+        assert!(
+            validate_a2a_params_match_signed_message(&omitted_false, &envelope, "ride-agent")
+                .is_ok()
+        );
+        assert!(
+            validate_a2a_params_match_signed_message(&explicit_true, &envelope, "ride-agent")
+                .is_err()
+        );
+
+        envelope.message["return_immediately"] = Value::Bool(true);
+        assert!(
+            validate_a2a_params_match_signed_message(&explicit_true, &envelope, "ride-agent")
+                .is_ok()
+        );
+        assert!(
+            validate_a2a_params_match_signed_message(&omitted_false, &envelope, "ride-agent")
+                .is_err()
         );
     }
 
