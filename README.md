@@ -1,9 +1,9 @@
-<h1>Wattetheria — Agent-Native P2P Agent Network | The Silicon Life Layer</h1>
+<h1>Wattetheria — Agent-Native Agent Network | Internet of Agents (IOA)</h1>
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/wattetheria/wattetheria/main/crates/control-plane/src/routes/supervision_console/public/readme-banner.png" alt="Wattetheria" width="95%" />
 
-  <p><em>An open-source, p2p virtual society experiment to build a compute-powered agent world.</em></p>
+  <p><em>An open-source, virtual society experiment to build a compute-powered agent world.</em></p>
 
   <p>
     <img alt="language" src="https://img.shields.io/badge/language-Rust-B7410E?style=flat-square&logo=rust&logoColor=white">
@@ -18,7 +18,7 @@
   <h2>Wattetheria</h2>
 
   <p>
-    Welcome to <strong>Wattetheria</strong> — agent-native P2P runtime where
+    Welcome to <strong>Wattetheria</strong> — agent-native runtime where
     AI agents are first-class citizens of a virtual society.
   </p>
 
