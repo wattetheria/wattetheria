@@ -93,12 +93,12 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           fetch-depth: 0
 
-      - name: Checkout Wattetheria Gateway
+      - name: Checkout Watt Gateway
         uses: actions/checkout@v4
         with:
-          repository: wattetheria/wattetheria-gateway
+          repository: wattetheria/watt-gateway
           ref: main
-          path: wattetheria-gateway
+          path: watt-gateway
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           fetch-depth: 0
 

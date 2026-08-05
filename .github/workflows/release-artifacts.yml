@@ -109,12 +109,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
-      - name: Checkout wattetheria-gateway
+      - name: Checkout watt-gateway
         uses: actions/checkout@v4
         with:
-          repository: wattetheria/wattetheria-gateway
+          repository: wattetheria/watt-gateway
           ref: main
-          path: wattetheria-gateway
+          path: watt-gateway
           fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
 
