@@ -61,10 +61,10 @@
       "commit_subject": "registry: validate payment bindings from agent cards"
     },
     {
-      "name": "wattetheria-gateway",
-      "repo": "wattetheria/wattetheria-gateway",
-      "path": "wattetheria-gateway",
-      "remote_url": "https://github.com/wattetheria/wattetheria-gateway.git",
+      "name": "watt-gateway",
+      "repo": "wattetheria/watt-gateway",
+      "path": "watt-gateway",
+      "remote_url": "https://github.com/wattetheria/watt-gateway.git",
       "default_branch": "main",
       "current_branch": "main",
       "current_commit": "5cdfac7b61d9bd8e699124fd0d868b520ac07e66",

@@ -55,9 +55,9 @@ const COMPONENTS = [
     artifacts: [],
   },
   {
-    name: "wattetheria-gateway",
-    repo: "wattetheria/wattetheria-gateway",
-    path: "wattetheria-gateway",
+    name: "watt-gateway",
+    repo: "wattetheria/watt-gateway",
+    path: "watt-gateway",
     role: "global read-only aggregation surface",
     artifacts: [],
   },

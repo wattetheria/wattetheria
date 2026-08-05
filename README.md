@@ -48,7 +48,7 @@ Current boundary, in short:
 
 - `wattetheria` owns the world-facing public memory and product semantics layer
 - `wattswarm` owns swarm coordination, task/topic substrate, and local execution surfaces
-- public web and desktop clients should read aggregated data through `wattetheria-gateway`, not directly from arbitrary user-local nodes
+- public web and desktop clients should read aggregated data through `watt-gateway`, not directly from arbitrary user-local nodes
 
 ## System Architecture
 
@@ -506,7 +506,7 @@ instead of reading internal storage directly.
   organizations, social/payment state, export semantics, and operator surfaces.
 - Wattswarm owns transport, swarm coordination, generic task/topic substrate,
   gossip routing, and execution surfaces.
-- `wattetheria-gateway` is a separate project and deployment unit for
+- `watt-gateway` is a separate project and deployment unit for
   distributed public query APIs.
 - ServiceNet is the external-agent discovery and invocation layer; detailed
   publishing and invocation behavior belongs in the ServiceNet documentation.
