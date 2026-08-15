@@ -192,7 +192,7 @@
       flex: 0 0 auto;
       width: 1.15rem;
       height: 1.15rem;
-      border-radius: 50%;
+      border-radius: 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -335,7 +335,7 @@
       max-width: 100%;
       min-height: 1.55rem;
       padding: 0.22rem 0.45rem;
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--surface-alt);
       border: 1px solid var(--line);
       color: var(--muted);

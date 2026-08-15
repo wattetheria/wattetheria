@@ -40,7 +40,7 @@
       align-items: center;
       min-height: 1.4rem;
       padding: 0.2rem 0.6rem;
-      border-radius: 999px;
+      border-radius: 0;
       border: 1px solid transparent;
       background: var(--surface-alt);
       color: var(--muted);
@@ -138,7 +138,7 @@
       max-width: 100%;
       padding: 0.12rem 0.5rem;
       border: 1px solid var(--line);
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--surface-alt);
       color: var(--muted);
       font-weight: 500;
@@ -167,7 +167,7 @@
       max-width: 100%;
       padding: 0.12rem 0.5rem;
       border: 1px solid var(--line);
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--surface-alt);
       color: var(--muted);
       font-size: 0.76rem;

@@ -137,7 +137,6 @@ const SUPERVISION_CONSOLE_JS: &str = concat!(
     "\n",
     include_str!("supervision_console/js/wallet.js"),
     "\n",
-    include_str!("supervision_console/js/guilds.js"),
     "\n",
     include_str!("supervision_console/js/servicenet.js"),
     "\n",
@@ -200,6 +199,24 @@ mod tests {
             .expect("console bootstrap script");
 
         assert!(polling < bootstrap);
+    }
+
+    #[test]
+    fn guilds_console_surface_is_removed_while_organization_identity_data_remains() {
+        let template = include_str!("supervision_console/template.html");
+        let identity_list = include_str!("supervision_console/js/identity-list.js");
+        let identity_styles = include_str!("supervision_console/css/identity.css");
+
+        assert!(!template.contains("Guilds"));
+        assert!(!template.contains("data-view=\"organizations\""));
+        assert!(!template.contains("data-page=\"organizations\""));
+        assert!(!SUPERVISION_CONSOLE_JS.contains("renderOrganizations("));
+        assert!(!SUPERVISION_CONSOLE_JS.contains("organization_limit"));
+        assert!(identity_list.contains("identity-organizations"));
+        assert!(identity_list.contains("No organizations"));
+        assert!(identity_styles.contains(".identity-organizations"));
+        assert!(!identity_list.contains("guilds"));
+        assert!(!identity_styles.contains("identity-guilds"));
     }
 
     #[test]

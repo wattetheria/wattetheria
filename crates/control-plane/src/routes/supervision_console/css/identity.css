@@ -77,7 +77,7 @@
       flex: 0 0 auto;
       width: 52px;
       height: 52px;
-      border-radius: 15px;
+      border-radius: 0;
       background: #fff;
       color: var(--accent-strong);
       display: flex;
@@ -112,7 +112,7 @@
       align-items: center;
       gap: 0.35rem;
       padding: 0.16rem 0.55rem;
-      border-radius: 999px;
+      border-radius: 0;
       background: rgba(255, 255, 255, 0.16);
       color: #eafff1;
       font-size: 0.72rem;
@@ -123,7 +123,7 @@
     .identity-cred-dot {
       width: 6px;
       height: 6px;
-      border-radius: 50%;
+      border-radius: 0;
       background: #4ade80;
     }
 
@@ -161,7 +161,7 @@
       flex: 0 0 auto;
       width: 1.15rem;
       height: 1.15rem;
-      border-radius: 50%;
+      border-radius: 0;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -254,8 +254,8 @@
       color: var(--muted);
     }
 
-    /* ===== Guilds ===== */
-    .identity-guilds {
+    /* ===== Organizations ===== */
+    .identity-organizations {
       display: flex;
       flex-wrap: wrap;
       gap: 0.4rem;
@@ -264,12 +264,12 @@
       border-top: 1px solid var(--line);
     }
 
-    .identity-guilds span {
+    .identity-organizations span {
       display: inline-flex;
       align-items: center;
       padding: 0.12rem 0.55rem;
       border: 1px solid var(--line);
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--surface-alt);
       color: var(--muted);
       font-size: 0.74rem;

@@ -22,7 +22,7 @@
       background: var(--surface);
       color: var(--muted);
       border: 1px solid var(--line-strong);
-      border-radius: 999px;
+      border-radius: 0;
       font-weight: 500;
     }
 

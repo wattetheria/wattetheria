@@ -11,7 +11,6 @@
       "swarm",
       "social",
       "nearby",
-      "organizations",
       "servicenet",
       "runtime",
       "logs",

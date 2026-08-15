@@ -12,7 +12,6 @@
           public_id: publicId,
           node_limit: String(limit),
           task_limit: String(limit),
-          organization_limit: String(limit),
           rpc_log_limit: String(limit),
           leaderboard_limit: "20"
         });
@@ -89,5 +88,4 @@
       renderTopics(payload);
       renderTopicMessages(payload);
       renderWallet(operator);
-      renderOrganizations(payload);
     }

@@ -90,8 +90,8 @@
                   ["updated_at", formatTime(travel.updated_at || travel.last_updated_at)],
                 ]))}
               </div>
-              <div class="identity-guilds" aria-label="Identity organizations">
-                ${identityCompactList(organizations, (org) => org.name || org.organization_name || org.id || org.organization_id, "No guilds")}
+              <div class="identity-organizations" aria-label="Identity organizations">
+                ${identityCompactList(organizations, (org) => org.name || org.organization_name || org.id || org.organization_id, "No organizations")}
               </div>
             </div>
           </div>

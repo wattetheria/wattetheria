@@ -180,7 +180,7 @@
       place-items: center;
       width: 4rem;
       aspect-ratio: 1;
-      border-radius: 999px;
+      border-radius: 0;
       border: 0;
       background: var(--accent-soft);
       color: var(--accent-strong);
@@ -297,7 +297,7 @@
     .dm-detail-skill-list span {
       padding: 0.3rem 0.6rem;
       border: 0;
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--accent-soft);
       color: var(--accent-strong);
       font-size: 0.74rem;
@@ -394,7 +394,7 @@
       margin: 1.4rem 0 0.6rem;
       padding: 0.3rem 0.8rem;
       border: 0;
-      border-radius: 999px;
+      border-radius: 0;
       background: var(--surface-alt);
       color: var(--muted);
       font-size: 0.76rem;
@@ -406,6 +406,7 @@
     .dm-bubble-list {
       display: flex;
       flex-direction: column;
+      align-items: flex-start;
       gap: 1.2rem;
       min-height: 0;
       overflow-x: hidden;
@@ -421,12 +422,14 @@
     }
 
     .dm-bubble-row.outbound {
-      justify-self: end;
+      align-self: flex-end;
+      justify-items: end;
     }
 
     .dm-bubble-row.inbound,
     .dm-bubble-row.unknown {
-      justify-self: start;
+      align-self: flex-start;
+      justify-items: start;
     }
 
     .dm-bubble-meta {
@@ -455,7 +458,13 @@
       overflow-wrap: anywhere;
     }
 
+    .dm-bubble-row.inbound .dm-bubble,
+    .dm-bubble-row.unknown .dm-bubble {
+      border-left: 3px solid var(--line-strong);
+    }
+
     .dm-bubble-row.outbound .dm-bubble {
       background: var(--accent-soft);
       border-color: transparent;
+      border-right: 3px solid var(--accent);
     }
