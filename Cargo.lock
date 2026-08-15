@@ -5216,6 +5216,7 @@ name = "wattswarm-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_jcs 0.2.0",
  "serde_json",
  "thiserror 2.0.18",
 ]

@@ -469,6 +469,23 @@ Wattswarm node state and its run queue in the mounted Wattswarm state
 directory. This setting does not change or share Wattetheria's own SQLite
 database.
 
+Wattswarm networking defaults to `WATTSWARM_NETWORK_BACKEND=p2p`. A deployment
+using the independently operated Message Gateway can select
+`WATTSWARM_NETWORK_BACKEND=client_server` and set
+`WATTSWARM_CLIENT_SERVER_URL` to its HTTPS endpoint. New ClientServer nodes
+auto-register by default with `WATTSWARM_CS_AUTO_REGISTER=true` through the
+Genesis registration server published in the join manifest from the base URL
+`WATTSWARM_NETWORK_REGISTRATION_URL`. In the current auto mode, the node
+appends `/api/network/registration/auto`; the future manual application flow
+will use the same base URL. The Genesis node signs a
+`NetworkMembershipGrant`; the Message Gateway only verifies that Grant using
+its manually supplied Genesis public-key map. There is no registration token
+shared with the Gateway. `WATTSWARM_NETWORK_GRANT_TTL_SECONDS=0` keeps Grants
+non-expiring by default. When switching an existing non-empty Event Store, also set
+`WATTSWARM_CS_CUTOVER_SEQUENCE`; a fresh store starts at sequence `0` without
+that setting. The worker container keeps its network service disabled because
+the Wattswarm kernel owns the selected network loop.
+
 ## Configuration
 
 Most operators should configure the node from the supervision console instead
