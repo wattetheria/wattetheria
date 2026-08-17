@@ -159,6 +159,59 @@ async fn assert_brain_config_session_mode_roundtrip(runtime_session_mode: &str) 
 }
 
 #[tokio::test]
+async fn brain_config_accepts_deepseek_harness_adapter() {
+    let (dir, app, token, _, _state) = build_test_app(10);
+    let updated = request_json(
+        app.clone(),
+        axum::http::Request::builder()
+            .method("PUT")
+            .uri("/v1/brain/config")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "kind": "openai-compatible",
+                    "adapter": "deepseek-harness",
+                    "base_url": "http://127.0.0.1:3080/v1",
+                    "model": "legacy-llm-name",
+                    "api_key": "dsh-bearer-token"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(updated["ok"].as_bool(), Some(true));
+    assert_eq!(
+        updated["label"].as_str(),
+        Some("adapter=deepseek-harness url=http://127.0.0.1:3080/v1")
+    );
+
+    let env_body = fs::read_to_string(dir.path().join("deploy/.env")).unwrap();
+    assert!(env_body.contains("WATTETHERIA_BRAIN_RUNTIME_ADAPTER=deepseek-harness"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_SESSION_HEADER_NAME=X-DSH-Session-ID"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_MODEL=dsh"));
+    assert!(env_body.contains("WATTETHERIA_BRAIN_API_KEY=dsh-bearer-token"));
+
+    let loaded = authed_get_json(app, &token, "/v1/brain/config").await;
+    assert_eq!(loaded["runtime_adapter"].as_str(), Some("deepseek-harness"));
+    assert_eq!(
+        loaded["session_header_name"].as_str(),
+        Some("X-DSH-Session-ID")
+    );
+    assert_eq!(loaded["config"]["model"].as_str(), Some("dsh"));
+    assert_eq!(loaded["has_api_key"].as_bool(), Some(true));
+    assert!(
+        loaded["supported_runtime_adapters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|adapter| adapter["key"].as_str() == Some("deepseek-harness"))
+    );
+}
+
+#[tokio::test]
 async fn night_shift_alias_endpoints_match_primary_routes() {
     let (_dir, app, token, _, _state) = build_test_app(20);
     let summary_json = authed_get_json(app.clone(), &token, "/v1/night-shift?hours=12").await;

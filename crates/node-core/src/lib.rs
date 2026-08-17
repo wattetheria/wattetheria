@@ -325,15 +325,22 @@ fn brain_provider_label(config: &BrainProviderConfig) -> String {
             model,
             runtime_adapter,
             ..
-        } => format!(
-            "adapter={} model={model} url={base_url}",
-            wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
+        } => {
+            let adapter = wattetheria_kernel::brain::AgentRuntimeAdapter::infer(
                 base_url,
                 model,
-                runtime_adapter.as_ref()
-            )
-            .key()
-        ),
+                runtime_adapter.as_ref(),
+            );
+            if matches!(
+                &adapter,
+                wattetheria_kernel::brain::AgentRuntimeAdapter::DeepSeekHarness { .. }
+            ) || model.trim().is_empty()
+            {
+                format!("adapter={} url={base_url}", adapter.key())
+            } else {
+                format!("adapter={} model={model} url={base_url}", adapter.key())
+            }
+        }
     }
 }
 

@@ -17,6 +17,22 @@
       return supportedRuntimeAdapters.find((item) => item.key === adapter)?.default_model || "";
     }
 
+    function runtimeAdapterKey(value) {
+      const normalized = (value || "").trim().toLowerCase();
+      if (normalized === "deep-seek-harness" || normalized === "deepseek_harness" || normalized === "dsh") {
+        return "deepseek-harness";
+      }
+      if (normalized === "open-claw" || normalized === "open_claw") {
+        return "openclaw";
+      }
+      return normalized || "hermes";
+    }
+
+    function defaultRuntimeBaseUrlFor(adapter) {
+      return supportedRuntimeAdapters.find((item) => item.key === adapter)?.default_base_url
+        || defaultRuntimeBaseUrl;
+    }
+
     function isDefaultRuntimeModel(value) {
       const normalized = value.trim();
       return supportedRuntimeAdapters.some((item) => item.default_model && item.default_model === normalized);
@@ -96,16 +112,20 @@
       const modelInput = document.getElementById("brain-openai-model");
       const baseUrlInput = document.getElementById("brain-openai-base-url");
 
-      if (!baseUrlInput.value.trim()) {
-        baseUrlInput.value = defaultRuntimeBaseUrl;
+      const previousDefaultBaseUrl = defaultRuntimeBaseUrlFor(previousAdapter);
+      const nextDefaultBaseUrl = defaultRuntimeBaseUrlFor(adapter);
+      if (!baseUrlInput.value.trim() || baseUrlInput.value.trim() === previousDefaultBaseUrl) {
+        baseUrlInput.value = nextDefaultBaseUrl;
       }
 
       const previousDefaultModel = defaultRuntimeModel(previousAdapter);
       const nextDefaultModel = defaultRuntimeModel(adapter);
-      if (!modelInput.value.trim()
+      if (adapter === "deepseek-harness") {
+        modelInput.value = nextDefaultModel || "dsh";
+      } else if (!modelInput.value.trim()
         || modelInput.value.trim() === previousDefaultModel
         || (!nextDefaultModel && isDefaultRuntimeModel(modelInput.value))) {
-        modelInput.value = nextDefaultModel;
+        modelInput.value = nextDefaultModel || "";
       }
 
       const previousHeader = runtimeSessionHeaderName(previousAdapter);
@@ -120,7 +140,7 @@
     }
 
     function setRuntimeAdapter(adapter) {
-      const value = adapter || "hermes";
+      const value = runtimeAdapterKey(adapter);
       const input = document.querySelector(`input[name="brain-runtime-adapter"][value="${value}"]`);
       (input || document.querySelector('input[name="brain-runtime-adapter"][value="hermes"]')).checked = true;
     }
@@ -147,7 +167,8 @@
         let runtimeLabel = "not configured";
         if (kind === "openai-compatible") {
           const adapter = cfg.runtime_adapter || {};
-          const adapterKind = adapter.kind || data.runtime_adapter || "hermes";
+          // The top-level value is the stable UI key; the nested enum tag uses serde naming.
+          const adapterKind = runtimeAdapterKey(data.runtime_adapter || adapter.kind || "hermes");
           configuredRuntimeAdapter = adapterKind;
           configuredRuntimeHasApiKey = data.has_api_key === true;
           configuredSessionHeaderName = adapter.session_header_name || data.session_header_name || "";
@@ -158,8 +179,10 @@
           });
           document.getElementById("brain-session-header-name").value =
             configuredSessionHeaderName || runtimeSessionHeaderName(adapterKind);
-          document.getElementById("brain-openai-base-url").value = cfg.base_url || defaultRuntimeBaseUrl;
-          document.getElementById("brain-openai-model").value = cfg.model || defaultRuntimeModel(adapterKind);
+          document.getElementById("brain-openai-base-url").value = cfg.base_url || defaultRuntimeBaseUrlFor(adapterKind);
+          document.getElementById("brain-openai-model").value = adapterKind === "deepseek-harness"
+            ? defaultRuntimeModel(adapterKind) || "dsh"
+            : cfg.model || defaultRuntimeModel(adapterKind);
           const apiKeyInput = document.getElementById("brain-api-key");
           apiKeyInput.value = "";
           updateApiKeyPlaceholder();
@@ -175,7 +198,7 @@
             option.dataset.previousAdapter = "hermes";
           });
           document.getElementById("brain-session-header-name").value = runtimeSessionHeaderName("hermes");
-          document.getElementById("brain-openai-base-url").value = defaultRuntimeBaseUrl;
+          document.getElementById("brain-openai-base-url").value = defaultRuntimeBaseUrlFor("hermes");
           document.getElementById("brain-openai-model").value = defaultRuntimeModel("hermes");
           document.getElementById("brain-api-key").value = "";
           updateApiKeyPlaceholder();
@@ -218,6 +241,9 @@
           configuredRuntimeAdapter = body.adapter;
           configuredRuntimeHasApiKey = apiKey ? true : data.has_api_key === true;
           configuredSessionHeaderName = body.session_header_name || "";
+          if (body.adapter === "deepseek-harness") {
+            document.getElementById("brain-openai-model").value = defaultRuntimeModel(body.adapter) || "dsh";
+          }
           const apiKeyInput = document.getElementById("brain-api-key");
           apiKeyInput.value = "";
           updateApiKeyPlaceholder();

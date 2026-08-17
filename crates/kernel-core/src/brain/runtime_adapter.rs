@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const HERMES_SESSION_HEADER: &str = "X-Hermes-Session-Id";
-const OPENCLAW_SESSION_HEADER: &str = "x-openclaw-session-key";
+const OPENCLAW_SESSION_HEADER: &str = "X-OpenClaw-Session-Key";
+const DEEPSEEK_HARNESS_SESSION_HEADER: &str = "X-DSH-Session-ID";
+const DEEPSEEK_HARNESS_BASE_URL: &str = "http://host.docker.internal:3080/v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
@@ -15,6 +17,10 @@ pub enum AgentRuntimeAdapter {
         session_header_name: Option<String>,
     },
     OpenClaw {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_header_name: Option<String>,
+    },
+    DeepSeekHarness {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_header_name: Option<String>,
     },
@@ -60,6 +66,7 @@ pub struct AgentRuntimeAdapterMetadata {
     pub label: &'static str,
     pub default_model: Option<&'static str>,
     pub session_header_name: Option<&'static str>,
+    pub default_base_url: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,18 +99,28 @@ impl AgentRuntimeAdapter {
                 label: "Hermes",
                 default_model: Some("hermes-agent"),
                 session_header_name: Some(HERMES_SESSION_HEADER),
+                default_base_url: None,
             },
             AgentRuntimeAdapterMetadata {
                 key: "openclaw",
                 label: "OpenClaw",
                 default_model: Some("openclaw"),
                 session_header_name: Some(OPENCLAW_SESSION_HEADER),
+                default_base_url: None,
+            },
+            AgentRuntimeAdapterMetadata {
+                key: "deepseek-harness",
+                label: "DSH",
+                default_model: Some("dsh"),
+                session_header_name: Some(DEEPSEEK_HARNESS_SESSION_HEADER),
+                default_base_url: Some(DEEPSEEK_HARNESS_BASE_URL),
             },
             AgentRuntimeAdapterMetadata {
                 key: "custom",
                 label: "Others",
                 default_model: None,
                 session_header_name: None,
+                default_base_url: None,
             },
         ]
     }
@@ -151,6 +168,14 @@ impl AgentRuntimeAdapter {
                     session_header_name: session_header_name.map(ToOwned::to_owned),
                 })
             }
+            "deepseek-harness" | "deepseek_harness" | "dsh" => {
+                if let Some(header) = session_header_name {
+                    validate_header_name(header)?;
+                }
+                Ok(Self::DeepSeekHarness {
+                    session_header_name: session_header_name.map(ToOwned::to_owned),
+                })
+            }
             "custom" => {
                 let session_header_name = session_header_name.ok_or_else(|| {
                     anyhow::anyhow!("custom runtime adapter requires session_header_name")
@@ -169,6 +194,7 @@ impl AgentRuntimeAdapter {
         match self {
             Self::Hermes { .. } => "hermes",
             Self::OpenClaw { .. } => "openclaw",
+            Self::DeepSeekHarness { .. } => "deepseek-harness",
             Self::Custom { .. } => "custom",
         }
     }
@@ -186,6 +212,11 @@ impl AgentRuntimeAdapter {
             } => session_header_name
                 .as_deref()
                 .unwrap_or(OPENCLAW_SESSION_HEADER),
+            Self::DeepSeekHarness {
+                session_header_name,
+            } => session_header_name
+                .as_deref()
+                .unwrap_or(DEEPSEEK_HARNESS_SESSION_HEADER),
             Self::Custom {
                 session_header_name,
             } => session_header_name,
@@ -322,7 +353,14 @@ mod tests {
                 session_header_name: None
             }
             .session_header_name(),
-            "x-openclaw-session-key"
+            "X-OpenClaw-Session-Key"
+        );
+        assert_eq!(
+            AgentRuntimeAdapter::DeepSeekHarness {
+                session_header_name: None
+            }
+            .session_header_name(),
+            "X-DSH-Session-ID"
         );
         assert_eq!(
             AgentRuntimeAdapter::Custom {
@@ -398,5 +436,30 @@ mod tests {
                 session_header_name: None
             }
         );
+    }
+
+    #[test]
+    fn deepseek_harness_adapter_has_expected_metadata_and_aliases() {
+        let metadata = AgentRuntimeAdapter::supported_metadata();
+        let dsh = metadata
+            .iter()
+            .find(|item| item.key == "deepseek-harness")
+            .expect("DeepSeek Harness metadata");
+        assert_eq!(dsh.label, "DSH");
+        assert_eq!(dsh.default_model, Some("dsh"));
+        assert_eq!(dsh.session_header_name, Some("X-DSH-Session-ID"));
+        assert_eq!(
+            dsh.default_base_url,
+            Some("http://host.docker.internal:3080/v1")
+        );
+
+        for alias in ["deepseek-harness", "deepseek_harness", "dsh"] {
+            assert_eq!(
+                AgentRuntimeAdapter::from_key(alias, None).unwrap(),
+                AgentRuntimeAdapter::DeepSeekHarness {
+                    session_header_name: None
+                }
+            );
+        }
     }
 }

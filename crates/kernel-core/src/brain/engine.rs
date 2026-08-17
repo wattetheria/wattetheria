@@ -443,8 +443,7 @@ async fn openai_compatible_generate_response(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
     );
-    let request_body = json!({
-        "model": provider.model,
+    let mut request_body = json!({
         "messages": [
             {"role":"system", "content":"You are a strict JSON generator."},
             {"role":"user", "content": prompt}
@@ -452,6 +451,12 @@ async fn openai_compatible_generate_response(
         "temperature": 0.2,
         "response_format": {"type": "json_object"}
     });
+    if !matches!(
+        &provider.runtime_adapter,
+        AgentRuntimeAdapter::DeepSeekHarness { .. }
+    ) {
+        request_body["model"] = json!(provider.model);
+    }
     let request_body_text =
         diagnostic_json_snippet(&request_body, OPENAI_COMPATIBLE_TRACE_BODY_LIMIT);
     let mut request = reqwest::Client::new().post(&url).json(&request_body);
@@ -1076,6 +1081,61 @@ mod tests {
         assert_eq!(
             decision.diagnostics["runtime_adapter"].as_str(),
             Some("hermes")
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn deepseek_harness_omits_model_from_request() {
+        let seen_model = Arc::new(Mutex::new(None::<bool>));
+        let seen_model_clone = seen_model.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<Value>| {
+                let seen_model = seen_model_clone.clone();
+                async move {
+                    *seen_model.lock().expect("model mutex poisoned") =
+                        Some(body.get("model").is_some());
+                    Json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "{\"action\":\"ignore\",\"reason\":\"test\",\"payload\":{}}"
+                            }
+                        }]
+                    }))
+                }
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve mock");
+        });
+
+        let engine = BrainEngine::from_config(&BrainProviderConfig::OpenaiCompatible {
+            base_url: format!("http://{addr}/v1"),
+            model: "should-not-be-sent".to_owned(),
+            api_key_env: None,
+            runtime_adapter: Some(AgentRuntimeAdapter::DeepSeekHarness {
+                session_header_name: None,
+            }),
+        });
+        engine
+            .decide_agent_event_with_diagnostics(&json!({
+                "agent_did": "did:key:zAgent",
+                "network_id": "mainnet:watt-etheria",
+                "event_type": "topic_message_requires_reply",
+                "allowed_actions": ["ignore"],
+                "payload": {}
+            }))
+            .await
+            .expect("runtime decision");
+
+        assert_eq!(
+            *seen_model.lock().expect("model mutex poisoned"),
+            Some(false)
         );
         server.abort();
     }

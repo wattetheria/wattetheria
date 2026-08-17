@@ -37,7 +37,13 @@ pub(crate) fn brain_provider_label(
             ..
         } => {
             let adapter = AgentRuntimeAdapter::infer(base_url, model, runtime_adapter.as_ref());
-            format!("adapter={} model={model} url={base_url}", adapter.key())
+            if matches!(&adapter, AgentRuntimeAdapter::DeepSeekHarness { .. })
+                || model.trim().is_empty()
+            {
+                format!("adapter={} url={base_url}", adapter.key())
+            } else {
+                format!("adapter={} model={model} url={base_url}", adapter.key())
+            }
         }
     }
 }
@@ -160,9 +166,16 @@ fn normalize_brain_config_request(
                 .get("session_header_name")
                 .or_else(|| object.get("custom_session_header_name"))
                 .and_then(Value::as_str);
+            let runtime_adapter = AgentRuntimeAdapter::from_key(adapter, session_header)?;
+            if matches!(
+                &runtime_adapter,
+                AgentRuntimeAdapter::DeepSeekHarness { .. }
+            ) {
+                object.insert("model".to_string(), Value::String("dsh".to_owned()));
+            }
             object.insert(
                 "runtime_adapter".to_string(),
-                serde_json::to_value(AgentRuntimeAdapter::from_key(adapter, session_header)?)?,
+                serde_json::to_value(runtime_adapter)?,
             );
         }
         object.remove("session_header_name");
