@@ -21,6 +21,9 @@ use crate::routes::servicenet::envelope::{
     normalize_servicenet_invoke_body, servicenet_invoke_agent_envelope,
 };
 use crate::state::ControlPlaneState;
+use wattetheria_kernel::network_agent_registration::{
+    load_network_permission_checkpoint, network_permission_is_active,
+};
 use wattetheria_kernel::payments::{
     PaymentStatus, PaymentTransaction, SettlementLayer as PaymentSettlementLayer,
     stablecoin_amount_from_base_units, stablecoin_amount_to_base_units,
@@ -250,6 +253,12 @@ async fn call_tool(
         },
     );
 
+    if let Some(result) =
+        network_permission_block_response(state, tool, &arguments, started_at).await?
+    {
+        return Ok(result);
+    }
+
     if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
         return Ok(result);
@@ -277,6 +286,80 @@ async fn call_tool(
     let result = response_to_tool_result(tool.name, &arguments, response).await;
     record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
     Ok(result)
+}
+
+async fn network_permission_block_response(
+    state: &ControlPlaneState,
+    tool: &AgentTool,
+    arguments: &Value,
+    started_at: Instant,
+) -> Result<Option<Value>, Response> {
+    let Some(result) = network_permission_block_result(state) else {
+        return Ok(None);
+    };
+    record_mcp_tool_diagnostic(
+        state,
+        arguments,
+        McpToolDiagnosticEvent {
+            tool_name: tool.name,
+            level: "warn",
+            phase: "tool.call.blocked",
+            status: "network_permission_required",
+            message: format!(
+                "MCP tool {} blocked because network permission is not active",
+                tool.name
+            ),
+            duration_ms: Some(started_at.elapsed().as_millis()),
+            result_kind: "network_permission",
+        },
+    );
+    record_mcp_tool_result(state, tool.name, arguments, &result, started_at).await?;
+    Ok(Some(result))
+}
+
+fn network_permission_block_result(state: &ControlPlaneState) -> Option<Value> {
+    let checkpoint = match load_network_permission_checkpoint(
+        &state.local_db,
+        &state.agent_did,
+        None,
+    ) {
+        Ok(checkpoint) => checkpoint,
+        Err(error) => {
+            return Some(tool_error(&json!({
+                "error_code": "network_permission_state_unavailable",
+                "message": "Network permission state could not be read. This MCP operation is blocked until the local permission checkpoint is available.",
+                "detail": error.to_string(),
+                "next_action": "retry_after_registration_state_is_restored"
+            })));
+        }
+    };
+    let Some(checkpoint) = checkpoint else {
+        return Some(tool_error(&json!({
+            "error_code": "network_permission_required",
+            "message": "Network permission is not active. This MCP operation is blocked. Submit the network registration request and wait for a signed Credential to be issued.",
+            "permission_status": "waiting",
+            "network_status": "stopped",
+            "next_action": "submit_registration_or_wait_for_approval"
+        })));
+    };
+
+    match network_permission_is_active(&state.local_db, &state.agent_did) {
+        Ok(true) => None,
+        Ok(false) => Some(tool_error(&json!({
+            "error_code": "network_permission_required",
+            "message": "Network permission is not active. This MCP operation is blocked until the signed Credential is active.",
+            "permission_status": checkpoint.permission_status,
+            "network_status": checkpoint.network_status,
+            "revision": checkpoint.revision,
+            "next_action": "submit_registration_or_wait_for_approval"
+        }))),
+        Err(error) => Some(tool_error(&json!({
+            "error_code": "network_permission_state_unavailable",
+            "message": "The signed Credential could not be verified from local permission state. This MCP operation is blocked.",
+            "detail": error.to_string(),
+            "next_action": "retry_after_registration_state_is_restored"
+        }))),
+    }
 }
 
 async fn direct_mcp_tool_result(

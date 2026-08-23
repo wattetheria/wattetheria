@@ -45,6 +45,10 @@ use wattetheria_kernel::identity::{
 };
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
+use wattetheria_kernel::network_agent_registration::{
+    MembershipCredential, RegistrationRequest, UnsignedMembershipCredential,
+    store_membership_credential, update_network_permission_checkpoint,
+};
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
 use wattetheria_kernel::provider_identity::FileProviderIdentityStore;
 use wattetheria_kernel::servicenet::ServiceNetClient;
@@ -135,6 +139,52 @@ fn build_test_state_with_bridge(
         .expect("load test ServiceNet Provider identity");
     let local_db =
         Arc::new(wattetheria_kernel::local_db::LocalDb::open_in_memory().expect("test local db"));
+    let registration_request = RegistrationRequest {
+        version: 1,
+        request_id: "test-network-registration".to_owned(),
+        network_id: "test-network".to_owned(),
+        agent_did: identity.agent_did.clone(),
+        nickname: "Test Agent".to_owned(),
+        agent_card: None,
+        agent_card_hash: None,
+        tenant_instance_id: None,
+        nonce: "test-registration-nonce".to_owned(),
+        signature_b64: "test-registration-signature".to_owned(),
+    };
+    let unsigned_credential = UnsignedMembershipCredential {
+        version: 1,
+        credential_id: "test-network-credential".to_owned(),
+        request_id: registration_request.request_id.clone(),
+        network_id: registration_request.network_id.clone(),
+        agent_did: registration_request.agent_did.clone(),
+        issuer_authority_id: "test-registry-authority".to_owned(),
+        issued_at_ms: Utc::now().timestamp_millis().try_into().unwrap(),
+        expires_at_ms: None,
+        signing_key_id: None,
+        signature_algorithm: None,
+        extensions: std::collections::BTreeMap::new(),
+    };
+    let credential = MembershipCredential {
+        unsigned: unsigned_credential,
+        signature_hex: "registry-owned-opaque-proof".to_owned(),
+    };
+    store_membership_credential(
+        &local_db,
+        &registration_request,
+        &credential,
+        Utc::now().timestamp_millis().try_into().unwrap(),
+    )
+    .expect("seed active test network credential");
+    update_network_permission_checkpoint(
+        &local_db,
+        &registration_request.network_id,
+        "test-node",
+        &registration_request.agent_did,
+        "active",
+        None,
+        Utc::now().timestamp_millis().try_into().unwrap(),
+    )
+    .expect("seed active test network permission checkpoint");
     let social_store =
         Arc::new(wattetheria_social::SocialStore::open_in_memory().expect("test social store"));
 
@@ -2385,6 +2435,7 @@ mod diagnostics_tests;
 mod galaxy_tests;
 mod identity_tests;
 mod mcp_tests;
+mod network_registration_tests;
 mod organization_tests;
 mod servicenet_publication_tests;
 mod servicenet_tests;

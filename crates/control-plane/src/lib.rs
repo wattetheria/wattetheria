@@ -1,3 +1,6 @@
+#![allow(clippy::manual_is_variant_and)]
+#![allow(clippy::result_large_err)]
+
 mod agent_attach;
 mod auth;
 mod autonomy;
@@ -62,6 +65,10 @@ pub use reliability_maintenance::{
 pub use routes::client_api::{
     SignedPublicClientSnapshot, build_signed_public_client_snapshot,
     push_signed_public_client_snapshot,
+};
+pub use routes::network::{
+    RegistryRegistrationResult, apply_registry_registration_record, build_registration_request,
+    run_registry_registration_once, sync_network_permission_checkpoint,
 };
 pub use state::{
     ClientExportQuery, ControlPlaneState, GatewayEventSequence, GeoSource, NodeGeoLocation,
@@ -199,6 +206,18 @@ fn network_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/source-agent-card",
             get(routes::network::source_agent_card),
+        )
+        .route(
+            "/v1/wattetheria/registration-request",
+            get(routes::network::registration_request),
+        )
+        .route(
+            "/v1/wattetheria/registration-credential",
+            post(routes::network::registration_credential),
+        )
+        .route(
+            "/v1/wattetheria/network-permission",
+            get(routes::network::network_permission),
         )
 }
 

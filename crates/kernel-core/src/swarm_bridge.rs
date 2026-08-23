@@ -1,6 +1,7 @@
 //! Bridge layer that keeps wattetheria app flows independent from wattswarm transport details.
 
 use crate::civilization::missions::{MissionBoard, MissionStatus};
+use crate::network_agent_registration::NetworkPermissionUpdate;
 use crate::swarm_sync::{
     SwarmKnowledgeExportSnapshot, SwarmRunEventsSnapshot, SwarmRunResultSnapshot,
     SwarmTaskDecisionSnapshot, SwarmTaskRunProjectionSnapshot, SwarmTopicActivitySnapshot,
@@ -422,6 +423,12 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm network status is not configured"))
     }
 
+    async fn update_network_permission(&self, _update: NetworkPermissionUpdate) -> Result<()> {
+        Err(anyhow!(
+            "wattswarm network permission bridge is not configured"
+        ))
+    }
+
     async fn current_network_id(&self) -> Result<String> {
         Err(anyhow!("wattswarm current network ID is not configured"))
     }
@@ -727,6 +734,10 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn network_status(&self) -> Result<SwarmNetworkStatusView> {
         self.topic_api()?.network_status().await
+    }
+
+    async fn update_network_permission(&self, update: NetworkPermissionUpdate) -> Result<()> {
+        self.topic_api()?.update_network_permission(update).await
     }
 
     async fn current_network_id(&self) -> Result<String> {
@@ -1066,6 +1077,19 @@ impl HttpWattswarmApi {
         })
     }
 
+    async fn update_network_permission(&self, update: NetworkPermissionUpdate) -> Result<()> {
+        self.client
+            .post(format!(
+                "{}/api/network/permission/checkpoint",
+                self.base_url
+            ))
+            .json(&update)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     async fn current_network_id(&self) -> Result<String> {
         let response = self
             .client
@@ -1169,6 +1193,37 @@ impl HttpWattswarmApi {
         display_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
+        let mut registry_records = Vec::new();
+        let mut registry_configured = false;
+        for discovery_url in self.discovery_bootnode_urls().await.unwrap_or_default() {
+            let Some(registry_base_url) = registry_base_url(&discovery_url) else {
+                continue;
+            };
+            registry_configured = true;
+            let response = self
+                .client
+                .get(format!("{registry_base_url}/nodes"))
+                .query(&RegistryNodesQuery {
+                    network_id: network_id.to_owned(),
+                    status: "active".to_owned(),
+                    limit,
+                })
+                .send()
+                .await;
+            let Ok(response) = response else {
+                continue;
+            };
+            let Ok(response) = response.error_for_status() else {
+                continue;
+            };
+            let Ok(response) = response.json::<RegistryNodesResponse>().await else {
+                continue;
+            };
+            registry_records.extend(response.records);
+        }
+        if registry_configured {
+            return Ok(registry_records);
+        }
         let response = self
             .client
             .get(format!("{}/api/network/discovery/agent", self.base_url))
@@ -1194,7 +1249,28 @@ impl HttpWattswarmApi {
     ) -> Result<Vec<Value>> {
         let (latitude, longitude) = self.startup_geo().await.unwrap_or((0.0, 0.0));
         let mut records = Vec::new();
+        let mut registry_configured = false;
         for base_url in self.discovery_bootnode_urls().await.unwrap_or_default() {
+            if let Some(registry_base_url) = registry_base_url(&base_url) {
+                registry_configured = true;
+                let response = self
+                    .client
+                    .get(format!("{registry_base_url}/nodes"))
+                    .query(&RegistryNodesQuery {
+                        network_id: network_id.to_owned(),
+                        status: "active".to_owned(),
+                        limit: limit.max(DEFAULT_AGENT_DISCOVERY_LIMIT),
+                    })
+                    .send()
+                    .await;
+                if let Ok(response) = response
+                    && let Ok(response) = response.error_for_status()
+                    && let Ok(response) = response.json::<RegistryNodesResponse>().await
+                {
+                    records.extend(response.records);
+                }
+                continue;
+            }
             let response = self
                 .client
                 .get(discovery_nearby_endpoint(&base_url))
@@ -1217,6 +1293,9 @@ impl HttpWattswarmApi {
                 continue;
             };
             records.extend(response.records);
+        }
+        if registry_configured {
+            return Ok(records);
         }
         Ok(records)
     }
@@ -1855,6 +1934,19 @@ struct NearbyDiscoveryResponse {
     records: Vec<Value>,
 }
 
+#[derive(Debug, Serialize)]
+struct RegistryNodesQuery {
+    network_id: String,
+    status: String,
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct RegistryNodesResponse {
+    #[serde(default)]
+    records: Vec<Value>,
+}
+
 #[derive(Debug, Deserialize)]
 struct StartupConfigResponse {
     #[serde(default)]
@@ -1978,6 +2070,23 @@ fn discovery_nearby_endpoint(base_url: &str) -> String {
     } else {
         format!("{base_url}/api/network/discovery/nearby")
     }
+}
+
+fn registry_base_url(base_url: &str) -> Option<String> {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() || base_url.contains("/api/network/discovery") {
+        return None;
+    }
+    if let Some(base) = base_url.strip_suffix("/v1/nodes/discovery") {
+        return Some(base.to_owned() + "/v1");
+    }
+    if let Some(base) = base_url.strip_suffix("/v1/nodes") {
+        return Some(base.to_owned() + "/v1");
+    }
+    if base_url.ends_with("/v1") {
+        return Some(base_url.to_owned());
+    }
+    Some(format!("{base_url}/v1"))
 }
 
 fn wattswarm_peer_views(response: PeersListResponse) -> Vec<SwarmPeerView> {
@@ -2259,6 +2368,22 @@ mod tests {
                 "https://bootstrap-a.example.com".to_owned(),
                 "https://bootstrap-b.example.com/api/network/discovery".to_owned()
             ]
+        );
+    }
+
+    #[test]
+    fn registry_discovery_urls_use_the_registry_v1_base() {
+        assert_eq!(
+            registry_base_url("https://bootstrap.example.com"),
+            Some("https://bootstrap.example.com/v1".to_owned())
+        );
+        assert_eq!(
+            registry_base_url("https://bootstrap.example.com/v1/nodes"),
+            Some("https://bootstrap.example.com/v1".to_owned())
+        );
+        assert_eq!(
+            registry_base_url("https://bootstrap.example.com/api/network/discovery"),
+            None
         );
     }
 }

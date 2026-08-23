@@ -14,7 +14,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i64 = 5;
+mod network_registration_storage;
+
+pub use network_registration_storage::{
+    NETWORK_AGENT_CREDENTIALS_TABLE, NETWORK_PERMISSION_CHECKPOINTS_TABLE,
+    NetworkAgentCredentialRecord, NetworkPermissionCheckpoint,
+};
+
+const SCHEMA_VERSION: i64 = 10;
 const SERVICENET_ASYNC_INVOCATIONS_TABLE: &str = "servicenet_async_invocations";
 pub const PRIMARY_DB_FILE: &str = "wattetheria.db";
 pub const LEGACY_SOCIAL_DB_FILE: &str = "social.db";
@@ -131,12 +138,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(value: &str) -> Option<Vec<u8>> {
-    if !value.len().is_multiple_of(2) {
+    let (chunks, remainder) = value.as_bytes().as_chunks::<2>();
+    if !remainder.is_empty() {
         return None;
     }
-    let mut bytes = Vec::with_capacity(value.len() / 2);
-    let chars = value.as_bytes();
-    for chunk in chars.chunks_exact(2) {
+    let mut bytes = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
         let high = hex_value(chunk[0])?;
         let low = hex_value(chunk[1])?;
         bytes.push((high << 4) | low);
@@ -205,6 +212,48 @@ impl LocalDb {
         self.conn.lock().expect("local db mutex poisoned")
     }
 
+    fn table_column_exists(
+        tx: &rusqlite::Transaction<'_>,
+        table: &str,
+        column: &str,
+    ) -> Result<bool> {
+        let mut statement = tx
+            .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))
+            .with_context(|| format!("inspect columns for {table}"))?;
+        let mut rows = statement.query([]).context("query table columns")?;
+        while let Some(row) = rows.next().context("read table column")? {
+            let name: String = row.get(1).context("decode table column name")?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn rename_table_column_if_needed(
+        tx: &rusqlite::Transaction<'_>,
+        table: &str,
+        old_column: &str,
+        new_column: &str,
+    ) -> Result<()> {
+        let old_exists = Self::table_column_exists(tx, table, old_column)?;
+        let new_exists = Self::table_column_exists(tx, table, new_column)?;
+        if old_exists && !new_exists {
+            tx.execute(
+                &format!(
+                    "ALTER TABLE {} RENAME COLUMN {} TO {}",
+                    quote_ident(table),
+                    quote_ident(old_column),
+                    quote_ident(new_column),
+                ),
+                [],
+            )
+            .with_context(|| format!("rename {table}.{old_column} to {new_column}"))?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn migrate(&self) -> Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction().context("begin local db migration")?;
@@ -245,6 +294,8 @@ impl LocalDb {
                 ON agent_action_commit_log(event_id, decision_id, action_type);",
         )
         .context("create agent_action_commit_log table")?;
+
+        network_registration_storage::migrate(&tx)?;
 
         for (_, table) in DOMAIN_TABLES {
             Self::create_domain_table(&tx, table)?;
@@ -943,5 +994,104 @@ mod tests {
     fn local_db_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<LocalDb>();
+    }
+
+    #[test]
+    fn network_permission_checkpoint_roundtrip_uses_dedicated_table() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let checkpoint = NetworkPermissionCheckpoint {
+            network_id: "network-1".to_owned(),
+            node_id: "node-1".to_owned(),
+            agent_did: "did:key:zAgent".to_owned(),
+            permission_status: "active".to_owned(),
+            network_status: "running".to_owned(),
+            revision: 2,
+            last_error: None,
+            updated_at_ms: 1_000,
+        };
+        db.upsert_network_permission_checkpoint(&checkpoint)
+            .unwrap();
+        let loaded = db
+            .load_network_permission_checkpoint(&checkpoint.agent_did, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, checkpoint);
+        let table_exists: i64 = db
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                params![NETWORK_PERMISSION_CHECKPOINTS_TABLE],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_exists, 1);
+    }
+
+    #[test]
+    fn network_permission_checkpoint_migration_renames_status_and_removes_credential_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wattetheria.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES (7);
+                 CREATE TABLE network_permission_checkpoints (
+                     network_id TEXT NOT NULL,
+                     node_id TEXT NOT NULL,
+                     agent_did TEXT NOT NULL,
+                     admission_status TEXT NOT NULL,
+                     network_status TEXT NOT NULL,
+                     revision INTEGER NOT NULL,
+                     credential_id TEXT,
+                     credential_hash TEXT,
+                     last_error TEXT,
+                     updated_at_ms INTEGER NOT NULL,
+                     PRIMARY KEY (network_id, node_id, agent_did)
+                 );
+                 INSERT INTO network_permission_checkpoints(
+                     network_id, node_id, agent_did, admission_status,
+                     network_status, revision, credential_id, credential_hash,
+                     last_error, updated_at_ms
+                 ) VALUES (
+                     'network-1', 'node-1', 'did:key:zAgent', 'active',
+                     'starting', 1, NULL, NULL, NULL, 1000
+                 );",
+            )
+            .unwrap();
+        }
+
+        let db = LocalDb::open(&path).unwrap();
+        let columns = {
+            let conn = db.conn();
+            let mut statement = conn
+                .prepare("PRAGMA table_info(network_permission_checkpoints)")
+                .unwrap();
+            let mut rows = statement.query([]).unwrap();
+            let mut columns = Vec::new();
+            while let Some(row) = rows.next().unwrap() {
+                columns.push(row.get::<_, String>(1).unwrap());
+            }
+            columns
+        };
+        assert!(columns.iter().any(|column| column == "permission_status"));
+        assert!(!columns.iter().any(|column| column == "admission_status"));
+        assert!(!columns.iter().any(|column| column == "credential_id"));
+        assert!(!columns.iter().any(|column| column == "credential_hash"));
+        let checkpoint = NetworkPermissionCheckpoint {
+            network_id: "network-1".to_owned(),
+            node_id: "node-1".to_owned(),
+            agent_did: "did:key:zAgent".to_owned(),
+            permission_status: "active".to_owned(),
+            network_status: "running".to_owned(),
+            revision: 1,
+            last_error: None,
+            updated_at_ms: 1_000,
+        };
+        assert_eq!(
+            db.load_network_permission_checkpoint(&checkpoint.agent_did, None, None)
+                .unwrap(),
+            Some(checkpoint)
+        );
     }
 }

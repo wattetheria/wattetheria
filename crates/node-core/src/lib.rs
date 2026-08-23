@@ -22,8 +22,9 @@ use runtime_loop::{LoopContext, run_loop};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
     NodeGeoLocation, RateLimiter, ServiceNetProviderIdentity, StreamEvent, build_signed_node_event,
-    push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once, serve_control_plane,
-    spawn_reliability_maintenance_task, spawn_wattswarm_sync_bridge,
+    push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once,
+    run_registry_registration_once, serve_control_plane, spawn_reliability_maintenance_task,
+    spawn_wattswarm_sync_bridge, sync_network_permission_checkpoint,
 };
 use wattetheria_kernel::agent_identity::FileAgentIdentityStore;
 use wattetheria_kernel::audit::AuditLog;
@@ -46,6 +47,9 @@ use wattetheria_kernel::local_db::{self, LocalDb};
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
+use wattetheria_kernel::network_agent_registration::{
+    PERMISSION_STATUS_ACTIVE, PERMISSION_STATUS_SUSPENDED, network_permission_is_active, now_ms,
+};
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::payments::PaymentLedger;
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
@@ -81,6 +85,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     let mut runtime = setup_runtime(&cli).await?;
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
+    let network_permission_sync_task =
+        spawn_network_permission_sync_task(runtime.control_state.clone());
+    let registry_registration_task =
+        spawn_registry_registration_task(runtime.control_state.clone());
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
     let wattswarm_sync_task = spawn_wattswarm_sync_bridge(
         runtime.control_state.clone(),
@@ -99,6 +107,8 @@ pub async fn run(cli: Cli) -> Result<()> {
     })
     .await;
     control_task.abort();
+    network_permission_sync_task.abort();
+    registry_registration_task.abort();
     if let Some(task) = wattswarm_sync_task {
         task.abort();
     }
@@ -113,6 +123,73 @@ pub async fn run(cli: Cli) -> Result<()> {
         task.abort();
     }
     run_result
+}
+
+fn spawn_registry_registration_task(state: ControlPlaneState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut pending_request_id = None;
+        let mut ticker = interval(Duration::from_secs(5));
+        loop {
+            ticker.tick().await;
+            match run_registry_registration_once(&state, pending_request_id.as_deref()).await {
+                Ok(result) if result.is_active() => {
+                    info!(
+                        request_id = %result.request_id,
+                        "network Agent registration is active; Wattswarm permission callback completed"
+                    );
+                    break;
+                }
+                Ok(result) => {
+                    info!(
+                        request_id = %result.request_id,
+                        status = %result.status,
+                        "network Agent registration is awaiting Registry approval"
+                    );
+                    pending_request_id = Some(result.request_id);
+                }
+                Err(error) => {
+                    warn!("network Agent registration attempt failed: {error:#}");
+                }
+            }
+        }
+    })
+}
+
+fn spawn_network_permission_sync_task(state: ControlPlaneState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let checkpoint =
+            match state
+                .local_db
+                .load_network_permission_checkpoint(&state.agent_did, None, None)
+            {
+                Ok(Some(checkpoint)) => checkpoint,
+                Ok(None) => return,
+                Err(error) => {
+                    warn!("load network permission checkpoint failed: {error:#}");
+                    return;
+                }
+            };
+        let checkpoint = if checkpoint.permission_status == PERMISSION_STATUS_ACTIVE
+            && !network_permission_is_active(&state.local_db, &state.agent_did).unwrap_or(false)
+        {
+            let mut suspended = checkpoint;
+            PERMISSION_STATUS_SUSPENDED.clone_into(&mut suspended.permission_status);
+            "stopped".clone_into(&mut suspended.network_status);
+            suspended.last_error = Some("membership Credential is missing or expired".to_owned());
+            suspended.revision = suspended.revision.saturating_add(1);
+            suspended.updated_at_ms = now_ms();
+            if let Err(error) = state
+                .local_db
+                .upsert_network_permission_checkpoint(&suspended)
+            {
+                warn!("suspend expired network permission checkpoint failed: {error:#}");
+            }
+            suspended
+        } else {
+            checkpoint
+        };
+        sync_network_permission_checkpoint(&state, &checkpoint).await;
+    })
 }
 
 #[allow(clippy::too_many_lines)]

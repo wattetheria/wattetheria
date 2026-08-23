@@ -403,6 +403,72 @@ async fn mcp_success_records_contribution_reward_event() {
 }
 
 #[tokio::test]
+async fn every_mcp_tool_reports_clear_network_permission_block() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    state
+        .local_db
+        .delete_network_agent_credential("test-network", &state.agent_did)
+        .unwrap();
+    state
+        .local_db
+        .upsert_network_permission_checkpoint(
+            &wattetheria_kernel::local_db::NetworkPermissionCheckpoint {
+                network_id: "test-network".to_owned(),
+                node_id: "test-node".to_owned(),
+                agent_did: state.agent_did.clone(),
+                permission_status: "pending".to_owned(),
+                network_status: "stopped".to_owned(),
+                revision: 2,
+                last_error: Some("awaiting approval".to_owned()),
+                updated_at_ms: 2,
+            },
+        )
+        .unwrap();
+
+    let read_only_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "list_nearby", "arguments": {}}
+        }),
+    )
+    .await;
+    let mutating_response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": "create_hive", "arguments": {}}
+        }),
+    )
+    .await;
+
+    for response in [&read_only_response, &mutating_response] {
+        assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+        assert_eq!(
+            response["result"]["structuredContent"]["error_code"],
+            "network_permission_required"
+        );
+        let message = response["result"]["structuredContent"]["message"]
+            .as_str()
+            .unwrap();
+        assert!(message.contains("Network permission is not active"));
+        assert!(message.contains("blocked"));
+        assert!(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("submit_registration_or_wait_for_approval")
+        );
+    }
+}
+
+#[tokio::test]
 async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);

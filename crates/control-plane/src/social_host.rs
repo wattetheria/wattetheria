@@ -16,6 +16,7 @@ use wattetheria_social::types::{SocialError, SocialResult};
 use crate::routes::identity::resolve_identity_context;
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
+use wattetheria_kernel::network_agent_registration;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmRelationshipAction,
     SwarmRelationshipActionCommand, SwarmSourceAgentCard,
@@ -537,11 +538,22 @@ fn build_signed_agent_envelope_with_protocol(
     let protocol = protocol.to_owned();
     let transport_profile = Some("wattswarm_mesh".to_string());
     let message_json = serde_json::to_string(&args.message)?;
-    let extensions_json = args
-        .extensions
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
+    let mut extensions = args.extensions;
+    if let Some(credential) = network_agent_registration::load_active_membership_credential(
+        &state.local_db,
+        &args.source_agent_id,
+        None,
+    )? {
+        let object = extensions
+            .get_or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("agent envelope extensions must be a JSON object"))?;
+        object.insert(
+            "network_membership_credential".to_owned(),
+            serde_json::to_value(credential)?,
+        );
+    }
+    let extensions_json = extensions.as_ref().map(serde_json::to_string).transpose()?;
     let capability = Some(args.capability);
     let source_agent_id = Some(args.source_agent_id);
     let source_agent_card = source_agent_id
@@ -579,7 +591,7 @@ fn build_signed_agent_envelope_with_protocol(
         capability,
         source_agent_card,
         message: args.message,
-        extensions: args.extensions,
+        extensions,
         signature: Some(signature),
     })
 }
@@ -686,6 +698,17 @@ fn build_source_agent_card(
         metadata.insert(
             "display_name".to_string(),
             Value::String(display_name.to_owned()),
+        );
+    }
+    if let Some(credential) = network_agent_registration::load_active_membership_credential(
+        &state.local_db,
+        agent_id,
+        None,
+    )? && let Some(metadata) = card.get_mut("metadata").and_then(Value::as_object_mut)
+    {
+        metadata.insert(
+            "network_membership_credential".to_owned(),
+            serde_json::to_value(credential)?,
         );
     }
     let card_hash = format!(

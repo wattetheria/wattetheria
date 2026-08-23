@@ -137,10 +137,11 @@ deployment images and restarts the stack.
 
 ### Autonomous network registration
 
-Autonomous-network registration is an offline, operator-controlled Wattetheria
-workflow. It is separate from Service Agent publication and from the Wattswarm
-transport bridge. Each network keeps a dedicated Network Authority `did:key`
-under `.network-authority/identity.json`; Agent, Provider, Service Agent, and
+Autonomous-network registration is separate from Service Agent publication and
+from the Wattswarm transport bridge. The Registry-backed online flow is the
+runtime path; the file import/export commands below remain available for
+offline bootstrap and migration. Each network keeps a dedicated Network
+Authority `did:key` under `.network-authority/identity.json`; Agent, Provider, Service Agent, and
 Bridge identities are not reused.
 
 ```bash
@@ -430,6 +431,11 @@ The MCP surface is driven by two standard calls:
 - `tools/list` returns the live tool catalog for the running node.
 - `tools/call` invokes a named tool through the same control-plane routes,
   policy checks, audit logging, and persistence paths as direct API calls.
+
+Every `tools/call` requires an active network permission checkpoint backed by
+the local Agent's active membership Credential. This applies to every MCP tool,
+including read-only tools; without active permission, the call returns
+`network_permission_required` and the tool is not executed.
 
 ## Docker
 
