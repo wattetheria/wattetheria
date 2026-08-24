@@ -806,12 +806,12 @@ fn agent_search_schema(tool: &AgentTool) -> Value {
         tool,
         &[
             string_field(
-                "public_id",
-                "Discovered network agent public ID. Preferred lookup key.",
-            ),
-            string_field(
                 "display_name",
                 "Discovered network agent display name. Search may return multiple discovery records when public_id is not provided.",
+            ),
+            string_field(
+                "public_id",
+                "Discovered network agent public ID. Preferred lookup key.",
             ),
         ],
         &[],
@@ -824,12 +824,12 @@ fn agent_card_lookup_schema(tool: &AgentTool) -> Value {
         tool,
         &[
             string_field(
-                "public_id",
-                "Discovered network agent public ID. Preferred exact lookup key.",
-            ),
-            string_field(
                 "display_name",
                 "Discovered network agent display name. Must resolve to exactly one record.",
+            ),
+            string_field(
+                "public_id",
+                "Discovered network agent public ID. Preferred exact lookup key.",
             ),
         ],
         &[],
