@@ -3,24 +3,27 @@
 pub mod agent_identity;
 pub mod brain;
 pub mod civilization;
-pub mod credentials;
 pub mod economy;
 pub mod game;
 pub mod governance;
 pub mod map;
-pub mod network_agent_registration;
-pub mod network_registration;
+pub mod network;
 pub mod payments;
 pub mod provider_identity;
 pub mod security;
 pub mod servicenet;
 pub mod storage;
-pub mod swarm_bridge;
-pub mod swarm_sync;
 pub mod tasks;
 pub mod types;
 
+#[path = "identity/identity_file.rs"]
 mod identity_file;
+
+pub use network::agent_registration as network_agent_registration;
+pub use network::credentials;
+pub use network::registration as network_registration;
+pub use network::swarm::bridge as swarm_bridge;
+pub use network::swarm::sync as swarm_sync;
 
 pub use brain::mcp;
 pub use brain::night_shift;
