@@ -29,6 +29,7 @@ const REGISTRY_AUTHORITY_ROUTE: &str = "/authority";
 const REGISTRY_AUTO_REGISTRATION_ROUTE: &str = "/registrations/auto";
 const REGISTRY_MANUAL_REGISTRATION_ROUTE: &str = "/registrations/manual";
 const REGISTRY_REGISTRATION_ROUTE: &str = "/registrations";
+const REGISTRY_NICKNAME_ROUTE: &str = "/agents/nickname";
 const WATTSWARM_STATE_DIR_ENV: &str = "WATTSWARM_STATE_DIR";
 const WATTSWARM_STATE_DIR_DEFAULT: &str = "/var/lib/wattswarm";
 const DISCOVERY_BOOTNODE_URLS_FILE: &str = "discovery_bootnode_urls_v1.json";
@@ -383,8 +384,14 @@ async fn persist_approved_registration(
     credential: wattetheria_kernel::network_agent_registration::MembershipCredential,
     auth: String,
 ) -> anyhow::Result<Value> {
-    let credential_changed =
-        store_membership_credential(state.local_db.as_ref(), request, &credential, now_ms())?;
+    let trust_anchor = state.swarm_bridge.network_credential_trust_anchor().await?;
+    let credential_changed = store_membership_credential(
+        state.local_db.as_ref(),
+        request,
+        &credential,
+        &trust_anchor,
+        now_ms(),
+    )?;
     let (checkpoint, checkpoint_changed) = persist_network_permission_checkpoint(
         state,
         request,
@@ -764,6 +771,59 @@ fn load_registry_urls(data_dir: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(normalized)
+}
+
+pub(crate) async fn reserve_registry_nickname(
+    state: &ControlPlaneState,
+    agent_did: &str,
+    nickname: &str,
+) -> anyhow::Result<()> {
+    let network_id = state.swarm_bridge.current_network_id().await?;
+    if network_id.starts_with("local:") {
+        return Ok(());
+    }
+    let registry_urls = load_registry_urls(&state.data_dir)?;
+    if registry_urls.is_empty() {
+        anyhow::bail!("no Registry URL configured; cannot check display name uniqueness");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(REGISTRY_REQUEST_TIMEOUT)
+        .build()
+        .context("build Registry nickname client")?;
+    let payload = json!({
+        "network_id": network_id,
+        "agent_did": agent_did,
+        "nickname": nickname,
+    });
+    let mut last_error = None;
+    for registry_base_url in registry_urls {
+        let response = match client
+            .post(format!("{registry_base_url}{REGISTRY_NICKNAME_ROUTE}"))
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = Some(anyhow::anyhow!(
+                    "Registry nickname request failed: {error:#}"
+                ));
+                continue;
+            }
+        };
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if status.is_success() {
+            return Ok(());
+        }
+        if status == reqwest::StatusCode::CONFLICT {
+            anyhow::bail!("display name is already in use across this network");
+        }
+        last_error = Some(anyhow::anyhow!(
+            "Registry nickname request returned HTTP {status}: {body}"
+        ));
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Registry nickname request failed")))
 }
 
 fn registry_base_url(base_url: &str) -> Option<String> {

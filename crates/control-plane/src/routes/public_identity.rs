@@ -10,6 +10,7 @@ use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{
     identity_context_response, public_memory_payload, resolve_identity_context,
 };
+use crate::routes::network::reserve_registry_nickname;
 use crate::state::{
     BootstrapIdentityBody, CitizenProfileBody, ControlPlaneState, ControllerBindingBody,
     ControllerBindingQuery, PublicIdentityBody, PublicIdentityDisplayNameBody, PublicIdentityQuery,
@@ -414,6 +415,29 @@ pub(crate) async fn public_identity_display_name_patch(
             Json(json!({"error": "public_id is required"})),
         )
             .into_response();
+    }
+    let current_identity = {
+        let registry = state.public_identity_registry.lock().await;
+        registry.get(public_id)
+    };
+    let Some(current_identity) = current_identity else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("public identity '{public_id}' not found")})),
+        )
+            .into_response();
+    };
+    if current_identity.agent_did.as_deref() == Some(state.agent_did.as_str())
+        && let Err(error) =
+            reserve_registry_nickname(&state, &state.agent_did, body.display_name.trim()).await
+    {
+        let message = format!("network display name check failed: {error:#}");
+        let status = if message.contains("already in use") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_GATEWAY
+        };
+        return (status, Json(json!({"error": message}))).into_response();
     }
     let mut registry = state.public_identity_registry.lock().await;
     let identity = match registry.update_display_name(public_id, &body.display_name) {

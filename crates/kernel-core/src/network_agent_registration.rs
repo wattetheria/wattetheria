@@ -17,6 +17,9 @@ use crate::local_db::{LocalDb, NetworkAgentCredentialRecord, NetworkPermissionCh
 
 pub const REGISTRATION_PROTOCOL_VERSION: u32 = 1;
 pub const REGISTRATION_REQUEST_DOMAIN: &str = "wattetheria:network-registration-request:v1";
+pub const AUTHORITY_KEY_CERTIFICATE_DOMAIN: &str =
+    "wattetheria:registry-authority-key-certificate:v1";
+pub const MEMBERSHIP_CREDENTIAL_DOMAIN: &str = "wattetheria:network-membership-credential:v1";
 pub const PERMISSION_STATUS_WAITING: &str = "waiting";
 pub const PERMISSION_STATUS_PENDING: &str = "pending";
 pub const PERMISSION_STATUS_ACTIVE: &str = "active";
@@ -75,13 +78,69 @@ impl RegistrationRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkCredentialTrustAnchor {
+    pub network_id: String,
+    pub trust_anchor_id: String,
+    pub signature_algorithm: String,
+    pub public_key_encoding: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnsignedAuthorityKeyCertificate {
+    pub version: u32,
+    pub network_id: String,
+    pub authority_id: String,
+    pub key_id: String,
+    pub signature_algorithm: String,
+    pub public_key_encoding: String,
+    pub public_key: String,
+    pub trust_anchor_id: String,
+    #[serde(rename = "issued_at", alias = "issued_at_ms")]
+    pub issued_at_ms: u64,
+    #[serde(
+        rename = "expires_at",
+        alias = "expires_at_ms",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthorityKeyCertificate {
+    #[serde(flatten)]
+    pub unsigned: UnsignedAuthorityKeyCertificate,
+    pub trust_anchor_signature_algorithm: String,
+    pub trust_anchor_signature_encoding: String,
+    pub trust_anchor_signature: String,
+}
+
+impl UnsignedAuthorityKeyCertificate {
+    pub fn signing_bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_jcs::to_vec(&json!({
+            "domain": AUTHORITY_KEY_CERTIFICATE_DOMAIN,
+            "version": self.version,
+            "network_id": self.network_id,
+            "authority_id": self.authority_id,
+            "key_id": self.key_id,
+            "signature_algorithm": self.signature_algorithm,
+            "public_key_encoding": self.public_key_encoding,
+            "public_key": self.public_key,
+            "trust_anchor_id": self.trust_anchor_id,
+            "issued_at": self.issued_at_ms,
+            "expires_at": self.expires_at_ms,
+        }))?)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnsignedMembershipCredential {
     pub version: u32,
     pub credential_id: String,
-    pub request_id: String,
     pub network_id: String,
     pub agent_did: String,
-    #[serde(rename = "issuer_genesis_id", alias = "issuer_authority_id")]
+    #[serde(alias = "issuer_genesis_id")]
     pub issuer_authority_id: String,
     #[serde(rename = "issued_at", alias = "issued_at_ms")]
     pub issued_at_ms: u64,
@@ -96,6 +155,8 @@ pub struct UnsignedMembershipCredential {
     pub signing_key_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_key_certificate: Option<AuthorityKeyCertificate>,
     #[serde(flatten)]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -109,8 +170,7 @@ pub struct MembershipCredential {
 
 impl MembershipCredential {
     pub fn verify_for(&self, request: &RegistrationRequest, now_ms: u64) -> Result<()> {
-        if self.unsigned.request_id != request.request_id
-            || self.unsigned.network_id != request.network_id
+        if self.unsigned.network_id != request.network_id
             || self.unsigned.agent_did != request.agent_did
         {
             bail!("membership credential subject does not match registration request");
@@ -124,6 +184,22 @@ impl MembershipCredential {
         }
         Ok(())
     }
+
+    pub fn signing_bytes(&self) -> Result<Vec<u8>> {
+        Ok(serde_jcs::to_vec(&json!({
+            "domain": MEMBERSHIP_CREDENTIAL_DOMAIN,
+            "version": self.unsigned.version,
+            "credential_id": self.unsigned.credential_id,
+            "network_id": self.unsigned.network_id,
+            "agent_did": self.unsigned.agent_did,
+            "issuer_authority_id": self.unsigned.issuer_authority_id,
+            "issued_at": self.unsigned.issued_at_ms,
+            "expires_at": self.unsigned.expires_at_ms,
+            "signing_key_id": self.unsigned.signing_key_id,
+            "signature_algorithm": self.unsigned.signature_algorithm,
+            "issuer_key_certificate": self.unsigned.issuer_key_certificate,
+        }))?)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -133,15 +209,20 @@ pub struct NetworkPermissionUpdate {
     pub credential_id: Option<String>,
     pub credential_hash: Option<String>,
     pub credential_expires_at_ms: Option<u64>,
+    pub credential_trust_anchor: Option<NetworkCredentialTrustAnchor>,
 }
 
 pub fn store_membership_credential(
     db: &LocalDb,
     request: &RegistrationRequest,
     credential: &MembershipCredential,
+    trust_anchor: &NetworkCredentialTrustAnchor,
     now_ms: u64,
 ) -> Result<bool> {
     credential.verify_for(request, now_ms)?;
+    if trust_anchor.network_id != request.network_id {
+        bail!("network Credential trust anchor does not match registration network");
+    }
     let credential_json = serde_json::to_string(&credential)
         .context("serialize network Agent membership Credential")?;
     let record = NetworkAgentCredentialRecord {
@@ -151,6 +232,10 @@ pub fn store_membership_credential(
         credential_id: credential.unsigned.credential_id.clone(),
         credential_hash: membership_credential_hash(credential),
         credential_json,
+        trust_anchor_json: Some(
+            serde_json::to_string(trust_anchor)
+                .context("serialize network Credential trust anchor")?,
+        ),
         status: "active".to_owned(),
         issued_at_ms: credential.unsigned.issued_at_ms,
         credential_expires_at_ms: credential.unsigned.expires_at_ms,
@@ -224,22 +309,108 @@ pub fn network_permission_update(
     db: &LocalDb,
     checkpoint: &NetworkPermissionCheckpoint,
 ) -> Result<NetworkPermissionUpdate> {
-    let credential = if checkpoint.permission_status == PERMISSION_STATUS_ACTIVE {
-        load_valid_membership_credential(db, &checkpoint.agent_did, Some(&checkpoint.network_id))?
-            .map(|(record, _)| record)
+    let verified = if checkpoint.permission_status == PERMISSION_STATUS_ACTIVE {
+        verify_membership_credential_for_network_start(
+            db,
+            &checkpoint.agent_did,
+            Some(&checkpoint.network_id),
+        )?
     } else {
         None
     };
+    let credential = verified.as_ref().map(|(record, _)| record);
+    let credential_trust_anchor = credential
+        .and_then(|record| record.trust_anchor_json.as_deref())
+        .map(serde_json::from_str)
+        .transpose()
+        .context("decode verified network Credential trust anchor")?;
     Ok(NetworkPermissionUpdate {
         checkpoint: checkpoint.clone(),
-        credential_id: credential
-            .as_ref()
-            .map(|record| record.credential_id.clone()),
-        credential_hash: credential
-            .as_ref()
-            .map(|record| record.credential_hash.clone()),
+        credential_id: credential.map(|record| record.credential_id.clone()),
+        credential_hash: credential.map(|record| record.credential_hash.clone()),
         credential_expires_at_ms: credential.and_then(|record| record.credential_expires_at_ms),
+        credential_trust_anchor,
     })
+}
+
+pub fn verify_membership_credential_for_network_start(
+    db: &LocalDb,
+    agent_did: &str,
+    network_id: Option<&str>,
+) -> Result<Option<(NetworkAgentCredentialRecord, MembershipCredential)>> {
+    let Some((record, credential)) = load_valid_membership_credential(db, agent_did, network_id)?
+    else {
+        return Ok(None);
+    };
+    let trust_anchor_json = record.trust_anchor_json.as_deref().context(
+        "network membership Credential has no trusted network anchor; re-registration is required",
+    )?;
+    let trust_anchor: NetworkCredentialTrustAnchor = serde_json::from_str(trust_anchor_json)
+        .context("decode stored network Credential trust anchor")?;
+    verify_membership_credential_signature(&credential, &trust_anchor, now_ms())?;
+    Ok(Some((record, credential)))
+}
+
+fn verify_membership_credential_signature(
+    credential: &MembershipCredential,
+    trust_anchor: &NetworkCredentialTrustAnchor,
+    now_ms: u64,
+) -> Result<()> {
+    if !credential.unsigned.extensions.is_empty() {
+        bail!("network membership Credential contains unsigned extension fields");
+    }
+    let certificate = credential
+        .unsigned
+        .issuer_key_certificate
+        .as_ref()
+        .context(
+            "network membership Credential has no issuer key certificate; re-registration is required",
+        )?;
+    if trust_anchor.network_id != credential.unsigned.network_id
+        || certificate.unsigned.network_id != credential.unsigned.network_id
+        || certificate.unsigned.authority_id != credential.unsigned.issuer_authority_id
+        || certificate.unsigned.trust_anchor_id != trust_anchor.trust_anchor_id
+        || certificate.trust_anchor_signature_algorithm != trust_anchor.signature_algorithm
+        || Some(certificate.unsigned.key_id.as_str())
+            != credential.unsigned.signing_key_id.as_deref()
+        || Some(certificate.unsigned.signature_algorithm.as_str())
+            != credential.unsigned.signature_algorithm.as_deref()
+    {
+        bail!("network membership Credential issuer proof does not match the trusted network");
+    }
+    if certificate
+        .unsigned
+        .expires_at_ms
+        .is_some_and(|expires_at| expires_at <= now_ms)
+    {
+        bail!("network membership Credential issuer key certificate has expired");
+    }
+    watt_credential::verify_detached_signature(
+        watt_credential::DetachedSignature {
+            algorithm: &certificate.trust_anchor_signature_algorithm,
+            public_key_encoding: &trust_anchor.public_key_encoding,
+            public_key: &trust_anchor.public_key,
+            signature_encoding: &certificate.trust_anchor_signature_encoding,
+            signature: &certificate.trust_anchor_signature,
+        },
+        &certificate.unsigned.signing_bytes()?,
+    )
+    .context("verify network membership Credential issuer key certificate")?;
+    watt_credential::verify_detached_signature(
+        watt_credential::DetachedSignature {
+            algorithm: credential
+                .unsigned
+                .signature_algorithm
+                .as_deref()
+                .context("network membership Credential signature algorithm is required")?,
+            public_key_encoding: &certificate.unsigned.public_key_encoding,
+            public_key: &certificate.unsigned.public_key,
+            signature_encoding: "hex",
+            signature: &credential.signature_hex,
+        },
+        &credential.signing_bytes()?,
+    )
+    .context("verify network membership Credential signature")
 }
 
 pub fn set_membership_credential_status(
@@ -284,7 +455,6 @@ fn load_valid_membership_credential(
     let credential: MembershipCredential = serde_json::from_str(&record.credential_json)
         .context("decode stored network Agent membership Credential")?;
     let valid = credential.unsigned.credential_id == record.credential_id
-        && credential.unsigned.request_id == record.request_id
         && credential.unsigned.network_id == record.network_id
         && credential.unsigned.agent_did == record.agent_did
         && credential.unsigned.issued_at_ms == record.issued_at_ms
@@ -441,24 +611,72 @@ mod tests {
         request_signature_is_valid(&request).expect("legacy request verifies");
     }
 
-    fn signed_credential(request: &RegistrationRequest) -> MembershipCredential {
+    fn signed_credential(
+        request: &RegistrationRequest,
+    ) -> (MembershipCredential, NetworkCredentialTrustAnchor) {
+        let signing_key = SigningKey::from_bytes(&[11_u8; 32]);
+        let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+        let key_id = format!("ed25519-{public_key}");
+        let certificate_unsigned = UnsignedAuthorityKeyCertificate {
+            version: 1,
+            network_id: request.network_id.clone(),
+            authority_id: "test-registry-authority".to_owned(),
+            key_id: key_id.clone(),
+            signature_algorithm: "ed25519".to_owned(),
+            public_key_encoding: "hex".to_owned(),
+            public_key: public_key.clone(),
+            trust_anchor_id: public_key.clone(),
+            issued_at_ms: 1,
+            expires_at_ms: None,
+        };
+        let issuer_key_certificate = AuthorityKeyCertificate {
+            trust_anchor_signature_algorithm: "ed25519".to_owned(),
+            trust_anchor_signature_encoding: "hex".to_owned(),
+            trust_anchor_signature: hex::encode(
+                signing_key
+                    .sign(
+                        &certificate_unsigned
+                            .signing_bytes()
+                            .expect("certificate signing bytes"),
+                    )
+                    .to_bytes(),
+            ),
+            unsigned: certificate_unsigned,
+        };
         let unsigned = UnsignedMembershipCredential {
             version: 1,
             credential_id: "cred-1".to_owned(),
-            request_id: request.request_id.clone(),
             network_id: request.network_id.clone(),
             agent_did: request.agent_did.clone(),
             issuer_authority_id: "test-registry-authority".to_owned(),
             issued_at_ms: 1,
             expires_at_ms: None,
-            signing_key_id: None,
-            signature_algorithm: None,
+            signing_key_id: Some(key_id),
+            signature_algorithm: Some("ed25519".to_owned()),
+            issuer_key_certificate: Some(issuer_key_certificate),
             extensions: BTreeMap::new(),
         };
-        MembershipCredential {
+        let mut credential = MembershipCredential {
             unsigned,
-            signature_hex: "registry-owned-opaque-proof".to_owned(),
-        }
+            signature_hex: String::new(),
+        };
+        credential.signature_hex = hex::encode(
+            signing_key
+                .sign(
+                    &credential
+                        .signing_bytes()
+                        .expect("Credential signing bytes"),
+                )
+                .to_bytes(),
+        );
+        let trust_anchor = NetworkCredentialTrustAnchor {
+            network_id: request.network_id.clone(),
+            trust_anchor_id: public_key.clone(),
+            signature_algorithm: "ed25519".to_owned(),
+            public_key_encoding: "hex".to_owned(),
+            public_key,
+        };
+        (credential, trust_anchor)
     }
 
     #[test]
@@ -476,8 +694,13 @@ mod tests {
             nonce: "nonce-1".to_owned(),
             signature_b64: "unused-in-this-test".to_owned(),
         };
-        let credential = signed_credential(&request);
-        store_membership_credential(&db, &request, &credential, 100).unwrap();
+        let (credential, trust_anchor) = signed_credential(&request);
+        store_membership_credential(&db, &request, &credential, &trust_anchor, 100).unwrap();
+        let stored = db
+            .load_network_agent_credential(&request.agent_did, Some(&request.network_id))
+            .unwrap()
+            .unwrap();
+        assert!(!stored.credential_json.contains("request_id"));
         assert_eq!(
             load_active_membership_credential(&db, &request.agent_did, Some(&request.network_id))
                 .unwrap(),
@@ -508,7 +731,7 @@ mod tests {
         };
         assert!(!network_permission_is_active(&db, &request.agent_did).unwrap());
 
-        let credential = signed_credential(&request);
+        let (credential, trust_anchor) = signed_credential(&request);
         update_network_permission_checkpoint(
             &db,
             &request.network_id,
@@ -521,7 +744,7 @@ mod tests {
         .unwrap();
         assert!(!network_permission_is_active(&db, &request.agent_did).unwrap());
 
-        store_membership_credential(&db, &request, &credential, 100).unwrap();
+        store_membership_credential(&db, &request, &credential, &trust_anchor, 100).unwrap();
         assert!(network_permission_is_active(&db, &request.agent_did).unwrap());
 
         let mut tampered = db
@@ -567,8 +790,117 @@ mod tests {
             nonce: "nonce-1".to_owned(),
             signature_b64: "unused-in-this-test".to_owned(),
         };
-        let credential = signed_credential(&request);
+        let (credential, _) = signed_credential(&request);
         credential.verify_for(&request, u64::MAX).unwrap();
+    }
+
+    #[test]
+    fn network_start_rejects_a_tampered_credential_even_if_its_local_hash_is_rewritten() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let request = RegistrationRequest {
+            version: 1,
+            request_id: "request-tamper".to_owned(),
+            network_id: "network-1".to_owned(),
+            agent_did: "did:key:z6MkhExample".to_owned(),
+            nickname: "Agent".to_owned(),
+            agent_card: None,
+            agent_card_hash: None,
+            tenant_instance_id: None,
+            nonce: "nonce-tamper".to_owned(),
+            signature_b64: "unused-in-this-test".to_owned(),
+        };
+        let (credential, trust_anchor) = signed_credential(&request);
+        store_membership_credential(&db, &request, &credential, &trust_anchor, 100).unwrap();
+        update_network_permission_checkpoint(
+            &db,
+            &request.network_id,
+            "node-1",
+            &request.agent_did,
+            PERMISSION_STATUS_ACTIVE,
+            None,
+            100,
+        )
+        .unwrap();
+
+        let mut record = db
+            .load_network_agent_credential(&request.agent_did, Some(&request.network_id))
+            .unwrap()
+            .unwrap();
+        let mut tampered = credential;
+        tampered.unsigned.issuer_authority_id = "forged-authority".to_owned();
+        record.credential_hash = membership_credential_hash(&tampered);
+        record.credential_json = serde_json::to_string(&tampered).unwrap();
+        db.upsert_network_agent_credential(&record).unwrap();
+
+        assert!(network_permission_is_active(&db, &request.agent_did).unwrap());
+        let error = verify_membership_credential_for_network_start(
+            &db,
+            &request.agent_did,
+            Some(&request.network_id),
+        )
+        .expect_err("network startup must reject the forged Credential");
+        assert!(error.to_string().contains("issuer proof"));
+    }
+
+    #[test]
+    fn network_start_rejects_unsigned_credential_extensions() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let request = RegistrationRequest {
+            version: 1,
+            request_id: "request-extension-tamper".to_owned(),
+            network_id: "network-1".to_owned(),
+            agent_did: "did:key:z6MkhExample".to_owned(),
+            nickname: "Agent".to_owned(),
+            agent_card: None,
+            agent_card_hash: None,
+            tenant_instance_id: None,
+            nonce: "nonce-extension-tamper".to_owned(),
+            signature_b64: "unused-in-this-test".to_owned(),
+        };
+        let (mut credential, trust_anchor) = signed_credential(&request);
+        credential
+            .unsigned
+            .extensions
+            .insert("forged_claim".to_owned(), json!(true));
+        store_membership_credential(&db, &request, &credential, &trust_anchor, 100).unwrap();
+
+        let error = verify_membership_credential_for_network_start(
+            &db,
+            &request.agent_did,
+            Some(&request.network_id),
+        )
+        .expect_err("network startup must reject unsigned Credential extensions");
+        assert!(error.to_string().contains("unsigned extension fields"));
+    }
+
+    #[test]
+    fn legacy_credential_without_issuer_proof_requires_re_registration() {
+        let request = RegistrationRequest {
+            version: 1,
+            request_id: "request-legacy-credential".to_owned(),
+            network_id: "network-1".to_owned(),
+            agent_did: "did:key:z6MkhExample".to_owned(),
+            nickname: "Agent".to_owned(),
+            agent_card: None,
+            agent_card_hash: None,
+            tenant_instance_id: None,
+            nonce: "nonce-legacy-credential".to_owned(),
+            signature_b64: "unused-in-this-test".to_owned(),
+        };
+        let (mut credential, trust_anchor) = signed_credential(&request);
+        credential.unsigned.issuer_key_certificate = None;
+        let encoded = serde_json::to_string(&credential).unwrap();
+        let decoded: MembershipCredential = serde_json::from_str(&encoded).unwrap();
+
+        let db = LocalDb::open_in_memory().unwrap();
+        store_membership_credential(&db, &request, &decoded, &trust_anchor, 100).unwrap();
+        let error = verify_membership_credential_for_network_start(
+            &db,
+            &request.agent_did,
+            Some(&request.network_id),
+        )
+        .expect_err("legacy Credential must not activate the network");
+        assert!(error.to_string().contains("re-registration is required"));
     }
 
     #[test]
@@ -589,7 +921,6 @@ mod tests {
             unsigned: UnsignedMembershipCredential {
                 version: 1,
                 credential_id: "credential-1".to_owned(),
-                request_id: request.request_id.clone(),
                 network_id: request.network_id.clone(),
                 agent_did: request.agent_did.clone(),
                 issuer_authority_id: "opaque-authority".to_owned(),
@@ -597,6 +928,23 @@ mod tests {
                 expires_at_ms: None,
                 signing_key_id: Some("key-1".to_owned()),
                 signature_algorithm: Some("future-algorithm".to_owned()),
+                issuer_key_certificate: Some(AuthorityKeyCertificate {
+                    unsigned: UnsignedAuthorityKeyCertificate {
+                        version: 1,
+                        network_id: request.network_id.clone(),
+                        authority_id: "opaque-authority".to_owned(),
+                        key_id: "key-1".to_owned(),
+                        signature_algorithm: "future-algorithm".to_owned(),
+                        public_key_encoding: "future-encoding".to_owned(),
+                        public_key: "opaque-key".to_owned(),
+                        trust_anchor_id: "opaque-anchor".to_owned(),
+                        issued_at_ms: 1,
+                        expires_at_ms: None,
+                    },
+                    trust_anchor_signature_algorithm: "future-algorithm".to_owned(),
+                    trust_anchor_signature_encoding: "future-encoding".to_owned(),
+                    trust_anchor_signature: "opaque-proof".to_owned(),
+                }),
                 extensions: BTreeMap::from([(
                     "algorithm_parameters".to_owned(),
                     json!({"curve": "future-curve"}),

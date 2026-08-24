@@ -46,7 +46,8 @@ use wattetheria_kernel::identity::{
 use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::network_agent_registration::{
-    MembershipCredential, RegistrationRequest, UnsignedMembershipCredential,
+    AuthorityKeyCertificate, MembershipCredential, NetworkCredentialTrustAnchor,
+    RegistrationRequest, UnsignedAuthorityKeyCertificate, UnsignedMembershipCredential,
     store_membership_credential, update_network_permission_checkpoint,
 };
 use wattetheria_kernel::policy_engine::{PolicyEngine, PolicyState};
@@ -151,27 +152,73 @@ fn build_test_state_with_bridge(
         nonce: "test-registration-nonce".to_owned(),
         signature_b64: "test-registration-signature".to_owned(),
     };
+    let signing_key = SigningKey::from_bytes(&[42_u8; 32]);
+    let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+    let signing_key_id = format!("ed25519-{public_key}");
+    let unsigned_certificate = UnsignedAuthorityKeyCertificate {
+        version: 1,
+        network_id: registration_request.network_id.clone(),
+        authority_id: "test-registry-authority".to_owned(),
+        key_id: signing_key_id.clone(),
+        signature_algorithm: "ed25519".to_owned(),
+        public_key_encoding: "hex".to_owned(),
+        public_key: public_key.clone(),
+        trust_anchor_id: public_key.clone(),
+        issued_at_ms: 1,
+        expires_at_ms: None,
+    };
+    let issuer_key_certificate = AuthorityKeyCertificate {
+        trust_anchor_signature_algorithm: "ed25519".to_owned(),
+        trust_anchor_signature_encoding: "hex".to_owned(),
+        trust_anchor_signature: hex::encode(
+            signing_key
+                .sign(
+                    &unsigned_certificate
+                        .signing_bytes()
+                        .expect("test authority certificate signing bytes"),
+                )
+                .to_bytes(),
+        ),
+        unsigned: unsigned_certificate,
+    };
     let unsigned_credential = UnsignedMembershipCredential {
         version: 1,
         credential_id: "test-network-credential".to_owned(),
-        request_id: registration_request.request_id.clone(),
         network_id: registration_request.network_id.clone(),
         agent_did: registration_request.agent_did.clone(),
         issuer_authority_id: "test-registry-authority".to_owned(),
         issued_at_ms: Utc::now().timestamp_millis().try_into().unwrap(),
         expires_at_ms: None,
-        signing_key_id: None,
-        signature_algorithm: None,
+        signing_key_id: Some(signing_key_id),
+        signature_algorithm: Some("ed25519".to_owned()),
+        issuer_key_certificate: Some(issuer_key_certificate),
         extensions: std::collections::BTreeMap::new(),
     };
-    let credential = MembershipCredential {
+    let mut credential = MembershipCredential {
         unsigned: unsigned_credential,
-        signature_hex: "registry-owned-opaque-proof".to_owned(),
+        signature_hex: String::new(),
+    };
+    credential.signature_hex = hex::encode(
+        signing_key
+            .sign(
+                &credential
+                    .signing_bytes()
+                    .expect("test Credential signing bytes"),
+            )
+            .to_bytes(),
+    );
+    let trust_anchor = NetworkCredentialTrustAnchor {
+        network_id: registration_request.network_id.clone(),
+        trust_anchor_id: public_key.clone(),
+        signature_algorithm: "ed25519".to_owned(),
+        public_key_encoding: "hex".to_owned(),
+        public_key,
     };
     store_membership_credential(
         &local_db,
         &registration_request,
         &credential,
+        &trust_anchor,
         Utc::now().timestamp_millis().try_into().unwrap(),
     )
     .expect("seed active test network credential");

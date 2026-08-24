@@ -28,6 +28,7 @@ pub struct NetworkAgentCredentialRecord {
     pub request_id: String,
     pub credential_id: String,
     pub credential_json: String,
+    pub trust_anchor_json: Option<String>,
     pub credential_hash: String,
     pub status: String,
     pub issued_at_ms: u64,
@@ -151,6 +152,17 @@ fn migrate_agent_credentials(tx: &Transaction<'_>) -> Result<()> {
         return create_agent_credentials_table(tx, NETWORK_AGENT_CREDENTIALS_TABLE);
     }
     if !LocalDb::table_column_exists(tx, NETWORK_AGENT_CREDENTIALS_TABLE, "payload")? {
+        if !LocalDb::table_column_exists(tx, NETWORK_AGENT_CREDENTIALS_TABLE, "trust_anchor_json")?
+        {
+            tx.execute(
+                &format!(
+                    "ALTER TABLE {NETWORK_AGENT_CREDENTIALS_TABLE}
+                     ADD COLUMN trust_anchor_json TEXT"
+                ),
+                [],
+            )
+            .context("add network Credential trust anchor column")?;
+        }
         return create_agent_credentials_indexes(tx);
     }
 
@@ -193,6 +205,7 @@ fn create_agent_credentials_table(tx: &Transaction<'_>, table: &str) -> Result<(
                 request_id TEXT NOT NULL,
                 credential_id TEXT NOT NULL UNIQUE,
                 credential_json TEXT NOT NULL,
+                trust_anchor_json TEXT,
                 credential_hash TEXT NOT NULL,
                 status TEXT NOT NULL,
                 issued_at_ms INTEGER NOT NULL,
@@ -237,6 +250,7 @@ fn legacy_credential_record(
         request_id: stored.request_id,
         credential_id,
         credential_json,
+        trust_anchor_json: None,
         credential_hash,
         status: stored.status,
         issued_at_ms,
@@ -251,7 +265,7 @@ fn canonicalize_legacy_credential(mut credential: Value) -> Result<Value> {
         .as_object_mut()
         .context("legacy Credential must be a JSON object")?;
     for (canonical, alias) in [
-        ("issuer_genesis_id", "issuer_authority_id"),
+        ("issuer_authority_id", "issuer_genesis_id"),
         ("issued_at", "issued_at_ms"),
         ("expires_at", "expires_at_ms"),
     ] {
@@ -308,9 +322,9 @@ fn insert_agent_credential(
         &format!(
             "INSERT INTO {table} (
                 network_id, agent_did, request_id, credential_id,
-                credential_json, credential_hash, status, issued_at_ms,
+                credential_json, trust_anchor_json, credential_hash, status, issued_at_ms,
                 credential_expires_at_ms, stored_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
         ),
         params![
             record.network_id,
@@ -318,6 +332,7 @@ fn insert_agent_credential(
             record.request_id,
             record.credential_id,
             record.credential_json,
+            record.trust_anchor_json,
             record.credential_hash,
             record.status,
             record.issued_at_ms,
@@ -407,13 +422,14 @@ impl LocalDb {
                 &format!(
                     "INSERT INTO {NETWORK_AGENT_CREDENTIALS_TABLE} (
                         network_id, agent_did, request_id, credential_id,
-                        credential_json, credential_hash, status, issued_at_ms,
+                        credential_json, trust_anchor_json, credential_hash, status, issued_at_ms,
                         credential_expires_at_ms, stored_at_ms, updated_at_ms
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                      ON CONFLICT (network_id, agent_did) DO UPDATE SET
                         request_id = excluded.request_id,
                         credential_id = excluded.credential_id,
                         credential_json = excluded.credential_json,
+                        trust_anchor_json = excluded.trust_anchor_json,
                         credential_hash = excluded.credential_hash,
                         status = excluded.status,
                         issued_at_ms = excluded.issued_at_ms,
@@ -427,6 +443,7 @@ impl LocalDb {
                     record.request_id,
                     record.credential_id,
                     record.credential_json,
+                    record.trust_anchor_json,
                     record.credential_hash,
                     record.status,
                     record.issued_at_ms,
@@ -447,7 +464,7 @@ impl LocalDb {
         let result = self.conn().query_row(
             &format!(
                 "SELECT network_id, agent_did, request_id, credential_id,
-                        credential_json, credential_hash, status, issued_at_ms,
+                        credential_json, trust_anchor_json, credential_hash, status, issued_at_ms,
                         credential_expires_at_ms, stored_at_ms, updated_at_ms
                  FROM {NETWORK_AGENT_CREDENTIALS_TABLE}
                  WHERE agent_did = ?1 AND (?2 IS NULL OR network_id = ?2)
@@ -530,12 +547,13 @@ fn decode_agent_credential(
         request_id: row.get(2)?,
         credential_id: row.get(3)?,
         credential_json: row.get(4)?,
-        credential_hash: row.get(5)?,
-        status: row.get(6)?,
-        issued_at_ms: row.get(7)?,
-        credential_expires_at_ms: row.get(8)?,
-        stored_at_ms: row.get(9)?,
-        updated_at_ms: row.get(10)?,
+        trust_anchor_json: row.get(5)?,
+        credential_hash: row.get(6)?,
+        status: row.get(7)?,
+        issued_at_ms: row.get(8)?,
+        credential_expires_at_ms: row.get(9)?,
+        stored_at_ms: row.get(10)?,
+        updated_at_ms: row.get(11)?,
     })
 }
 
@@ -547,6 +565,7 @@ fn credential_records_match(
         && current.agent_did == candidate.agent_did
         && current.request_id == candidate.request_id
         && current.credential_id == candidate.credential_id
+        && current.trust_anchor_json == candidate.trust_anchor_json
         && current.credential_hash == candidate.credential_hash
         && current.status == candidate.status
         && current.issued_at_ms == candidate.issued_at_ms
@@ -629,7 +648,7 @@ mod tests {
         assert_eq!(record.credential_expires_at_ms, Some(200));
         assert!(record.credential_hash.starts_with("sha256:"));
         let migrated: Value = serde_json::from_str(&record.credential_json).unwrap();
-        assert_eq!(migrated["issuer_genesis_id"], "authority-1");
+        assert_eq!(migrated["issuer_authority_id"], "authority-1");
         assert_eq!(migrated["issued_at"], 100);
         assert_eq!(migrated["expires_at"], 200);
         assert_eq!(migrated["signature_algorithm"], "future-algorithm");
@@ -694,6 +713,7 @@ mod tests {
             request_id: "request-1".to_owned(),
             credential_id: "credential-1".to_owned(),
             credential_json: "{}".to_owned(),
+            trust_anchor_json: Some("{}".to_owned()),
             credential_hash: "sha256:abc".to_owned(),
             status: "active".to_owned(),
             issued_at_ms: 100,

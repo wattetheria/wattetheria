@@ -48,7 +48,8 @@ use wattetheria_kernel::mailbox::CrossSubnetMailbox;
 use wattetheria_kernel::map::registry::GalaxyMapRegistry;
 use wattetheria_kernel::map::state::{TravelStateRegistry, resolve_anchor_position};
 use wattetheria_kernel::network_agent_registration::{
-    PERMISSION_STATUS_ACTIVE, PERMISSION_STATUS_SUSPENDED, network_permission_is_active, now_ms,
+    PERMISSION_STATUS_ACTIVE, PERMISSION_STATUS_SUSPENDED, now_ms,
+    verify_membership_credential_for_network_start,
 };
 use wattetheria_kernel::online_proof::OnlineProofManager;
 use wattetheria_kernel::payments::PaymentLedger;
@@ -169,13 +170,26 @@ fn spawn_network_permission_sync_task(state: ControlPlaneState) -> tokio::task::
                     return;
                 }
             };
-        let checkpoint = if checkpoint.permission_status == PERMISSION_STATUS_ACTIVE
-            && !network_permission_is_active(&state.local_db, &state.agent_did).unwrap_or(false)
-        {
+        let suspension_reason = if checkpoint.permission_status == PERMISSION_STATUS_ACTIVE {
+            match verify_membership_credential_for_network_start(
+                &state.local_db,
+                &state.agent_did,
+                Some(&checkpoint.network_id),
+            ) {
+                Ok(Some(_)) => None,
+                Ok(None) => Some("membership Credential is missing or expired".to_owned()),
+                Err(error) => Some(format!(
+                    "membership Credential verification failed: {error:#}"
+                )),
+            }
+        } else {
+            None
+        };
+        let checkpoint = if let Some(suspension_reason) = suspension_reason {
             let mut suspended = checkpoint;
             PERMISSION_STATUS_SUSPENDED.clone_into(&mut suspended.permission_status);
             "stopped".clone_into(&mut suspended.network_status);
-            suspended.last_error = Some("membership Credential is missing or expired".to_owned());
+            suspended.last_error = Some(suspension_reason);
             suspended.revision = suspended.revision.saturating_add(1);
             suspended.updated_at_ms = now_ms();
             if let Err(error) = state

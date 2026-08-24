@@ -433,6 +433,14 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm current network ID is not configured"))
     }
 
+    async fn network_credential_trust_anchor(
+        &self,
+    ) -> Result<crate::network_agent_registration::NetworkCredentialTrustAnchor> {
+        Err(anyhow!(
+            "wattswarm network Credential trust anchor is not configured"
+        ))
+    }
+
     async fn local_node_id(&self) -> Result<String> {
         Err(anyhow!("wattswarm local node id is not configured"))
     }
@@ -742,6 +750,12 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn current_network_id(&self) -> Result<String> {
         self.topic_api()?.current_network_id().await
+    }
+
+    async fn network_credential_trust_anchor(
+        &self,
+    ) -> Result<crate::network_agent_registration::NetworkCredentialTrustAnchor> {
+        self.topic_api()?.network_credential_trust_anchor().await
     }
 
     async fn local_node_id(&self) -> Result<String> {
@@ -1110,6 +1124,26 @@ impl HttpWattswarmApi {
             ));
         }
         Ok(network_id.to_owned())
+    }
+
+    async fn network_credential_trust_anchor(
+        &self,
+    ) -> Result<crate::network_agent_registration::NetworkCredentialTrustAnchor> {
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/wattetheria/network/snapshot",
+                self.base_url
+            ))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<NetworkSnapshotResponse>()
+            .await
+            .context("decode Wattswarm network Credential trust anchor")?;
+        response
+            .credential_trust_anchor
+            .context("Wattswarm network snapshot has no verified Credential trust anchor")
     }
 
     async fn local_node_id(&self) -> Result<String> {
@@ -1877,6 +1911,8 @@ struct TopicCursorResponse {
 #[derive(Debug, Deserialize)]
 struct NetworkSnapshotResponse {
     network_id: String,
+    credential_trust_anchor:
+        Option<crate::network_agent_registration::NetworkCredentialTrustAnchor>,
 }
 
 #[derive(Debug, Deserialize)]
