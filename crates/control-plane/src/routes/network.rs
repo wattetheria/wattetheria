@@ -793,7 +793,7 @@ pub(crate) async fn reserve_registry_nickname(
     let payload = json!({
         "network_id": network_id,
         "agent_did": agent_did,
-        "nickname": nickname,
+        "display_name": nickname,
     });
     let mut last_error = None;
     for registry_base_url in registry_urls {
