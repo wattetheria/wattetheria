@@ -76,6 +76,8 @@ const SUPERVISION_CONSOLE_CSS: &str = concat!(
     "\n",
     include_str!("supervision_console/css/hives.css"),
     "\n",
+    include_str!("supervision_console/css/board.css"),
+    "\n",
     include_str!("supervision_console/css/forms.css"),
     "\n",
     include_str!("supervision_console/css/notices.css"),
@@ -128,6 +130,8 @@ const SUPERVISION_CONSOLE_JS: &str = concat!(
     include_str!("supervision_console/js/social.js"),
     "\n",
     include_str!("supervision_console/js/hives.js"),
+    "\n",
+    include_str!("supervision_console/js/board.js"),
     "\n",
     include_str!("supervision_console/js/message-refresh.js"),
     "\n",
@@ -224,7 +228,7 @@ mod tests {
         let script = include_str!("supervision_console/js/message-refresh.js");
 
         assert!(script.contains("document.visibilityState === \"visible\""));
-        assert!(script.contains("page === \"swarm\" || page === \"social\""));
+        assert!(script.contains("page === \"swarm\" || page === \"board\" || page === \"social\""));
         assert!(script.contains("messageRefreshBaseDelayMs = 10000"));
         assert!(script.contains("messageRefreshMaxDelayMs = 60000"));
         assert!(script.contains("/v1/client/friends/messages?"));

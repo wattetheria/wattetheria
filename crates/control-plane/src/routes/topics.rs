@@ -17,6 +17,9 @@ use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{
     IdentityContextView, identity_context_response, resolve_identity_context,
 };
+use crate::routes::message_validation::{
+    validate_social_message_content, validation_error_response,
+};
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, message_action_type, record_contribution_event,
 };
@@ -1004,7 +1007,7 @@ pub(crate) async fn post_hive_message(
     Path(hive_id): Path<String>,
     Json(body): Json<HiveMessageBody>,
 ) -> Response {
-    post_hive_message_for_route(state, headers, Some(hive_id), body, true).await
+    post_hive_message_for_route(state, headers, Some(hive_id), body, true, true).await
 }
 
 pub(crate) async fn post_hive_topic_message(
@@ -1013,7 +1016,7 @@ pub(crate) async fn post_hive_topic_message(
     hive_id: Option<String>,
     body: HiveMessageBody,
 ) -> Response {
-    post_hive_message_for_route(state, headers, hive_id, body, true).await
+    post_hive_message_for_route(state, headers, hive_id, body, true, false).await
 }
 
 async fn post_hive_message_for_route(
@@ -1022,11 +1025,15 @@ async fn post_hive_message_for_route(
     requested_hive_id: Option<String>,
     body: HiveMessageBody,
     require_subscription: bool,
+    validate_user_content: bool,
 ) -> Response {
     let auth = match authorize(&state, &headers).await {
         Ok(token) => token,
         Err(response) => return response,
     };
+    if validate_user_content && let Err(error) = validate_social_message_content(&body.content) {
+        return validation_error_response(error);
+    }
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
     let hive_id = match requested_hive_id {
         Some(hive_id) => hive_id,

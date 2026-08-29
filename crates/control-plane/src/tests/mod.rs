@@ -641,6 +641,22 @@ fn mock_service_signature(
 async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let app = Router::new()
         .route(
+            "/v1/providers",
+            get(|Query(query): Query<BTreeMap<String, String>>| async move {
+                let provider_did = query
+                    .get("provider_did")
+                    .cloned()
+                    .unwrap_or_else(|| "did:key:mock-provider".to_owned());
+                Json(json!({
+                    "items": [{
+                        "provider_id": "provider-one",
+                        "provider_did": provider_did,
+                        "status": "active"
+                    }]
+                }))
+            }),
+        )
+        .route(
             "/v1/agents",
             get(|Query(query): Query<BTreeMap<String, String>>| async move {
                 let limit = query
@@ -654,6 +670,7 @@ async fn spawn_mock_servicenet() -> (std::net::SocketAddr, tokio::task::JoinHand
                 let agents = vec![
                     json!({
                         "agent_id": "agent-alpha",
+                        "service_did": mock_service_did("agent-alpha"),
                         "service_address": "alpha@wattetheria",
                         "provider_id": "provider-one",
                         "version": "0.1.0",
@@ -1252,6 +1269,7 @@ type TopicSubscriptionRecord = (
 
 struct MockSwarmBridge {
     local_node_id: String,
+    public_bootstrap: bool,
     agent_stats: BTreeMap<String, AgentStats>,
     network_status: SwarmNetworkStatusView,
     peers: Vec<SwarmPeerView>,
@@ -1272,6 +1290,7 @@ impl MockSwarmBridge {
     fn default_for(local_node_id: String) -> Self {
         Self {
             local_node_id,
+            public_bootstrap: false,
             agent_stats: BTreeMap::new(),
             network_status: SwarmNetworkStatusView {
                 running: false,
@@ -1423,6 +1442,10 @@ impl SwarmBridge for MockSwarmBridge {
 
     async fn current_network_id(&self) -> anyhow::Result<String> {
         Ok(format!("local:{}", self.local_node_id))
+    }
+
+    async fn public_bootstrap(&self) -> anyhow::Result<bool> {
+        Ok(self.public_bootstrap)
     }
 
     async fn local_node_id(&self) -> anyhow::Result<String> {
@@ -2475,6 +2498,7 @@ async fn complete_and_settle_mission(
 }
 
 mod agent_event_tests;
+mod board_tests;
 mod civilization_tests;
 mod client_tests;
 mod credential_tests;

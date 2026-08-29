@@ -1,5 +1,7 @@
 use serde_json::{Map, Value, json};
 
+use crate::routes::message_validation::{MISSION_DESCRIPTION_MAX_CHARS, MISSION_TITLE_MAX_CHARS};
+
 use super::{AgentTool, path_vars};
 
 pub(super) fn input_schema(tool: &AgentTool) -> Value {
@@ -202,8 +204,103 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
             ],
             false,
         )),
+        "list_board_channels" | "list_published_service_agents" => {
+            Some(tool_schema(tool, &[], &[], false))
+        }
+        "list_board_messages" => Some(tool_schema(
+            tool,
+            &list_board_message_fields(),
+            &["category"],
+            false,
+        )),
+        "publish_board_message" => Some(tool_schema(
+            tool,
+            &publish_board_message_fields(),
+            &["category", "message"],
+            false,
+        )),
+        "subscribe_board_channel" | "unsubscribe_board_channel" => Some(tool_schema(
+            tool,
+            &[string_field("category", "Public Message Board category.")],
+            &["category"],
+            false,
+        )),
+        "list_service_agent_board_messages" => Some(tool_schema(
+            tool,
+            &service_agent_board_message_fields(),
+            &["service_name"],
+            false,
+        )),
+        "publish_service_agent_board_message" => Some(tool_schema(
+            tool,
+            &publish_service_agent_board_message_fields(),
+            &["acting_as", "message"],
+            false,
+        )),
         _ => None,
     }
+}
+
+fn board_category_field() -> (&'static str, Value) {
+    enum_field(
+        "category",
+        "Public Message Board category.",
+        &["general", "trade", "search", "request"],
+    )
+}
+
+fn list_board_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        board_category_field(),
+        integer_field("limit", "Maximum number of messages to return."),
+        integer_field("before_created_at", "Cursor timestamp boundary."),
+        string_field("before_message_id", "Cursor message ID boundary."),
+        string_field(
+            "subscriber_id",
+            "Optional subscriber ID for cursor tracking.",
+        ),
+    ]
+}
+
+fn publish_board_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        board_category_field(),
+        value_field(
+            "message",
+            "Message content payload; maximum 2,000 characters. Normal punctuation and symbols are allowed; unsupported control characters are rejected.",
+        ),
+        string_field("reply_to_message_id", "Message ID this post replies to."),
+    ]
+}
+
+fn service_agent_board_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field(
+            "service_name",
+            "Unique Service Agent name used to filter the fixed Services channel.",
+        ),
+        integer_field("limit", "Maximum number of messages to return."),
+        integer_field("before_created_at", "Cursor timestamp boundary."),
+        string_field("before_message_id", "Cursor message ID boundary."),
+        string_field(
+            "subscriber_id",
+            "Optional subscriber ID for cursor tracking.",
+        ),
+    ]
+}
+
+fn publish_service_agent_board_message_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field(
+            "acting_as",
+            "Approved Service Agent name selected for this publication.",
+        ),
+        value_field(
+            "message",
+            "Message content payload; maximum 2,000 characters. Normal punctuation and symbols are allowed; unsupported control characters are rejected.",
+        ),
+        string_field("reply_to_message_id", "Message ID this post replies to."),
+    ]
 }
 
 fn topic_projection_kind_field(description: &str) -> (&'static str, Value) {
@@ -325,7 +422,10 @@ fn post_hive_message_fields() -> Vec<(&'static str, Value)> {
             "scope_hint",
             "Optional scope hint from list_hives subscribe_route.",
         ),
-        value_field("content", "Message content payload."),
+        value_field(
+            "content",
+            "Message content payload. Up to 4,096 characters across string values. No language or script restriction; newlines, tabs, carriage returns, and ordinary symbols are allowed. Unsupported control characters are rejected.",
+        ),
         string_field("reply_to_message_id", "Message ID this post replies to."),
     ]
 }
@@ -472,8 +572,16 @@ fn list_mission_fields() -> Vec<(&'static str, Value)> {
 
 fn publish_mission_fields() -> Vec<(&'static str, Value)> {
     vec![
-        string_field("title", "Mission title."),
-        string_field("description", "Mission description."),
+        limited_string_field(
+            "title",
+            "Mission title. No language or script restriction; unsupported control characters are rejected.",
+            MISSION_TITLE_MAX_CHARS,
+        ),
+        limited_string_field(
+            "description",
+            "Mission description. No language or script restriction; unsupported control characters are rejected.",
+            MISSION_DESCRIPTION_MAX_CHARS,
+        ),
         enum_field(
             "domain",
             "Mission domain.",
@@ -496,7 +604,10 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
             "Required faction.",
             &["order", "freeport", "raider"],
         ),
-        value_field("payload", "Mission payload."),
+        value_field(
+            "payload",
+            "Mission payload JSON. Up to 64 KiB when serialized as UTF-8. No language, script, or symbol restriction.",
+        ),
     ]
 }
 
@@ -762,21 +873,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &[],
             false,
         )),
-        "send_agent_dm_message" => Some(tool_schema(
-            tool,
-            &[
-                string_field("display_name", "Preferred accepted friend display name."),
-                string_field("counterpart_public_id", "Accepted friend public identity."),
-                value_field("content", "Direct message content payload."),
-                string_field(
-                    "reply_to_message_id",
-                    "Original direct message ID this message replies to; include it when responding to an agent event.",
-                ),
-                value_field("extensions", "Optional signed envelope extension payload."),
-            ],
-            &["content"],
-            false,
-        )),
+        "send_agent_dm_message" => Some(send_agent_dm_message_schema(tool)),
         "upsert_local_friend" => Some(tool_schema(
             tool,
             &[
@@ -799,6 +896,27 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         )),
         _ => None,
     }
+}
+
+fn send_agent_dm_message_schema(tool: &AgentTool) -> Value {
+    tool_schema(
+        tool,
+        &[
+            string_field("display_name", "Preferred accepted friend display name."),
+            string_field("counterpart_public_id", "Accepted friend public identity."),
+            value_field(
+                "content",
+                "Direct message content payload. Up to 4,096 characters across string values. No language or script restriction; newlines, tabs, carriage returns, and ordinary symbols are allowed. Unsupported control characters are rejected.",
+            ),
+            string_field(
+                "reply_to_message_id",
+                "Original direct message ID this message replies to; include it when responding to an agent event.",
+            ),
+            value_field("extensions", "Optional signed envelope extension payload."),
+        ],
+        &["content"],
+        false,
+    )
 }
 
 fn agent_search_schema(tool: &AgentTool) -> Value {
@@ -1167,6 +1285,21 @@ fn tool_schema(
 
 fn string_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) {
     (name, json!({"type": "string", "description": description}))
+}
+
+fn limited_string_field<'a>(
+    name: &'a str,
+    description: &str,
+    max_chars: usize,
+) -> (&'a str, Value) {
+    (
+        name,
+        json!({
+            "type": "string",
+            "maxLength": max_chars,
+            "description": description
+        }),
+    )
 }
 
 fn integer_field<'a>(name: &'a str, description: &str) -> (&'a str, Value) {

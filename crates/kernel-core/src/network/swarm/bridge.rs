@@ -36,6 +36,18 @@ pub struct SwarmTopicMessageView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmGlobalMessageView {
+    pub sequence: u64,
+    pub message_id: String,
+    pub kind: String,
+    pub lane: String,
+    pub scope_hint: String,
+    pub author_node_id: String,
+    pub content: Value,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SwarmTopicCursorView {
     pub subscriber_node_id: String,
     pub feed_key: String,
@@ -410,6 +422,18 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm topic history is not configured"))
     }
 
+    async fn list_global_messages(
+        &self,
+        _limit: usize,
+        _before_sequence: Option<u64>,
+    ) -> Result<Vec<SwarmGlobalMessageView>> {
+        Err(anyhow!("wattswarm global history is not configured"))
+    }
+
+    async fn public_bootstrap(&self) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn topic_cursor(
         &self,
         _network_id: Option<&str>,
@@ -729,6 +753,20 @@ impl SwarmBridge for HybridSwarmBridge {
             .await
     }
 
+    async fn list_global_messages(
+        &self,
+        limit: usize,
+        before_sequence: Option<u64>,
+    ) -> Result<Vec<SwarmGlobalMessageView>> {
+        self.topic_api()?
+            .list_global_messages(limit, before_sequence)
+            .await
+    }
+
+    async fn public_bootstrap(&self) -> Result<bool> {
+        self.topic_api()?.public_bootstrap().await
+    }
+
     async fn topic_cursor(
         &self,
         network_id: Option<&str>,
@@ -982,6 +1020,19 @@ impl HttpWattswarmApi {
             .context("decode wattswarm node status response")
     }
 
+    async fn public_bootstrap(&self) -> Result<bool> {
+        let response = self
+            .client
+            .get(format!("{}/api/network/local", self.base_url))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<NetworkLocalResponse>()
+            .await
+            .context("decode wattswarm local network response")?;
+        Ok(response.public_bootstrap)
+    }
+
     async fn subscribe_topic(
         &self,
         network_id: Option<&str>,
@@ -1057,6 +1108,27 @@ impl HttpWattswarmApi {
             .error_for_status()?
             .json::<TopicMessagesResponse>()
             .await?;
+        Ok(response.messages)
+    }
+
+    async fn list_global_messages(
+        &self,
+        limit: usize,
+        before_sequence: Option<u64>,
+    ) -> Result<Vec<SwarmGlobalMessageView>> {
+        let response = self
+            .client
+            .get(format!("{}/api/global/messages", self.base_url))
+            .query(&GlobalMessagesQuery {
+                limit,
+                before_sequence,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<GlobalMessagesResponse>()
+            .await
+            .context("decode wattswarm global message response")?;
         Ok(response.messages)
     }
 
@@ -1861,6 +1933,12 @@ struct TopicMessagesQuery {
 }
 
 #[derive(Debug, Serialize)]
+struct GlobalMessagesQuery {
+    limit: usize,
+    before_sequence: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
 struct TopicCursorQuery {
     network_id: Option<String>,
     feed_key: String,
@@ -1904,6 +1982,11 @@ struct TopicMessagesResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct GlobalMessagesResponse {
+    messages: Vec<SwarmGlobalMessageView>,
+}
+
+#[derive(Debug, Deserialize)]
 struct TopicCursorResponse {
     cursor: Option<SwarmTopicCursorView>,
 }
@@ -1913,6 +1996,12 @@ struct NetworkSnapshotResponse {
     network_id: String,
     credential_trust_anchor:
         Option<crate::network_agent_registration::NetworkCredentialTrustAnchor>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NetworkLocalResponse {
+    #[serde(default)]
+    public_bootstrap: bool,
 }
 
 #[derive(Debug, Deserialize)]

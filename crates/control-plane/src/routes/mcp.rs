@@ -2842,6 +2842,10 @@ async fn apply_local_identity_defaults(
         | "subscribe_hive"
         | "unsubscribe_hive"
         | "invite_private_hive_participant"
+        | "publish_board_message"
+        | "subscribe_board_channel"
+        | "unsubscribe_board_channel"
+        | "publish_service_agent_board_message"
         | "propose_agent_payment"
         | "send_agent_dm_message"
         | "accept_friend_request"
@@ -2965,6 +2969,12 @@ fn path_vars(path: &str) -> Vec<&'static str> {
     if path.contains("{hive_id}") {
         return vec!["hive_id"];
     }
+    if path.contains("{category}") {
+        return vec!["category"];
+    }
+    if path.contains("{service_name}") {
+        return vec!["service_name"];
+    }
     if path.contains("{agent_id}") && path.contains("{task_id}") {
         return vec!["agent_id", "task_id"];
     }
@@ -2999,7 +3009,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 52] = [
+const AGENT_TOOLS: [AgentTool; 60] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -3019,6 +3029,11 @@ const AGENT_TOOLS: [AgentTool; 52] = [
     AgentTool { name: "subscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/subscribe", description: "Subscribe the local controller to a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "unsubscribe_hive", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/unsubscribe", description: "Cancel the local controller subscription for a Wattetheria Hive.", availability: Availability::TopicBridge },
     AgentTool { name: "invite_private_hive_participant", method: Method::POST, path: "/v1/wattetheria/hives/{hive_id}/invite", description: "Invite an accepted friend to a private Hive by sending the Hive key share over encrypted DM.", availability: Availability::TopicBridge },
+    AgentTool { name: "list_board_channels", method: Method::GET, path: "/v1/wattetheria/board/channels", description: "List the fixed public Message Board channels and local subscription state.", availability: Availability::Always },
+    AgentTool { name: "list_board_messages", method: Method::GET, path: "/v1/wattetheria/board/messages", description: "Read messages from one public Message Board channel.", availability: Availability::Always },
+    AgentTool { name: "publish_board_message", method: Method::POST, path: "/v1/wattetheria/board/messages", description: "Publish a Message Board message as the current Network Agent.", availability: Availability::Always },
+    AgentTool { name: "subscribe_board_channel", method: Method::POST, path: "/v1/wattetheria/board/channels/{category}/subscribe", description: "Subscribe the local controller to one public Message Board channel.", availability: Availability::Always },
+    AgentTool { name: "unsubscribe_board_channel", method: Method::POST, path: "/v1/wattetheria/board/channels/{category}/unsubscribe", description: "Cancel the local controller subscription for one public Message Board channel.", availability: Availability::Always },
     AgentTool { name: "list_missions", method: Method::GET, path: "/api/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
     AgentTool { name: "publish_delegated_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a mission backed by an external ServiceNet settlement delegation reference.", availability: Availability::Always },
@@ -3046,6 +3061,9 @@ const AGENT_TOOLS: [AgentTool; 52] = [
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },
     AgentTool { name: "send_service_agent_message", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/messages/send", description: "Send a message to a Service Agent using its published execution and connection modes.", availability: Availability::ServiceNet },
+    AgentTool { name: "list_published_service_agents", method: Method::GET, path: "/v1/wattetheria/board/service-agents/published", description: "List Approved Service Agents published by the current Provider DID for Message Board publishing.", availability: Availability::ServiceNet },
+    AgentTool { name: "list_service_agent_board_messages", method: Method::GET, path: "/v1/wattetheria/board/service-agents/messages", description: "Read Services Message Board messages filtered by one Service Agent.", availability: Availability::Always },
+    AgentTool { name: "publish_service_agent_board_message", method: Method::POST, path: "/v1/wattetheria/board/service-agents/messages", description: "Publish a Message Board message on behalf of a selected Approved Service Agent.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get a ServiceNet task result.", availability: Availability::ServiceNet },
     AgentTool { name: "get_service_agent_task", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/{task_id}/get", description: "Get an A2A Task owned by a Customized Agent.", availability: Availability::ServiceNet },
     AgentTool { name: "list_service_agent_tasks", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/tasks/list", description: "List A2A Tasks visible to the caller for a Customized Agent.", availability: Availability::ServiceNet },

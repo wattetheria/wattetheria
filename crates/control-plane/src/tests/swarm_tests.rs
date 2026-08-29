@@ -89,6 +89,7 @@ async fn network_routes_surface_bridge_read_models() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
@@ -733,6 +734,7 @@ async fn authed_get_text(app: Router, token: &str, uri: &str) -> (StatusCode, St
 
 fn topic_routes_mock_bridge(identity: &Identity) -> Arc<MockSwarmBridge> {
     Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),

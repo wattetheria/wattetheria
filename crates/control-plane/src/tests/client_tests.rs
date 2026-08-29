@@ -75,6 +75,7 @@ async fn client_api_routes_align_with_client_dtos() {
         },
     );
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats,
@@ -931,6 +932,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let remote_node_id = "12D3KooRemotePeer".to_string();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
@@ -1112,6 +1114,7 @@ async fn client_export_excludes_local_friends_and_dm() {
     let remote_node_id = "12D3KooRemotePeer".to_string();
     let thread_id = format!("dm:{remote_node_id}");
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
@@ -1396,6 +1399,7 @@ async fn client_export_is_public_and_signed() {
         },
     );
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats,
@@ -1802,6 +1806,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
@@ -1896,6 +1901,7 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+        public_bootstrap: false,
         fail_accept_and_finalize: false,
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]

@@ -42,7 +42,7 @@
 
     function messageRefreshView() {
       const page = pageFromHash();
-      return page === "swarm" || page === "social" ? page : "";
+      return page === "swarm" || page === "board" || page === "social" ? page : "";
     }
 
     function messageRefreshCanRun() {
@@ -103,6 +103,10 @@
       return true;
     }
 
+    async function refreshBoardMessagesOnly() {
+      return Boolean(await loadBoardMessages({ silent: true }));
+    }
+
     async function runMessageRefresh() {
       messageRefreshTimer = null;
       if (!messageRefreshCanRun() || messageRefreshInFlight) {
@@ -112,9 +116,12 @@
 
       messageRefreshInFlight = true;
       try {
-        const refreshed = messageRefreshView() === "swarm"
+        const view = messageRefreshView();
+        const refreshed = view === "swarm"
           ? await refreshActiveHiveMessages()
-          : await refreshDmMessagesOnly();
+          : view === "board"
+            ? await refreshBoardMessagesOnly()
+            : await refreshDmMessagesOnly();
         messageRefreshFailures = refreshed ? 0 : messageRefreshFailures + 1;
       } catch (_) {
         messageRefreshFailures += 1;

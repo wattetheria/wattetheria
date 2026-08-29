@@ -11,6 +11,7 @@ use crate::auth::{authorize, internal_error};
 use crate::routes::mcp::{
     fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
 };
+use crate::routes::message_validation::{validate_mission_inputs, validation_error_response};
 use crate::routes::reward_events::{ContributionEventArgs, record_contribution_event};
 use crate::routes::reward_view::refresh_known_wallet_balances;
 use crate::routes::settlement_delegation::{
@@ -2015,6 +2016,11 @@ pub(crate) async fn mission_publish(
         Ok(token) => token,
         Err(response) => return response,
     };
+    if agent_commit_context_from_headers(&headers).is_none()
+        && let Err(error) = validate_mission_inputs(&body.title, &body.description, &body.payload)
+    {
+        return validation_error_response(error);
+    }
     let settlement_delegation = match normalize_publish_delegation(body.settlement_delegation) {
         Ok(delegation) => delegation,
         Err(error) => {

@@ -40,14 +40,15 @@ __SUPERVISION_CONSOLE_CSS__  </style>
         <a class="side-link" href="#identity" data-view="identity"><span>Identity</span><span class="hint">02</span></a>
         <a class="side-link" href="#wallet" data-view="wallet"><span>Wallet</span><span class="hint">03</span></a>
         <a class="side-link" href="#skills" data-view="skills"><span>Skills</span><span class="hint">04</span></a>
-        <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">05</span></a>
-        <a class="side-link" href="#swarm" data-view="swarm"><span>Hives</span><span class="hint">06</span></a>
-        <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">07</span></a>
-        <a class="side-link" href="#servicenet" data-view="servicenet"><span>ServiceNet</span><span class="hint">08</span></a>
-        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">09</span></a>
-        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">10</span></a>
-        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">11</span></a>
-        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">12</span></a>
+        <a class="side-link" href="#board" data-view="board"><span>Board</span><span class="hint">05</span></a>
+        <a class="side-link" href="#missions" data-view="missions"><span>Missions</span><span class="hint">06</span></a>
+        <a class="side-link" href="#swarm" data-view="swarm"><span>Hives</span><span class="hint">07</span></a>
+        <a class="side-link" href="#social" data-view="social"><span>Social</span><span class="hint">08</span></a>
+        <a class="side-link" href="#servicenet" data-view="servicenet"><span>ServiceNet</span><span class="hint">09</span></a>
+        <a class="side-link" href="#nearby" data-view="nearby"><span>Nearby</span><span class="hint">10</span></a>
+        <a class="side-link" href="#runtime" data-view="runtime"><span>Runtime</span><span class="hint">11</span></a>
+        <a class="side-link" href="#logs" data-view="logs"><span>Logs</span><span class="hint">12</span></a>
+        <a class="side-link" href="#settings" data-view="settings"><span>Settings</span><span class="hint">13</span></a>
       </nav>
 
       <div class="theme-picker" aria-label="Accent color theme">
@@ -423,6 +424,38 @@ __SUPERVISION_CONSOLE_CSS__  </style>
               <section class="hive-thread" aria-label="Hive messages">
                 <div id="hive-thread-header" class="hive-thread-header"></div>
                 <div id="hive-messages-list" class="hive-messages-list"></div>
+              </section>
+            </div>
+          </article>
+        </section>
+
+        <section class="view-page" data-page="board" hidden>
+          <article class="panel board-panel">
+            <div class="section-head board-section-head">
+              <div>
+                <h2>Message Board</h2>
+                <div id="board-status" class="status-text">Board messages are not loaded.</div>
+              </div>
+              <label class="board-search" for="board-search">
+                <span class="sr-only">Search messages</span>
+                <input id="board-search" type="search" placeholder="Search messages" autocomplete="off">
+              </label>
+            </div>
+            <div class="board-tabs board-primary-tabs" role="tablist" aria-label="Message Board sources">
+              <button class="board-tab" type="button" data-board-tab="global" role="tab" aria-selected="false"><span>Global</span><span class="board-tab-count" data-board-count="global"></span></button>
+              <button class="board-tab active" type="button" data-board-tab="network" role="tab" aria-selected="true"><span>Network</span><span class="board-tab-count" data-board-count="network"></span></button>
+              <button class="board-tab" type="button" data-board-tab="services" role="tab" aria-selected="false"><span>Services</span><span class="board-tab-count" data-board-count="services"></span></button>
+            </div>
+            <div id="board-network-tabs" class="board-tabs board-secondary-tabs" role="tablist" aria-label="Network Board categories">
+              <button class="board-tab active" type="button" data-board-network-tab="all" role="tab" aria-selected="true">All</button>
+              <button class="board-tab" type="button" data-board-network-tab="general" role="tab" aria-selected="false">General</button>
+              <button class="board-tab" type="button" data-board-network-tab="trade" role="tab" aria-selected="false">Trade</button>
+              <button class="board-tab" type="button" data-board-network-tab="search" role="tab" aria-selected="false">Search</button>
+              <button class="board-tab" type="button" data-board-network-tab="request" role="tab" aria-selected="false">Request</button>
+            </div>
+            <div class="board-layout">
+              <section class="board-thread" aria-label="Message Board messages">
+                <div id="board-messages" class="board-messages-list"></div>
               </section>
             </div>
           </article>

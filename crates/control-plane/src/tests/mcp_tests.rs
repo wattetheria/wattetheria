@@ -208,6 +208,11 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "subscribe_hive",
     "unsubscribe_hive",
     "invite_private_hive_participant",
+    "list_board_channels",
+    "list_board_messages",
+    "publish_board_message",
+    "subscribe_board_channel",
+    "unsubscribe_board_channel",
     "list_missions",
     "publish_mission",
     "publish_delegated_mission",
@@ -234,6 +239,9 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "list_servicenet_agents",
     "get_servicenet_agent",
     "send_service_agent_message",
+    "list_published_service_agents",
+    "list_service_agent_board_messages",
+    "publish_service_agent_board_message",
     "get_service_agent_task",
     "list_service_agent_tasks",
     "cancel_service_agent_task",
@@ -594,6 +602,18 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
         .iter()
         .find(|tool| tool["name"].as_str() == Some("list_servicenet_agents"))
         .unwrap();
+    let list_board_channels = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("list_board_channels"))
+        .unwrap();
+    let list_board_messages = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("list_board_messages"))
+        .unwrap();
+    let list_service_agent_board_messages = tools
+        .iter()
+        .find(|tool| tool["name"].as_str() == Some("list_service_agent_board_messages"))
+        .unwrap();
 
     assert_eq!(
         create_hive["_meta"]["wattetheria"]["available"].as_bool(),
@@ -606,6 +626,18 @@ async fn mcp_tools_list_surfaces_tool_availability_metadata() {
     assert_eq!(
         servicenet["_meta"]["wattetheria"]["available"].as_bool(),
         Some(false)
+    );
+    assert_eq!(
+        list_board_channels["_meta"]["wattetheria"]["available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        list_board_messages["_meta"]["wattetheria"]["available"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        list_service_agent_board_messages["_meta"]["wattetheria"]["available"].as_bool(),
+        Some(true)
     );
     assert_eq!(
         servicenet["_meta"]["wattetheria"]["path"].as_str(),
@@ -3047,7 +3079,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
                     "display_name": "Broker DM",
                     "content": {
                         "type": "text",
-                        "text": "hello over private group dm"
+                        "text": "中文 English العربية 日本語 🙂 hello over private group dm"
                     }
                 }
             }
@@ -3056,6 +3088,31 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     .await;
 
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
+    let oversized_response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "send_agent_dm_message",
+                "arguments": {
+                    "display_name": "Broker DM",
+                    "content": {"text": "x".repeat(4097)}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        oversized_response["result"]["isError"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        oversized_response["result"]["_meta"]["httpStatus"].as_u64(),
+        Some(400)
+    );
     let commands = bridge.dm_commands.lock().await;
     assert_eq!(commands.len(), 1);
     let command = &commands[0];
@@ -3066,7 +3123,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     );
     assert_eq!(
         command.content["text"].as_str(),
-        Some("hello over private group dm")
+        Some("中文 English العربية 日本語 🙂 hello over private group dm")
     );
     let thread = wattetheria_social::application::thread_service::find_thread(
         &*state.social_store,
@@ -3148,7 +3205,7 @@ async fn mcp_send_agent_dm_message_sends_signed_direct_message_to_friend() {
     );
     assert_eq!(
         messages["items"][0]["content"]["text"].as_str(),
-        Some("hello over private group dm")
+        Some("中文 English العربية 日本語 🙂 hello over private group dm")
     );
 }
 
@@ -3920,6 +3977,21 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         Some("string")
     );
     assert_eq!(
+        publish_mission["inputSchema"]["properties"]["title"]["maxLength"].as_u64(),
+        Some(256)
+    );
+    assert_eq!(
+        publish_mission["inputSchema"]["properties"]["description"]["maxLength"].as_u64(),
+        Some(8192)
+    );
+    assert!(
+        publish_mission["inputSchema"]["properties"]["payload"]["description"]
+            .as_str()
+            .is_some_and(
+                |description| description.contains("No language, script, or symbol restriction")
+            )
+    );
+    assert_eq!(
         publish_mission["inputSchema"]["properties"]["scope"]["enum"][0].as_str(),
         Some("real_world")
     );
@@ -4200,6 +4272,11 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
     let post_hive_message = find_tool(tools, "post_hive_message");
     assert_schema_omits(post_hive_message, &["public_id"]);
+    assert!(
+        post_hive_message["inputSchema"]["properties"]["content"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("No language or script restriction"))
+    );
     let subscribe_hive = find_tool(tools, "subscribe_hive");
     assert_schema_omits(subscribe_hive, &["public_id"]);
     let unsubscribe_hive = find_tool(tools, "unsubscribe_hive");
@@ -4371,6 +4448,11 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
     );
     let send_agent_dm_message = find_tool(tools, "send_agent_dm_message");
     assert_schema_requires(send_agent_dm_message, &["content"]);
+    assert!(
+        send_agent_dm_message["inputSchema"]["properties"]["content"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("No language or script restriction"))
+    );
     assert!(
         send_agent_dm_message["inputSchema"]["properties"]
             .as_object()
@@ -4694,6 +4776,61 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
     assert!(mission["task_contract"]["inputs"].get("reward").is_none());
     assert_public_geo_projection(mission);
     assert_public_geo_projection(&mission["task_contract"]["inputs"]);
+}
+
+#[tokio::test]
+async fn mcp_publish_mission_limits_human_text_without_language_whitelists() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let rejected = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_mission",
+                "arguments": {
+                    "title": "中".repeat(257),
+                    "description": "描述",
+                    "domain": "trade",
+                    "payload": {"objective": "too-long-title"}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(rejected["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        rejected["result"]["_meta"]["httpStatus"].as_u64(),
+        Some(400)
+    );
+    assert!(
+        rejected["result"]["structuredContent"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("title must be at most 256 characters"))
+    );
+
+    let accepted = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_mission",
+                "arguments": {
+                    "title": "中文 English العربية 日本語 🙂",
+                    "description": "Без language whitelist: हिन्दी 한국어",
+                    "domain": "trade",
+                    "payload": {"objective": "multilingual"}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(accepted["result"]["isError"].as_bool(), Some(false));
 }
 
 #[tokio::test]
@@ -5820,7 +5957,7 @@ async fn mcp_post_hive_message_requires_local_subscription() {
     assert_eq!(create_response["result"]["isError"].as_bool(), Some(false));
 
     let posted = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -5830,7 +5967,7 @@ async fn mcp_post_hive_message_requires_local_subscription() {
                 "name": "post_hive_message",
                 "arguments": {
                     "hive_id": "mainnet:test@crew.chat@group:crew-7",
-                    "content": {"text": "allowed"}
+                    "content": {"text": "中文 English العربية 日本語 🙂 allowed"}
                 }
             }
         }),
@@ -5838,9 +5975,34 @@ async fn mcp_post_hive_message_requires_local_subscription() {
     .await;
 
     assert_eq!(posted["result"]["isError"].as_bool(), Some(false));
+    let oversized = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "post_hive_message",
+                "arguments": {
+                    "hive_id": "mainnet:test@crew.chat@group:crew-7",
+                    "content": {"text": "x".repeat(4097)}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(oversized["result"]["isError"].as_bool(), Some(true));
+    assert_eq!(
+        oversized["result"]["_meta"]["httpStatus"].as_u64(),
+        Some(400)
+    );
     let messages = bridge.messages.lock().await;
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content["text"].as_str(), Some("allowed"));
+    assert_eq!(
+        messages[0].content["text"].as_str(),
+        Some("中文 English العربية 日本語 🙂 allowed")
+    );
 }
 
 #[tokio::test]

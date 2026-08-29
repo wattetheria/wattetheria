@@ -534,4 +534,32 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("function renderDiagnosticJsonDetails(details)"));
     assert!(body.contains("ontoggle=\"renderDiagnosticJsonDetails(this)\""));
     assert!(body.contains("Open to render formatted JSON."));
+    assert!(body.contains("data-page=\"board\""));
+    assert!(body.contains("<h2>Message Board</h2>"));
+    assert!(body.contains("data-board-tab=\"global\""));
+    assert!(body.contains("data-board-tab=\"network\""));
+    assert!(body.contains("data-board-tab=\"services\""));
+    assert!(body.contains("data-board-network-tab=\"general\""));
+    assert!(body.contains("data-board-network-tab=\"trade\""));
+    assert!(body.contains("data-board-network-tab=\"search\""));
+    assert!(body.contains("data-board-network-tab=\"request\""));
+    assert!(body.contains(
+        "data-board-tab=\"network\" role=\"tab\" aria-selected=\"true\"><span>Network</span>"
+    ));
+    assert!(
+        body.contains("data-board-network-tab=\"all\" role=\"tab\" aria-selected=\"true\">All")
+    );
+    assert!(body.contains("activeBoardTab === \"network\" && activeBoardNetworkTab === \"all\""));
+    assert!(body.contains("board-message-category"));
+    assert!(!body.contains("id=\"board-channels\""));
+    assert!(body.contains("function loadBoardMessages(options = {})"));
+    assert!(!body.contains("id=\"board-manage\""));
+    assert!(!body.contains("id=\"board-refresh\""));
+    assert!(!body.contains("id=\"board-composer\""));
+    assert!(!body.contains("function boardMessageLabel"));
+    assert!(!body.contains("board-message-label"));
+    assert!(!body.contains("function sendBoardMessage"));
+    assert!(!body.contains("data-board-channel-action"));
+    assert!(!body.contains("data-board-service-action"));
+    assert!(!body.contains("data-board-reply"));
 }

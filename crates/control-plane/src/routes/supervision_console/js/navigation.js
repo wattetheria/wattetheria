@@ -9,6 +9,7 @@
       "skills",
       "missions",
       "swarm",
+      "board",
       "social",
       "nearby",
       "servicenet",
@@ -44,6 +45,9 @@
       }
       if (nextPage === "identity") {
         loadManagedAgentIdentities().catch((error) => setStatus(error.message, true));
+      }
+      if (nextPage === "board" && tokenEl.value.trim()) {
+        loadBoardMessages({ silent: true });
       }
       if (nextPage === "skills" && !agentSkills.length) {
         loadAgentSkills().catch((error) => setStatus(error.message, true));

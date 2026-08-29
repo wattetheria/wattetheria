@@ -11,6 +11,9 @@ use uuid::Uuid;
 use crate::auth::{authorize, internal_error};
 use crate::routes::agent_events::replay_deferred_dm_agent_events_for_friendship;
 use crate::routes::mcp::collective::record_collective_participation_from_dm;
+use crate::routes::message_validation::{
+    validate_social_message_content, validation_error_response,
+};
 use crate::social_host::{
     SignedAgentEnvelopeArgs, SocialCounterpartTarget, SocialLocalContext, agent_did,
     build_signed_agent_envelope_for_nodes, capability_for_relationship_action,
@@ -3692,6 +3695,11 @@ pub(crate) async fn send_agent_dm_message(
         Ok(token) => token,
         Err(response) => return response,
     };
+    if agent_commit_context_from_headers(&headers).is_none()
+        && let Err(error) = validate_social_message_content(&body.content)
+    {
+        return validation_error_response(error);
+    }
     handle_send_agent_dm_message(state, headers, body, auth).await
 }
 

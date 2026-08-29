@@ -15,6 +15,7 @@ pub mod routes {
     pub(crate) mod agent_events;
     pub(crate) mod agent_identities;
     pub(crate) mod agent_skills;
+    pub(crate) mod board;
     pub(crate) mod civilization;
     pub(crate) mod client;
     pub(crate) mod client_api;
@@ -31,6 +32,7 @@ pub mod routes {
     pub(crate) mod mailbox;
     pub(crate) mod map;
     pub(crate) mod mcp;
+    pub(crate) mod message_validation;
     pub(crate) mod missions;
     pub(crate) mod network;
     pub(crate) mod organizations;
@@ -269,6 +271,36 @@ fn client_router() -> Router<ControlPlaneState> {
         )
 }
 
+fn client_board_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route("/v1/client/board", get(routes::board::client_board))
+        .route(
+            "/v1/wattetheria/board/channels",
+            get(routes::board::list_board_channels),
+        )
+        .route(
+            "/v1/wattetheria/board/messages",
+            get(routes::board::list_board_messages).post(routes::board::publish_board_message),
+        )
+        .route(
+            "/v1/wattetheria/board/channels/{category}/subscribe",
+            post(routes::board::subscribe_board_channel),
+        )
+        .route(
+            "/v1/wattetheria/board/channels/{category}/unsubscribe",
+            post(routes::board::unsubscribe_board_channel),
+        )
+        .route(
+            "/v1/wattetheria/board/service-agents/published",
+            get(routes::board::list_published_service_agents),
+        )
+        .route(
+            "/v1/wattetheria/board/service-agents/messages",
+            get(routes::board::list_service_agent_board_messages)
+                .post(routes::board::publish_service_agent_board_message),
+        )
+}
+
 fn client_facing_router() -> Router<ControlPlaneState> {
     Router::new()
         .route(
@@ -365,6 +397,7 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/agent-skills/{skill_id}",
             delete(routes::agent_skills::delete_agent_skill),
         )
+        .merge(client_board_router())
 }
 
 fn game_router() -> Router<ControlPlaneState> {

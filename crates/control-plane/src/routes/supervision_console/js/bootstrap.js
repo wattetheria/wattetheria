@@ -69,6 +69,7 @@
     bindServiceNetControls();
     bindAgentIdentityControls();
     bindSkillControls();
+    bindBoardControls();
     initThemePicker();
     enhanceAllSelects();
     observeDynamicSelects();

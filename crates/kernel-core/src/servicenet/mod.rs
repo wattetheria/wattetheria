@@ -406,6 +406,84 @@ impl ServiceNetClient {
         })
     }
 
+    pub async fn list_agents_for_provider_did(
+        &self,
+        provider_did: &str,
+        limit: usize,
+        offset: usize,
+    ) -> std::result::Result<ServiceNetListAgentsResponse, ServiceNetClientError> {
+        let resolved_provider_id = self
+            .provider_id_for_did(provider_did)
+            .await?
+            .unwrap_or_default();
+        if resolved_provider_id.is_empty() {
+            return Ok(ServiceNetListAgentsResponse {
+                items: Vec::new(),
+                count: 0,
+                limit,
+                offset,
+                next_offset: None,
+                has_more: false,
+                known_count: Some(0),
+            });
+        }
+
+        let fetch_limit = limit.clamp(1, 200);
+        let mut all_items = Vec::new();
+        let mut page_offset = 0;
+        loop {
+            let page = self.list_agents(fetch_limit, page_offset).await?;
+            all_items.extend(page.items.into_iter().filter(|agent| {
+                agent.get("provider_id").and_then(Value::as_str)
+                    == Some(resolved_provider_id.as_str())
+            }));
+            let Some(next_offset) = page.next_offset.filter(|next| *next > page_offset) else {
+                break;
+            };
+            if !page.has_more {
+                break;
+            }
+            page_offset = next_offset;
+        }
+        let known_count = all_items.len();
+        let items = all_items
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let next_offset = (offset.saturating_add(items.len()) < known_count)
+            .then_some(offset.saturating_add(items.len()));
+        Ok(ServiceNetListAgentsResponse {
+            count: items.len(),
+            items,
+            limit,
+            offset,
+            next_offset,
+            has_more: next_offset.is_some(),
+            known_count: Some(known_count),
+        })
+    }
+
+    async fn provider_id_for_did(
+        &self,
+        provider_did: &str,
+    ) -> std::result::Result<Option<String>, ServiceNetClientError> {
+        let mut url = self
+            .endpoint(&["v1", "providers"])
+            .map_err(|error| Self::client_error(&error))?;
+        url.query_pairs_mut()
+            .append_pair("provider_did", provider_did);
+        let response: ServiceNetItemsResponse = self
+            .request_json(Method::GET, url, Option::<&Value>::None)
+            .await?;
+        Ok(response.items.into_iter().find_map(|provider| {
+            (provider.get("provider_did").and_then(Value::as_str) == Some(provider_did))
+                .then(|| provider.get("provider_id").and_then(Value::as_str))
+                .flatten()
+                .map(ToOwned::to_owned)
+        }))
+    }
+
     pub async fn list_agent_health(
         &self,
     ) -> std::result::Result<Vec<Value>, ServiceNetClientError> {

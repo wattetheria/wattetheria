@@ -68,6 +68,8 @@ pub fn spawn_wattswarm_sync_bridge(
         }
     };
     Some(tokio::spawn(async move {
+        let board_subscription_task =
+            tokio::spawn(run_board_subscription_until_done(state.clone()));
         let startup_geo_task = tokio::spawn(run_startup_geo_sync_until_done(
             state.clone(),
             grpc_endpoint.clone(),
@@ -92,6 +94,7 @@ pub fn spawn_wattswarm_sync_bridge(
             sync_cache_db,
         ));
         let _ = tokio::join!(
+            board_subscription_task,
             startup_geo_task,
             network_task,
             task_run_task,
@@ -99,6 +102,21 @@ pub fn spawn_wattswarm_sync_bridge(
             topic_task
         );
     }))
+}
+
+async fn run_board_subscription_until_done(state: ControlPlaneState) {
+    loop {
+        match crate::routes::board::ensure_startup_board_subscriptions(&state).await {
+            Ok(()) => {
+                debug!("Wattetheria Board startup subscriptions are ready");
+                return;
+            }
+            Err(error) => {
+                debug!("Wattetheria Board startup subscriptions will retry: {error:#}");
+            }
+        }
+        sleep(Duration::from_secs(RECONNECT_DELAY_SEC)).await;
+    }
 }
 
 async fn connect_client(grpc_endpoint: &str) -> Result<WattetheriaSyncServiceClient<Channel>> {

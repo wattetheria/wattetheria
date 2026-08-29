@@ -8,6 +8,7 @@ use wattetheria_kernel::local_db;
 use wattetheria_kernel::swarm_bridge::{SwarmPeerDmMessageView, SwarmRunSubmitCommand};
 use wattetheria_kernel::swarm_sync::SwarmRunResultSnapshot;
 
+use crate::routes::message_validation::validate_mission_arguments;
 use crate::state::{ControlPlaneState, HiveMessageBody};
 
 use super::{
@@ -159,6 +160,9 @@ pub(super) async fn publish_collective_mission_result(
     auth: &str,
     arguments: &Value,
 ) -> Value {
+    if let Err(error) = validate_mission_arguments(arguments) {
+        return tool_error(&json!({"error": error}));
+    }
     let execution = match collective_execution_spec(arguments) {
         Ok(execution) => execution,
         Err(error) => return tool_error(&json!({"error": error})),
