@@ -578,11 +578,65 @@ fn global_message_views(messages: &[SwarmGlobalMessageView]) -> Vec<Value> {
         .collect()
 }
 
+pub(crate) async fn build_public_board_messages_snapshot_payload(
+    state: &ControlPlaneState,
+    limit: usize,
+) -> anyhow::Result<Vec<Value>> {
+    let network_id = resolve_network_id(state, None).await?;
+    let limit = limit.clamp(1, 200);
+    let mut messages = Vec::new();
+    for channel in BOARD_CHANNELS {
+        let scope_hint = format!("group:{}", channel.group);
+        let topic_messages = state
+            .swarm_bridge
+            .list_topic_messages(
+                Some(&network_id),
+                channel.feed_key,
+                &scope_hint,
+                limit,
+                None,
+                None,
+            )
+            .await?;
+        messages.extend(
+            board_topic_message_views(state, &topic_messages, Some(channel.category)).await,
+        );
+    }
+    let global_messages = state.swarm_bridge.list_global_messages(limit, None).await?;
+    messages.extend(global_message_views(&global_messages));
+    let (feed_key, scope_hint) = services_board_route();
+    let service_messages = state
+        .swarm_bridge
+        .list_topic_messages(Some(&network_id), feed_key, scope_hint, limit, None, None)
+        .await?;
+    messages.extend(board_topic_message_views(state, &service_messages, Some("services")).await);
+    sort_board_messages(&mut messages);
+    messages.truncate(limit);
+    Ok(messages)
+}
+
 pub(crate) fn record_board_message_post(state: &ControlPlaneState, post: &BoardMessagePost<'_>) {
+    let service_agent = post.content.get("service_agent");
     let payload = json!({
+        "message_id": post.message_id,
+        "author_node_id": post.author_node_id,
+        "author_public_id": post.author_public_id,
+        "author_display_name": post.author_display_name,
         "source": post.source,
         "category": post.category,
         "network_id": post.network_id,
+        "service_name": service_agent
+            .and_then(|agent| agent.get("service_name"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "service_did": service_agent
+            .and_then(|agent| agent.get("service_did"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "provider_did": service_agent
+            .and_then(|agent| agent.get("provider_did"))
+            .cloned()
+            .unwrap_or(Value::Null),
         "feed_key": post.feed_key,
         "scope_hint": post.scope_hint,
         "content": post.content,

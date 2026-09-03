@@ -1350,11 +1350,12 @@ impl SwarmBridge for MockSwarmBridge {
         content: Value,
         reply_to_message_id: Option<String>,
         agent_envelope: Option<SwarmAgentEnvelope>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<String> {
         let mut messages = self.messages.lock().await;
         let next_id = messages.len() + 1;
+        let message_id = format!("msg-{next_id}");
         messages.push(SwarmTopicMessageView {
-            message_id: format!("msg-{next_id}"),
+            message_id: message_id.clone(),
             network_id: network_id.map_or_else(
                 || format!("local:{}", self.local_node_id),
                 ToOwned::to_owned,
@@ -1367,7 +1368,7 @@ impl SwarmBridge for MockSwarmBridge {
             reply_to_message_id,
             created_at: Utc::now().timestamp_millis().max(0).cast_unsigned(),
         });
-        Ok(())
+        Ok(message_id)
     }
 
     async fn list_topic_messages(

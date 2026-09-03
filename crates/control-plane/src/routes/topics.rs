@@ -641,6 +641,7 @@ async fn post_initial_hive_message(
         )
         .await
         .map_err(|error| internal_error(&error))
+        .map(|_| ())
 }
 
 async fn persist_created_topic(
@@ -1274,6 +1275,7 @@ async fn post_hive_message_to_swarm(
         )
         .await
         .map_err(|error| internal_error(&error))
+        .map(|_| ())
 }
 
 async fn require_active_hive_subscription(

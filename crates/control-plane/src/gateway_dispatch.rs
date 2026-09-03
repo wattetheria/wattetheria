@@ -448,6 +448,19 @@ fn plan_topic_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> 
                 identity_key: Some(message_id),
             })
         }
+        "board.message.posted" => {
+            let message_id = payload
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)?;
+            Some(GatewayDispatchPlan {
+                data_kind: GatewayDataKind::BoardActivity,
+                visibility: GatewayVisibility::Public,
+                provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+                scope: GatewayEventScope::default(),
+                identity_key: Some(message_id),
+            })
+        }
         _ => None,
     }
 }
@@ -599,6 +612,47 @@ mod tests {
         assert_eq!(plan.scope.topic_id.as_deref(), Some("topic-1"));
         assert_eq!(plan.identity_key.as_deref(), Some("msg-1"));
         let decision = describe_stream_event(&event).expect("topic decision");
+        assert_eq!(
+            decision.mechanism_path,
+            GatewayMechanismPath::DirectProjection
+        );
+        assert_eq!(
+            decision.push_disposition,
+            GatewayPushDisposition::PushEligible
+        );
+        assert_eq!(
+            decision.confirmation_requirement,
+            GatewayConfirmationRequirement::Required
+        );
+    }
+
+    #[test]
+    fn board_message_posts_are_gateway_pushed_as_board_activity() {
+        let incomplete_event = StreamEvent {
+            kind: "board.message.posted".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({"content":{"text":"missing id"}}),
+        };
+        assert!(describe_stream_event(&incomplete_event).is_none());
+
+        let event = StreamEvent {
+            kind: "board.message.posted".to_string(),
+            timestamp: 1_710_000_000,
+            payload: json!({
+                "message_id": "board-msg-1",
+                "author_node_id": "node-board",
+                "source": "network",
+                "category": "general",
+                "network_id": "network-1",
+                "feed_key": "wattetheria.board.general",
+                "scope_hint": "group:board-general",
+                "content": {"text": "board message"},
+            }),
+        };
+        let plan = plan_stream_event(&event).expect("board message plan");
+        assert_eq!(plan.data_kind, GatewayDataKind::BoardActivity);
+        assert_eq!(plan.identity_key.as_deref(), Some("board-msg-1"));
+        let decision = describe_stream_event(&event).expect("board decision");
         assert_eq!(
             decision.mechanism_path,
             GatewayMechanismPath::DirectProjection

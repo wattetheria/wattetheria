@@ -406,7 +406,7 @@ pub trait SwarmBridge: Send + Sync {
         _content: Value,
         _reply_to_message_id: Option<String>,
         _agent_envelope: Option<SwarmAgentEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         Err(anyhow!("wattswarm topic messages are not configured"))
     }
 
@@ -719,7 +719,7 @@ impl SwarmBridge for HybridSwarmBridge {
         content: Value,
         reply_to_message_id: Option<String>,
         agent_envelope: Option<SwarmAgentEnvelope>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         self.topic_api()?
             .post_topic_message(
                 network_id,
@@ -1066,8 +1066,9 @@ impl HttpWattswarmApi {
         content: Value,
         reply_to_message_id: Option<String>,
         agent_envelope: Option<SwarmAgentEnvelope>,
-    ) -> Result<()> {
-        self.client
+    ) -> Result<String> {
+        let response = self
+            .client
             .post(format!("{}/api/topic/messages", self.base_url))
             .json(&json!({
                 "network_id": network_id,
@@ -1079,8 +1080,16 @@ impl HttpWattswarmApi {
             }))
             .send()
             .await?
-            .error_for_status()?;
-        Ok(())
+            .error_for_status()?
+            .json::<TopicMessagePostResponse>()
+            .await
+            .context("decode wattswarm topic message response")?;
+        if response.message_id.trim().is_empty() {
+            return Err(anyhow!(
+                "wattswarm topic message response omitted message_id"
+            ));
+        }
+        Ok(response.message_id)
     }
 
     async fn list_topic_messages(
@@ -2002,6 +2011,11 @@ struct NetworkSnapshotResponse {
 struct NetworkLocalResponse {
     #[serde(default)]
     public_bootstrap: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TopicMessagePostResponse {
+    message_id: String,
 }
 
 #[derive(Debug, Deserialize)]

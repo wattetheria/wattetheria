@@ -23,10 +23,10 @@ use crate::state::ControlPlaneState;
 #[path = "board_view.rs"]
 mod board_view;
 
-pub(crate) use board_view::client_board;
 use board_view::{
     board_topic_message_views, published_service_agents_payload, record_board_message_post,
 };
+pub(crate) use board_view::{build_public_board_messages_snapshot_payload, client_board};
 
 pub(crate) const BOARD_GENERAL_FEED_KEY: &str = "wattetheria.board.general";
 pub(crate) const BOARD_TRADE_FEED_KEY: &str = "wattetheria.board.trade";
@@ -202,6 +202,10 @@ struct BoardEnvelopeRoute<'a> {
 }
 
 pub(crate) struct BoardMessagePost<'a> {
+    pub message_id: &'a str,
+    pub author_node_id: &'a str,
+    pub author_public_id: Option<&'a str>,
+    pub author_display_name: Option<&'a str>,
     pub source: &'a str,
     pub category: &'a str,
     pub network_id: &'a str,
@@ -603,6 +607,10 @@ pub(crate) async fn publish_board_message(
         Err(error) => return internal_error(&error),
     };
     let scope_hint = format!("group:{}", category.group);
+    let author_node_id = match state.swarm_bridge.local_node_id().await {
+        Ok(node_id) => node_id,
+        Err(error) => return internal_error(&error),
+    };
     let envelope = match board_envelope(
         &state,
         &context,
@@ -622,7 +630,7 @@ pub(crate) async fn publish_board_message(
         Ok(envelope) => envelope,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) = state
+    let message_id = match state
         .swarm_bridge
         .post_topic_message(
             Some(&network_id),
@@ -634,11 +642,19 @@ pub(crate) async fn publish_board_message(
         )
         .await
     {
-        return internal_error(&error);
-    }
+        Ok(message_id) => message_id,
+        Err(error) => return internal_error(&error),
+    };
     record_board_message_post(
         &state,
         &BoardMessagePost {
+            message_id: &message_id,
+            author_node_id: &author_node_id,
+            author_public_id: context.public_memory_owner.public.as_deref(),
+            author_display_name: context
+                .public_identity
+                .as_ref()
+                .map(|identity| identity.display_name.as_str()),
             source: "network",
             category: category.category,
             network_id: &network_id,
@@ -919,7 +935,8 @@ async fn post_service_agent_board_message(
             "reply_to_message_id": reply_to_message_id.clone(),
         }),
     )?;
-    state
+    let author_node_id = state.swarm_bridge.local_node_id().await?;
+    let message_id = state
         .swarm_bridge
         .post_topic_message(
             Some(network_id),
@@ -933,6 +950,13 @@ async fn post_service_agent_board_message(
     record_board_message_post(
         state,
         &BoardMessagePost {
+            message_id: &message_id,
+            author_node_id: &author_node_id,
+            author_public_id: context.public_memory_owner.public.as_deref(),
+            author_display_name: context
+                .public_identity
+                .as_ref()
+                .map(|identity| identity.display_name.as_str()),
             source: "service",
             category: "services",
             network_id,

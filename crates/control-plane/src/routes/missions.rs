@@ -442,6 +442,7 @@ async fn post_mission_lifecycle_topic_notice(
             Some(envelope.agent_envelope.clone()),
         )
         .await
+        .map(|_| ())
 }
 
 async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {

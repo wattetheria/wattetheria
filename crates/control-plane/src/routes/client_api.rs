@@ -27,6 +27,7 @@ use wattetheria_kernel::swarm_bridge::{
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::board::build_public_board_messages_snapshot_payload;
 use crate::routes::civilization::build_agent_relationship_payload;
 use crate::routes::client_swarm::{
     build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
@@ -62,6 +63,8 @@ pub struct PublicClientSnapshot {
     pub public_topics: Vec<Value>,
     #[serde(default)]
     pub public_topic_messages: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_board_messages: Vec<Value>,
     #[serde(default)]
     pub swarm_task_activity: Value,
     pub tasks: Vec<Value>,
@@ -1397,6 +1400,24 @@ fn client_export_node_limit(query: &ClientExportQuery) -> usize {
         .clamp(1, 200)
 }
 
+async fn build_public_board_snapshot_payload(
+    state: &ControlPlaneState,
+    query: &ClientExportQuery,
+    source_public_id: Option<&str>,
+    source_agent_identity: Option<&str>,
+) -> Vec<Value> {
+    attach_source_identity_to_values(
+        build_public_board_messages_snapshot_payload(
+            state,
+            query.rpc_log_limit.unwrap_or(100).clamp(1, 200),
+        )
+        .await
+        .unwrap_or_default(),
+        source_public_id,
+        source_agent_identity,
+    )
+}
+
 async fn build_public_client_snapshot(
     state: &ControlPlaneState,
     query: &ClientExportQuery,
@@ -1464,6 +1485,13 @@ async fn build_public_client_snapshot(
             source_public_id_ref,
             source_agent_identity_ref,
         ),
+        public_board_messages: build_public_board_snapshot_payload(
+            state,
+            query,
+            source_public_id_ref,
+            source_agent_identity_ref,
+        )
+        .await,
         swarm_task_activity: attach_source_identity_to_task_activity(
             swarm_task_activity,
             source_public_id_ref,
