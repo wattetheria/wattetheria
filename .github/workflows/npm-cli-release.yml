@@ -85,31 +85,37 @@ jobs:
             platform: darwin
             arch: arm64
             binary: target/release/wattetheria-client-cli
+            exe: ""
           - target_key: darwin-x64
             runs_on: macos-15-intel
             platform: darwin
             arch: x64
             binary: target/release/wattetheria-client-cli
+            exe: ""
           - target_key: linux-arm64
             runs_on: ubuntu-24.04-arm
             platform: linux
             arch: arm64
             binary: target/release/wattetheria-client-cli
+            exe: ""
           - target_key: linux-x64
             runs_on: ubuntu-latest
             platform: linux
             arch: x64
             binary: target/release/wattetheria-client-cli
+            exe: ""
           - target_key: win32-arm64
             runs_on: windows-11-arm
             platform: win32
             arch: arm64
             binary: target/release/wattetheria-client-cli.exe
+            exe: ".exe"
           - target_key: win32-x64
             runs_on: windows-latest
             platform: win32
             arch: x64
             binary: target/release/wattetheria-client-cli.exe
+            exe: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -164,6 +170,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: npm-cli-release-${{ matrix.target_key }}
+          workspaces: |
+            . -> target
+            ../wattswarm -> target
 
       - uses: actions/setup-node@v4
         with:
@@ -175,8 +184,11 @@ jobs:
         env:
           NPM_CLI_RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
 
-      - name: Build native CLI
-        run: cargo build --release -p wattetheria-client-cli
+      - name: Build native CLI and Wattetheria kernel
+        run: cargo build --release -p wattetheria-client-cli -p wattetheria-kernel
+
+      - name: Build Wattswarm node binaries
+        run: cargo build --release --manifest-path ../wattswarm/Cargo.toml -p wattswarm --bin wattswarm --bin wattswarm-runtime
 
       - name: Stage native package
         run: >
@@ -184,6 +196,9 @@ jobs:
           --platform ${{ matrix.platform }}
           --arch ${{ matrix.arch }}
           --source ${{ matrix.binary }}
+          --extra target/release/wattetheria-kernel${{ matrix.exe }}
+          --extra ../wattswarm/target/release/wattswarm${{ matrix.exe }}
+          --extra ../wattswarm/target/release/wattswarm-runtime${{ matrix.exe }}
 
       - name: Verify native package
         run: node scripts/check-native-package-binary.js npm/native/${{ matrix.target_key }}

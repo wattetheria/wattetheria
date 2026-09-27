@@ -1,7 +1,7 @@
 {
   "name": "@wattetheria/cli-darwin-x64",
   "version": "0.3.0",
-  "description": "Wattetheria native CLI for macOS x64",
+  "description": "Wattetheria native CLI and node binaries for macOS x64",
   "license": "AGPL-3.0-only",
   "os": [
     "darwin"

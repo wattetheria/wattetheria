@@ -221,5 +221,268 @@ test(
     assert.equal(result.status, 0, result.stderr);
     assert.equal(invocationCount(npmMarker), 1);
     assert.ok(invocationCount(dockerMarker) > 0);
+    assert.match(
+      fs.readFileSync(path.join(deploymentDirectory, ".env"), "utf8"),
+      /^WATTETHERIA_DEPLOYMENT_RUNTIME=docker$/m
+    );
+  }
+);
+
+test("deployment runtime is read from the deployment env", (context) => {
+  const deploymentDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-runtime-test-"));
+  context.after(() => fs.rmSync(deploymentDirectory, { recursive: true, force: true }));
+  const envPath = path.join(deploymentDirectory, ".env");
+  const version = () => runCli(["version", "--dir", deploymentDirectory]);
+
+  fs.writeFileSync(envPath, "WATTETHERIA_DEPLOYMENT_RUNTIME=native\n");
+  assert.match(version().stdout, /\(native\)/);
+
+  fs.writeFileSync(envPath, "WATTETHERIA_DEPLOYMENT_RUNTIME=docker\nWATTETHERIA_KERNEL_IMAGE=ghcr.io/wattetheria/wattetheria-kernel:1.2.3\n");
+  assert.doesNotMatch(version().stdout, /native/);
+
+  fs.writeFileSync(envPath, "WATTETHERIA_KERNEL_IMAGE=ghcr.io/wattetheria/wattetheria-kernel:1.2.3\n");
+  assert.doesNotMatch(version().stdout, /native/);
+
+  fs.writeFileSync(envPath, "WATTETHERIA_DEPLOYMENT_RUNTIME=podman\n");
+  const invalid = version();
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /Invalid WATTETHERIA_DEPLOYMENT_RUNTIME=podman in deployment env/);
+});
+
+test("help documents the native runtime option", () => {
+  const result = runCli(["help"]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--runtime <name>\s+With install or setup: docker \(default\) or native/);
+});
+
+test("install rejects an unknown runtime", () => {
+  const result = runCli(["install", "--runtime", "podman"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Invalid --runtime: podman\. Use docker or native\./);
+});
+
+test("native kernel flags mirror the Docker kernel entrypoint", () => {
+  const { kernelArgs } = require("../lib/native");
+  const env = new Map([
+    ["WATTETHERIA_CONTROL_PLANE_BIND_HOST", "0.0.0.0"],
+    ["WATTETHERIA_CONTROL_PLANE_PORT", "17777"],
+    ["WATTSWARM_UI_PORT", "17788"],
+    ["WATTSWARM_SYNC_GRPC_PORT", "17791"],
+    ["WATTETHERIA_AUTONOMY_ENABLED", "true"],
+    ["WATTETHERIA_BRAIN_PROVIDER_KIND", "openai-compatible"],
+    ["WATTETHERIA_BRAIN_MODEL", ""],
+    ["WATTETHERIA_MCP_TOKEN_AUTH", "true"],
+    ["WATTETHERIA_GATEWAY_URLS", "https://a.example, ,https://b.example"],
+  ]);
+
+  const args = kernelArgs({
+    env,
+    wattetheriaDataDir: "/state/wattetheria",
+    wattswarmStateDir: "/state/wattswarm",
+  });
+
+  const flag = (name) => args[args.indexOf(name) + 1];
+  assert.equal(flag("--data-dir"), "/state/wattetheria");
+  assert.equal(flag("--control-plane-bind"), "0.0.0.0:17777");
+  assert.equal(flag("--wattswarm-agent-event-callback-base-url"), "http://127.0.0.1:17777");
+  assert.equal(flag("--wattswarm-ui-base-url"), "http://127.0.0.1:17788");
+  assert.equal(flag("--wattswarm-sync-grpc-endpoint"), "http://127.0.0.1:17791");
+  assert.equal(flag("--agent-host-data-dir"), "/state/wattetheria");
+  assert.equal(flag("--gateway-config-path"), path.join("/state/wattswarm", "startup_config.json"));
+  assert.equal(flag("--brain-provider-kind"), "openai-compatible");
+  assert.ok(args.includes("--autonomy-enabled"));
+  assert.ok(args.includes("--mcp-token-auth-required"));
+  assert.ok(!args.includes("--brain-model"));
+  assert.deepEqual(
+    args.flatMap((value, index) => (value === "--gateway-url" ? [args[index + 1]] : [])),
+    ["https://a.example", "https://b.example"]
+  );
+});
+
+function freePort() {
+  const net = require("node:net");
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function writeFakeNativeBinaries(binDirectory, markerPath) {
+  fs.mkdirSync(binDirectory, { recursive: true });
+  const kernel = path.join(binDirectory, "wattetheria-kernel");
+  fs.writeFileSync(kernel, "#!/bin/sh\nexec sleep 300\n");
+  const wattswarm = path.join(binDirectory, "wattswarm");
+  fs.writeFileSync(
+    wattswarm,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" >> '${markerPath}'`,
+      'case "$*" in *" run init"*|*" executors add "*) exit 0 ;; esac',
+      "exec sleep 300",
+      "",
+    ].join("\n")
+  );
+  const runtime = path.join(binDirectory, "wattswarm-runtime");
+  fs.writeFileSync(
+    runtime,
+    [
+      `#!${process.execPath}`,
+      'const [host, port] = process.argv[process.argv.indexOf("--listen") + 1].split(":");',
+      'require("node:http").createServer((_req, res) => res.end("ok")).listen(Number(port), host);',
+      "",
+    ].join("\n")
+  );
+  for (const binary of [kernel, wattswarm, runtime]) {
+    fs.chmodSync(binary, 0o755);
+  }
+}
+
+test(
+  "native install supervises local binaries without Docker",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" },
+  async (context) => {
+    const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-test-"));
+    const binDirectory = path.join(testDirectory, "bin");
+    const deploymentDirectory = path.join(testDirectory, "deployment");
+    const wattswarmMarker = path.join(testDirectory, "wattswarm-args");
+    const dockerMarker = path.join(testDirectory, "docker");
+    const commandDirectory = fakeCommandDirectory(
+      require("../package.json").version,
+      path.join(testDirectory, "npm"),
+      dockerMarker
+    );
+    writeFakeNativeBinaries(binDirectory, wattswarmMarker);
+    fs.mkdirSync(deploymentDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(deploymentDirectory, ".env"),
+      `WATTETHERIA_DEPLOYMENT_RUNTIME=native\nWATTSWARM_RUNTIME_PORT=${await freePort()}\n`
+    );
+    const env = {
+      ...process.env,
+      PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+      WATTETHERIA_NATIVE_BIN_DIR: binDirectory,
+      WATTETHERIA_NO_BANNER: "1",
+    };
+    const cli = (...args) => spawnSync(
+      process.execPath,
+      [CLI_PATH, ...args, "--dir", deploymentDirectory],
+      { cwd: ROOT_DIR, encoding: "utf8", env }
+    );
+    context.after(() => {
+      cli("stop");
+      fs.rmSync(commandDirectory, { recursive: true, force: true });
+      fs.rmSync(testDirectory, { recursive: true, force: true });
+    });
+
+    const install = cli("install", "--runtime", "native", "--no-health-checks");
+    assert.equal(install.status, 0, install.stderr);
+    assert.match(install.stdout, /Native supervisor started/);
+
+    const deploymentEnv = fs.readFileSync(path.join(deploymentDirectory, ".env"), "utf8");
+    assert.match(deploymentEnv, /^WATTETHERIA_DEPLOYMENT_RUNTIME=native$/m);
+    assert.match(deploymentEnv, /^WATTSWARM_STORAGE_BACKEND=sqlite$/m);
+    assert.doesNotMatch(deploymentEnv, /WATTSWARM_PG_/);
+
+    let status;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      status = cli("status");
+      if ((status.stdout.match(/^\S+\s+running\s+\d+/gm) || []).length === 4) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.equal(status.status, 0, status.stderr);
+    for (const service of ["wattswarm-runtime", "wattswarm-kernel", "wattswarm-worker", "kernel"]) {
+      assert.match(status.stdout, new RegExp(`^${service}\\s+running\\s+\\d+`, "m"));
+    }
+
+    const wattswarmCalls = fs.readFileSync(wattswarmMarker, "utf8");
+    assert.match(wattswarmCalls, /--store wattswarm\.db run init/);
+    assert.match(wattswarmCalls, /executors add rt http:\/\/127\.0\.0\.1:\d+/);
+    assert.match(wattswarmCalls, /run worker --concurrency 16/);
+    assert.ok(fs.existsSync(path.join(deploymentDirectory, "data", "wattetheria", "control.token")));
+
+    const mismatch = cli("install", "--runtime", "docker");
+    assert.equal(mismatch.status, 1);
+    assert.match(mismatch.stderr, /A native deployment already exists/);
+
+    const stop = cli("stop");
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.match(stop.stdout, /Native services stopped\./);
+    assert.match(cli("status").stdout, /Native supervisor: stopped/);
+    assert.equal(invocationCount(dockerMarker), 0);
+  }
+);
+
+test(
+  "native supervisor restarts a service whose binary fails to start",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" },
+  async (context) => {
+    const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-test-"));
+    const binDirectory = path.join(testDirectory, "bin");
+    const deploymentDirectory = path.join(testDirectory, "deployment");
+    const commandDirectory = fakeCommandDirectory(
+      require("../package.json").version,
+      path.join(testDirectory, "npm"),
+      path.join(testDirectory, "docker")
+    );
+    writeFakeNativeBinaries(binDirectory, path.join(testDirectory, "wattswarm-args"));
+    fs.chmodSync(path.join(binDirectory, "wattetheria-kernel"), 0o644);
+    fs.mkdirSync(deploymentDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(deploymentDirectory, ".env"),
+      `WATTETHERIA_DEPLOYMENT_RUNTIME=native\nWATTSWARM_RUNTIME_PORT=${await freePort()}\n`
+    );
+    const env = {
+      ...process.env,
+      PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+      WATTETHERIA_NATIVE_BIN_DIR: binDirectory,
+      WATTETHERIA_NO_BANNER: "1",
+    };
+    const cli = (...args) => spawnSync(
+      process.execPath,
+      [CLI_PATH, ...args, "--dir", deploymentDirectory],
+      { cwd: ROOT_DIR, encoding: "utf8", env }
+    );
+    context.after(() => {
+      cli("stop");
+      fs.rmSync(commandDirectory, { recursive: true, force: true });
+      fs.rmSync(testDirectory, { recursive: true, force: true });
+    });
+
+    const install = cli("install", "--runtime", "native", "--no-health-checks");
+    assert.equal(install.status, 0, install.stderr);
+
+    const kernelRow = () => cli("status").stdout.match(/^kernel\s+(\S+)\s+(\S+)\s+(\d+)/m);
+    let row;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      row = kernelRow();
+      if (row && Number(row[3]) >= 2) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    assert.ok(row, "kernel status row is missing");
+    assert.equal(row[1], "restarting");
+    assert.equal(row[2], "-");
+    assert.ok(Number(row[3]) >= 2, `expected repeated restart attempts, got ${row[3]}`);
+
+    const state = JSON.parse(
+      fs.readFileSync(path.join(deploymentDirectory, "run", "state.json"), "utf8")
+    );
+    assert.equal(state.services.kernel.lastExit, "EACCES");
+    const daemonLog = fs.readFileSync(path.join(deploymentDirectory, "logs", "daemon.log"), "utf8");
+    assert.match(daemonLog, /kernel failed to start: spawn .* EACCES/);
+    assert.doesNotMatch(daemonLog, /kernel started \(pid undefined\)/);
+
+    const stop = cli("stop");
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.match(stop.stdout, /Native services stopped\./);
   }
 );

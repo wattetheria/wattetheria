@@ -1,7 +1,7 @@
 {
   "name": "@wattetheria/cli-linux-arm64",
   "version": "0.3.0",
-  "description": "Wattetheria native CLI for Linux arm64",
+  "description": "Wattetheria native CLI and node binaries for Linux arm64",
   "license": "AGPL-3.0-only",
   "os": [
     "linux"

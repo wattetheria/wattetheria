@@ -15,6 +15,7 @@ function parseArgs(argv) {
     platform: process.env.WATTETHERIA_NATIVE_PLATFORM || process.platform,
     arch: process.env.WATTETHERIA_NATIVE_ARCH || process.arch,
     source: process.env.WATTETHERIA_NATIVE_CLI_BIN || "",
+    extras: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -25,6 +26,8 @@ function parseArgs(argv) {
       options.arch = requireValue(arg, argv[++index]);
     } else if (arg === "--source") {
       options.source = requireValue(arg, argv[++index]);
+    } else if (arg === "--extra") {
+      options.extras.push(requireValue(arg, argv[++index]));
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -62,8 +65,8 @@ function nativePackageDir(key) {
   return path.join(ROOT_DIR, "npm", "native", key);
 }
 
-function copyBinary(source, targetDir, platform) {
-  const target = path.join(targetDir, binaryName(platform));
+function copyBinary(source, targetDir, platform, targetName = binaryName(platform)) {
+  const target = path.join(targetDir, targetName);
   fs.mkdirSync(targetDir, { recursive: true });
   fs.copyFileSync(source, target);
   if (platform !== "win32") {
@@ -100,6 +103,19 @@ function stageNativeCli(options) {
   );
   console.log(`staged ${mainTarget}`);
   console.log(`staged ${packageTarget}`);
+
+  // Native node binaries (wattetheria-kernel, wattswarm, wattswarm-runtime)
+  // ship beside the client CLI for no-Docker deployments.
+  for (const extra of options.extras) {
+    const extraSource = path.resolve(extra);
+    if (!fs.existsSync(extraSource)) {
+      throw new Error(`Native binary not found at ${extraSource}.`);
+    }
+    const extraName = path.basename(extraSource);
+    for (const dir of [path.join(ROOT_DIR, "bin", "native", key), path.join(packageDir, "bin")]) {
+      console.log(`staged ${copyBinary(extraSource, dir, options.platform, extraName)}`);
+    }
+  }
 }
 
 try {

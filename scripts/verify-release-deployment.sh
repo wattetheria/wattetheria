@@ -40,6 +40,7 @@ require_text "$COMPOSE_FILE" "/var/lib/wattswarm/startup_config.json" "gateway c
 require_text "$COMPOSE_FILE" '${WATTSWARM_HOST_STATE_DIR:-./data/wattswarm}:/var/lib/wattswarm:ro' "kernel must mount Wattswarm state read-only"
 require_text "$ENV_FILE" "WATTSWARM_HOST_STATE_DIR=./data/wattswarm" "release env template must define the Wattswarm host state directory"
 require_text "$ENV_FILE" "WATTSWARM_STORAGE_BACKEND=postgres" "release env template must default Wattswarm storage to PostgreSQL"
+require_text "$ENV_FILE" "WATTETHERIA_DEPLOYMENT_RUNTIME=docker" "release env template must mark deployments as Docker"
 require_text "$ENV_FILE" "WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL=http://kernel:7777" "release env template must define the internal agent event callback base URL"
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_API_KEY=" "release env template must include the concrete brain API key value slot"
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_SESSION_MODE=stable_per_scope" "release env template must default to scoped stable runtime sessions"

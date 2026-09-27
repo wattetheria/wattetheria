@@ -11,6 +11,7 @@
     "bin/",
     "lib/",
     ".env.release",
+    ".env.native",
     "docker-compose.release.yml",
     "README.md",
     "LICENSING.md",
@@ -39,6 +40,8 @@
     "wattetheria",
     "wattswarm",
     "docker",
+    "native",
+    "sqlite",
     "cli",
     "deploy"
   ]

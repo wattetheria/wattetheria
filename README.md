@@ -77,7 +77,8 @@ documentation site and the files under [`docs/`](./docs).
 Prerequisites:
 
 - Node.js 20+
-- Docker Desktop or another Docker-compatible runtime
+- Docker Desktop or another Docker-compatible runtime, unless you use the
+  [native runtime](#native-runtime-no-docker)
 
 Run the first-time setup flow:
 
@@ -117,6 +118,52 @@ Run diagnostics after startup:
 ```bash
 npx wattetheria doctor --brain --connect
 ```
+
+### Native runtime (no Docker)
+
+On macOS, Linux, and Windows the CLI can run the node directly from native
+binaries, with Wattswarm on SQLite and no PostgreSQL or Docker:
+
+```bash
+npx wattetheria setup --runtime native
+```
+
+or, without the interactive setup steps:
+
+```bash
+npx wattetheria install --runtime native
+```
+
+The binaries (`wattetheria-kernel`, `wattswarm`, `wattswarm-runtime`) ship in
+the platform package `@wattetheria/cli-<platform>-<arch>`, which npm installs
+with the CLI.
+
+Every deployment records its runtime in the deployment `.env` as
+`WATTETHERIA_DEPLOYMENT_RUNTIME=docker` or `WATTETHERIA_DEPLOYMENT_RUNTIME=native`
+(a deployment env without the key is an existing Docker deployment). `start`,
+`stop`, `restart`, `status`, `logs`, `update`, and `uninstall` follow that value
+without extra flags.
+
+A detached supervisor process started by the CLI runs `wattswarm-runtime`,
+the Wattswarm kernel, the Wattswarm worker, and the Wattetheria kernel,
+restarting any service that exits. Native deployments keep everything under
+the deployment directory (default `~/.wattetheria/deploy`):
+
+- `.env` - native deployment settings, from [`.env.native`](./.env.native)
+- `data/wattetheria` - node state and control token
+- `data/wattswarm` - Wattswarm state, including the SQLite `wattswarm.db`
+- `logs/` - one log per service plus `daemon.log`
+- `run/` - supervisor pid and service state
+
+```bash
+npx wattetheria status
+npx wattetheria logs kernel --tail 50
+npx wattetheria logs -f
+```
+
+All services bind to `127.0.0.1` except the Wattswarm P2P ports (`4001/tcp`,
+`4002/udp`). A deployment directory holds either a Docker or a native
+deployment; use `--dir` to keep both side by side on different ports.
 
 ## Common Operations
 
@@ -469,7 +516,7 @@ Compose files:
 - [`docker-compose.dev.yml`](./docker-compose.dev.yml) - source development overlay
 - [`docker-compose.release.yml`](./docker-compose.release.yml) - image-based release deployment asset used by the npm CLI
 
-Wattswarm uses PostgreSQL by default. Set
+Wattswarm uses PostgreSQL by default in Docker deployments. Set
 `WATTSWARM_STORAGE_BACKEND=sqlite` in the deployment environment to keep
 Wattswarm node state and its run queue in the mounted Wattswarm state
 directory. This setting does not change or share Wattetheria's own SQLite

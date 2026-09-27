@@ -3,10 +3,15 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const BASE_NAME = "wattetheria-client-cli";
+const BASE_NAMES = [
+  "wattetheria-client-cli",
+  "wattetheria-kernel",
+  "wattswarm",
+  "wattswarm-runtime",
+];
 
-function binaryName(platform) {
-  return platform === "win32" ? `${BASE_NAME}.exe` : BASE_NAME;
+function binaryName(baseName, platform) {
+  return platform === "win32" ? `${baseName}.exe` : baseName;
 }
 
 function readPackageJson(packageDir) {
@@ -29,14 +34,16 @@ function checkNativePackageBinary(packageDir) {
   const platform = firstArrayValue(manifest, "os");
   firstArrayValue(manifest, "cpu");
 
-  const binaryPath = path.join(packageDir, "bin", binaryName(platform));
-  if (!fs.existsSync(binaryPath)) {
-    throw new Error(
-      `Missing native CLI binary for ${manifest.name}: ${binaryPath}. ` +
-        "Run npm run stage:native-cli with the matching --platform and --arch first."
-    );
+  for (const baseName of BASE_NAMES) {
+    const binaryPath = path.join(packageDir, "bin", binaryName(baseName, platform));
+    if (!fs.existsSync(binaryPath)) {
+      throw new Error(
+        `Missing native binary for ${manifest.name}: ${binaryPath}. ` +
+          "Run npm run stage:native-cli with the matching --platform, --arch, and --extra binaries first."
+      );
+    }
+    console.log(`native binary present for ${manifest.name}: ${binaryPath}`);
   }
-  console.log(`native binary present for ${manifest.name}: ${binaryPath}`);
 }
 
 try {
