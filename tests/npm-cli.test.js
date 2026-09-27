@@ -301,6 +301,31 @@ test("native kernel flags mirror the Docker kernel entrypoint", () => {
   );
 });
 
+test("orphan process identity matches the deployment arguments, not only the binary", () => {
+  const { commandLineMatchesIdentity } = require("../lib/native");
+  const commandLine = '"C:\\Program Files\\Watt\\wattswarm.exe" --state-dir "C:\\Users\\PVer\\.wattetheria\\deploy A\\data\\wattswarm" --store wattswarm.db ui';
+
+  assert.equal(commandLineMatchesIdentity(commandLine, [
+    "--state-dir",
+    "C:\\Users\\PVer\\.wattetheria\\deploy A\\data\\wattswarm"
+  ]), true);
+  assert.equal(commandLineMatchesIdentity(commandLine, [
+    "--state-dir",
+    "C:\\Users\\PVer\\.wattetheria\\deploy B\\data\\wattswarm"
+  ]), false);
+  assert.equal(commandLineMatchesIdentity(commandLine, [
+    "--state-dir",
+    "C:\\Users\\PVer\\.wattetheria\\deploy A"
+  ]), false);
+  if (process.platform !== "win32") {
+    assert.equal(commandLineMatchesIdentity("wattswarm --state-dir /srv/Deploy/data", [
+      "--state-dir",
+      "/srv/deploy/data"
+    ]), false);
+  }
+  assert.equal(commandLineMatchesIdentity(commandLine, ["--listen", "127.0.0.1:8788"]), false);
+});
+
 function freePort() {
   const net = require("node:net");
   return new Promise((resolve, reject) => {
@@ -401,6 +426,17 @@ test(
     for (const service of ["wattswarm-runtime", "wattswarm-kernel", "wattswarm-worker", "kernel"]) {
       assert.match(status.stdout, new RegExp(`^${service}\\s+running\\s+\\d+`, "m"));
     }
+    const nativeState = JSON.parse(
+      fs.readFileSync(path.join(deploymentDirectory, "run", "state.json"), "utf8")
+    );
+    assert.deepEqual(nativeState.services["wattswarm-kernel"].identityArgs, [
+      "--state-dir",
+      path.join(deploymentDirectory, "data", "wattswarm")
+    ]);
+    assert.deepEqual(nativeState.services.kernel.identityArgs, [
+      "--data-dir",
+      path.join(deploymentDirectory, "data", "wattetheria")
+    ]);
 
     const wattswarmCalls = fs.readFileSync(wattswarmMarker, "utf8");
     assert.match(wattswarmCalls, /--store wattswarm\.db run init/);
@@ -486,3 +522,86 @@ test(
     assert.match(stop.stdout, /Native services stopped\./);
   }
 );
+
+function sandboxedCli(context) {
+  const homeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-home-test-"));
+  const dockerMarker = path.join(homeDirectory, "docker-invocations");
+  const commandDirectory = fakeCommandDirectory(
+    require("../package.json").version,
+    path.join(homeDirectory, "npm-invocations"),
+    dockerMarker
+  );
+  const deploymentDirectory = path.join(homeDirectory, ".wattetheria", "deploy");
+  context.after(() => {
+    fs.rmSync(commandDirectory, { recursive: true, force: true });
+    fs.rmSync(homeDirectory, { recursive: true, force: true });
+  });
+  const cli = (...args) => spawnSync(
+    process.execPath,
+    [CLI_PATH, ...args, "--dir", deploymentDirectory],
+    {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: homeDirectory,
+        USERPROFILE: homeDirectory,
+        PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+        WATTETHERIA_NO_BANNER: "1",
+      },
+    }
+  );
+  return { cli, homeDirectory, deploymentDirectory, dockerMarker };
+}
+
+test(
+  "uninstall --purge treats native leftovers without an env file as native",
+  { skip: process.platform === "win32" && "requires an executable Docker test shim" },
+  (context) => {
+    const { cli, homeDirectory, deploymentDirectory, dockerMarker } = sandboxedCli(context);
+    fs.mkdirSync(path.join(deploymentDirectory, "logs"), { recursive: true });
+    fs.mkdirSync(path.join(deploymentDirectory, "run"), { recursive: true });
+    fs.writeFileSync(path.join(deploymentDirectory, "logs", "kernel.log"), "log\n");
+
+    const result = cli("uninstall", "--volumes", "--purge");
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /PostgreSQL|compose/i);
+    assert.match(result.stdout, /Native services are not running\./);
+    assert.equal(fs.existsSync(path.join(homeDirectory, ".wattetheria")), false);
+    assert.equal(invocationCount(dockerMarker), 0);
+  }
+);
+
+test(
+  "uninstall --purge without any deployment only removes the home directory",
+  { skip: process.platform === "win32" && "requires an executable Docker test shim" },
+  (context) => {
+    const { cli, homeDirectory, dockerMarker } = sandboxedCli(context);
+    fs.mkdirSync(path.join(homeDirectory, ".wattetheria"), { recursive: true });
+
+    const result = cli("uninstall", "--purge");
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /No Wattetheria deployment found/);
+    assert.doesNotMatch(`${result.stdout}${result.stderr}`, /PostgreSQL|compose/i);
+    assert.equal(fs.existsSync(path.join(homeDirectory, ".wattetheria")), false);
+    assert.equal(invocationCount(dockerMarker), 0);
+  }
+);
+
+for (const command of ["start", "stop", "status", "logs", "restart"]) {
+  test(
+    `${command} without a deployment asks for install instead of checking Docker`,
+    { skip: process.platform === "win32" && "requires an executable Docker test shim" },
+    (context) => {
+      const { cli, dockerMarker } = sandboxedCli(context);
+
+      const result = cli(command);
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /No Wattetheria deployment found .* Run `wattetheria install` first\./);
+      assert.equal(invocationCount(dockerMarker), 0);
+    }
+  );
+}
