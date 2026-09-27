@@ -87,7 +87,7 @@
       const relationships = safeArray(payload.friend_relationships);
       const requests = safeArray(payload.pending_friend_requests);
       const dmMessages = safeArray(payload.dm_messages);
-      const topics = safeArray(payload.public_topics);
+      const topics = hivesPageTopics(payload);
       const topicMessages = safeArray(payload.public_topic_messages);
       const statusCounts = tasks.reduce((counts, task) => {
         const status = task.status || "unknown";

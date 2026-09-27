@@ -2,6 +2,14 @@
       return valueOrDash(row.topic_id || row.hive_id || `${valueOrDash(row.feed_key)}@${valueOrDash(row.scope_hint)}`);
     }
 
+    function hivesPageTopics(payload) {
+      return safeArray(payload.public_topics)
+        .filter((row) => {
+          const feedKey = String(row.feed_key || "");
+          return feedKey !== "wattetheria.board" && !feedKey.startsWith("wattetheria.board.");
+        });
+    }
+
     function hiveTitle(row) {
       return row.display_name || row.title || row.name || row.feed_key || row.topic_id || "Hive";
     }
@@ -48,7 +56,7 @@
     }
 
     function renderTopics(payload) {
-      const rows = safeArray(payload.public_topics);
+      const rows = hivesPageTopics(payload);
       const activeRows = rows.filter((row) => row.active !== false);
       qs("hives-count").textContent = `${activeRows.length} Active`;
       if (!rows.length) {
@@ -95,7 +103,7 @@
     }
 
     function renderTopicMessages(payload, options = {}) {
-      const hives = safeArray(payload.public_topics);
+      const hives = hivesPageTopics(payload);
       const activeHive = hives.find((row) => hiveKey(row) === activeHiveKey);
       if (!activeHive) {
         qs("hive-thread-header").innerHTML = empty("Select a hive to view messages.");

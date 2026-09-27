@@ -553,6 +553,12 @@ async fn supervision_console_page_serves_canonical_surface() {
     assert!(body.contains("board-message-category"));
     assert!(!body.contains("id=\"board-channels\""));
     assert!(body.contains("function loadBoardMessages(options = {})"));
+    assert!(body.contains("function hivesPageTopics(payload)"));
+    assert!(body.contains("feedKey !== \"wattetheria.board\""));
+    assert!(body.contains("feedKey.startsWith(\"wattetheria.board.\")"));
+    assert!(body.contains("const rows = hivesPageTopics(payload);"));
+    assert!(body.contains("const hives = hivesPageTopics(payload);"));
+    assert!(body.contains("const topics = hivesPageTopics(payload);"));
     assert!(!body.contains("id=\"board-manage\""));
     assert!(!body.contains("id=\"board-refresh\""));
     assert!(!body.contains("id=\"board-composer\""));
