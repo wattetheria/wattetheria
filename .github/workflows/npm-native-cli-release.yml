@@ -15,7 +15,7 @@ on:
       dry_run:
         description: Build and verify native assets without creating or updating a GitHub Release.
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write

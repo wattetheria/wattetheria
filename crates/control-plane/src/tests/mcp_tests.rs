@@ -2239,6 +2239,236 @@ async fn mcp_request_agent_friend_resolves_target_agent_did_to_remote_node() {
 }
 
 #[tokio::test]
+async fn mcp_request_agent_friend_uses_discovered_node_after_local_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let remote_public_id = scoped_id("broker-removed", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooFreshDiscoveryPeer";
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.to_string(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Removed".to_string()),
+                source_agent_card: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    wattetheria_social::application::remote_identity_service::upsert_remote_identity(
+        &*state.social_store,
+        &wattetheria_social::domain::identities::RemoteIdentityProfile {
+            public_id: remote_public_id.clone(),
+            agent_did: remote_identity.agent_did.clone(),
+            display_name: "Broker Removed".to_string(),
+            description: None,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            did_document_json: None,
+            active: false,
+            last_profile_fetched_at: Some(1),
+            created_at: 1,
+            updated_at: 2,
+        },
+    )
+    .expect("seed removed remote identity");
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:{remote_public_id}"),
+            local_public_id,
+            remote_public_id: remote_public_id.clone(),
+            display_name: Some("Broker Removed".to_string()),
+            state: wattetheria_social::domain::friendships::FriendshipState::Removed,
+            established_from_request_id: Some("request-removed-1".to_string()),
+            thread_id: None,
+            created_at: 1,
+            updated_at: 2,
+        },
+    )
+    .expect("seed removed friendship");
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "target_agent_did": remote_identity.agent_did,
+                    "counterpart_public_id": remote_public_id,
+                    "remote_node_id": remote_node_id
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["result"]["isError"].as_bool(),
+        Some(false),
+        "{response}"
+    );
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].remote_node_id, remote_node_id);
+    assert_eq!(
+        commands[0].agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    assert_eq!(
+        commands[0].agent_envelope.message["target_public_id"].as_str(),
+        Some(remote_public_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_does_not_fall_back_to_removed_remote_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-removed-cached", &remote_identity.agent_did);
+    state
+        .public_identity_registry
+        .lock()
+        .await
+        .upsert(
+            &remote_public_id,
+            "Broker Removed Cached".to_string(),
+            Some(remote_identity.agent_did.clone()),
+            true,
+        )
+        .expect("seed kernel identity");
+    state.controller_binding_registry.lock().await.upsert(
+        &remote_public_id,
+        wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+        "remote-runtime".to_string(),
+        Some("12D3KooCachedRemovedPeer".to_string()),
+        wattetheria_kernel::civilization::identities::OwnershipScope::External,
+        true,
+    );
+    wattetheria_social::application::remote_identity_service::upsert_remote_identity(
+        &*state.social_store,
+        &wattetheria_social::domain::identities::RemoteIdentityProfile {
+            public_id: remote_public_id.clone(),
+            agent_did: remote_identity.agent_did.clone(),
+            display_name: "Broker Removed Cached".to_string(),
+            description: None,
+            capabilities: Vec::new(),
+            skills: Vec::new(),
+            did_document_json: None,
+            active: false,
+            last_profile_fetched_at: Some(1),
+            created_at: 1,
+            updated_at: 2,
+        },
+    )
+    .expect("seed removed social identity");
+
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": {
+                    "target_agent_did": remote_identity.agent_did,
+                    "counterpart_public_id": remote_public_id,
+                    "remote_node_id": "12D3KooCachedRemovedPeer"
+                }
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_rejects_conflicting_discovery_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let other_identity = Identity::new_random();
+    let remote_public_id = scoped_id("broker-verified", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooVerifiedPeer";
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.to_string(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Verified".to_string()),
+                source_agent_card: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    for (id, target_agent_did, remote_node_id) in [
+        (1, other_identity.agent_did, remote_node_id),
+        (2, remote_identity.agent_did, "12D3KooWrongPeer"),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "request_agent_friend",
+                    "arguments": {
+                        "counterpart_public_id": remote_public_id.clone(),
+                        "target_agent_did": target_agent_did,
+                        "remote_node_id": remote_node_id
+                    }
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"].as_bool(), Some(true));
+        assert!(
+            response["result"]["structuredContent"]["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("discovery result does not match"))
+        );
+    }
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+}
+
+#[tokio::test]
 async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
@@ -2268,10 +2498,32 @@ async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery(
         ..MockSwarmBridge::default_for(identity.agent_did.clone())
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
-    let (_dir, app, token, _policy, _state) =
+    let (_dir, app, token, _policy, state) =
         build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
     let _local_public_id =
         bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    {
+        let mut identities = state.public_identity_registry.lock().await;
+        identities
+            .upsert(
+                &remote_public_id,
+                "Broker Discovery".to_string(),
+                Some(remote_identity.agent_did.clone()),
+                true,
+            )
+            .unwrap();
+    }
+    {
+        let mut bindings = state.controller_binding_registry.lock().await;
+        bindings.upsert(
+            &remote_public_id,
+            wattetheria_kernel::civilization::identities::ControllerKind::ExternalRuntime,
+            "remote-runtime".to_string(),
+            Some("12D3KooStaleCachedPeer".to_string()),
+            wattetheria_kernel::civilization::identities::OwnershipScope::External,
+            true,
+        );
+    }
 
     let response = mcp_request(
         app,
@@ -2320,7 +2572,21 @@ async fn assert_friend_request_reaches_unregistered_discovered_agent(include_pub
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let remote_public_id = scoped_id("broker-unregistered", &remote_identity.agent_did);
     let remote_node_id = "12D3KooUnregisteredPeer".to_string();
-    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            remote_public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: remote_public_id.clone(),
+                remote_node_id: remote_node_id.clone(),
+                target_agent_did: remote_identity.agent_did.clone(),
+                display_name: Some("Broker Unregistered".to_string()),
+                source_agent_card: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _policy, _state) =
         build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
@@ -2937,7 +3203,7 @@ async fn mcp_get_agent_card_rejects_display_name_before_discovery() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_friendship() {
+async fn mcp_remove_agent_friend_updates_local_relationships_without_network_command() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity = Identity::new_random();
@@ -2990,9 +3256,25 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
         },
     )
     .expect("seed active friendship");
+    bridge
+        .relationship_views
+        .lock()
+        .await
+        .push(SwarmPeerRelationshipView {
+            remote_node_id: "12D3KooRemovePeer".to_owned(),
+            relationship_state: "accepted".to_owned(),
+            last_action: "accept".to_owned(),
+            initiated_by: "local".to_owned(),
+            agent_envelope: None,
+            requested_at: Some(1),
+            responded_at: Some(1),
+            blocked_at: None,
+            cleared_at: None,
+            updated_at: 1,
+        });
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -3013,39 +3295,26 @@ async fn mcp_remove_agent_friend_sends_relationship_action_and_soft_deletes_frie
     .await;
 
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    let commands = bridge.relationship_commands.lock().await;
-    assert_eq!(commands.len(), 1);
-    let command = &commands[0];
-    assert_eq!(command.remote_node_id, "12D3KooRemovePeer");
-    assert_eq!(
-        serde_json::to_value(&command.action).unwrap().as_str(),
-        Some("remove")
-    );
-    assert_eq!(
-        command.agent_envelope.capability.as_deref(),
-        Some("social.friend.remove")
-    );
-    assert_eq!(
-        command.agent_envelope.target_agent_id.as_deref(),
-        Some(remote_identity.agent_did.as_str())
-    );
-    assert_eq!(
-        command
-            .agent_envelope
-            .message
-            .get("source_public_id")
-            .and_then(Value::as_str),
-        Some(local_public_id.as_str())
-    );
-    assert_eq!(
-        command
-            .agent_envelope
-            .message
-            .get("target_public_id")
-            .and_then(Value::as_str),
-        Some(remote_public_id.as_str())
-    );
-    drop(commands);
+    let retry = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "remove_agent_friend",
+                "arguments": {"counterpart_public_id": remote_public_id}
+            }
+        }),
+    )
+    .await;
+    assert_eq!(retry["result"]["isError"].as_bool(), Some(false));
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+    let views = bridge.relationship_views.lock().await;
+    assert_eq!(views[0].relationship_state, "none");
+    assert_eq!(views[0].last_action, "remove");
+    drop(views);
 
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
         .expect("list friendships after remove");

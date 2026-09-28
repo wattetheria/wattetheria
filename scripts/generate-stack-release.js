@@ -47,6 +47,23 @@ const COMPONENTS = [
     role: "local key-custody and signing layer",
     artifacts: [],
   },
+  // Start tracking these repositories from the v1.1.1 release boundary.
+  {
+    name: "watt-credential",
+    repo: "wattetheria/watt-credential",
+    path: "watt-credential",
+    role: "shared verifiable credential library",
+    baselineCommit: "7cdb9beaa3c440d7072dd98c2d5770e92446f4fd",
+    artifacts: [],
+  },
+  {
+    name: "watt-registry",
+    repo: "wattetheria/watt-registry",
+    path: "watt-registry",
+    role: "network agent registration authority",
+    baselineCommit: "971ae1c0f47caf2777036b55b1a8699e43c72612",
+    artifacts: [],
+  },
   {
     name: "wattswarm-servicenet",
     repo: "wattetheria/watt-servicenet",
@@ -183,28 +200,17 @@ function findPreviousManifest(release) {
   }
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "watt-stack-release-"));
-  const download = run(
-    "gh",
-    [
-      "release",
-      "download",
-      previousRelease.tagName,
-      "--repo",
-      STACK_RELEASE_REPO,
-      "--pattern",
-      "release-manifest*.json",
-      "--dir",
-      tempDir,
-    ],
-    { allowFailure: true },
-  );
-
-  if (!download.ok) {
-    return {
-      manifest: null,
-      source: `no release manifest asset found on ${previousRelease.tagName}`,
-    };
-  }
+  run("gh", [
+    "release",
+    "download",
+    previousRelease.tagName,
+    "--repo",
+    STACK_RELEASE_REPO,
+    "--pattern",
+    "release-manifest*.json",
+    "--dir",
+    tempDir,
+  ]);
 
   const manifestFiles = fs
     .readdirSync(tempDir)
@@ -212,10 +218,7 @@ function findPreviousManifest(release) {
     .sort();
 
   if (manifestFiles.length === 0) {
-    return {
-      manifest: null,
-      source: `no release manifest asset found on ${previousRelease.tagName}`,
-    };
+    throw new Error(`no release manifest asset found on ${previousRelease.tagName}`);
   }
 
   const manifestPath = path.join(tempDir, manifestFiles[0]);
@@ -421,7 +424,9 @@ function collectComponent(component, previousManifest, release) {
   const currentCommit = git(repoPath, ["rev-parse", "HEAD"]);
   const remoteUrl = git(repoPath, ["remote", "get-url", "origin"], { allowFailure: true });
   const previousComponent = previousComponentFor(previousManifest, component);
-  const previousCommit = previousComponent?.current_commit || previousComponent?.commit || null;
+  const previousCommit = previousComponent
+    ? previousComponent.current_commit || previousComponent.commit || null
+    : component.baselineCommit || null;
   const range = collectCommitRange(repoPath, previousCommit, currentCommit);
   if (range.boundary === "previous_commit_not_ancestor") {
     throw new Error(`${component.repo}: ${range.warning}`);

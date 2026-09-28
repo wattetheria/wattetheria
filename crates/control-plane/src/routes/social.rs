@@ -32,8 +32,8 @@ use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::relationships::RelationshipEdge;
 use wattetheria_kernel::swarm_bridge::{
-    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmPeerDmMessageView, SwarmPeerDmThreadView,
-    SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipAction,
+    SwarmAgentEnvelope, SwarmDirectMessageCommand, SwarmDiscoveredAgent, SwarmPeerDmMessageView,
+    SwarmPeerDmThreadView, SwarmPeerRelationshipView, SwarmPeerView, SwarmRelationshipAction,
     SwarmRelationshipActionCommand, SwarmSourceAgentCard,
 };
 use wattetheria_social::application::{
@@ -2095,6 +2095,27 @@ async fn send_signed_relationship_action_command(
         .await
 }
 
+async fn remove_local_relationship_action(
+    state: &ControlPlaneState,
+    local_public_id: &str,
+    counterpart_public_id: &str,
+    remote_node_id: &str,
+) -> anyhow::Result<Value> {
+    let request_id = friendship_service::list_friendships(&*state.social_store, local_public_id)?
+        .into_iter()
+        .find(|friendship| friendship.remote_public_id == counterpart_public_id)
+        .and_then(|friendship| friendship.established_from_request_id);
+    state
+        .swarm_bridge
+        .remove_peer_relationship_locally(
+            remote_node_id,
+            request_id.as_deref(),
+            local_public_id,
+            counterpart_public_id,
+        )
+        .await
+}
+
 async fn send_signed_direct_message_command(
     state: &ControlPlaneState,
     args: SignedDirectMessageArgs,
@@ -3373,14 +3394,10 @@ async fn resolve_remove_agent_friend_counterpart(
     let transport_bindings =
         transport_binding_service::list_transport_bindings(&*state.social_store)
             .map_err(|error| format!("query transport bindings: {error}"))?;
-    let active_friendships =
-        friendship_service::list_friendships(&*state.social_store, local_public_id)
-            .map_err(|error| format!("query friendships: {error}"))?
-            .into_iter()
-            .filter(|friendship| friendship.state == FriendshipState::Active)
-            .collect::<Vec<_>>();
+    let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)
+        .map_err(|error| format!("query friendships: {error}"))?;
 
-    let matches = active_friendships
+    let matches = friendships
         .iter()
         .filter(|friendship| {
             display_name.is_some_and(|value| {
@@ -3409,8 +3426,8 @@ async fn resolve_remove_agent_friend_counterpart(
         [friendship] => {
             target_from_active_friendship(friendship, &identities, &bindings, &transport_bindings)
         }
-        [] => Err("active friendship not found for remove_agent_friend".to_string()),
-        _ => Err("multiple active friends matched; provide counterpart_public_id".to_string()),
+        [] => Err("friendship not found for remove_agent_friend".to_string()),
+        _ => Err("multiple friends matched; provide counterpart_public_id".to_string()),
     }
 }
 
@@ -3443,6 +3460,37 @@ async fn resolve_agent_relationship_counterpart(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+
+    if body.action == SwarmRelationshipAction::Request
+        && let Some(counterpart_public_id) = counterpart_public_id
+    {
+        match state
+            .swarm_bridge
+            .resolve_agent_public_id(counterpart_public_id)
+            .await
+        {
+            Ok(Some(discovered)) => {
+                return validate_discovered_relationship_target(
+                    discovered,
+                    counterpart_public_id,
+                    target_agent_did,
+                    remote_node_id,
+                );
+            }
+            Ok(None) | Err(_) => {
+                if state
+                    .social_store
+                    .get_remote_identity(counterpart_public_id)
+                    .map_err(|error| format!("query remote identity: {error}"))?
+                    .is_some_and(|identity| !identity.active)
+                {
+                    return Err(format!(
+                        "public identity {counterpart_public_id} is not active and has no discovery record"
+                    ));
+                }
+            }
+        }
+    }
 
     match (
         target_agent_did,
@@ -3477,6 +3525,27 @@ async fn resolve_agent_relationship_counterpart(
                 .to_string(),
         ),
     }
+}
+
+fn validate_discovered_relationship_target(
+    discovered: SwarmDiscoveredAgent,
+    counterpart_public_id: &str,
+    target_agent_did: Option<&str>,
+    remote_node_id: Option<&str>,
+) -> Result<SocialCounterpartTarget, String> {
+    if discovered.public_id != counterpart_public_id
+        || target_agent_did.is_some_and(|value| value != discovered.target_agent_did)
+        || remote_node_id.is_some_and(|value| value != discovered.remote_node_id)
+    {
+        return Err(
+            "discovery result does not match the supplied agent identity or node".to_string(),
+        );
+    }
+    Ok(SocialCounterpartTarget {
+        counterpart_public_id: discovered.public_id,
+        remote_node: discovered.remote_node_id,
+        target_agent: discovered.target_agent_did,
+    })
 }
 
 async fn resolve_agent_relationship_counterpart_by_public_id(
@@ -3584,14 +3653,9 @@ async fn handle_agent_relationship_action(
         remote_node,
         target_agent,
     } = counterpart;
-    let request_counterpart_public_id = body
-        .counterpart_public_id
-        .unwrap_or_else(|| counterpart_public_id.clone());
-    let capability = capability_for_relationship_action(&body.action).to_string();
     let now = Utc::now().timestamp();
-    let base_message = body.message;
     if body.action == SwarmRelationshipAction::Request {
-        if let Some(response) = friend_request_message_error(base_message.as_ref()) {
+        if let Some(response) = friend_request_message_error(body.message.as_ref()) {
             return response;
         }
         match ensure_outbound_friend_request_allowed(
@@ -3615,7 +3679,7 @@ async fn handle_agent_relationship_action(
         &local_public_id,
         &counterpart_public_id,
         &body.action,
-        base_message,
+        body.message,
         now,
     );
     if let Some(response) =
@@ -3623,22 +3687,31 @@ async fn handle_agent_relationship_action(
     {
         return response;
     }
-    let response_json = match send_signed_relationship_action_command(
-        &state,
-        SignedRelationshipActionArgs {
-            local_agent_id,
-            local_public_id: local_public_id.clone(),
-            local_display_name,
-            target_agent_id: target_agent.clone(),
-            remote_node_id: remote_node.clone(),
-            action: body.action.clone(),
-            capability: capability.clone(),
-            message: message.clone(),
-            extensions: body.extensions,
-        },
-    )
-    .await
-    {
+    let response_json = match if body.action == SwarmRelationshipAction::Remove {
+        remove_local_relationship_action(
+            &state,
+            &local_public_id,
+            &counterpart_public_id,
+            &remote_node,
+        )
+        .await
+    } else {
+        send_signed_relationship_action_command(
+            &state,
+            SignedRelationshipActionArgs {
+                local_agent_id,
+                local_public_id: local_public_id.clone(),
+                local_display_name,
+                target_agent_id: target_agent.clone(),
+                remote_node_id: remote_node.clone(),
+                action: body.action.clone(),
+                capability: capability_for_relationship_action(&body.action).to_string(),
+                message: message.clone(),
+                extensions: body.extensions,
+            },
+        )
+        .await
+    } {
         Ok(response) => response,
         Err(error) => return internal_error(&error),
     };
@@ -3648,12 +3721,14 @@ async fn handle_agent_relationship_action(
         FinalizeRelationshipActionArgs {
             auth,
             local_public_id,
-            counterpart_public_id,
+            counterpart_public_id: counterpart_public_id.clone(),
             target_agent,
             remote_node_id: remote_node,
+            capability: capability_for_relationship_action(&body.action).to_string(),
             action: body.action,
-            capability,
-            request_counterpart_public_id,
+            request_counterpart_public_id: body
+                .counterpart_public_id
+                .unwrap_or_else(|| counterpart_public_id.clone()),
             message,
             response_json,
         },

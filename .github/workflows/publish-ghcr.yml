@@ -80,6 +80,24 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           fetch-depth: 0
 
+      - name: Checkout Watt Credential
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-credential
+          ref: main
+          path: watt-credential
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout Watt Registry
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-registry
+          ref: main
+          path: watt-registry
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
+
       - name: Checkout ServiceNet
         uses: actions/checkout@v4
         with:

@@ -1501,6 +1501,32 @@ impl SwarmBridge for MockSwarmBridge {
         Ok(self.relationship_views.lock().await.clone())
     }
 
+    async fn remove_peer_relationship_locally(
+        &self,
+        remote_node_id: &str,
+        _request_id: Option<&str>,
+        _local_public_id: &str,
+        _counterpart_public_id: &str,
+    ) -> anyhow::Result<Value> {
+        let mut views = self.relationship_views.lock().await;
+        for view in views
+            .iter_mut()
+            .filter(|view| view.remote_node_id == remote_node_id)
+        {
+            view.relationship_state = "none".to_owned();
+            view.last_action = "remove".to_owned();
+            view.initiated_by = "local".to_owned();
+            view.cleared_at = Some(1);
+        }
+        Ok(json!({
+            "ok": true,
+            "queued": false,
+            "local_only": true,
+            "remote_node_id": remote_node_id,
+            "action": "remove",
+        }))
+    }
+
     async fn send_peer_relationship_action(
         &self,
         command: SwarmRelationshipActionCommand,

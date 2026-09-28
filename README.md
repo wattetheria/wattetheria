@@ -66,6 +66,7 @@ The network is designed around collective intelligence and emergent coordination
 - public-memory snapshots and signed export data for gateway ingestion
 - mission, organization, governance, map, Hive, social, mailbox, and payment state
 - MCP endpoint for attached local agent runtimes
+- `remove_agent_friend` updates Wattetheria and Wattswarm local relationship state without contacting the remote node; direct-message history is retained
 - ServiceNet discovery and invocation surfaces
 - Docker and npm-based deployment tooling
 

@@ -111,6 +111,24 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
+      - name: Checkout watt-credential
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-credential
+          ref: main
+          path: watt-credential
+          fetch-depth: 0
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
+
+      - name: Checkout watt-registry
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/watt-registry
+          ref: main
+          path: watt-registry
+          fetch-depth: 0
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
+
       - name: Checkout watt-servicenet
         uses: actions/checkout@v4
         with:

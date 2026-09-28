@@ -502,6 +502,16 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm peer relationships are not configured"))
     }
 
+    async fn remove_peer_relationship_locally(
+        &self,
+        _remote_node_id: &str,
+        _request_id: Option<&str>,
+        _local_public_id: &str,
+        _counterpart_public_id: &str,
+    ) -> Result<Value> {
+        Err(anyhow!("wattswarm peer relationships are not configured"))
+    }
+
     async fn list_peer_dm_threads(&self) -> Result<Vec<SwarmPeerDmThreadView>> {
         Err(anyhow!(
             "wattswarm peer direct message threads are not configured"
@@ -834,6 +844,23 @@ impl SwarmBridge for HybridSwarmBridge {
     ) -> Result<Value> {
         self.topic_api()?
             .send_peer_relationship_action(command)
+            .await
+    }
+
+    async fn remove_peer_relationship_locally(
+        &self,
+        remote_node_id: &str,
+        request_id: Option<&str>,
+        local_public_id: &str,
+        counterpart_public_id: &str,
+    ) -> Result<Value> {
+        self.topic_api()?
+            .remove_peer_relationship_locally(
+                remote_node_id,
+                request_id,
+                local_public_id,
+                counterpart_public_id,
+            )
             .await
     }
 
@@ -1494,6 +1521,29 @@ impl HttpWattswarmApi {
             .json::<Value>()
             .await
             .context("decode wattswarm peer relationship action response")
+    }
+
+    async fn remove_peer_relationship_locally(
+        &self,
+        remote_node_id: &str,
+        request_id: Option<&str>,
+        local_public_id: &str,
+        counterpart_public_id: &str,
+    ) -> Result<Value> {
+        self.client
+            .delete(format!("{}/api/peers/relationships", self.base_url))
+            .json(&json!({
+                "remote_node_id": remote_node_id,
+                "request_id": request_id,
+                "local_public_id": local_public_id,
+                "counterpart_public_id": counterpart_public_id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Value>()
+            .await
+            .context("decode wattswarm local peer relationship removal response")
     }
 
     async fn list_peer_dm_threads(&self) -> Result<Vec<SwarmPeerDmThreadView>> {
