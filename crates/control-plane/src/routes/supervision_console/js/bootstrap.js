@@ -35,13 +35,23 @@
     });
     qs("nearby-search")?.addEventListener("input", (event) => {
       nearbySearchQuery = event.target.value;
+      nearbyPage = 1;
       renderNearbyPage();
     });
     document.querySelectorAll("[data-nearby-status]").forEach((button) => {
       button.addEventListener("click", () => {
         nearbyStatusFilter = button.dataset.nearbyStatus || "all";
+        nearbyPage = 1;
         renderNearbyPage();
       });
+    });
+    qs("nearby-prev")?.addEventListener("click", () => {
+      nearbyPage = Math.max(1, nearbyPage - 1);
+      renderNearbyPage();
+    });
+    qs("nearby-next")?.addEventListener("click", () => {
+      nearbyPage += 1;
+      renderNearbyPage();
     });
     document.querySelectorAll("[data-log-mode]").forEach((button) => {
       button.addEventListener("click", () => {

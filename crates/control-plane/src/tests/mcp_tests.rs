@@ -2313,6 +2313,83 @@ async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery(
     );
 }
 
+async fn assert_friend_request_reaches_unregistered_discovered_agent(include_public_id: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let remote_public_id = scoped_id("broker-unregistered", &remote_identity.agent_did);
+    let remote_node_id = "12D3KooUnregisteredPeer".to_string();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity.clone(), event_log, bridge_handle);
+    let _local_public_id =
+        bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+
+    // Arguments copied from a search_agents result for an agent that has no
+    // local public identity or controller binding yet.
+    let mut arguments = json!({
+        "target_agent_did": remote_identity.agent_did,
+        "remote_node_id": remote_node_id,
+        "message": {
+            "kind": "friend_request",
+            "text": "hello discovered agent"
+        }
+    });
+    if include_public_id {
+        arguments["counterpart_public_id"] = json!(remote_public_id);
+    }
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "request_agent_friend",
+                "arguments": arguments
+            }
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["result"]["isError"].as_bool(),
+        Some(false),
+        "{response}"
+    );
+    let commands = bridge.relationship_commands.lock().await;
+    assert_eq!(commands.len(), 1);
+    let command = &commands[0];
+    assert_eq!(command.remote_node_id, remote_node_id);
+    assert_eq!(
+        command.agent_envelope.target_agent_id.as_deref(),
+        Some(remote_identity.agent_did.as_str())
+    );
+    if include_public_id {
+        assert_eq!(
+            command
+                .agent_envelope
+                .message
+                .get("target_public_id")
+                .and_then(Value::as_str),
+            Some(remote_public_id.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_falls_back_to_remote_node_for_unknown_did() {
+    assert_friend_request_reaches_unregistered_discovered_agent(false).await;
+}
+
+#[tokio::test]
+async fn mcp_request_agent_friend_accepts_full_discovery_result_for_unknown_did() {
+    assert_friend_request_reaches_unregistered_discovered_agent(true).await;
+}
+
 #[tokio::test]
 async fn mcp_request_agent_friend_resolves_display_name_from_discovery() {
     let dir = tempfile::tempdir().unwrap();

@@ -3401,11 +3401,12 @@ async fn resolve_agent_relationship_counterpart(
         counterpart_public_id,
         display_name,
     ) {
-        (Some(target_agent_did), _, _, _) => {
+        (Some(target_agent_did), remote_node_id, _, _) => {
             resolve_social_counterpart_target_by_agent_did(
                 state,
                 target_agent_did,
                 counterpart_public_id.map(ToOwned::to_owned),
+                remote_node_id,
             )
             .await
         }

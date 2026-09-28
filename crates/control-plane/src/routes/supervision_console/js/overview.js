@@ -291,12 +291,27 @@
       });
 
       const filtered = nearbyFilteredRows(rows);
+      const pageCount = Math.max(1, Math.ceil(filtered.length / nearbyPageSize));
+      nearbyPage = Math.min(Math.max(1, nearbyPage), pageCount);
+      const pageStart = (nearbyPage - 1) * nearbyPageSize;
+      const pageRows = filtered.slice(pageStart, pageStart + nearbyPageSize);
+      const prevButton = qs("nearby-prev");
+      const nextButton = qs("nearby-next");
+      if (prevButton) prevButton.disabled = nearbyPage <= 1;
+      if (nextButton) nextButton.disabled = nearbyPage >= pageCount;
       const countLabel = qs("nearby-count");
       if (countLabel) {
         const narrowed = nearbySearchQuery.trim() || nearbyStatusFilter !== "all";
-        countLabel.textContent = narrowed
-          ? `${filtered.length} shown / ${rows.length} total`
-          : `${rows.length} total`;
+        const rangeStart = filtered.length === 0 ? 0 : pageStart + 1;
+        const rangeEnd = pageStart + pageRows.length;
+        // The export caps nodes at nearbyFetchLimit, so a full page means the
+        // network may hold more agents than were loaded.
+        const loadedCapped = rows.length >= nearbyFetchLimit;
+        const loadedText = loadedCapped ? `${rows.length}+` : `${rows.length}`;
+        const countText = narrowed
+          ? `${rangeStart}-${rangeEnd} / ${filtered.length} matched, ${loadedText} ${loadedCapped ? "loaded" : "total"}`
+          : `${rangeStart}-${rangeEnd} / ${loadedText}`;
+        countLabel.textContent = `${countText} | Page ${nearbyPage} / ${pageCount}`;
       }
 
       if (nearbyDetailId && !rows.some((row) => (row.node_id || "") === nearbyDetailId)) {
@@ -312,7 +327,7 @@
       const tableHtml = filtered.length
         ? `<table class="nearby-table">
             <thead><tr><th>Status</th><th>Agent</th><th>Kind</th><th>Last seen</th><th>Source</th></tr></thead>
-            <tbody>${nearbyTableRowsHtml(filtered)}</tbody>
+            <tbody>${nearbyTableRowsHtml(pageRows)}</tbody>
           </table>`
         : empty(emptyText);
       target.innerHTML = tableHtml + (detailRow ? nearbyDetailCardHtml(detailRow) : "");

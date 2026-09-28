@@ -1288,9 +1288,14 @@ impl HttpWattswarmApi {
             .unwrap_or_default();
         if records.is_empty() {
             records.extend(
-                self.fetch_bootnode_nearby_discovery_records(&network_id, limit)
-                    .await
-                    .unwrap_or_default(),
+                self.fetch_bootnode_nearby_discovery_records(
+                    &network_id,
+                    public_id,
+                    display_name,
+                    limit,
+                )
+                .await
+                .unwrap_or_default(),
             );
         }
         Ok(filter_discovered_agents(
@@ -1321,6 +1326,8 @@ impl HttpWattswarmApi {
                 .query(&RegistryNodesQuery {
                     network_id: network_id.to_owned(),
                     status: "active".to_owned(),
+                    public_id: public_id.map(ToOwned::to_owned),
+                    display_name: display_name.map(ToOwned::to_owned),
                     limit,
                 })
                 .send()
@@ -1360,6 +1367,8 @@ impl HttpWattswarmApi {
     async fn fetch_bootnode_nearby_discovery_records(
         &self,
         network_id: &str,
+        public_id: Option<&str>,
+        display_name: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
         let (latitude, longitude) = self.startup_geo().await.unwrap_or((0.0, 0.0));
@@ -1374,6 +1383,8 @@ impl HttpWattswarmApi {
                     .query(&RegistryNodesQuery {
                         network_id: network_id.to_owned(),
                         status: "active".to_owned(),
+                        public_id: public_id.map(ToOwned::to_owned),
+                        display_name: display_name.map(ToOwned::to_owned),
                         limit: limit.max(DEFAULT_AGENT_DISCOVERY_LIMIT),
                     })
                     .send()
@@ -2073,10 +2084,16 @@ struct NearbyDiscoveryResponse {
     records: Vec<Value>,
 }
 
+// Registries without Agent filters ignore public_id/display_name, so callers
+// keep filtering the returned records locally.
 #[derive(Debug, Serialize)]
 struct RegistryNodesQuery {
     network_id: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
     limit: usize,
 }
 
@@ -2388,6 +2405,124 @@ mod tests {
         assert_eq!(stats.reputation, 4);
         assert_eq!(stats.capacity, 11);
         assert_eq!(stats.power, 2);
+    }
+
+    fn registry_node_record(index: usize, public_id: &str, name: &str) -> Value {
+        json!({
+            "record": {
+                "body": {
+                    "node_id": format!("node-{index}"),
+                    "source_agent_card": {
+                        "agent_id": format!("did:key:agent-{index}"),
+                        "card": {"name": name, "metadata": {"public_id": public_id}}
+                    }
+                }
+            }
+        })
+    }
+
+    /// Serves a wattswarm API plus a registry whose unfiltered listing stops
+    /// before the target Agent, like a network with more than 50 nodes.
+    type RegistryQueryLog = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+    async fn spawn_registry_discovery_fixture() -> (String, RegistryQueryLog) {
+        use axum::extract::{Query, State};
+        use axum::routing::get;
+        use axum::{Json, Router};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let registry_queries = Arc::new(Mutex::new(Vec::new()));
+        let bootnodes = vec![format!("{base_url}/v1/nodes/discovery")];
+        let app = Router::new()
+            .route(
+                "/api/wattetheria/network/snapshot",
+                get(|| async { Json(json!({"network_id": "mainnet:test"})) }),
+            )
+            .route(
+                "/api/network/discovery/bootnodes",
+                get(move || {
+                    let urls = bootnodes.clone();
+                    async move { Json(json!({ "urls": urls })) }
+                }),
+            )
+            .route(
+                "/v1/nodes",
+                get(
+                    |State(queries): State<RegistryQueryLog>,
+                     Query(query): Query<HashMap<String, String>>| async move {
+                        let mut keys = query.keys().cloned().collect::<Vec<_>>();
+                        keys.sort();
+                        queries.lock().unwrap().push(keys.join(","));
+                        let mut records = (0..60)
+                            .map(|index| {
+                                registry_node_record(index, &format!("agent-{index}"), "Filler")
+                            })
+                            .collect::<Vec<_>>();
+                        records.push(registry_node_record(99, "agent-target", "Target Broker"));
+                        let records = records
+                            .into_iter()
+                            .filter(|record| {
+                                let card = &record["record"]["body"]["source_agent_card"]["card"];
+                                query.get("public_id").is_none_or(|public_id| {
+                                    card["metadata"]["public_id"] == public_id.as_str()
+                                }) && query.get("display_name").is_none_or(|name| {
+                                    card["name"].as_str().unwrap().eq_ignore_ascii_case(name)
+                                })
+                            })
+                            .take(50)
+                            .collect::<Vec<_>>();
+                        Json(json!({ "ok": true, "records": records }))
+                    },
+                ),
+            )
+            .with_state(registry_queries.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base_url, registry_queries)
+    }
+
+    #[tokio::test]
+    async fn registry_public_id_lookup_finds_agents_beyond_the_first_page() {
+        let (base_url, registry_queries) = spawn_registry_discovery_fixture().await;
+        let api = HttpWattswarmApi::new(&base_url);
+
+        let agent = api
+            .resolve_agent_public_id("@agent-target")
+            .await
+            .unwrap()
+            .expect("target agent");
+
+        assert_eq!(agent.public_id, "agent-target");
+        assert_eq!(agent.remote_node_id, "node-99");
+        assert_eq!(
+            registry_queries.lock().unwrap().first().map(String::as_str),
+            Some("limit,network_id,public_id,status")
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_display_name_search_finds_agents_beyond_the_first_page() {
+        let (base_url, registry_queries) = spawn_registry_discovery_fixture().await;
+        let api = HttpWattswarmApi::new(&base_url);
+
+        let agents = api
+            .search_agent_display_name("Target Broker")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            agents
+                .iter()
+                .map(|agent| agent.public_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["agent-target"]
+        );
+        assert_eq!(
+            registry_queries.lock().unwrap().first().map(String::as_str),
+            Some("display_name,limit,network_id,status")
+        );
     }
 
     #[test]

@@ -454,6 +454,7 @@ pub(crate) async fn resolve_social_counterpart_target_by_agent_did(
     state: &ControlPlaneState,
     target_agent_did: &str,
     counterpart_public_id_hint: Option<String>,
+    remote_node_fallback: Option<&str>,
 ) -> Result<SocialCounterpartTarget, String> {
     let target_agent_did = target_agent_did.trim();
     if target_agent_did.is_empty() {
@@ -465,10 +466,24 @@ pub(crate) async fn resolve_social_counterpart_target_by_agent_did(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let (identities, bindings) = load_social_identity_maps(state).await;
+    // A freshly discovered agent is not a local public identity yet; its
+    // discovery record still names the node that hosts it.
+    let discovered_target = |counterpart_public_id: Option<&str>| {
+        remote_node_fallback.map(|remote_node| SocialCounterpartTarget {
+            counterpart_public_id: counterpart_public_id
+                .map(ToOwned::to_owned)
+                .or_else(|| counterpart_public_id_for_remote_node(&bindings, remote_node))
+                .unwrap_or_else(|| remote_node.to_owned()),
+            remote_node: remote_node.to_owned(),
+            target_agent: target_agent_did.to_owned(),
+        })
+    };
     let identity = if let Some(counterpart_public_id) = counterpart_public_id_hint {
-        let identity = identities.get(counterpart_public_id).ok_or_else(|| {
-            format!("public identity missing for counterpart_public_id {counterpart_public_id}")
-        })?;
+        let Some(identity) = identities.get(counterpart_public_id) else {
+            return discovered_target(Some(counterpart_public_id)).ok_or_else(|| {
+                format!("public identity missing for counterpart_public_id {counterpart_public_id}")
+            });
+        };
         if !identity.active {
             return Err(format!(
                 "public identity {counterpart_public_id} is not active"
@@ -479,15 +494,16 @@ pub(crate) async fn resolve_social_counterpart_target_by_agent_did(
         }
         identity
     } else {
-        identities
-            .values()
-            .find(|identity| {
-                identity.active && identity.agent_did.as_deref() == Some(target_agent_did)
-            })
-            .ok_or_else(|| {
+        let known = identities.values().find(|identity| {
+            identity.active && identity.agent_did.as_deref() == Some(target_agent_did)
+        });
+        let Some(identity) = known else {
+            return discovered_target(None).ok_or_else(|| {
                 "target_agent_did is not a known public identity; provide remote_node_id or counterpart_public_id"
                     .to_string()
-            })?
+            });
+        };
+        identity
     };
 
     let binding = bindings

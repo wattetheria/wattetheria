@@ -10,7 +10,7 @@
       try {
         const query = new URLSearchParams({
           public_id: publicId,
-          node_limit: String(limit),
+          node_limit: String(Math.max(limit, nearbyFetchLimit)),
           task_limit: String(limit),
           rpc_log_limit: String(limit),
           leaderboard_limit: "20"
@@ -77,7 +77,8 @@
       qs("node-detail").textContent = `Generated ${formatTime(payload.generated_at)} | public key ${compactId(payload.public_key)}`;
       qs("side-identity").textContent = compactId(operator.display_name || operator.id || "Not loaded", 20);
       qs("side-network").textContent = `${valueOrDash(network.status || operator.status || "unknown")}\n${networkId}`;
-      qs("side-nodes").textContent = String(safeArray(payload.nodes).length);
+      const loadedNodes = safeArray(payload.nodes).length;
+      qs("side-nodes").textContent = loadedNodes >= nearbyFetchLimit ? `${loadedNodes}+` : String(loadedNodes);
 
       renderNearby(payload);
       renderKpis(payload);

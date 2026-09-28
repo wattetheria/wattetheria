@@ -1500,6 +1500,133 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+async fn agent_events_send_null_friend_request_action_to_human_review() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let app_mock = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async move {
+            Json(json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"action\":null,\"reason\":\"needs human decision\",\"payload\":{}}"
+                    }
+                }]
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app_mock).await.expect("serve mock");
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let remote_identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, router, token, _policy_engine, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    let local_public_id = bootstrap_broker_identity(router, &token, &identity.agent_did).await;
+    let remote_public_id = scoped_id("broker-remote", &remote_identity.agent_did);
+    friend_request_service::upsert_friend_request(
+        &*state.social_store,
+        &wattetheria_social::domain::friend_requests::FriendRequest {
+            request_id: "req-human-review".to_owned(),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: remote_public_id.clone(),
+            remote_node_id: Some("remote-node".to_owned()),
+            direction: wattetheria_social::domain::friend_requests::FriendRequestDirection::Inbound,
+            state: wattetheria_social::domain::friend_requests::FriendRequestState::Pending,
+            decision_reason: None,
+            correlation_id: None,
+            created_at: 1,
+            updated_at: 1,
+            expires_at: None,
+        },
+    )
+    .expect("save inbound friend request");
+    let agent_envelope = signed_agent_event_envelope(
+        &remote_identity,
+        "remote-node",
+        Some(&identity.agent_did),
+        "social.relationship.request",
+        json!({
+            "source_public_id": remote_public_id,
+            "request_id": "req-human-review"
+        }),
+    );
+    let base_url = format!("http://{addr}/v1");
+    let state = ControlPlaneState {
+        brain_engine: Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+            &BrainProviderConfig::OpenaiCompatible {
+                base_url: base_url.clone(),
+                model: "openclaw".to_owned(),
+                api_key_env: None,
+                runtime_adapter: None,
+            },
+        ))),
+        ..state
+    };
+    let response = request_json(
+        app(state.clone()),
+        Request::post("/agent-events")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "event": {
+                        "event_id": "evt-friend-human-review",
+                        "event_type": "friend_request",
+                        "source_kind": "peer_relationship",
+                        "source_node_id": "remote-node",
+                        "target_agent_id": identity.agent_did,
+                        "target_executor": "core-agent",
+                        "agent_envelope": agent_envelope,
+                        "payload": {},
+                        "requires_commit": true,
+                        "allowed_actions": ["accept", "reject", "block"],
+                        "created_at": 1
+                    }
+                })
+                .to_string(),
+            ))
+            .expect("request"),
+    )
+    .await;
+
+    assert_eq!(response["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response["decision"]["action"].as_str(),
+        Some("human_review")
+    );
+    assert_eq!(response["decision"]["route"].as_str(), Some("noop"));
+    assert!(bridge.relationship_commands.lock().await.is_empty());
+    let requests =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("list friend requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].state,
+        wattetheria_social::domain::friend_requests::FriendRequestState::Pending
+    );
+    let pending = authed_get_json(
+        app(state.clone()),
+        &token,
+        &format!("/v1/client/friend-requests?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(
+        pending["items"][0]["request_id"].as_str(),
+        Some("req-human-review")
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn agent_events_route_translates_topic_dm_reply_to_wattetheria_commit() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

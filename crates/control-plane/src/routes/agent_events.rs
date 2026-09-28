@@ -154,6 +154,7 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
 
 fn routes_to_noop(event_type: &str, action: &str) -> bool {
     match event_type {
+        "friend_request" => action == "human_review",
         "topic_message_requires_reply"
         | "task_claim_decision_received"
         | "task_completion_decision_received"
@@ -405,6 +406,12 @@ fn push_allowed_action(event: &mut AgentEventEnvelope, action: &str) {
 
 fn set_allowed_actions(event: &mut AgentEventEnvelope, actions: &[&str]) {
     event.allowed_actions = actions.iter().map(|action| (*action).to_owned()).collect();
+}
+
+fn add_friend_request_review_action(event: &mut AgentEventEnvelope) {
+    if event.event_type == "friend_request" {
+        push_allowed_action(event, "human_review");
+    }
 }
 
 fn add_mission_allowed_actions(state: &ControlPlaneState, event: &mut AgentEventEnvelope) {
@@ -1964,6 +1971,31 @@ async fn response_from_resolution(
     selected_action_response(state, event, &action, route, &resolution, acked_at).await
 }
 
+fn friend_request_resolution_or_review(
+    event: &AgentEventEnvelope,
+    resolution: Option<AgentEventResolution>,
+) -> Option<AgentEventResolution> {
+    if event.event_type != "friend_request" {
+        return resolution;
+    }
+    let mut resolution = resolution.unwrap_or(AgentEventResolution {
+        action: None,
+        reason: None,
+        payload: json!({}),
+    });
+    if resolution
+        .action
+        .as_deref()
+        .is_none_or(|action| action.trim().is_empty())
+    {
+        resolution.action = Some("human_review".to_owned());
+        if resolution.reason.is_none() {
+            resolution.reason = Some("automatic friend request decision unavailable".to_owned());
+        }
+    }
+    Some(resolution)
+}
+
 async fn process_agent_event_decision(
     state: &ControlPlaneState,
     mut event: AgentEventEnvelope,
@@ -1972,6 +2004,7 @@ async fn process_agent_event_decision(
 ) -> Response {
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(state, &mut event);
+    add_friend_request_review_action(&mut event);
     let network_id = resolve_agent_event_network_id(state, &event).await;
     let runtime_session_mode = *state.runtime_session_mode.read().await;
     let runtime_session_scope_hint = runtime_session_scope_hint_from_event(&event);
@@ -2029,14 +2062,8 @@ async fn process_agent_event_decision(
         }
     };
     record_agent_brain_response_diagnostic(state, &event, &decision.diagnostics);
-    response_from_resolution(
-        state,
-        &event,
-        verified_context,
-        decision.resolution,
-        acked_at,
-    )
-    .await
+    let resolution = friend_request_resolution_or_review(&event, decision.resolution);
+    response_from_resolution(state, &event, verified_context, resolution, acked_at).await
 }
 
 pub(crate) async fn replay_deferred_dm_agent_events_for_friendship(
@@ -2150,6 +2177,36 @@ mod tests {
             extensions: None,
             signature: Some("signature".to_owned()),
         }
+    }
+
+    #[test]
+    fn friend_request_without_action_routes_to_human_review() {
+        let mut event = test_event("friend_request", json!({}));
+        event.allowed_actions = vec!["accept".to_owned(), "reject".to_owned(), "block".to_owned()];
+        add_friend_request_review_action(&mut event);
+
+        assert!(
+            event
+                .allowed_actions
+                .iter()
+                .any(|action| action == "human_review")
+        );
+        let resolution = friend_request_resolution_or_review(&event, None).unwrap();
+        assert_eq!(resolution.action.as_deref(), Some("human_review"));
+        assert_eq!(map_route("friend_request", "human_review"), Some("noop"));
+        assert_eq!(
+            map_route("friend_request", "accept"),
+            Some("wattetheria_commit")
+        );
+    }
+
+    #[test]
+    fn other_events_keep_empty_decisions() {
+        let mut event = test_event("payment_request", json!({}));
+        add_friend_request_review_action(&mut event);
+
+        assert!(event.allowed_actions.is_empty());
+        assert!(friend_request_resolution_or_review(&event, None).is_none());
     }
 
     #[test]

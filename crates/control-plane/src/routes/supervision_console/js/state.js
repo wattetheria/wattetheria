@@ -27,6 +27,9 @@
     let nearbySearchQuery = "";
     let nearbyDetailId = "";
     let nearbyAllRows = [];
+    let nearbyPage = 1;
+    const nearbyPageSize = 20;
+    const nearbyFetchLimit = 200;
     const missionPageByTab = { published: 1, claim_submitted: 1, claimed: 1 };
     const missionPageSize = 10;
     let servicenetTemplate = null;

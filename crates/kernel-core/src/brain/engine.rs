@@ -563,7 +563,6 @@ fn build_agent_event_prompt(event: &Value) -> Result<String> {
         concat!(
             "Return strict JSON object with keys action,reason,payload. ",
             "Choose action from this allowed_actions list only: {}. ",
-            "If no safe action should be taken, return {{\"action\": null, \"reason\": \"...\", \"payload\": {{}}}}. ",
             "Common rules: ",
             "1. payload must be a JSON object. ",
             "2. Do not invent fields that are not needed by the selected action. ",
@@ -610,7 +609,22 @@ fn agent_event_scoped_rules(
     }
     if rules.is_empty() {
         rules.push(
-            "No event-specific action schema is available; use only allowed_actions and return action null when required fields are missing.".to_owned(),
+            "No event-specific action schema is available; use only allowed_actions.".to_owned(),
+        );
+    }
+    if event_type == "friend_request"
+        && allowed_actions
+            .iter()
+            .any(|action| action == "human_review")
+    {
+        rules.push(
+            "If accepting, rejecting, or blocking is not safe, choose human_review; never return action null for a friend request."
+                .to_owned(),
+        );
+    } else {
+        rules.push(
+            "If no safe action should be taken, return {\"action\": null, \"reason\": \"...\", \"payload\": {}}."
+                .to_owned(),
         );
     }
     rules
@@ -628,6 +642,10 @@ fn agent_event_action_rule(event_type: &str, action: &str, event: &Value) -> Opt
         ),
         ("friend_request", "block") => Some(
             "block: reject and block the counterpart; payload may include message or extensions."
+                .to_owned(),
+        ),
+        ("friend_request", "human_review") => Some(
+            "human_review: leave the inbound friend request pending for a human decision; do not accept, reject, or block it."
                 .to_owned(),
         ),
         ("topic_message_requires_reply", "reply") => Some(
@@ -1181,6 +1199,20 @@ mod tests {
         assert!(!prompt.contains("task_result_received"));
         assert!(!prompt.contains("settle_mission"));
         assert!(!prompt.contains("mission_claim_approved"));
+    }
+
+    #[test]
+    fn friend_request_prompt_uses_human_review_instead_of_null_action() {
+        let prompt = build_agent_event_prompt(&json!({
+            "event_type": "friend_request",
+            "allowed_actions": ["accept", "reject", "block", "human_review"],
+            "payload": {}
+        }))
+        .unwrap();
+
+        assert!(prompt.contains("choose human_review"));
+        assert!(prompt.contains("leave the inbound friend request pending"));
+        assert!(!prompt.contains("{\"action\": null"));
     }
 
     #[test]
