@@ -35,4 +35,11 @@ impl DirectThread {
             _ => false,
         }
     }
+
+    /// A thread closed by removing the friendship reopens once the friendship
+    /// is re-established. Blocked threads never reopen this way.
+    #[must_use]
+    pub fn can_reopen_to(&self, next: ThreadState) -> bool {
+        self.state == ThreadState::Closed && next == ThreadState::Ready
+    }
 }

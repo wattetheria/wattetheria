@@ -37,4 +37,19 @@ impl Friendship {
             (FriendshipState::Removed | FriendshipState::Blocked, _) => false,
         }
     }
+
+    /// A removed friendship means "no relationship": like re-adding a deleted
+    /// contact, only a different, newly accepted request may make it active
+    /// again. Stale data from the request that formed it can never revive it.
+    #[must_use]
+    pub fn is_reestablished_by(&self, next: &Friendship) -> bool {
+        self.state == FriendshipState::Removed
+            && next.state == FriendshipState::Active
+            && next
+                .established_from_request_id
+                .as_deref()
+                .is_some_and(|request_id| {
+                    self.established_from_request_id.as_deref() != Some(request_id)
+                })
+    }
 }

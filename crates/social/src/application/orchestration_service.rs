@@ -296,11 +296,22 @@ where
                     &view.counterpart.counterpart_public_id,
                 )
             });
-        let direction = if view.initiated_by == "remote" {
-            FriendRequestDirection::Inbound
-        } else {
-            FriendRequestDirection::Outbound
-        };
+        // A request's direction is fixed when it is first recorded; the view's
+        // `initiated_by` tracks the latest actor and flips to "local" once we
+        // accept an inbound request.
+        let direction = existing_requests
+            .iter()
+            .find(|request| request.request_id == request_id)
+            .map_or_else(
+                || {
+                    if view.initiated_by == "remote" {
+                        FriendRequestDirection::Inbound
+                    } else {
+                        FriendRequestDirection::Outbound
+                    }
+                },
+                |request| request.direction,
+            );
         let requested_at = view.requested_at.unwrap_or(view.updated_at);
         let updated_at = view
             .responded_at
@@ -386,6 +397,12 @@ where
                         updated_at,
                     },
                 ))?;
+                reopen_thread_of_active_friendship(
+                    repository,
+                    local_public_id,
+                    &view.counterpart.counterpart_public_id,
+                    updated_at,
+                )?;
                 mark_counterpart_identity_state(
                     repository,
                     &view.counterpart.counterpart_public_id,
@@ -913,7 +930,7 @@ where
                     updated_at: input.occurred_at,
                 },
             )?;
-            thread_service::upsert_thread(
+            thread_service::upsert_thread_for_established_friendship(
                 repository,
                 &DirectThread {
                     thread_id: thread_id.clone(),
@@ -1229,6 +1246,37 @@ fn normalize_thread_lifetime(
     }
     updated_at = updated_at.max(created_at);
     (created_at, updated_at)
+}
+
+/// Reopens the thread closed by an earlier removal once the friendship is
+/// active again (e.g. re-established by a new accepted request).
+fn reopen_thread_of_active_friendship<R>(
+    repository: &R,
+    local_public_id: &str,
+    remote_public_id: &str,
+    updated_at: i64,
+) -> SocialResult<()>
+where
+    R: FriendshipRepository + ThreadRepository,
+{
+    let friendship_active = repository
+        .find_friendship(local_public_id, remote_public_id)?
+        .is_some_and(|friendship| friendship.is_active());
+    let Some(thread) = thread_service::find_thread(repository, local_public_id, remote_public_id)?
+    else {
+        return Ok(());
+    };
+    if !friendship_active || !thread.can_reopen_to(ThreadState::Ready) {
+        return Ok(());
+    }
+    thread_service::upsert_thread_for_established_friendship(
+        repository,
+        &DirectThread {
+            state: ThreadState::Ready,
+            updated_at: thread.updated_at.max(updated_at),
+            ..thread
+        },
+    )
 }
 
 fn retire_alias_friendships<R>(
@@ -1878,6 +1926,124 @@ mod tests {
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].state, ThreadState::Ready);
         assert_eq!(threads[0].updated_at, 110);
+    }
+
+    fn accepted_view(
+        counterpart: CounterpartSnapshot,
+        request_id: Option<&str>,
+        initiated_by: &str,
+        at: i64,
+    ) -> RelationshipSyncView {
+        RelationshipSyncView {
+            counterpart,
+            relationship_state: "accepted".to_string(),
+            last_action: Some("accept".to_string()),
+            initiated_by: initiated_by.to_string(),
+            request_id: request_id.map(ToOwned::to_owned),
+            correlation_id: None,
+            requested_at: Some(at),
+            responded_at: Some(at),
+            updated_at: at,
+        }
+    }
+
+    fn accept_action(request_id: &str, at: i64) -> PersistRelationshipActionInput {
+        PersistRelationshipActionInput {
+            local_public_id: "did:key:alice".to_string(),
+            counterpart: counterpart(at),
+            action: RelationshipAction::Accept,
+            request_id: Some(request_id.to_string()),
+            correlation_id: None,
+            occurred_at: at,
+        }
+    }
+
+    fn bob_friendship_state(store: &SocialStore) -> Option<FriendshipState> {
+        friendship_service::list_friendships(store, "did:key:alice")
+            .expect("friendships")
+            .into_iter()
+            .find(|friendship| friendship.remote_public_id == "did:key:bob")
+            .map(|friendship| friendship.state)
+    }
+
+    #[test]
+    fn removed_friendship_is_reestablished_only_by_a_new_accepted_request() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        persist_relationship_action(&store, &accept_action("req-1", 10)).expect("accept");
+        persist_relationship_action(
+            &store,
+            &PersistRelationshipActionInput {
+                action: RelationshipAction::Remove,
+                ..accept_action("req-1", 20)
+            },
+        )
+        .expect("remove");
+
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(counterpart(30), Some("req-1"), "remote", 30)],
+        )
+        .expect("stale accept is ignored");
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Removed));
+
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(counterpart(40), Some("req-2"), "remote", 40)],
+        )
+        .expect("new request re-establishes");
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Active));
+    }
+
+    #[test]
+    fn explicit_accept_of_new_request_reestablishes_removed_friendship() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        persist_relationship_action(&store, &accept_action("req-1", 10)).expect("accept");
+        persist_relationship_action(
+            &store,
+            &PersistRelationshipActionInput {
+                action: RelationshipAction::Remove,
+                ..accept_action("req-1", 20)
+            },
+        )
+        .expect("remove");
+
+        let replay_error = persist_relationship_action(&store, &accept_action("req-1", 30))
+            .expect_err("the removed request cannot revive the friendship");
+        assert!(matches!(replay_error, SocialError::Conflict(_)));
+
+        persist_relationship_action(&store, &accept_action("req-2", 40))
+            .expect("accept new request");
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Active));
+    }
+
+    #[test]
+    fn reconcile_accept_keeps_inbound_request_direction() {
+        let store = SocialStore::open_in_memory().expect("social store");
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                relationship_state: "requested".to_string(),
+                last_action: Some("request".to_string()),
+                ..accepted_view(counterpart(10), Some("req-1"), "remote", 10)
+            }],
+        )
+        .expect("inbound request");
+        // After we accept, the swarm view reports the latest actor: us.
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(counterpart(20), Some("req-1"), "local", 20)],
+        )
+        .expect("accepted");
+
+        let requests = friend_request_service::list_friend_requests(&store, "did:key:alice")
+            .expect("requests");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].state, FriendRequestState::Accepted);
+        assert_eq!(requests[0].direction, FriendRequestDirection::Inbound);
     }
 
     #[test]

@@ -4289,3 +4289,216 @@ async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
         Some("social.dm.send")
     );
 }
+
+fn inbound_friend_request_relationship_view(
+    identity: &Identity,
+    remote_identity: &Identity,
+    remote_node_id: &str,
+    local_public_id: &str,
+    remote_public_id: &str,
+) -> SwarmPeerRelationshipView {
+    SwarmPeerRelationshipView {
+        remote_node_id: remote_node_id.to_string(),
+        relationship_state: "requested".to_string(),
+        last_action: "request".to_string(),
+        initiated_by: "remote".to_string(),
+        agent_envelope: Some(SwarmAgentEnvelope {
+            protocol: "google_a2a".to_string(),
+            transport_profile: None,
+            source_agent_id: Some(remote_identity.agent_did.clone()),
+            target_agent_id: Some(identity.agent_did.clone()),
+            source_node_id: Some(remote_node_id.to_string()),
+            target_node_id: Some("local-node".to_string()),
+            capability: Some("social.friend.request".to_string()),
+            source_agent_card: None,
+            message: json!({
+                "request_id": "request-inbound",
+                "source_public_id": remote_public_id,
+                "target_public_id": local_public_id,
+            }),
+            extensions: None,
+            signature: Some("sig-inbound".to_string()),
+        }),
+        requested_at: Some(1),
+        responded_at: None,
+        blocked_at: None,
+        cleared_at: None,
+        updated_at: 1,
+    }
+}
+
+#[tokio::test]
+async fn accepted_inbound_request_stays_friends_when_swarm_view_loses_envelope() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_identity = Identity::new_random();
+    let remote_public_id = scoped_id("broker-remote", &remote_identity.agent_did);
+    let remote_node_id = "remote-node-sandbox";
+
+    *bridge.relationship_views.lock().await = vec![inbound_friend_request_relationship_view(
+        &identity,
+        &remote_identity,
+        remote_node_id,
+        &local_public_id,
+        &remote_public_id,
+    )];
+    let requests = authed_get_json(
+        app.clone(),
+        &token,
+        &format!("/v1/client/friend-requests?public_id={local_public_id}"),
+    )
+    .await;
+    assert_eq!(requests["count"].as_u64(), Some(1));
+
+    let accepted = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/social/friend-requests/request-inbound/accept",
+        json!({"public_id": local_public_id}),
+    )
+    .await;
+    assert_ne!(accepted["ok"].as_bool(), Some(false), "{accepted}");
+
+    // After a local accept wattswarm keeps one accepted view for the node,
+    // with no agent envelope left to name the counterpart.
+    *bridge.relationship_views.lock().await = vec![SwarmPeerRelationshipView {
+        remote_node_id: remote_node_id.to_string(),
+        relationship_state: "accepted".to_string(),
+        last_action: "accept".to_string(),
+        initiated_by: "local".to_string(),
+        agent_envelope: None,
+        requested_at: Some(1),
+        responded_at: Some(2),
+        blocked_at: None,
+        cleared_at: None,
+        updated_at: 2,
+    }];
+    let _ = authed_get_json(
+        app.clone(),
+        &token,
+        &format!("/v1/client/friend-requests?public_id={local_public_id}"),
+    )
+    .await;
+
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("friendships");
+    let friendship = friendships
+        .iter()
+        .find(|friendship| friendship.remote_public_id == remote_public_id)
+        .expect("public id friendship");
+    assert_eq!(
+        friendship.state,
+        wattetheria_social::domain::friendships::FriendshipState::Active
+    );
+    assert!(
+        friendships
+            .iter()
+            .all(|friendship| friendship.remote_public_id != remote_node_id),
+        "no node-id alias friendship: {friendships:?}"
+    );
+    let request =
+        friend_request_service::list_friend_requests(&*state.social_store, &local_public_id)
+            .expect("requests")
+            .into_iter()
+            .find(|request| request.request_id == "request-inbound")
+            .expect("inbound request");
+    assert_eq!(
+        request.direction,
+        wattetheria_social::domain::friend_requests::FriendRequestDirection::Inbound
+    );
+
+    let dm_response = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/social/agent-dm/messages",
+        json!({
+            "public_id": local_public_id,
+            "counterpart_public_id": remote_public_id,
+            "content": {"type": "text", "text": "hello after accept"},
+        }),
+    )
+    .await;
+    assert_eq!(dm_response["ok"].as_bool(), Some(true), "{dm_response}");
+    assert_eq!(bridge.dm_commands.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn envelope_less_view_for_multi_agent_node_does_not_retire_friendship() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
+    let (_dir, app, token, _, state) =
+        build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge_handle);
+    let local_public_id = bootstrap_broker_identity(app.clone(), &token, &identity.agent_did).await;
+    let remote_node_id = "remote-node-multi-agent";
+    for public_id in ["agent-friend", "agent-neighbour"] {
+        wattetheria_social::application::transport_binding_service::upsert_transport_binding(
+            &*state.social_store,
+            &wattetheria_social::domain::transport_bindings::RemoteTransportBinding {
+                public_id: public_id.to_string(),
+                agent_did: None,
+                transport_kind:
+                    wattetheria_social::domain::transport_bindings::TransportKind::Wattswarm,
+                transport_node_id: remote_node_id.to_string(),
+                binding_source: "test".to_string(),
+                binding_confidence: 50,
+                binding_proof_json: None,
+                binding_verified: false,
+                binding_verified_at: None,
+                updated_at: 1,
+            },
+        )
+        .expect("seed transport binding");
+    }
+    friendship_service::upsert_friendship(
+        &*state.social_store,
+        &wattetheria_social::domain::friendships::Friendship {
+            friendship_id: format!("friendship:{local_public_id}:agent-friend"),
+            local_public_id: local_public_id.clone(),
+            remote_public_id: "agent-friend".to_string(),
+            display_name: None,
+            state: wattetheria_social::domain::friendships::FriendshipState::Active,
+            established_from_request_id: Some("request-friend".to_string()),
+            thread_id: None,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )
+    .expect("seed friendship");
+    *bridge.relationship_views.lock().await = vec![SwarmPeerRelationshipView {
+        remote_node_id: remote_node_id.to_string(),
+        relationship_state: "accepted".to_string(),
+        last_action: "accept".to_string(),
+        initiated_by: "local".to_string(),
+        agent_envelope: None,
+        requested_at: Some(1),
+        responded_at: Some(2),
+        blocked_at: None,
+        cleared_at: None,
+        updated_at: 2,
+    }];
+
+    let _ = authed_get_json(
+        app,
+        &token,
+        &format!("/v1/client/friend-requests?public_id={local_public_id}"),
+    )
+    .await;
+
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("friendships");
+    assert_eq!(friendships.len(), 1, "{friendships:?}");
+    assert_eq!(friendships[0].remote_public_id, "agent-friend");
+    assert_eq!(
+        friendships[0].state,
+        wattetheria_social::domain::friendships::FriendshipState::Active
+    );
+}

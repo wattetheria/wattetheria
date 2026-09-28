@@ -25,6 +25,7 @@ where
     if let Some(existing) =
         repository.find_friendship(&friendship.local_public_id, &friendship.remote_public_id)?
         && !existing.can_transition_to(friendship.state)
+        && !existing.is_reestablished_by(friendship)
     {
         return Err(SocialError::Conflict(format!(
             "invalid friendship transition: {:?} -> {:?}",

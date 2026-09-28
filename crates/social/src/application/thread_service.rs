@@ -6,6 +6,29 @@ pub fn upsert_thread<R>(repository: &R, thread: &DirectThread) -> SocialResult<(
 where
     R: ThreadRepository,
 {
+    upsert_thread_checked(repository, thread, false)
+}
+
+/// Upserts the thread of a friendship that is active after an accept, reopening
+/// the thread that was closed when an earlier friendship was removed.
+pub fn upsert_thread_for_established_friendship<R>(
+    repository: &R,
+    thread: &DirectThread,
+) -> SocialResult<()>
+where
+    R: ThreadRepository,
+{
+    upsert_thread_checked(repository, thread, true)
+}
+
+fn upsert_thread_checked<R>(
+    repository: &R,
+    thread: &DirectThread,
+    reopen_closed: bool,
+) -> SocialResult<()>
+where
+    R: ThreadRepository,
+{
     if thread.thread_id.trim().is_empty() {
         return Err(SocialError::InvalidInput(
             "thread_id is required".to_owned(),
@@ -36,6 +59,7 @@ where
     if let Some(existing) =
         repository.find_thread(&thread.local_public_id, &thread.remote_public_id)?
         && !existing.can_transition_to(thread.state)
+        && !(reopen_closed && existing.can_reopen_to(thread.state))
     {
         return Err(SocialError::Conflict(format!(
             "invalid thread transition: {:?} -> {:?}",

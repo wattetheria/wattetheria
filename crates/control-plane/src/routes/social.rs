@@ -1499,6 +1499,48 @@ fn known_identity_from_source_agent_card(
     }
 }
 
+/// Public ids bound to `remote_node_id` over wattswarm. Self-bindings left by
+/// earlier node-id fallbacks are not identities and are skipped.
+fn transport_bound_public_ids(
+    transport_bindings: &[RemoteTransportBinding],
+    remote_node_id: &str,
+) -> BTreeSet<String> {
+    transport_bindings
+        .iter()
+        .filter(|binding| {
+            binding.transport_kind == TransportKind::Wattswarm
+                && binding.transport_node_id == remote_node_id
+                && binding.public_id != remote_node_id
+        })
+        .map(|binding| binding.public_id.clone())
+        .collect()
+}
+
+/// Relationship views can arrive without an agent envelope (e.g. right after a
+/// local accept). Resolve the counterpart through every known binding before
+/// keying it by the bare node id, so one peer never alternates between two
+/// identities across reconcile passes. Returns `None` when only the node id is
+/// left but the node hosts several known identities: that counterpart would
+/// be an alias of one of them, and reconciling it would retire the real
+/// friendship.
+fn relationship_counterpart_public_id(
+    view: &SwarmPeerRelationshipView,
+    bindings: &BTreeMap<String, ControllerBinding>,
+    transport_bindings: &[RemoteTransportBinding],
+) -> Option<String> {
+    if let Some(public_id) = relationship_remote_public_id(view)
+        .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
+    {
+        return Some(public_id);
+    }
+    let mut bound = transport_bound_public_ids(transport_bindings, &view.remote_node_id);
+    match bound.len() {
+        0 => Some(view.remote_node_id.clone()),
+        1 => bound.pop_first(),
+        _ => None,
+    }
+}
+
 pub(crate) fn reconcile_swarm_relationship_views(
     state: &ControlPlaneState,
     local_public_id: &str,
@@ -1506,14 +1548,19 @@ pub(crate) fn reconcile_swarm_relationship_views(
     bindings: &BTreeMap<String, ControllerBinding>,
     views: &[SwarmPeerRelationshipView],
 ) -> anyhow::Result<()> {
+    let transport_bindings =
+        transport_binding_service::list_transport_bindings(&*state.social_store)
+            .unwrap_or_default();
     let mut synced = Vec::with_capacity(views.len());
     for view in views {
         if !relationship_view_belongs_to_local_identity(view, local_public_id) {
             continue;
         }
-        let counterpart_public_id = relationship_remote_public_id(view)
-            .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
-            .unwrap_or_else(|| view.remote_node_id.clone());
+        let Some(counterpart_public_id) =
+            relationship_counterpart_public_id(view, bindings, &transport_bindings)
+        else {
+            continue;
+        };
         let target_agent = relationship_remote_agent_id(view)
             .or_else(|| {
                 identities
@@ -1575,9 +1622,11 @@ pub(crate) fn reconcile_swarm_relationship_views(
         .filter(|view| relationship_view_belongs_to_local_identity(view, local_public_id))
         .filter(|view| view.relationship_state == "accepted" || view.relationship_state == "active")
     {
-        let counterpart_public_id = relationship_remote_public_id(view)
-            .or_else(|| counterpart_public_id_for_remote_node(bindings, &view.remote_node_id))
-            .unwrap_or_else(|| view.remote_node_id.clone());
+        let Some(counterpart_public_id) =
+            relationship_counterpart_public_id(view, bindings, &transport_bindings)
+        else {
+            continue;
+        };
         let state = state.clone();
         let local_public_id = local_public_id.to_string();
         tokio::spawn(async move {
