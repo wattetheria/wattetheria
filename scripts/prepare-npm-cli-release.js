@@ -7,9 +7,7 @@ const { spawnSync } = require("node:child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const ROOT_PACKAGE_PATH = path.join(ROOT_DIR, "package.json");
-const NATIVE_PACKAGE_DIR = path.join(ROOT_DIR, "npm", "native");
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const NATIVE_PACKAGE_PREFIX = "@wattetheria/cli-";
 const REQUIRE_UNPUBLISHED =
   process.env.NPM_CLI_REQUIRE_UNPUBLISHED === "1" ||
   process.env.NPM_CLI_REQUIRE_UNPUBLISHED === "true";
@@ -99,51 +97,20 @@ function resolveReleaseVersion(rootPackage) {
   };
 }
 
-function nativePackagePaths() {
-  return fs
-    .readdirSync(NATIVE_PACKAGE_DIR)
-    .map((entry) => path.join(NATIVE_PACKAGE_DIR, entry, "package.json"))
-    .filter((manifestPath) => fs.existsSync(manifestPath))
-    .sort();
-}
-
-function updateRootPackage(rootPackage, version, nativePackageNames) {
+function updateRootPackage(rootPackage, version) {
   rootPackage.version = version;
-  rootPackage.optionalDependencies = rootPackage.optionalDependencies || {};
-
-  for (const packageName of nativePackageNames) {
-    rootPackage.optionalDependencies[packageName] = version;
-  }
 }
 
-function updateNativePackages(version) {
-  const packageNames = [];
-
-  for (const manifestPath of nativePackagePaths()) {
-    const manifest = readJson(manifestPath);
-    if (!manifest.name || !manifest.name.startsWith(NATIVE_PACKAGE_PREFIX)) {
-      throw new Error(`unexpected native package name in ${manifestPath}: ${manifest.name}`);
-    }
-    manifest.version = version;
-    writeJson(manifestPath, manifest);
-    packageNames.push(manifest.name);
-  }
-
-  return packageNames.sort();
-}
-
-function requireUnpublishedVersion(packageNames, version) {
+function requireUnpublishedVersion(packageName, version) {
   if (!REQUIRE_UNPUBLISHED) {
     return;
   }
 
-  for (const packageName of packageNames) {
-    const result = run("npm", ["view", `${packageName}@${version}`, "version", "--json"], {
-      allowFailure: true,
-    });
-    if (result.ok) {
-      throw new Error(`${packageName}@${version} is already published`);
-    }
+  const result = run("npm", ["view", `${packageName}@${version}`, "version", "--json"], {
+    allowFailure: true,
+  });
+  if (result.ok) {
+    throw new Error(`${packageName}@${version} is already published`);
   }
 }
 
@@ -159,9 +126,8 @@ function writeGithubOutput(values) {
 function main() {
   const rootPackage = readJson(ROOT_PACKAGE_PATH);
   const release = resolveReleaseVersion(rootPackage);
-  const nativePackageNames = updateNativePackages(release.version);
-  requireUnpublishedVersion([rootPackage.name, ...nativePackageNames], release.version);
-  updateRootPackage(rootPackage, release.version, nativePackageNames);
+  requireUnpublishedVersion(rootPackage.name, release.version);
+  updateRootPackage(rootPackage, release.version);
   writeJson(ROOT_PACKAGE_PATH, rootPackage);
 
   writeGithubOutput({
@@ -172,9 +138,6 @@ function main() {
 
   console.log(`prepared npm CLI release version ${release.version} (${release.source})`);
   console.log(`updated ${ROOT_PACKAGE_PATH}`);
-  for (const packageName of nativePackageNames) {
-    console.log(`updated ${packageName} -> ${release.version}`);
-  }
 }
 
 try {

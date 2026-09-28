@@ -103,9 +103,8 @@ The lower-level deployment command remains available:
 npx wattetheria install
 ```
 
-`setup`, `install`, and `update` check the published npm CLI version before
-deployment work. If the local CLI is older than `npm view wattetheria version`,
-run `wattetheria cli update` first, then rerun the original command.
+The npm CLI and Wattetheria product runtime are versioned independently.
+`setup`, `install`, and `update` do not require an npm CLI update first.
 
 For release deployments, the control token is stored under:
 
@@ -134,9 +133,10 @@ or, without the interactive setup steps:
 npx wattetheria install --runtime native
 ```
 
-The binaries (`wattetheria-kernel`, `wattswarm`, `wattswarm-runtime`) ship in
-the platform package `@wattetheria/cli-<platform>-<arch>`, which npm installs
-with the CLI.
+The native binaries are downloaded from the latest Wattetheria GitHub Release
+and cached under `~/.wattetheria/native`. Native runtime releases are separate
+from npm CLI releases and use the same product version as the GHCR images:
+image tags use `X`, and the corresponding GitHub Release tag is `vX`.
 
 Every deployment records its runtime in the deployment `.env` as
 `WATTETHERIA_DEPLOYMENT_RUNTIME=docker` or `WATTETHERIA_DEPLOYMENT_RUNTIME=native`
@@ -178,9 +178,10 @@ npx wattetheria restart
 npx wattetheria doctor --brain --connect
 ```
 
-`wattetheria cli update` updates the npm CLI package itself with
-`npm install -g wattetheria@latest`. `wattetheria update` updates the local
-deployment images and restarts the stack.
+`wattetheria cli update` updates only the npm CLI package with
+`npm install -g wattetheria@latest`. `wattetheria update` updates the native
+binaries for a native deployment or pulls the latest GHCR images for a Docker
+deployment, then restarts the stack.
 
 ### Autonomous network registration
 

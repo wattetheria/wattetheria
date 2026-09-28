@@ -96,6 +96,48 @@ test(
   }
 );
 
+test(
+  "network uses the cached native CLI from a GitHub Release",
+  { skip: process.platform === "win32" && "uses a POSIX executable shim" },
+  (context) => {
+    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-cache-test-"));
+    const platformKey = `${process.platform}-${process.arch}`;
+    const binDirectory = path.join(cacheRoot, "1.2.3", platformKey);
+    const marker = path.join(cacheRoot, "args.txt");
+    fs.mkdirSync(binDirectory, { recursive: true });
+    fs.writeFileSync(path.join(cacheRoot, "current.json"), JSON.stringify({
+      tag: "v1.2.3",
+      platformKey
+    }));
+    const binary = path.join(binDirectory, "wattetheria-client-cli");
+    fs.writeFileSync(
+      binary,
+      `#!/bin/sh\nif [ "$1" = "--help" ]; then exit 0; fi\nprintf '%s\\n' "$@" > '${marker}'\n`
+    );
+    fs.chmodSync(binary, 0o755);
+    for (const name of ["wattetheria-kernel", "wattswarm", "wattswarm-runtime"]) {
+      fs.writeFileSync(path.join(binDirectory, name), "cached release binary\n");
+    }
+    context.after(() => fs.rmSync(cacheRoot, { recursive: true, force: true }));
+
+    const result = spawnSync(process.execPath, [CLI_PATH, "network", "authority-show"], {
+      cwd: ROOT_DIR,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        WATTETHERIA_NATIVE_CACHE_DIR: cacheRoot,
+        WATTETHERIA_NO_BANNER: "1"
+      }
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(fs.readFileSync(marker, "utf8").trim().split(/\r?\n/), [
+      "network",
+      "authority-show"
+    ]);
+  }
+);
+
 const removedCommands = [
   { args: ["identity"], error: /Unknown command: identity/ },
   { args: ["servicenet"], error: /Unknown command: servicenet/ },
@@ -151,47 +193,79 @@ function invocationCount(markerPath) {
 }
 
 for (const command of ["setup", "install", "update"]) {
-  test(`${command} rejects an outdated npm CLI`, (context) => {
+  test(`${command} works without updating the npm CLI first`, (context) => {
     const markerDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-markers-"));
     const npmMarker = path.join(markerDirectory, "npm");
     const dockerMarker = path.join(markerDirectory, "docker");
     const npmDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
+    const deploymentDirectory = path.join(markerDirectory, "deployment");
+    fs.mkdirSync(deploymentDirectory, { recursive: true });
+    if (command === "update") {
+      fs.copyFileSync(path.join(ROOT_DIR, ".env.release"), path.join(deploymentDirectory, ".env"));
+      fs.copyFileSync(
+        path.join(ROOT_DIR, "docker-compose.release.yml"),
+        path.join(deploymentDirectory, "docker-compose.yml")
+      );
+    }
     context.after(() => fs.rmSync(npmDirectory, { recursive: true, force: true }));
     context.after(() => fs.rmSync(markerDirectory, { recursive: true, force: true }));
 
-    const result = spawnSync(process.execPath, [CLI_PATH, command], {
+    const result = spawnSync(process.execPath, [
+      CLI_PATH,
+      command,
+      "--dir",
+      deploymentDirectory,
+      "--tag",
+      "test",
+      "--no-health-checks"
+    ], {
       cwd: ROOT_DIR,
       encoding: "utf8",
       env: {
         ...process.env,
-        PATH: npmDirectory,
+        PATH: `${npmDirectory}${path.delimiter}${process.env.PATH || ""}`,
         WATTETHERIA_NO_BANNER: "1",
       },
     });
 
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Wattetheria CLI is outdated/);
-    assert.match(result.stderr, new RegExp(`wattetheria ${command}`));
-    assert.equal(invocationCount(npmMarker), 1);
-    if (process.platform !== "win32") {
-      assert.equal(invocationCount(dockerMarker), 0);
-      assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Docker/);
-    }
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(invocationCount(npmMarker), 0);
+    assert.ok(invocationCount(dockerMarker) > 0);
   });
 }
 
+test("cli update is the explicit npm package update command", (context) => {
+  const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-cli-update-test-"));
+  const npmMarker = path.join(testDirectory, "npm");
+  const dockerMarker = path.join(testDirectory, "docker");
+  const commandDirectory = fakeCommandDirectory("1.2.3", npmMarker, dockerMarker);
+  context.after(() => fs.rmSync(commandDirectory, { recursive: true, force: true }));
+  context.after(() => fs.rmSync(testDirectory, { recursive: true, force: true }));
+
+  const result = spawnSync(process.execPath, [CLI_PATH, "cli", "update"], {
+    cwd: ROOT_DIR,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+      WATTETHERIA_NO_BANNER: "1"
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /npm install -g wattetheria@latest/);
+  assert.equal(invocationCount(npmMarker), 1);
+  assert.equal(invocationCount(dockerMarker), 0);
+});
+
 test(
-  "setup checks the CLI version once when it delegates to install",
+  "setup delegates to install without invoking npm to check the CLI version",
   { skip: process.platform === "win32" && "requires an executable Docker test shim" },
   (context) => {
     const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-setup-test-"));
     const npmMarker = path.join(testDirectory, "npm");
     const dockerMarker = path.join(testDirectory, "docker");
-    const commandDirectory = fakeCommandDirectory(
-      require("../package.json").version,
-      npmMarker,
-      dockerMarker
-    );
+    const commandDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
     const deploymentDirectory = path.join(testDirectory, "deployment");
     context.after(() => fs.rmSync(commandDirectory, { recursive: true, force: true }));
     context.after(() => fs.rmSync(testDirectory, { recursive: true, force: true }));
@@ -219,7 +293,7 @@ test(
     );
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(invocationCount(npmMarker), 1);
+    assert.equal(invocationCount(npmMarker), 0);
     assert.ok(invocationCount(dockerMarker) > 0);
     assert.match(
       fs.readFileSync(path.join(deploymentDirectory, ".env"), "utf8"),
@@ -376,12 +450,9 @@ test(
     const binDirectory = path.join(testDirectory, "bin");
     const deploymentDirectory = path.join(testDirectory, "deployment");
     const wattswarmMarker = path.join(testDirectory, "wattswarm-args");
+    const npmMarker = path.join(testDirectory, "npm");
     const dockerMarker = path.join(testDirectory, "docker");
-    const commandDirectory = fakeCommandDirectory(
-      require("../package.json").version,
-      path.join(testDirectory, "npm"),
-      dockerMarker
-    );
+    const commandDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
     writeFakeNativeBinaries(binDirectory, wattswarmMarker);
     fs.mkdirSync(deploymentDirectory, { recursive: true });
     fs.writeFileSync(
@@ -413,6 +484,7 @@ test(
     assert.match(deploymentEnv, /^WATTETHERIA_DEPLOYMENT_RUNTIME=native$/m);
     assert.match(deploymentEnv, /^WATTSWARM_STORAGE_BACKEND=sqlite$/m);
     assert.doesNotMatch(deploymentEnv, /WATTSWARM_PG_/);
+    assert.equal(invocationCount(npmMarker), 0);
 
     let status;
     for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -447,6 +519,11 @@ test(
     const mismatch = cli("install", "--runtime", "docker");
     assert.equal(mismatch.status, 1);
     assert.match(mismatch.stderr, /A native deployment already exists/);
+
+    const update = cli("update", "--no-health-checks");
+    assert.equal(update.status, 0, update.stderr);
+    assert.match(update.stdout, /Native services stopped\./);
+    assert.match(update.stdout, /Native supervisor started/);
 
     const stop = cli("stop");
     assert.equal(stop.status, 0, stop.stderr);

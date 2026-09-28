@@ -15,6 +15,7 @@ function parseArgs(argv) {
     platform: process.env.WATTETHERIA_NATIVE_PLATFORM || process.platform,
     arch: process.env.WATTETHERIA_NATIVE_ARCH || process.arch,
     source: process.env.WATTETHERIA_NATIVE_CLI_BIN || "",
+    releaseAssetsDir: "",
     extras: [],
   };
 
@@ -26,6 +27,8 @@ function parseArgs(argv) {
       options.arch = requireValue(arg, argv[++index]);
     } else if (arg === "--source") {
       options.source = requireValue(arg, argv[++index]);
+    } else if (arg === "--release-assets-dir") {
+      options.releaseAssetsDir = requireValue(arg, argv[++index]);
     } else if (arg === "--extra") {
       options.extras.push(requireValue(arg, argv[++index]));
     } else {
@@ -114,6 +117,16 @@ function stageNativeCli(options) {
     const extraName = path.basename(extraSource);
     for (const dir of [path.join(ROOT_DIR, "bin", "native", key), path.join(packageDir, "bin")]) {
       console.log(`staged ${copyBinary(extraSource, dir, options.platform, extraName)}`);
+    }
+  }
+
+  if (options.releaseAssetsDir) {
+    fs.mkdirSync(options.releaseAssetsDir, { recursive: true });
+    for (const baseName of [BASE_NAME, "wattetheria-kernel", "wattswarm", "wattswarm-runtime"]) {
+      const name = options.platform === "win32" ? `${baseName}.exe` : baseName;
+      const sourcePath = path.join(packageDir, "bin", name);
+      const assetName = `wattetheria-native-${key}-${name}`;
+      copyBinary(sourcePath, options.releaseAssetsDir, options.platform, assetName);
     }
   }
 }

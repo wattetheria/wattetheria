@@ -172,7 +172,8 @@ function findPreviousManifest(release) {
     "tagName,publishedAt",
   ]);
   const releases = parseJson(releasesOutput, "GitHub release list");
-  const previousRelease = releases.find((entry) => entry.tagName !== release);
+  const currentReleaseTags = new Set([release, release.startsWith("v") ? release : `v${release}`]);
+  const previousRelease = releases.find((entry) => !currentReleaseTags.has(entry.tagName));
 
   if (!previousRelease) {
     return {

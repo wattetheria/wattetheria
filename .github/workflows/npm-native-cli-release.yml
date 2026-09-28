@@ -3,10 +3,22 @@ name: npm-native-cli-release
 on:
   workflow_dispatch:
     inputs:
+      release_version:
+        description: Wattetheria product version to publish, matching the GHCR image tag (for example 1.0.7).
+        required: true
+        type: string
+      previous_manifest_path:
+        description: Previous stack manifest path for the first release; leave empty later to use the latest release asset.
+        required: false
+        default: .github/release/stack-baseline.json
+        type: string
       dry_run:
-        description: Run builds and npm publish dry-runs without publishing packages.
+        description: Build and verify native assets without creating or updating a GitHub Release.
         type: boolean
         default: true
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,7 +26,7 @@ env:
 
 jobs:
   native:
-    name: Build and publish ${{ matrix.target_key }}
+    name: Build native runtime ${{ matrix.target_key }}
     runs-on: ${{ matrix.runs_on }}
     timeout-minutes: 60
     strategy:
@@ -60,6 +72,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate release version and branch
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "main" ]; then
+            echo "Product releases must be run from main." >&2
+            exit 1
+          fi
+          if ! printf '%s' "${RELEASE_VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "release_version must be a semantic version without the v prefix." >&2
+            exit 1
+          fi
 
       - uses: actions/checkout@v4
         with:
@@ -110,7 +136,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: native-cli-${{ matrix.target_key }}
+          key: native-release-${{ matrix.target_key }}
           workspaces: |
             . -> target
             ../wattswarm -> target
@@ -118,7 +144,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
 
       - name: Build native CLI and Wattetheria kernel
         run: cargo build --release -p wattetheria-client-cli -p wattetheria-kernel
@@ -126,7 +151,7 @@ jobs:
       - name: Build Wattswarm node binaries
         run: cargo build --release --manifest-path ../wattswarm/Cargo.toml -p wattswarm --bin wattswarm --bin wattswarm-runtime
 
-      - name: Stage native package
+      - name: Stage native release assets
         run: >
           node scripts/stage-native-cli.js
           --platform ${{ matrix.platform }}
@@ -135,19 +160,53 @@ jobs:
           --extra target/release/wattetheria-kernel${{ matrix.exe }}
           --extra ../wattswarm/target/release/wattswarm${{ matrix.exe }}
           --extra ../wattswarm/target/release/wattswarm-runtime${{ matrix.exe }}
+          --release-assets-dir release-assets
 
-      - name: Verify native package
+      - name: Verify native binaries
         run: node scripts/check-native-package-binary.js npm/native/${{ matrix.target_key }}
 
-      - name: Pack native package
+      - name: Verify package contents
         run: npm pack npm/native/${{ matrix.target_key }} --dry-run
 
-      - name: Publish native package dry-run
-        if: inputs.dry_run
-        run: npm publish npm/native/${{ matrix.target_key }} --access public --dry-run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wattetheria-native-${{ matrix.target_key }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Publish native package
-        if: ${{ !inputs.dry_run }}
-        run: npm publish npm/native/${{ matrix.target_key }} --access public
+  release-artifacts:
+    if: ${{ !inputs.dry_run }}
+    needs: native
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      tag: v${{ inputs.release_version }}
+      previous_manifest_path: ${{ inputs.previous_manifest_path }}
+    secrets: inherit
+
+  publish-native-assets:
+    if: ${{ !inputs.dry_run }}
+    needs:
+      - native
+      - release-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wattetheria-native-*
+          path: native-release-assets
+          merge-multiple: true
+
+      - name: Validate collected native assets
+        run: |
+          count=$(find native-release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [ "$count" -ne 24 ]; then
+            echo "Expected 24 native release assets, found $count." >&2
+            exit 1
+          fi
+
+      - name: Attach native assets to the product release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          RELEASE_TAG: v${{ inputs.release_version }}
+        run: gh release upload "$RELEASE_TAG" --repo wattetheria/wattetheria --clobber native-release-assets/*

@@ -12,6 +12,17 @@ on:
         required: false
         default: '.github/release/stack-baseline.json'
         type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to publish, for example v1.0.4
+        required: true
+        type: string
+      previous_manifest_path:
+        description: Previous stack manifest path for the first release; leave empty later to use the latest release asset
+        required: false
+        default: .github/release/stack-baseline.json
+        type: string
 
 jobs:
   release:
@@ -71,7 +82,7 @@ jobs:
           ref: ${{ github.ref_name }}
           path: wattetheria
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Checkout wattswarm
         uses: actions/checkout@v4
@@ -80,7 +91,7 @@ jobs:
           ref: main
           path: wattswarm
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Checkout watt-did
         uses: actions/checkout@v4
@@ -89,7 +100,7 @@ jobs:
           ref: main
           path: watt-did
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Checkout watt-wallet
         uses: actions/checkout@v4
@@ -98,7 +109,7 @@ jobs:
           ref: main
           path: watt-wallet
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Checkout watt-servicenet
         uses: actions/checkout@v4
@@ -107,7 +118,7 @@ jobs:
           ref: main
           path: watt-servicenet
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
       - name: Checkout watt-gateway
         uses: actions/checkout@v4
@@ -116,20 +127,14 @@ jobs:
           ref: main
           path: watt-gateway
           fetch-depth: 0
-          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          token: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
 
-      - name: Validate release boundary
+      - name: Validate release source
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           PREVIOUS_MANIFEST: ${{ steps.release-inputs.outputs.previous_manifest }}
         run: |
-          git -C wattetheria fetch --tags origin
-          if git -C wattetheria rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
-            echo "Release tag already exists: $RELEASE_TAG"
-            exit 1
-          fi
-
           if [ -n "$PREVIOUS_MANIFEST" ] && [ ! -f "$PREVIOUS_MANIFEST" ]; then
             echo "Previous stack manifest does not exist: $PREVIOUS_MANIFEST"
             exit 1
@@ -138,7 +143,7 @@ jobs:
       - name: Generate stack release notes
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
           RELEASE: ${{ steps.release-inputs.outputs.release_version }}
           PREVIOUS_STACK_MANIFEST: ${{ steps.release-inputs.outputs.previous_manifest }}
           STACK_RELEASE_REPO: wattetheria/wattetheria
@@ -146,12 +151,33 @@ jobs:
           STACK_RELEASE_OUT_DIR: ${{ github.workspace }}/stack-release
         run: node wattetheria/scripts/generate-stack-release.js
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.tag }}
-          target_commitish: ${{ github.ref_name }}
-          name: Wattetheria Stack ${{ steps.release-inputs.outputs.release_version }}
-          body_path: stack-release/release-notes.md
-          files: stack-release/release-manifest.${{ steps.release-inputs.outputs.release_version }}.json
-          prerelease: ${{ contains(inputs.tag, '-alpha') || contains(inputs.tag, '-beta') || contains(inputs.tag, '-rc') }}
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || secrets.CROSS_REPO_TOKEN || github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_VERSION: ${{ steps.release-inputs.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          release_title="Wattetheria Stack ${RELEASE_VERSION}"
+          release_notes="stack-release/release-notes.md"
+          release_manifest="stack-release/release-manifest.${RELEASE_VERSION}.json"
+          release_target="$(git -C wattetheria rev-parse HEAD)"
+          release_args=(--repo wattetheria/wattetheria --title "$release_title" --notes-file "$release_notes")
+
+          if [[ "$RELEASE_TAG" =~ -(alpha|beta|rc) ]]; then
+            release_args+=(--prerelease)
+          else
+            release_args+=(--latest)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo wattetheria/wattetheria >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" "${release_args[@]}"
+          else
+            gh release create "$RELEASE_TAG" --target "$release_target" "${release_args[@]}"
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            --repo wattetheria/wattetheria \
+            --clobber \
+            "$release_manifest"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Coordinated Watt stack version tag to publish.
+        description: Coordinated Watt stack version to publish, without a v prefix (for example 1.0.7).
         required: true
         type: string
 
@@ -31,12 +31,8 @@ jobs:
             echo "release input is required" >&2
             exit 1
           fi
-          if [ "${RELEASE}" = "latest" ]; then
-            echo "release input must be a version tag, not latest" >&2
-            exit 1
-          fi
-          if ! printf '%s' "${RELEASE}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
-            echo "release input must contain only letters, numbers, dots, underscores, and hyphens" >&2
+          if ! printf '%s' "${RELEASE}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "release input must be a semantic version without the v prefix" >&2
             exit 1
           fi
           if [ -z "${CROSS_REPO_TOKEN}" ]; then
@@ -144,27 +140,34 @@ jobs:
           set -euo pipefail
 
           release_title="Wattetheria Stack ${RELEASE}"
+          release_tag="v${RELEASE}"
           release_notes="wattetheria/dist/stack-release/release-notes.md"
           release_manifest="wattetheria/dist/stack-release/release-manifest.${RELEASE}.json"
           release_target="$(git -C wattetheria rev-parse HEAD)"
+          release_args=(
+            --repo wattetheria/wattetheria
+            --title "${release_title}"
+            --notes-file "${release_notes}"
+          )
 
-          if gh release view "${RELEASE}" --repo wattetheria/wattetheria >/dev/null 2>&1; then
-            gh release edit "${RELEASE}" \
-              --repo wattetheria/wattetheria \
-              --title "${release_title}" \
-              --notes-file "${release_notes}" \
-              --target "${release_target}" \
-              --latest
+          if [[ "${release_tag}" =~ -(alpha|beta|rc) ]]; then
+            release_args+=(--prerelease)
           else
-            gh release create "${RELEASE}" \
-              --repo wattetheria/wattetheria \
-              --target "${release_target}" \
-              --title "${release_title}" \
-              --notes-file "${release_notes}" \
-              --latest
+            release_args+=(--latest)
           fi
 
-          gh release upload "${RELEASE}" \
+          if gh release view "${release_tag}" --repo wattetheria/wattetheria >/dev/null 2>&1; then
+            gh release edit "${release_tag}" \
+              --target "${release_target}" \
+              "${release_args[@]}"
+          else
+            gh release create "${release_tag}" \
+              --repo wattetheria/wattetheria \
+              --target "${release_target}" \
+              "${release_args[@]}"
+          fi
+
+          gh release upload "${release_tag}" \
             --repo wattetheria/wattetheria \
             --clobber \
             "${release_manifest}" \
