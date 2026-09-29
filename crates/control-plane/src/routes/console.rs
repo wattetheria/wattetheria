@@ -194,6 +194,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dm_load_failure_is_not_replaced_with_an_empty_history() {
+        let script = include_str!("supervision_console/js/refresh.js");
+
+        assert!(script.contains(
+            "if (dmMessagesResult.status === \"rejected\") throw dmMessagesResult.reason;"
+        ));
+        assert!(script.contains("const dmMessages = dmMessagesResult.value;"));
+        assert!(!script.contains("dmMessagesResult.value : []"));
+    }
+
+    #[test]
     fn message_refresh_script_loads_before_console_bootstrap() {
         let polling = SUPERVISION_CONSOLE_JS
             .find("const messageRefreshBaseDelayMs")

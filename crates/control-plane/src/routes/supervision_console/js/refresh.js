@@ -48,8 +48,9 @@
         fetchJson(`/v1/client/friends/messages?${query.toString()}`, { auth: true }),
         fetchJson(`/v1/client/friends?${query.toString()}`, { auth: true }),
       ]);
+      if (dmMessagesResult.status === "rejected") throw dmMessagesResult.reason;
       const friendRequests = friendRequestsResult.status === "fulfilled" ? friendRequestsResult.value : {};
-      const dmMessages = dmMessagesResult.status === "fulfilled" ? dmMessagesResult.value : [];
+      const dmMessages = dmMessagesResult.value;
       const clientFriends = clientFriendsResult.status === "fulfilled" ? clientFriendsResult.value : [];
       return {
         local_client_friends: [],

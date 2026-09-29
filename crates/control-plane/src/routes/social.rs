@@ -2485,10 +2485,22 @@ async fn load_reconciled_bridge_dm_messages(
     local_public_id: &str,
     identities: &BTreeMap<String, PublicIdentity>,
     bindings: &BTreeMap<String, ControllerBinding>,
+    known_threads: &[DirectThread],
     transport_thread_ids: &[String],
 ) -> anyhow::Result<BTreeMap<String, Vec<SwarmPeerDmMessageView>>> {
+    let friendships = friendship_service::list_friendships(&*state.social_store, local_public_id)?;
     let mut bridge_message_map = BTreeMap::new();
     for transport_thread_id in transport_thread_ids {
+        // Removed/blocked conversations retain local history without importing more messages.
+        if known_threads.iter().any(|thread| {
+            thread.transport_thread_id == *transport_thread_id
+                && friendships.iter().any(|friendship| {
+                    friendship.remote_public_id == thread.remote_public_id
+                        && !friendship.is_active()
+                })
+        }) {
+            continue;
+        }
         let views = state
             .swarm_bridge
             .list_peer_dm_messages(transport_thread_id)
@@ -2758,6 +2770,7 @@ pub(crate) async fn build_agent_dm_messages_payload(
         &local.public_id,
         &identities,
         &bindings,
+        &known_threads,
         &transport_thread_ids,
     )
     .await?;
