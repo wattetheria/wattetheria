@@ -6685,6 +6685,50 @@ async fn mcp_subscribe_hive_uses_gateway_subscribe_route_when_hive_is_not_local(
     );
 }
 
+#[tokio::test]
+async fn mcp_list_hives_reads_startup_resolved_gateway_urls() {
+    // Native deployments hand the gateway to the kernel only through
+    // `--gateway-config-path` / `--gateway-url`, with no `config.json` entry and no
+    // WATTETHERIA_GATEWAY_* env vars; queries must still find the gateway.
+    let gateway_url = spawn_gateway_hives_server(gateway_hives_fixture()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (_dir, state, token, _policy) =
+        build_test_state_with_bridge(100, dir, identity, event_log, bridge);
+    let state = ControlPlaneState {
+        gateway_urls: vec![gateway_url],
+        ..state
+    };
+    assert!(!state.data_dir.join("config.json").exists());
+
+    let response = mcp_request(
+        app(state),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "list_hives", "arguments": {}}
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["result"]["isError"].as_bool(),
+        Some(false),
+        "{response}"
+    );
+    let content = &response["result"]["structuredContent"];
+    assert_eq!(
+        content["source"].as_str(),
+        Some("wattetheria-gateway.api_hives")
+    );
+    assert_eq!(content["known_count"].as_u64(), Some(2));
+}
+
 async fn spawn_gateway_hives_server(payload: Value) -> String {
     let gateway_app = axum::Router::new().route(
         "/api/hives",

@@ -390,6 +390,7 @@ async fn build_control_state(
         local_db,
         social_store,
         servicenet_client,
+        gateway_urls: resolve_gateway_urls(cli),
         agent_executor_base_url,
         agent_event_callback_base_url,
         agent_topic_bridge_enabled: cli

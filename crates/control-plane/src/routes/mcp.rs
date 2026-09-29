@@ -2140,6 +2140,7 @@ struct GatewayQueryConfig {
 pub(crate) fn resolve_gateway_query_url(state: &ControlPlaneState) -> anyhow::Result<String> {
     let candidates = gateway_urls_from_config_path(&state.data_dir.join("config.json"))
         .into_iter()
+        .chain(state.gateway_urls.iter().cloned())
         .chain(gateway_urls_from_env())
         .chain(gateway_urls_from_env_config_path());
     candidates

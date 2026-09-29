@@ -393,6 +393,7 @@ fn build_test_state_with_bridge(
         local_db,
         social_store,
         servicenet_client: None,
+        gateway_urls: Vec::new(),
         agent_executor_base_url: None,
         agent_event_callback_base_url: None,
         agent_topic_bridge_enabled: true,

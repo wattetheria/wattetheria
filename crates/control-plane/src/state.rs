@@ -146,6 +146,10 @@ pub struct ControlPlaneState {
     pub local_db: Arc<LocalDb>,
     pub social_store: Arc<SocialStore>,
     pub servicenet_client: Option<Arc<ServiceNetClient>>,
+    /// Gateway URLs resolved at startup from `--gateway-url` / `--gateway-config-path`,
+    /// the same list snapshot pushes use. Gateway queries must read this rather than
+    /// re-deriving it from environment variables only some deployments set.
+    pub gateway_urls: Vec<String>,
     pub agent_executor_base_url: Option<String>,
     pub agent_event_callback_base_url: Option<String>,
     pub agent_topic_bridge_enabled: bool,
