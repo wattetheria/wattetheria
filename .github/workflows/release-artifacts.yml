@@ -8,9 +8,9 @@ on:
         required: true
         type: string
       previous_manifest_path:
-        description: 'Previous stack manifest path for the first release; leave empty later to use the latest release asset'
+        description: 'Optional bootstrap manifest path; leave blank to use the previous GitHub Release asset'
         required: false
-        default: '.github/release/stack-baseline.json'
+        default: ''
         type: string
   workflow_call:
     inputs:
@@ -19,9 +19,9 @@ on:
         required: true
         type: string
       previous_manifest_path:
-        description: Previous stack manifest path for the first release; leave empty later to use the latest release asset
+        description: Optional bootstrap manifest path; leave blank to use the previous GitHub Release asset
         required: false
-        default: .github/release/stack-baseline.json
+        default: ''
         type: string
 
 jobs:
