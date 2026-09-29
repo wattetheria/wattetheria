@@ -313,10 +313,16 @@ where
                 |request| request.direction,
             );
         let requested_at = view.requested_at.unwrap_or(view.updated_at);
-        let updated_at = view
-            .responded_at
-            .unwrap_or(view.updated_at)
-            .max(requested_at);
+        let updated_at = if view.relationship_state == "none"
+            && view.last_action.as_deref() == Some("remove")
+            && view.initiated_by == "local"
+        {
+            view.updated_at.max(requested_at)
+        } else {
+            view.responded_at
+                .unwrap_or(view.updated_at)
+                .max(requested_at)
+        };
         let thread_id = thread_service::find_thread(
             repository,
             local_public_id,
@@ -359,6 +365,36 @@ where
                 ))?;
             }
             ("accepted", _) => {
+                let already_accepted = existing_requests.iter().any(|request| {
+                    request.request_id == request_id
+                        && request.state == FriendRequestState::Accepted
+                });
+                friend_request_service::accept_related_friend_requests(
+                    repository,
+                    local_public_id,
+                    friend_request_service::FriendRequestCounterpartRef {
+                        public_id: &view.counterpart.counterpart_public_id,
+                        remote_node_id: &view.counterpart.remote_node_id,
+                        target_agent: &view.counterpart.target_agent,
+                    },
+                    updated_at,
+                )?;
+                if let Some(friendship) = repository
+                    .find_friendship(local_public_id, &view.counterpart.counterpart_public_id)?
+                    .filter(|friendship| friendship.state == FriendshipState::Removed)
+                {
+                    let as_millis = |timestamp: i64| {
+                        if timestamp > 10_000_000_000 {
+                            timestamp
+                        } else {
+                            timestamp.saturating_mul(1_000)
+                        }
+                    };
+                    if already_accepted || as_millis(updated_at) <= as_millis(friendship.updated_at)
+                    {
+                        continue;
+                    }
+                }
                 retire_alias_friendships(
                     repository,
                     local_public_id,
@@ -407,18 +443,6 @@ where
                     repository,
                     &view.counterpart.counterpart_public_id,
                     true,
-                    updated_at,
-                )?;
-                friend_request_service::settle_related_outbound_friend_requests(
-                    repository,
-                    local_public_id,
-                    friend_request_service::FriendRequestCounterpartRef {
-                        public_id: &view.counterpart.counterpart_public_id,
-                        remote_node_id: &view.counterpart.remote_node_id,
-                        target_agent: &view.counterpart.target_agent,
-                    },
-                    FriendRequestState::Accepted,
-                    "accepted",
                     updated_at,
                 )?;
                 friend_request_service::clear_friend_request_retry(repository, &request_id)?;
@@ -523,7 +547,6 @@ where
                         .into_iter()
                         .find(|friendship| {
                             friendship.remote_public_id == view.counterpart.counterpart_public_id
-                                && friendship.state == FriendshipState::Active
                         });
                 if existing_friendship
                     .as_ref()
@@ -547,8 +570,7 @@ where
                 });
                 let established_from_request_id = existing_friendship
                     .as_ref()
-                    .and_then(|friendship| friendship.established_from_request_id.clone())
-                    .or(Some(request_id));
+                    .and_then(|friendship| friendship.established_from_request_id.clone());
                 let thread_id = existing_friendship
                     .as_ref()
                     .and_then(|friendship| friendship.thread_id.clone())
@@ -855,23 +877,27 @@ where
         + ThreadRepository,
 {
     cache_counterpart(repository, &input.counterpart)?;
-    let request_id = input
-        .request_id
-        .clone()
-        .or_else(|| {
-            friend_request_service::list_friend_requests(repository, &input.local_public_id)
-                .ok()
-                .and_then(|items| {
-                    let counterpart_public_id = &input.counterpart.counterpart_public_id;
-                    let request = if input.action == RelationshipAction::Request {
-                        latest_pending_request_for_counterpart(&items, counterpart_public_id)
-                    } else {
-                        latest_request_for_counterpart(&items, counterpart_public_id)
-                    };
-                    request.map(|item| item.request_id.clone())
-                })
-        })
-        .unwrap_or_else(|| format!("request-{}", input.occurred_at));
+    let request_id = if input.action == RelationshipAction::Remove {
+        String::new()
+    } else {
+        input
+            .request_id
+            .clone()
+            .or_else(|| {
+                friend_request_service::list_friend_requests(repository, &input.local_public_id)
+                    .ok()
+                    .and_then(|items| {
+                        let counterpart_public_id = &input.counterpart.counterpart_public_id;
+                        let request = if input.action == RelationshipAction::Request {
+                            latest_pending_request_for_counterpart(&items, counterpart_public_id)
+                        } else {
+                            latest_request_for_counterpart(&items, counterpart_public_id)
+                        };
+                        request.map(|item| item.request_id.clone())
+                    })
+            })
+            .unwrap_or_else(|| format!("request-{}", input.occurred_at))
+    };
     let thread_id = stable_pair_id(
         "dm",
         &input.local_public_id,
@@ -949,7 +975,7 @@ where
                 true,
                 input.occurred_at,
             )?;
-            friend_request_service::settle_related_outbound_friend_requests(
+            friend_request_service::accept_related_friend_requests(
                 repository,
                 &input.local_public_id,
                 friend_request_service::FriendRequestCounterpartRef {
@@ -957,8 +983,6 @@ where
                     remote_node_id: &input.counterpart.remote_node_id,
                     target_agent: &input.counterpart.target_agent,
                 },
-                FriendRequestState::Accepted,
-                "accepted",
                 input.occurred_at,
             )?;
         }
@@ -1014,7 +1038,6 @@ where
                     .into_iter()
                     .find(|friendship| {
                         friendship.remote_public_id == input.counterpart.counterpart_public_id
-                            && friendship.state == FriendshipState::Active
                     });
             let friendship_id = existing_friendship
                 .as_ref()
@@ -1027,8 +1050,7 @@ where
             });
             let established_from_request_id = existing_friendship
                 .as_ref()
-                .and_then(|friendship| friendship.established_from_request_id.clone())
-                .or(Some(request_id));
+                .and_then(|friendship| friendship.established_from_request_id.clone());
             let thread_id = existing_friendship
                 .as_ref()
                 .and_then(|friendship| friendship.thread_id.clone())
@@ -1964,6 +1986,243 @@ mod tests {
             .into_iter()
             .find(|friendship| friendship.remote_public_id == "did:key:bob")
             .map(|friendship| friendship.state)
+    }
+
+    #[test]
+    fn accept_settles_duplicates_and_remove_preserves_history_before_readding() {
+        let store = SocialStore::open_in_memory().unwrap();
+        for (id, direction, state, node, created_at, reason) in [
+            (
+                "req-a",
+                FriendRequestDirection::Inbound,
+                FriendRequestState::Pending,
+                "node-bob",
+                1,
+                None,
+            ),
+            (
+                "req-b",
+                FriendRequestDirection::Outbound,
+                FriendRequestState::Pending,
+                "node-bob",
+                2,
+                None,
+            ),
+            (
+                "req-c",
+                FriendRequestDirection::Inbound,
+                FriendRequestState::DecisionPending,
+                "node-bob",
+                3,
+                None,
+            ),
+            (
+                "req-d",
+                FriendRequestDirection::Outbound,
+                FriendRequestState::Cancelled,
+                "node-bob",
+                4,
+                Some("superseded_by_new_request"),
+            ),
+            (
+                "req-other",
+                FriendRequestDirection::Inbound,
+                FriendRequestState::Pending,
+                "node-other",
+                1,
+                None,
+            ),
+        ] {
+            store
+                .upsert_friend_request(&FriendRequest {
+                    request_id: id.to_owned(),
+                    local_public_id: "did:key:alice".to_owned(),
+                    remote_public_id: if node == "node-other" {
+                        "did:key:other"
+                    } else {
+                        "did:key:bob"
+                    }
+                    .to_owned(),
+                    remote_node_id: Some(node.to_owned()),
+                    direction,
+                    state,
+                    decision_reason: reason.map(str::to_owned),
+                    correlation_id: None,
+                    created_at,
+                    updated_at: created_at,
+                    expires_at: None,
+                })
+                .unwrap();
+        }
+        persist_relationship_action(&store, &accept_action("req-a", 10)).unwrap();
+        let history = store.list_friend_requests("did:key:alice").unwrap();
+        assert!(
+            history
+                .iter()
+                .filter(|r| r.remote_node_id.as_deref() == Some("node-bob"))
+                .all(|r| r.state == FriendRequestState::Accepted)
+        );
+        assert_eq!(
+            history
+                .iter()
+                .find(|r| r.request_id == "req-other")
+                .unwrap()
+                .state,
+            FriendRequestState::Pending
+        );
+        let original = store.list_friendships("did:key:alice").unwrap().remove(0);
+        for at in [20, 30] {
+            persist_relationship_action(
+                &store,
+                &PersistRelationshipActionInput {
+                    action: RelationshipAction::Remove,
+                    request_id: None,
+                    ..accept_action("unused", at)
+                },
+            )
+            .unwrap();
+            let removed = store.list_friendships("did:key:alice").unwrap().remove(0);
+            assert_eq!(removed.state, FriendshipState::Removed);
+            assert_eq!(
+                removed.established_from_request_id,
+                original.established_from_request_id
+            );
+            assert_eq!(removed.thread_id, original.thread_id);
+            assert_eq!(removed.created_at, original.created_at);
+            assert_eq!(
+                store.list_friend_requests("did:key:alice").unwrap(),
+                history
+            );
+        }
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(counterpart(35), Some("req-b"), "remote", 35)],
+        )
+        .unwrap();
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Removed));
+        assert_eq!(
+            store.list_friend_requests("did:key:alice").unwrap(),
+            history
+        );
+        persist_relationship_action(
+            &store,
+            &PersistRelationshipActionInput {
+                action: RelationshipAction::Request,
+                ..accept_action("req-new", 40)
+            },
+        )
+        .unwrap();
+        assert!(
+            friend_request_service::list_friend_requests(&store, "did:key:alice")
+                .unwrap()
+                .iter()
+                .any(|r| r.request_id == "req-new" && r.state == FriendRequestState::Pending)
+        );
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Removed));
+        // An older acceptance projection must not settle a later request.
+        friend_request_service::accept_related_friend_requests(
+            &store,
+            "did:key:alice",
+            friend_request_service::FriendRequestCounterpartRef {
+                public_id: "did:key:bob",
+                remote_node_id: "node-bob",
+                target_agent: "did:key:bob",
+            },
+            10,
+        )
+        .unwrap();
+        assert!(
+            store
+                .list_friend_requests("did:key:alice")
+                .unwrap()
+                .iter()
+                .any(|r| r.request_id == "req-new" && r.state == FriendRequestState::Pending)
+        );
+        persist_relationship_action(&store, &accept_action("req-new", 50)).unwrap();
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Active));
+    }
+
+    #[test]
+    fn delayed_accept_before_removal_does_not_restore_friendship() {
+        let store = SocialStore::open_in_memory().unwrap();
+        let now = 1_790_000_000;
+        persist_relationship_action(&store, &accept_action("original", now)).unwrap();
+        store
+            .upsert_friend_request(&FriendRequest {
+                request_id: "delayed".to_owned(),
+                local_public_id: "did:key:alice".to_owned(),
+                remote_public_id: "did:key:bob".to_owned(),
+                remote_node_id: Some("node-bob".to_owned()),
+                direction: FriendRequestDirection::Outbound,
+                state: FriendRequestState::Pending,
+                decision_reason: None,
+                correlation_id: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+            })
+            .unwrap();
+        let removed_at = (now + 1) * 1_000 + 500;
+        persist_relationship_action(
+            &store,
+            &PersistRelationshipActionInput {
+                action: RelationshipAction::Remove,
+                ..accept_action("unused", removed_at)
+            },
+        )
+        .unwrap();
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[RelationshipSyncView {
+                relationship_state: "none".to_owned(),
+                last_action: Some("remove".to_owned()),
+                requested_at: Some(now),
+                responded_at: Some(now),
+                updated_at: removed_at,
+                ..accepted_view(counterpart(removed_at), Some("original"), "local", now)
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            store.list_friendships("did:key:alice").unwrap()[0].updated_at,
+            removed_at
+        );
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(
+                counterpart(removed_at),
+                Some("delayed"),
+                "remote",
+                removed_at - 1,
+            )],
+        )
+        .unwrap();
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Removed));
+        assert_eq!(
+            store
+                .list_friend_requests("did:key:alice")
+                .unwrap()
+                .iter()
+                .find(|r| r.request_id == "delayed")
+                .unwrap()
+                .state,
+            FriendRequestState::Accepted
+        );
+        reconcile_relationship_views(
+            &store,
+            "did:key:alice",
+            &[accepted_view(
+                counterpart(removed_at + 1),
+                Some("new"),
+                "remote",
+                removed_at + 1,
+            )],
+        )
+        .unwrap();
+        assert_eq!(bob_friendship_state(&store), Some(FriendshipState::Active));
     }
 
     #[test]

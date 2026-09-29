@@ -131,6 +131,63 @@ where
     repository.clear_reliability_task(FRIEND_REQUEST_OBJECT_KIND, request_id)
 }
 
+pub fn accept_related_friend_requests<R>(
+    repository: &R,
+    local_public_id: &str,
+    counterpart: FriendRequestCounterpartRef<'_>,
+    occurred_at: i64,
+) -> SocialResult<()>
+where
+    R: FriendRequestRepository + ReliabilityTaskRepository,
+{
+    let counterpart_keys = counterpart_match_keys(counterpart);
+    // Local actions use seconds; transport projections and legacy rows may use milliseconds.
+    let as_millis = |timestamp: i64| {
+        if timestamp > 10_000_000_000 {
+            timestamp
+        } else {
+            timestamp.saturating_mul(1_000)
+        }
+    };
+    let accepted_at = if occurred_at > 10_000_000_000 {
+        occurred_at
+    } else {
+        as_millis(occurred_at).saturating_add(999)
+    };
+    // Use raw records: the inbox projection hides superseded duplicate requests.
+    for request in repository.list_friend_requests(local_public_id)? {
+        if !request_matches_counterpart(&request, &counterpart_keys)
+            || as_millis(request.created_at) > accepted_at
+        {
+            continue;
+        }
+        let superseded = request.state == FriendRequestState::Cancelled
+            && request.decision_reason.as_deref() == Some("superseded_by_new_request");
+        if matches!(
+            request.state,
+            FriendRequestState::Pending | FriendRequestState::DecisionPending
+        ) || superseded
+        {
+            repository.upsert_friend_request(&FriendRequest {
+                state: FriendRequestState::Accepted,
+                decision_reason: Some("accepted".to_owned()),
+                updated_at: request.updated_at.max(occurred_at),
+                ..request.clone()
+            })?;
+        }
+        if matches!(
+            request.state,
+            FriendRequestState::Pending
+                | FriendRequestState::DecisionPending
+                | FriendRequestState::Accepted
+        ) || superseded
+        {
+            clear_friend_request_retry(repository, &request.request_id)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn settle_related_outbound_friend_requests<R>(
     repository: &R,
     local_public_id: &str,
@@ -269,9 +326,7 @@ fn same_request_pair(left: &FriendRequest, right: &FriendRequest) -> bool {
 fn blocks_new_pending_request(state: FriendRequestState) -> bool {
     matches!(
         state,
-        FriendRequestState::DecisionPending
-            | FriendRequestState::Accepted
-            | FriendRequestState::Blocked
+        FriendRequestState::DecisionPending | FriendRequestState::Blocked
     )
 }
 
@@ -402,6 +457,61 @@ mod tests {
     }
 
     #[test]
+    fn accepts_duplicate_requests_with_mixed_timestamp_units_but_not_later_requests() {
+        use crate::store::SocialStore;
+        let at = 1_790_000_010;
+        for accepted_at in [at, at * 1_000] {
+            let store = SocialStore::open_in_memory().unwrap();
+            for (id, created_at) in [
+                ("seconds", at - 1),
+                ("milliseconds", (at - 1) * 1_000 + 500),
+                ("later-seconds", at + 1),
+                ("later-milliseconds", (at + 1) * 1_000),
+            ] {
+                store
+                    .upsert_friend_request(&FriendRequest {
+                        request_id: id.to_owned(),
+                        created_at,
+                        updated_at: created_at,
+                        ..pending_request()
+                    })
+                    .unwrap();
+            }
+            if accepted_at > 10_000_000_000 {
+                store
+                    .upsert_friend_request(&FriendRequest {
+                        request_id: "later-subsecond".to_owned(),
+                        created_at: accepted_at + 1,
+                        updated_at: accepted_at + 1,
+                        ..pending_request()
+                    })
+                    .unwrap();
+            }
+            accept_related_friend_requests(
+                &store,
+                "did:key:alice",
+                FriendRequestCounterpartRef {
+                    public_id: "did:key:bob",
+                    remote_node_id: "peer-bob",
+                    target_agent: "did:key:bob",
+                },
+                accepted_at,
+            )
+            .unwrap();
+            for request in store.list_friend_requests("did:key:alice").unwrap() {
+                assert_eq!(
+                    request.state,
+                    if request.request_id.starts_with("later") {
+                        FriendRequestState::Pending
+                    } else {
+                        FriendRequestState::Accepted
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rejects_invalid_terminal_transition() {
         let repository = FakeRepository::default();
         let mut request = pending_request();
@@ -493,6 +603,7 @@ mod tests {
     #[test]
     fn allows_new_request_id_after_retryable_terminal_state() {
         for state in [
+            FriendRequestState::Accepted,
             FriendRequestState::Rejected,
             FriendRequestState::Cancelled,
             FriendRequestState::Expired,
@@ -523,7 +634,6 @@ mod tests {
     fn ignores_new_request_id_for_blocking_pair_state() {
         for state in [
             FriendRequestState::DecisionPending,
-            FriendRequestState::Accepted,
             FriendRequestState::Blocked,
         ] {
             let repository = FakeRepository::default();
@@ -552,7 +662,6 @@ mod tests {
     fn hides_stored_pending_request_when_blocking_pair_state_exists() {
         for state in [
             FriendRequestState::DecisionPending,
-            FriendRequestState::Accepted,
             FriendRequestState::Blocked,
         ] {
             let repository = FakeRepository::default();

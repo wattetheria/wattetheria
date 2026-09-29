@@ -1806,7 +1806,11 @@ async fn persist_social_relationship_action(
     action: &SwarmRelationshipAction,
     message: &Value,
 ) -> anyhow::Result<()> {
-    let now = Utc::now().timestamp();
+    let now = if matches!(action, SwarmRelationshipAction::Remove) {
+        Utc::now().timestamp_millis()
+    } else {
+        Utc::now().timestamp()
+    };
     let (identities, bindings) = load_social_identity_maps(state).await;
     let request_id = message
         .get("request_id")
@@ -2101,18 +2105,9 @@ async fn remove_local_relationship_action(
     counterpart_public_id: &str,
     remote_node_id: &str,
 ) -> anyhow::Result<Value> {
-    let request_id = friendship_service::list_friendships(&*state.social_store, local_public_id)?
-        .into_iter()
-        .find(|friendship| friendship.remote_public_id == counterpart_public_id)
-        .and_then(|friendship| friendship.established_from_request_id);
     state
         .swarm_bridge
-        .remove_peer_relationship_locally(
-            remote_node_id,
-            request_id.as_deref(),
-            local_public_id,
-            counterpart_public_id,
-        )
+        .remove_peer_relationship_locally(remote_node_id, local_public_id, counterpart_public_id)
         .await
 }
 

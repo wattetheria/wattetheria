@@ -1504,7 +1504,6 @@ impl SwarmBridge for MockSwarmBridge {
     async fn remove_peer_relationship_locally(
         &self,
         remote_node_id: &str,
-        _request_id: Option<&str>,
         _local_public_id: &str,
         _counterpart_public_id: &str,
     ) -> anyhow::Result<Value> {

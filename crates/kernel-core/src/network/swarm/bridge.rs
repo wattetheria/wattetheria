@@ -505,7 +505,6 @@ pub trait SwarmBridge: Send + Sync {
     async fn remove_peer_relationship_locally(
         &self,
         _remote_node_id: &str,
-        _request_id: Option<&str>,
         _local_public_id: &str,
         _counterpart_public_id: &str,
     ) -> Result<Value> {
@@ -850,14 +849,12 @@ impl SwarmBridge for HybridSwarmBridge {
     async fn remove_peer_relationship_locally(
         &self,
         remote_node_id: &str,
-        request_id: Option<&str>,
         local_public_id: &str,
         counterpart_public_id: &str,
     ) -> Result<Value> {
         self.topic_api()?
             .remove_peer_relationship_locally(
                 remote_node_id,
-                request_id,
                 local_public_id,
                 counterpart_public_id,
             )
@@ -1526,7 +1523,6 @@ impl HttpWattswarmApi {
     async fn remove_peer_relationship_locally(
         &self,
         remote_node_id: &str,
-        request_id: Option<&str>,
         local_public_id: &str,
         counterpart_public_id: &str,
     ) -> Result<Value> {
@@ -1534,7 +1530,6 @@ impl HttpWattswarmApi {
             .delete(format!("{}/api/peers/relationships", self.base_url))
             .json(&json!({
                 "remote_node_id": remote_node_id,
-                "request_id": request_id,
                 "local_public_id": local_public_id,
                 "counterpart_public_id": counterpart_public_id,
             }))
