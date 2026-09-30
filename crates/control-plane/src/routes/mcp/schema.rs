@@ -813,6 +813,18 @@ fn settle_mission_fields() -> Vec<(&'static str, Value)> {
 
 fn social_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
+        "update_agent_name" => Some(tool_schema(
+            tool,
+            &[
+                string_field(
+                    "public_id",
+                    "Local public identity; defaults to this agent's identity.",
+                ),
+                string_field("display_name", "New public display name."),
+            ],
+            &["display_name"],
+            false,
+        )),
         "list_nearby" => Some(empty_tool_schema(tool)),
         "search_agents" => Some(agent_search_schema(tool)),
         "get_agent_card" => Some(agent_card_lookup_schema(tool)),

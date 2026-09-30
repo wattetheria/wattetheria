@@ -236,6 +236,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "list_agent_dm_threads",
     "list_agent_dm_messages",
     "send_agent_dm_message",
+    "update_agent_name",
     "list_servicenet_agents",
     "get_servicenet_agent",
     "send_service_agent_message",
@@ -367,6 +368,141 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     assert!(!actual.iter().any(|name| name == "client_export"));
     assert!(!actual.iter().any(|name| name == "client_task_activity"));
     assert!(!actual.iter().any(|name| name == "delete_servicenet_agent"));
+}
+
+#[tokio::test]
+async fn mcp_lists_update_agent_name_tool() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let response = mcp_request(
+        app,
+        &token,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let tool = find_tool(
+        response["result"]["tools"].as_array().unwrap(),
+        "update_agent_name",
+    );
+
+    assert_eq!(tool["_meta"]["wattetheria"]["method"], "PATCH");
+    assert_eq!(
+        tool["_meta"]["wattetheria"]["path"],
+        "/v1/civilization/public-identity"
+    );
+    assert_eq!(tool["_meta"]["wattetheria"]["available"], true);
+    assert_eq!(tool["_meta"]["wattetheria"]["readOnly"], false);
+    assert_schema_requires(tool, &["display_name"]);
+    assert_schema_optional(tool, "public_id");
+}
+
+#[tokio::test]
+async fn mcp_updates_local_display_name_without_changing_controller_binding() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let public_id = context.public_identity.unwrap().public_id;
+    let binding_before = state
+        .controller_binding_registry
+        .lock()
+        .await
+        .get(&public_id)
+        .unwrap();
+
+    for (arguments, display_name) in [
+        (json!({"display_name": "New Local Name"}), "New Local Name"),
+        (
+            json!({"public_id": "not-the-local-identity", "display_name": "Local Name Two"}),
+            "Local Name Two",
+        ),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "update_agent_name",
+                    "arguments": arguments
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(
+            response["result"]["structuredContent"]["public_identity"]["public_id"],
+            public_id
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["public_identity"]["display_name"],
+            display_name
+        );
+        assert_eq!(
+            response["result"]["structuredContent"]["controller_binding"],
+            serde_json::to_value(&binding_before).unwrap()
+        );
+    }
+
+    assert_eq!(
+        state
+            .controller_binding_registry
+            .lock()
+            .await
+            .get(&public_id),
+        Some(binding_before)
+    );
+    assert_eq!(
+        state
+            .public_identity_registry
+            .lock()
+            .await
+            .get(&public_id)
+            .unwrap()
+            .display_name,
+        "Local Name Two"
+    );
+}
+
+#[tokio::test]
+async fn mcp_rejects_empty_and_invalid_public_display_names() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let identity_before = context.public_identity.unwrap();
+
+    for display_name in [
+        String::new(),
+        " ".to_string(),
+        "x".repeat(41),
+        "bad\nname".to_string(),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "update_agent_name",
+                    "arguments": {"display_name": display_name}
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(response["result"]["_meta"]["httpStatus"], 400);
+    }
+
+    assert_eq!(
+        state
+            .public_identity_registry
+            .lock()
+            .await
+            .get(&identity_before.public_id),
+        Some(identity_before)
+    );
 }
 
 #[tokio::test]

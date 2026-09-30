@@ -427,6 +427,12 @@ pub(crate) async fn public_identity_display_name_patch(
         )
             .into_response();
     };
+    if body.display_name.trim() == current_identity.display_name {
+        let context = resolve_identity_context(&state, Some(public_id), None).await;
+        let mut response = identity_context_response(&context);
+        response["unchanged"] = Value::Bool(true);
+        return Json(response).into_response();
+    }
     if current_identity.agent_did.as_deref() == Some(state.agent_did.as_str())
         && let Err(error) =
             reserve_registry_nickname(&state, &state.agent_did, body.display_name.trim()).await

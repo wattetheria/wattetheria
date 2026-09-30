@@ -768,3 +768,65 @@ async fn public_identity_display_name_patch_preserves_binding() {
         Some(true)
     );
 }
+
+#[tokio::test]
+async fn public_identity_display_name_patch_skips_unchanged_name() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let identity_before = context.public_identity.unwrap();
+    let event_count = state.event_log.get_all().unwrap().len();
+    let audit_count = state.audit_log.list_recent(100).unwrap().len();
+
+    let unchanged = authed_patch_json(
+        app.clone(),
+        &token,
+        "/v1/civilization/public-identity",
+        json!({
+            "public_id": identity_before.public_id,
+            "display_name": format!("  {}  ", identity_before.display_name)
+        }),
+    )
+    .await;
+
+    assert_eq!(unchanged["unchanged"], true);
+    assert_eq!(
+        unchanged["public_identity"]["display_name"],
+        identity_before.display_name
+    );
+    assert_eq!(
+        unchanged["public_identity"]["updated_at"],
+        identity_before.updated_at
+    );
+    assert_eq!(
+        state
+            .public_identity_registry
+            .lock()
+            .await
+            .get(&identity_before.public_id),
+        Some(identity_before.clone())
+    );
+    assert_eq!(state.event_log.get_all().unwrap().len(), event_count);
+    assert_eq!(state.audit_log.list_recent(100).unwrap().len(), audit_count);
+
+    let changed = authed_patch_json(
+        app,
+        &token,
+        "/v1/civilization/public-identity",
+        json!({
+            "public_id": identity_before.public_id,
+            "display_name": "A Different Name"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        changed["public_identity"]["display_name"],
+        "A Different Name"
+    );
+    assert!(changed.get("unchanged").is_none());
+    assert_eq!(state.event_log.get_all().unwrap().len(), event_count + 1);
+    assert_eq!(
+        state.audit_log.list_recent(100).unwrap().len(),
+        audit_count + 1
+    );
+}
