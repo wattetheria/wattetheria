@@ -236,6 +236,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "list_agent_dm_threads",
     "list_agent_dm_messages",
     "send_agent_dm_message",
+    "get_agent_identity",
     "update_agent_name",
     "list_servicenet_agents",
     "get_servicenet_agent",
@@ -368,6 +369,204 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
     assert!(!actual.iter().any(|name| name == "client_export"));
     assert!(!actual.iter().any(|name| name == "client_task_activity"));
     assert!(!actual.iter().any(|name| name == "delete_servicenet_agent"));
+}
+
+#[tokio::test]
+async fn mcp_lists_get_agent_identity_tool() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let response = mcp_request(
+        app,
+        &token,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    )
+    .await;
+    let tool = find_tool(
+        response["result"]["tools"].as_array().unwrap(),
+        "get_agent_identity",
+    );
+
+    assert_eq!(tool["_meta"]["wattetheria"]["method"], "GET");
+    assert_eq!(
+        tool["_meta"]["wattetheria"]["path"],
+        "/v1/civilization/public-identity"
+    );
+    assert_eq!(tool["_meta"]["wattetheria"]["available"], true);
+    assert_eq!(tool["_meta"]["wattetheria"]["readOnly"], true);
+    assert_eq!(tool["inputSchema"]["properties"], json!({}));
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert_schema_requires(tool, &[]);
+}
+
+#[tokio::test]
+async fn mcp_get_agent_identity_reads_current_local_identity_without_mutating_it() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    let public_id = context.public_identity.unwrap().public_id;
+    authed_patch_json(
+        app.clone(),
+        &token,
+        "/v1/civilization/public-identity",
+        json!({"public_id": public_id, "display_name": "Current Local Agent"}),
+    )
+    .await;
+    let identities_before = state.public_identity_registry.lock().await.list();
+    let expected = authed_get_json(app.clone(), &token, "/v1/civilization/public-identity").await;
+    assert_eq!(expected["public_identity"]["public_id"], public_id);
+    assert_eq!(
+        expected["public_identity"]["display_name"],
+        "Current Local Agent"
+    );
+    assert_eq!(expected["public_identity"]["agent_did"], state.agent_did);
+
+    for params in [
+        json!({"name": "get_agent_identity", "arguments": {}}),
+        json!({"name": "get_agent_identity"}),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": params
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(response["result"]["structuredContent"], expected);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(serde_json::from_str::<Value>(text).unwrap(), expected);
+        assert!(!response.to_string().contains("private_key"));
+        assert!(!response.to_string().contains(&token));
+    }
+
+    assert_eq!(
+        state.public_identity_registry.lock().await.list(),
+        identities_before
+    );
+    let context = crate::routes::identity::resolve_identity_context(&state, None, None).await;
+    assert_eq!(
+        crate::routes::identity::identity_context_response(&context),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn mcp_get_agent_identity_rejects_selectors_without_recording_success() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let other_agent = Identity::new_random();
+    let other_public_id = scoped_id("other-agent", &other_agent.agent_did);
+    state
+        .public_identity_registry
+        .lock()
+        .await
+        .upsert(
+            &other_public_id,
+            "Other Agent".to_string(),
+            Some(other_agent.agent_did.clone()),
+            true,
+        )
+        .unwrap();
+    let events_before: Value = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap();
+
+    for arguments in [
+        json!({"public_id": other_public_id}),
+        json!({"agent_did": other_agent.agent_did}),
+        json!({"query": {"public_id": other_public_id}}),
+    ] {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "get_agent_identity", "arguments": arguments}
+            }),
+        )
+        .await;
+
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["error"],
+            "get_agent_identity does not accept arguments"
+        );
+        assert!(
+            response["result"]["structuredContent"]
+                .get("public_identity")
+                .is_none()
+        );
+    }
+
+    let events_after: Value = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap();
+    assert_eq!(events_after, events_before);
+}
+
+#[tokio::test]
+async fn mcp_get_agent_identity_requires_network_permission() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    state
+        .local_db
+        .delete_network_agent_credential("test-network", &state.agent_did)
+        .unwrap();
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "get_agent_identity", "arguments": {}}
+        }),
+    )
+    .await;
+
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(
+        response["result"]["structuredContent"]["error_code"],
+        "network_permission_required"
+    );
+    assert!(
+        response["result"]["structuredContent"]
+            .get("public_identity")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn mcp_get_agent_identity_requires_authentication() {
+    let (_dir, _app, _token, _policy, mut state) = build_test_app(100);
+    state.mcp_token_auth_required = true;
+    let app = app(state);
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "get_agent_identity", "arguments": {}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -505,45 +704,145 @@ async fn mcp_rejects_empty_and_invalid_public_display_names() {
     );
 }
 
-#[tokio::test]
-async fn mcp_success_records_contribution_reward_event() {
-    let (_dir, app, token, _policy, state) = build_test_app(100);
-
-    let response = mcp_request(
-        app.clone(),
-        &token,
+async fn call_mcp_tool(app: Router, token: &str, name: &str, arguments: Value) -> Value {
+    mcp_request(
+        app,
+        token,
         json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
-            "params": {
-                "name": "client_export",
-                "arguments": {}
-            }
+            "params": {"name": name, "arguments": arguments}
         }),
+    )
+    .await
+}
+
+fn load_contribution_log(
+    state: &ControlPlaneState,
+) -> wattetheria_kernel::economy::ContributionEventLog {
+    state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap()
+}
+
+fn watt_balance_of(
+    state: &ControlPlaneState,
+    event: &wattetheria_kernel::economy::ContributionEvent,
+) -> i64 {
+    let balances: wattetheria_kernel::economy::WalletBalanceState = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .unwrap();
+    balances
+        .get(&event.controller_id, event.public_id.as_deref())
+        .unwrap()
+        .watt_balance
+}
+
+#[tokio::test]
+async fn mcp_success_records_contribution_reward_event() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+
+    let response = call_mcp_tool(
+        app.clone(),
+        &token,
+        "update_agent_name",
+        json!({"display_name": "Rewarded Name"}),
     )
     .await;
 
     assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    let log: wattetheria_kernel::economy::ContributionEventLog = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
-        .unwrap();
+    let log = load_contribution_log(&state);
     let event = log
         .events
         .values()
         .find(|event| event.action_type == "mcp.tool.success")
         .unwrap();
-    assert_eq!(event.receipt["tool_name"].as_str(), Some("client_export"));
+    assert_eq!(
+        event.receipt["tool_name"].as_str(),
+        Some("update_agent_name")
+    );
+    assert_eq!(watt_balance_of(&state, event), 1);
+}
 
-    let balances: wattetheria_kernel::economy::WalletBalanceState = state
+#[tokio::test]
+async fn mcp_read_only_tools_record_no_contribution_reward() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+
+    for tool in ["client_export", "list_nearby", "list_friend_requests"] {
+        call_mcp_tool(app.clone(), &token, tool, json!({})).await;
+    }
+
+    assert!(load_contribution_log(&state).events.is_empty());
+    assert!(crate::routes::mcp::is_read_only_mcp_tool(
+        "list_agent_dm_messages"
+    ));
+    assert!(crate::routes::mcp::is_read_only_mcp_tool(
+        "get_service_agent_task"
+    ));
+    assert!(!crate::routes::mcp::is_read_only_mcp_tool(
+        "send_agent_dm_message"
+    ));
+    assert!(!crate::routes::mcp::is_read_only_mcp_tool(
+        "send_service_agent_message"
+    ));
+}
+
+#[tokio::test]
+async fn prune_removes_read_only_mcp_rewards_and_reprojects_balance() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    call_mcp_tool(
+        app.clone(),
+        &token,
+        "update_agent_name",
+        json!({"display_name": "Kept Name"}),
+    )
+    .await;
+    let mut log = load_contribution_log(&state);
+    let kept = log.events.values().next().unwrap().clone();
+    for (action_type, tool_name) in [
+        ("mcp.tool.success", "list_nearby"),
+        ("mcp.tool.success", "list_agent_dm_messages"),
+        (
+            "servicenet.agent.invoke.success",
+            "list_service_agent_tasks",
+        ),
+    ] {
+        let mut farmed = kept.clone();
+        farmed.event_id = format!("reward:farmed:{tool_name}");
+        farmed.action_type = action_type.to_owned();
+        farmed.receipt = json!({"tool_name": tool_name, "result": {"content": []}});
+        log.append(farmed);
+    }
+    state
         .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .save_domain(
+            wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG,
+            &log,
+        )
         .unwrap();
-    let balance = balances
-        .get(&event.controller_id, event.public_id.as_deref())
+    crate::routes::reward_view::refresh_known_wallet_balances(&state)
+        .await
         .unwrap();
-    assert_eq!(balance.watt_balance, 1);
+    assert_eq!(watt_balance_of(&state, &kept), 4);
+
+    let removed = crate::prune_read_only_mcp_contributions(&state)
+        .await
+        .unwrap();
+
+    assert_eq!(removed, 3);
+    let log = load_contribution_log(&state);
+    assert_eq!(log.events.len(), 1);
+    assert!(log.events.contains_key(&kept.event_id));
+    assert_eq!(watt_balance_of(&state, &kept), 1);
+    assert_eq!(
+        crate::prune_read_only_mcp_contributions(&state)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test]

@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
-use crate::routes::identity::resolve_identity_context;
+use crate::routes::identity::{identity_context_response, resolve_identity_context};
 use crate::routes::reward_events::{
     ContributionEventArgs, contribution_actor, record_contribution_event,
 };
@@ -369,6 +369,18 @@ async fn direct_mcp_tool_result(
     arguments: &Value,
 ) -> Option<Value> {
     match tool_name {
+        "get_agent_identity" => {
+            if arguments
+                .as_object()
+                .is_some_and(|object| !object.is_empty())
+            {
+                return Some(tool_error(
+                    &json!({"error": "get_agent_identity does not accept arguments"}),
+                ));
+            }
+            let context = resolve_identity_context(state, None, None).await;
+            Some(tool_success(&identity_context_response(&context)))
+        }
         "list_missions" => Some(network_mission_market_result(state, arguments).await),
         "publish_collective_mission" => {
             Some(collective::publish_collective_mission_result(state, auth, arguments).await)
@@ -553,6 +565,7 @@ async fn record_mcp_tool_result(
         },
     );
     if !is_error
+        && !is_read_only_mcp_tool(tool_name)
         && let Err(error) =
             record_mcp_success_contribution(state, tool_name, arguments, result).await
     {
@@ -3000,6 +3013,22 @@ fn agent_tools() -> &'static [AgentTool] {
     &AGENT_TOOLS
 }
 
+/// POST tools that only read remote task state.
+const READ_ONLY_POST_TOOLS: [&str; 3] = [
+    "get_service_agent_task",
+    "get_servicenet_agent_task",
+    "list_service_agent_tasks",
+];
+
+/// Read-only tools earn no contribution reward: any polling client could
+/// otherwise farm Watt and ranking by repeating queries.
+pub(crate) fn is_read_only_mcp_tool(tool_name: &str) -> bool {
+    READ_ONLY_POST_TOOLS.contains(&tool_name)
+        || AGENT_TOOLS
+            .iter()
+            .any(|tool| tool.name == tool_name && tool.method == Method::GET)
+}
+
 fn is_visible_agent_tool(name: &str) -> bool {
     !matches!(
         name,
@@ -3011,7 +3040,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 61] = [
+const AGENT_TOOLS: [AgentTool; 62] = [
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },
@@ -3059,6 +3088,7 @@ const AGENT_TOOLS: [AgentTool; 61] = [
     AgentTool { name: "list_agent_dm_threads", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/threads", description: "List one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "list_agent_dm_messages", method: Method::GET, path: "/v1/wattetheria/social/agent-dm/messages", description: "List messages in one-to-one agent direct message threads.", availability: Availability::Always },
     AgentTool { name: "send_agent_dm_message", method: Method::POST, path: "/v1/wattetheria/social/agent-dm/messages", description: "Send a signed one-to-one direct message to an accepted agent friend.", availability: Availability::Always },
+    AgentTool { name: "get_agent_identity", method: Method::GET, path: "/v1/civilization/public-identity", description: "Read this local agent's current public identity, display name, Agent DID, and controller binding without exposing private keys.", availability: Availability::Always },
     AgentTool { name: "update_agent_name", method: Method::PATCH, path: "/v1/civilization/public-identity", description: "Update this local agent's public display name.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },

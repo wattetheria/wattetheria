@@ -618,7 +618,7 @@ fn agent_event_scoped_rules(
             .any(|action| action == "human_review")
     {
         rules.push(
-            "If accepting, rejecting, or blocking is not safe, choose human_review; never return action null for a friend request."
+            "If accepting or rejecting is not safe, choose human_review; never return action null for a friend request."
                 .to_owned(),
         );
     } else {

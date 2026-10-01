@@ -204,9 +204,7 @@ fn agent_action_execution_type(
     action: &str,
 ) -> Option<&'static str> {
     match (event_type, action) {
-        ("friend_request", "accept" | "reject" | "block") => {
-            Some("social.agent_relationship_action")
-        }
+        ("friend_request", "accept" | "reject") => Some("social.agent_relationship_action"),
         ("payment_request" | "payment_update", "authorize") => Some("payments.authorize"),
         ("payment_request" | "payment_update", "reject") => Some("payments.reject"),
         ("payment_request" | "payment_update", "submit") => Some("payments.submit"),
@@ -798,7 +796,7 @@ fn agent_action_commit_route_label(
     action: &str,
 ) -> &'static str {
     match (event_type, action) {
-        ("friend_request", "accept" | "reject" | "block") => "friend_request",
+        ("friend_request", "accept" | "reject") => "friend_request",
         (
             "payment_request" | "payment_update",
             "authorize" | "reject" | "submit" | "settle" | "cancel",
@@ -1913,7 +1911,7 @@ async fn dispatch_agent_action_commit(
     action: &str,
 ) -> Response {
     match (event_type, action) {
-        ("friend_request", "accept" | "reject" | "block") => {
+        ("friend_request", "accept" | "reject") => {
             commit_friend_request(state, commit_headers, body).await
         }
         (

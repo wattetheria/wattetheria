@@ -9,6 +9,7 @@ use wattetheria_kernel::economy::{
 use wattetheria_kernel::local_db;
 
 use crate::routes::identity::IdentityContextView;
+use crate::routes::mcp::is_read_only_mcp_tool;
 use crate::routes::reward_view::{
     load_wallet_balance_state_or_default, refresh_known_wallet_balances,
 };
@@ -58,6 +59,37 @@ pub(crate) async fn record_contribution_event(
         publish_ranking_update(state, &event);
     }
     Ok(event)
+}
+
+/// Removes contribution events that read-only MCP tools earned before they
+/// stopped being rewarded, then reprojects balances so the farmed Watt and
+/// ranking disappear. Returns the number of removed events.
+pub async fn prune_read_only_mcp_contributions(state: &ControlPlaneState) -> anyhow::Result<usize> {
+    let mut log: ContributionEventLog = state
+        .local_db
+        .load_domain_or_default(local_db::domain::CONTRIBUTION_EVENT_LOG)?;
+    let before = log.events.len();
+    log.events
+        .retain(|_, event| !is_read_only_mcp_contribution(event));
+    let removed = before - log.events.len();
+    if removed > 0 {
+        state
+            .local_db
+            .save_domain(local_db::domain::CONTRIBUTION_EVENT_LOG, &log)?;
+        refresh_known_wallet_balances(state).await?;
+    }
+    Ok(removed)
+}
+
+fn is_read_only_mcp_contribution(event: &ContributionEvent) -> bool {
+    matches!(
+        event.action_type.as_str(),
+        "mcp.tool.success" | "servicenet.agent.invoke.success"
+    ) && event
+        .receipt
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .is_some_and(is_read_only_mcp_tool)
 }
 
 pub(crate) fn contribution_actor<'a>(

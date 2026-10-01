@@ -1038,7 +1038,7 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
 }
 
 #[tokio::test]
-async fn agent_action_commit_routes_social_block_to_wattetheria_state() {
+async fn agent_action_commit_rejects_social_block_without_side_effects() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let remote_identity = Identity::new_random();
@@ -1073,7 +1073,7 @@ async fn agent_action_commit_routes_social_block_to_wattetheria_state() {
         );
     }
 
-    let committed = authed_post_json_with_headers(
+    let committed = authed_post(
         app.clone(),
         &token,
         "/v1/agent-actions/commit",
@@ -1103,25 +1103,16 @@ async fn agent_action_commit_routes_social_block_to_wattetheria_state() {
                 }
             }
         }),
-        &[
-            ("x-agent-event-id", "evt-friend-1"),
-            ("x-agent-decision-id", "dec-friend-1"),
-        ],
     )
     .await;
 
-    assert_eq!(committed["ok"].as_bool(), Some(true));
+    assert_eq!(committed, StatusCode::BAD_REQUEST);
     let blocks = block_service::list_blocks(&*state.social_store, &local_public_id)
         .expect("list social blocks");
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].blocked_public_id, remote_public_id);
+    assert!(blocks.is_empty());
 
     let relationship_commands = bridge.relationship_commands.lock().await;
-    assert_eq!(relationship_commands.len(), 1);
-    assert_eq!(
-        relationship_commands[0].action,
-        wattetheria_kernel::swarm_bridge::SwarmRelationshipAction::Block
-    );
+    assert!(relationship_commands.is_empty());
 }
 
 #[tokio::test]

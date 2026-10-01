@@ -72,6 +72,7 @@ pub use routes::network::{
     RegistryRegistrationResult, apply_registry_registration_record, build_registration_request,
     run_registry_registration_once, sync_network_permission_checkpoint,
 };
+pub use routes::reward_events::prune_read_only_mcp_contributions;
 pub use state::{
     ClientExportQuery, ControlPlaneState, GatewayEventSequence, GeoSource, NodeGeoLocation,
     RateLimiter, ServiceNetProviderIdentity, StreamEvent,

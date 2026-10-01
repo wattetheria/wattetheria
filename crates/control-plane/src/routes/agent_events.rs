@@ -117,7 +117,7 @@ fn map_route(event_type: &str, action: &str) -> Option<&'static str> {
 
 fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
     match event_type {
-        "friend_request" => matches!(action, "accept" | "reject" | "block"),
+        "friend_request" => matches!(action, "accept" | "reject"),
         "payment_request" | "payment_update" => {
             matches!(
                 action,
@@ -410,6 +410,7 @@ fn set_allowed_actions(event: &mut AgentEventEnvelope, actions: &[&str]) {
 
 fn add_friend_request_review_action(event: &mut AgentEventEnvelope) {
     if event.event_type == "friend_request" {
+        event.allowed_actions.retain(|action| action != "block");
         push_allowed_action(event, "human_review");
     }
 }
@@ -2185,6 +2186,8 @@ mod tests {
         event.allowed_actions = vec!["accept".to_owned(), "reject".to_owned(), "block".to_owned()];
         add_friend_request_review_action(&mut event);
 
+        assert!(!event.allowed_actions.iter().any(|action| action == "block"));
+        assert_eq!(map_route("friend_request", "block"), None);
         assert!(
             event
                 .allowed_actions

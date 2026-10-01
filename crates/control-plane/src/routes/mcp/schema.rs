@@ -825,7 +825,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             &["display_name"],
             false,
         )),
-        "list_nearby" => Some(empty_tool_schema(tool)),
+        "get_agent_identity" | "list_nearby" => Some(empty_tool_schema(tool)),
         "search_agents" => Some(agent_search_schema(tool)),
         "get_agent_card" => Some(agent_card_lookup_schema(tool)),
         "list_friend_requests" | "list_sent_friend_requests" => Some(tool_schema(
