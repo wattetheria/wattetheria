@@ -169,6 +169,10 @@ async fn execute_wattetheria_runtime(
 }
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to boxed futures"
+)]
 trait CustomizedAgentExecutor: Send + Sync {
     async fn send_message(
         &self,

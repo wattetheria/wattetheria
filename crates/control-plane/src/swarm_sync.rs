@@ -26,6 +26,10 @@ use wattetheria_kernel::swarm_sync::{
     clippy::default_trait_access,
     clippy::too_many_lines
 )]
+#[allow(
+    clippy::double_must_use,
+    reason = "tonic generates async_trait methods"
+)]
 pub mod proto {
     tonic::include_proto!("wattswarm.wattetheria.sync");
 }

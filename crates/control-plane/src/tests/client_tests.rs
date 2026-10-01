@@ -314,7 +314,10 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(leaderboard_json[0]["score_tenths"].as_i64(), Some(100));
 
     let rpc_logs_json = authed_get_json(app, &token, "/v1/client/rpc-logs?limit=5").await;
-    assert!(!rpc_logs_json.as_array().unwrap().is_empty());
+    assert_ne!(
+        rpc_logs_json.as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
     assert!(rpc_logs_json[0]["timestamp"].is_string());
     assert!(rpc_logs_json[0]["message"].is_string());
     assert!(rpc_logs_json[0]["level"].is_string());

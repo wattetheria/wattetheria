@@ -73,6 +73,10 @@ pub struct BrainEngine {
 }
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to boxed futures"
+)]
 pub trait BrainProvider: Send + Sync {
     async fn humanize_night_shift(&self, report: &Value) -> Result<HumanReport>;
     async fn propose_actions(&self, state: &Value) -> Result<Vec<ActionProposal>>;
@@ -1027,7 +1031,7 @@ mod tests {
         });
 
         let human = engine.humanize_night_shift(&report).await.unwrap();
-        assert!(!human.summary.is_empty());
+        assert_ne!(human.summary, "");
 
         let actions = engine
             .propose_actions(&json!({"pending_policy_requests": 1}))

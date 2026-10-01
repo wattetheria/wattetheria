@@ -364,6 +364,6 @@ mod tests {
         let mut galaxy = GalaxyState::default_with_core_zones();
         let generated =
             generate_system_galaxy_events(&mut galaxy, &governance, &missions, 3).unwrap();
-        assert!(!generated.is_empty());
+        assert_ne!(generated.as_slice(), []);
     }
 }

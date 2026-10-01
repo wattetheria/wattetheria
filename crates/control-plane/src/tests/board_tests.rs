@@ -147,7 +147,10 @@ async fn board_publish_and_read_keep_category_group_isolated() {
         "/v1/wattetheria/board/messages?category=general",
     )
     .await;
-    assert!(general["messages"].as_array().unwrap().is_empty());
+    assert_eq!(
+        general["messages"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 }
 
 #[tokio::test]

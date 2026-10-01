@@ -1446,7 +1446,7 @@ async fn agent_events_auto_commit_friend_request_accepts_relationship() {
     );
     let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
         .expect("list friendships");
-    assert!(friendships.is_empty());
+    assert_eq!(friendships.as_slice(), []);
 
     wattetheria_social::application::orchestration_service::reconcile_relationship_views(
         &*state.social_store,

@@ -76,11 +76,12 @@ async fn supervision_home_and_my_views_work() {
             .iter()
             .any(|track| track["key"].as_str() == Some("civic_governance"))
     );
-    assert!(
-        !my_governance_json["next_actions"]
+    assert_ne!(
+        my_governance_json["next_actions"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }
 #[tokio::test]

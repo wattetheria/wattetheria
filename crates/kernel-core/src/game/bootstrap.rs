@@ -473,7 +473,7 @@ mod tests {
                 .iter()
                 .any(|card| card.key == "bootstrap_stage_pack")
         );
-        assert!(!flow.first_hour_plan.is_empty());
+        assert_ne!(flow.first_hour_plan, [] as [String; 0]);
         assert_eq!(flow.first_cycle_plan, flow.first_hour_plan);
         assert_eq!(flow.first_hour_plan[0], "Seed your first trade corridor");
     }

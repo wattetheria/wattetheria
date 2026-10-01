@@ -1225,7 +1225,7 @@ async fn servicenet_template_and_publish_routes_support_console_flow() {
         Some(state.servicenet_provider.did.as_str())
     );
     let agent_id = publish_json["agent_id"].as_str().unwrap();
-    assert!(!agent_id.is_empty());
+    assert_ne!(agent_id, "");
     assert_eq!(
         publish_json["service_agent_identity_id"].as_str(),
         Some(service_identity.service_agent_identity_id.as_str())

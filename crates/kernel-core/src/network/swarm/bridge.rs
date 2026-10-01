@@ -383,6 +383,10 @@ pub struct SwarmTaskProposeCandidateCommand {
 }
 
 #[async_trait]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait adds must_use to boxed futures"
+)]
 pub trait SwarmBridge: Send + Sync {
     async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView>;
 

@@ -46,7 +46,7 @@ async fn public_source_agent_card_builds_signed_discovery_card() {
     let skills = card.card["skills"]
         .as_array()
         .expect("agent card skills array");
-    assert!(skills.is_empty());
+    assert_eq!(skills.as_slice(), [] as [Value; 0]);
     state
         .social_store
         .upsert_agent_skill(&wattetheria_social::domain::agent_skills::AgentSkill {
@@ -138,7 +138,10 @@ async fn agent_skills_api_updates_public_source_agent_card() {
         build_test_app_with_bridge(20, dir, identity.clone(), event_log, bridge);
 
     let skills = authed_get_json(app.clone(), &token, "/v1/wattetheria/agent-skills").await;
-    assert!(skills["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        skills["items"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 
     let saved = authed_post_json(
         app.clone(),
@@ -175,9 +178,15 @@ async fn agent_skills_api_updates_public_source_agent_card() {
     assert_eq!(deleted["skill_id"].as_str(), Some("custom-research"));
 
     let skills = authed_get_json(app.clone(), &token, "/v1/wattetheria/agent-skills").await;
-    assert!(skills["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        skills["items"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
     let card = authed_get_json(app, &token, "/v1/wattetheria/source-agent-card").await;
-    assert!(card["card"]["skills"].as_array().unwrap().is_empty());
+    assert_eq!(
+        card["card"]["skills"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 }
 
 async fn mock_x402_settle_rpc(
@@ -1109,7 +1118,7 @@ async fn agent_action_commit_rejects_social_block_without_side_effects() {
     assert_eq!(committed, StatusCode::BAD_REQUEST);
     let blocks = block_service::list_blocks(&*state.social_store, &local_public_id)
         .expect("list social blocks");
-    assert!(blocks.is_empty());
+    assert_eq!(blocks.as_slice(), []);
 
     let relationship_commands = bridge.relationship_commands.lock().await;
     assert!(relationship_commands.is_empty());
@@ -1227,10 +1236,11 @@ async fn agent_action_commit_resolves_friend_request_before_legacy_node_target()
         Some(secondary_public_id.as_str())
     );
     drop(commands);
-    assert!(
+    assert_eq!(
         friend_request_service::list_friend_requests(&*state.social_store, &primary_public_id)
             .expect("list primary requests")
-            .is_empty()
+            .as_slice(),
+        []
     );
     let secondary_requests =
         friend_request_service::list_friend_requests(&*state.social_store, &secondary_public_id)
@@ -2771,11 +2781,9 @@ async fn queued_relationship_reject_waits_for_swarm_projection() {
         requests[0].decision_reason.as_deref(),
         Some(wattetheria_social::domain::friend_requests::DECISION_PENDING_REJECT_REASON)
     );
-    assert!(
-        friendship_service::list_friendships(&*state.social_store, &local_public_id)
-            .expect("list friendships")
-            .is_empty()
-    );
+    let friendships = friendship_service::list_friendships(&*state.social_store, &local_public_id)
+        .expect("list friendships");
+    assert_eq!(friendships.as_slice(), []);
 
     let repeated = authed_post(
         app,

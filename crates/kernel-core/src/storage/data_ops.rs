@@ -351,7 +351,7 @@ mod tests {
 
         let snapshot = create_snapshot(&event_path, &snapshot_dir).unwrap();
         assert_eq!(snapshot.event_count, 1);
-        assert!(!snapshot.segment_files.is_empty());
+        assert_ne!(snapshot.segment_files, [] as [String; 0]);
 
         fs::write(&event_path, "{bad json\n").unwrap();
         let recovered = recover_if_corrupt(&event_path, &snapshot_dir).unwrap();

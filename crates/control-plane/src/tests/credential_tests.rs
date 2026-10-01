@@ -117,7 +117,10 @@ async fn provider_credentials_are_did_scoped_isolated_and_deletable() {
     );
     assert!(listed["items"][0].get("payload").is_none());
     assert!(!listed.to_string().contains("provider-private-claim"));
-    assert!(runtime["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        runtime["items"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 
     let credential_id = imported["credential_id"].as_str().unwrap();
     let (status, _) = authed_json_request(
@@ -136,7 +139,10 @@ async fn provider_credentials_are_did_scoped_isolated_and_deletable() {
     .await;
 
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(after_delete["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        after_delete["items"].as_array().unwrap().as_slice(),
+        [] as [Value; 0]
+    );
 }
 
 #[tokio::test]

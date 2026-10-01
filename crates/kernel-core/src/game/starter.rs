@@ -495,7 +495,7 @@ mod tests {
         let created = bootstrap_starter_missions("agent-a", &profile, &maps, &mut board);
         assert_eq!(created.len(), 2);
         let duplicate = bootstrap_starter_missions("agent-a", &profile, &maps, &mut board);
-        assert!(duplicate.is_empty());
+        assert_eq!(duplicate.as_slice(), []);
         let set = starter_mission_set("agent-a", &profile, &maps, &board);
         assert_eq!(set.templates.len(), 2);
         assert_eq!(set.existing.len(), 2);

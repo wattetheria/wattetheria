@@ -227,10 +227,11 @@ async fn galaxy_travel_state_and_session_flow_work() {
         arrived_json["travel_state"]["last_consequence"]["route_risk_level"].as_str(),
         Some("volatile")
     );
-    assert!(
-        !arrived_json["travel_state"]["recent_consequences"]
+    assert_ne!(
+        arrived_json["travel_state"]["recent_consequences"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 }

@@ -2208,7 +2208,7 @@ mod tests {
         let mut event = test_event("payment_request", json!({}));
         add_friend_request_review_action(&mut event);
 
-        assert!(event.allowed_actions.is_empty());
+        assert_eq!(event.allowed_actions, [] as [String; 0]);
         assert!(friend_request_resolution_or_review(&event, None).is_none());
     }
 

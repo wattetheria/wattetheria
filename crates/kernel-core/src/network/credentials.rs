@@ -620,7 +620,7 @@ mod tests {
                 .starts_with(dir.path().join(CREDENTIAL_ROOT))
         );
         assert_eq!(store.list(&provider).unwrap().len(), 1);
-        assert!(store.list(&runtime).unwrap().is_empty());
+        assert_eq!(store.list(&runtime).unwrap().as_slice(), []);
     }
 
     #[test]

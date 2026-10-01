@@ -760,7 +760,7 @@ mod tests {
             &galaxy,
             &mut board,
         );
-        assert!(duplicate.is_empty());
+        assert_eq!(duplicate.as_slice(), []);
 
         let pack = mission_pack_set(
             "agent-a",

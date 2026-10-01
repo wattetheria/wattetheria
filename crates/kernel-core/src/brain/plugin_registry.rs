@@ -74,7 +74,7 @@ mod tests {
             "plugins/market.wasm",
             TrustLevel::Verified,
         );
-        assert!(!descriptor.digest.is_empty());
+        assert_ne!(descriptor.digest, "");
         assert_eq!(registry.list().len(), 1);
         assert_eq!(
             registry.get("market-plugin", "0.1.0").unwrap().trust_level,

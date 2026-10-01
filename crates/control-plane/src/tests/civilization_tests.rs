@@ -220,11 +220,12 @@ async fn civilization_briefing_and_generated_galaxy_events_work() {
 
     let emergencies_json =
         authed_get_json(app.clone(), &token, "/v1/civilization/emergencies").await;
-    assert!(
-        !emergencies_json["emergencies"]
+    assert_ne!(
+        emergencies_json["emergencies"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .as_slice(),
+        [] as [Value; 0]
     );
 
     let briefing_json =
