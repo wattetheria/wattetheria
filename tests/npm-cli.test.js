@@ -366,11 +366,55 @@ function invocationCount(markerPath) {
 }
 
 for (const command of ["setup", "install", "update"]) {
-  test(`${command} works without updating the npm CLI first`, (context) => {
+  for (const runtime of ["native", "docker"]) {
+    test(`${command} rejects an outdated npm CLI before ${runtime} deployment work`, (context) => {
+      const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-outdated-cli-"));
+      const npmMarker = path.join(testDirectory, "npm");
+      const dockerMarker = path.join(testDirectory, "docker");
+      const commandDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
+      const deploymentDirectory = path.join(testDirectory, "deployment");
+      const envPath = path.join(deploymentDirectory, ".env");
+      const deploymentEnv = `WATTETHERIA_DEPLOYMENT_RUNTIME=${runtime}\n`;
+      fs.mkdirSync(deploymentDirectory);
+      fs.writeFileSync(envPath, deploymentEnv);
+      context.after(() => fs.rmSync(commandDirectory, { recursive: true, force: true }));
+      context.after(() => fs.rmSync(testDirectory, { recursive: true, force: true }));
+
+      const result = spawnSync(process.execPath, [
+        CLI_PATH, command, "--dir", deploymentDirectory, "--no-health-checks",
+        ...(runtime === "docker" ? ["--tag", "test"] : [])
+      ], {
+        cwd: ROOT_DIR,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+          WATTETHERIA_NATIVE_BIN_DIR: path.join(testDirectory, "missing-binaries"),
+          WATTETHERIA_NATIVE_CACHE_DIR: path.join(testDirectory, "cache"),
+          WATTETHERIA_NO_BANNER: "1"
+        }
+      });
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Wattetheria CLI is outdated\./);
+      assert.ok(result.stderr.includes(`Current: ${require("../package.json").version}`));
+      assert.match(result.stderr, /Latest:  999\.0\.0/);
+      assert.match(result.stderr, /wattetheria cli update/);
+      assert.ok(result.stderr.includes(`Then rerun:\n  wattetheria ${command}`));
+      assert.equal(invocationCount(npmMarker), 1);
+      assert.equal(invocationCount(dockerMarker), 0);
+      assert.equal(fs.readFileSync(envPath, "utf8"), deploymentEnv);
+      assert.deepEqual(fs.readdirSync(deploymentDirectory), [".env"]);
+      assert.equal(fs.existsSync(path.join(testDirectory, "cache")), false);
+      assert.doesNotMatch(result.stdout, /Checking native binaries|Pulling|Starting|Stopping/);
+    });
+  }
+
+  test(`${command} accepts a current npm CLI`, (context) => {
     const markerDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-markers-"));
     const npmMarker = path.join(markerDirectory, "npm");
     const dockerMarker = path.join(markerDirectory, "docker");
-    const npmDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
+    const npmDirectory = fakeCommandDirectory(require("../package.json").version, npmMarker, dockerMarker);
     const deploymentDirectory = path.join(markerDirectory, "deployment");
     fs.mkdirSync(deploymentDirectory, { recursive: true });
     if (command === "update") {
@@ -402,7 +446,7 @@ for (const command of ["setup", "install", "update"]) {
     });
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(invocationCount(npmMarker), 0);
+    assert.equal(invocationCount(npmMarker), 1);
     assert.ok(invocationCount(dockerMarker) > 0);
   });
 }
@@ -432,13 +476,13 @@ test("cli update is the explicit npm package update command", (context) => {
 });
 
 test(
-  "setup delegates to install without invoking npm to check the CLI version",
+  "setup checks the CLI version once when it delegates to install",
   { skip: process.platform === "win32" && "requires an executable Docker test shim" },
   (context) => {
     const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-setup-test-"));
     const npmMarker = path.join(testDirectory, "npm");
     const dockerMarker = path.join(testDirectory, "docker");
-    const commandDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
+    const commandDirectory = fakeCommandDirectory(require("../package.json").version, npmMarker, dockerMarker);
     const deploymentDirectory = path.join(testDirectory, "deployment");
     context.after(() => fs.rmSync(commandDirectory, { recursive: true, force: true }));
     context.after(() => fs.rmSync(testDirectory, { recursive: true, force: true }));
@@ -466,7 +510,7 @@ test(
     );
 
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(invocationCount(npmMarker), 0);
+    assert.equal(invocationCount(npmMarker), 1);
     assert.ok(invocationCount(dockerMarker) > 0);
     assert.match(
       fs.readFileSync(path.join(deploymentDirectory, ".env"), "utf8"),
@@ -474,6 +518,575 @@ test(
     );
   }
 );
+
+async function setupFixture(context, runtime, settings = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-setup-mode-"));
+  const packageRoot = path.join(root, "package");
+  fs.mkdirSync(packageRoot);
+  for (const file of ["bin", "lib", "package.json", ".env.native", ".env.release", "docker-compose.release.yml"]) {
+    fs.cpSync(path.join(ROOT_DIR, file), path.join(packageRoot, file), { recursive: true });
+  }
+  if (settings.packageVersion) {
+    const packagePath = path.join(packageRoot, "package.json");
+    const metadata = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    metadata.version = settings.packageVersion;
+    fs.writeFileSync(packagePath, JSON.stringify(metadata));
+  }
+  const registryRequests = [];
+  let certificate;
+  if (settings.registryTags) {
+    certificate = path.join(root, "registry-cert.pem");
+    const key = path.join(root, "registry-key.pem");
+    const generated = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key, "-out", certificate, "-days", "1", "-subj", "/CN=127.0.0.1",
+      "-addext", "subjectAltName=IP:127.0.0.1"], { encoding: "utf8" });
+    assert.equal(generated.status, 0, generated.stderr);
+    const registry = require("node:https").createServer({ key: fs.readFileSync(key), cert: fs.readFileSync(certificate) }, (request, response) => {
+      registryRequests.push(request.url);
+      response.setHeader("Content-Type", "application/json");
+      const expected = /^\/v2\/wattetheria\/(?:wattetheria-kernel|wattswarm-kernel|wattswarm-runtime|wattswarm-worker)\/tags\/list\?n=1000$/;
+      response.statusCode = expected.test(request.url) ? 200 : 404;
+      response.end(JSON.stringify({ tags: settings.registryTags }));
+    });
+    await new Promise(resolve => registry.listen(0, "127.0.0.1", resolve));
+    context.after(() => new Promise(resolve => registry.close(resolve)));
+    const releaseTemplate = path.join(packageRoot, ".env.release");
+    fs.writeFileSync(releaseTemplate, fs.readFileSync(releaseTemplate, "utf8")
+      .replaceAll("ghcr.io/wattetheria/", `127.0.0.1:${registry.address().port}/wattetheria/`));
+  }
+  const requests = [];
+  const http = require("node:http");
+  const health = http.createServer((request, response) => {
+    requests.push(request.url);
+    const running = runtime === "native"
+      ? require("../lib/native").isNativeStackRunning(dir) : fs.existsSync(runningPath);
+    response.statusCode = !["/v1/health", "/"].includes(request.url) ? 404
+      : !running || requests.length <= (settings.healthFailures || 0) ? 503 : 200;
+    response.end("test endpoint, not a Wattetheria service");
+  });
+  await new Promise(resolve => health.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise(resolve => health.close(resolve)));
+  for (const name of [".env.native", ".env.release"]) {
+    const template = path.join(packageRoot, name);
+    fs.writeFileSync(template, fs.readFileSync(template, "utf8")
+      .replace(/^WATTETHERIA_CONTROL_PLANE_PORT=.*$/m, `WATTETHERIA_CONTROL_PLANE_PORT=${health.address().port}`)
+      .replace(/^WATTSWARM_UI_PORT=.*$/m, `WATTSWARM_UI_PORT=${health.address().port}`));
+  }
+  const template = path.join(packageRoot, ".env.native");
+  fs.writeFileSync(template, fs.readFileSync(template, "utf8").replace(
+    /^WATTSWARM_RUNTIME_PORT=.*$/m, `WATTSWARM_RUNTIME_PORT=${await freePort()}`
+  ));
+  const dir = settings.defaultDir ? path.join(root, ".wattetheria", "deploy") : path.join(root, "deployment");
+  const envPath = path.join(dir, ".env");
+  const npmMarker = path.join(root, "npm");
+  const startsPath = path.join(root, "starts.jsonl");
+  const runningPath = path.join(root, "docker-running");
+  const callsPath = path.join(root, "docker-calls.jsonl");
+  const commandDirectory = fakeCommandDirectory(settings.publishedVersion || require("../package.json").version, npmMarker, path.join(root, "docker"));
+  const binDirectory = path.join(root, "native");
+  writeFakeNativeBinaries(binDirectory, path.join(root, "wattswarm"));
+  const recordStart = `fs.appendFileSync(${JSON.stringify(startsPath)}, JSON.stringify({ args, env: fs.readFileSync(${JSON.stringify(envPath)}, "utf8") }) + "\\n");`;
+  fs.writeFileSync(path.join(binDirectory, "wattetheria-kernel"), [
+    `#!${process.execPath}`,
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    recordStart,
+    `fs.appendFileSync(${JSON.stringify(path.join(root, "kernel-env.jsonl"))}, JSON.stringify(process.env) + "\\n");`,
+    'setInterval(() => {}, 1000);', ""
+  ].join("\n"));
+  fs.writeFileSync(path.join(commandDirectory, "docker"), [
+    `#!${process.execPath}`,
+    'const fs = require("node:fs"); const args = process.argv.slice(2);',
+    `fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");`,
+    `if (args.includes(${JSON.stringify(settings.dockerFailure || "never-fail")}) && fs.readFileSync(${JSON.stringify(callsPath)}, "utf8").trim().split("\\n").map(JSON.parse).filter(call => call.includes(${JSON.stringify(settings.dockerFailure || "never-fail")})).length === ${settings.failureOccurrence || 1}) { console.error("injected Docker failure"); process.exit(23); }`,
+    'if (!args.some(arg => ["--version", "version", "info", "config", "pull", "up", "down", "ps"].includes(arg))) { console.error("Unexpected Docker invocation", args); process.exit(24); }',
+    `if (args.includes("up")) { ${recordStart} fs.writeFileSync(${JSON.stringify(runningPath)}, "running"); }`,
+    `if (args.includes("down")) fs.rmSync(${JSON.stringify(runningPath)}, { force: true });`,
+    `if (args.includes("ps") && fs.existsSync(${JSON.stringify(runningPath)})) console.log("kernel\\nwattswarm-postgres\\nwattswarm-runtime\\nwattswarm-kernel\\nwattswarm-worker");`, ""
+  ].join("\n"));
+  for (const command of ["open", "xdg-open"]) {
+    fs.writeFileSync(path.join(commandDirectory, command), `#!/bin/sh\nexit ${settings.openFailure ? 1 : 0}\n`, { mode: 0o755 });
+  }
+  const env = {
+    ...process.env,
+    HOME: root,
+    USERPROFILE: root,
+    PATH: `${commandDirectory}${path.delimiter}${process.env.PATH || ""}`,
+    WATTETHERIA_NATIVE_BIN_DIR: binDirectory,
+    WATTETHERIA_NATIVE_CACHE_DIR: path.join(root, "cache"),
+    ...(certificate ? { NODE_EXTRA_CA_CERTS: certificate } : {}),
+    WATTETHERIA_NO_BANNER: "1"
+  };
+  const cliPath = path.join(packageRoot, "bin", "wattetheria.js");
+  const cli = (...args) => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args, ...(settings.defaultDir ? [] : ["--dir", dir])], { cwd: packageRoot, env });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", status => resolve({ status, stdout, stderr }));
+  });
+  context.after(async () => {
+    await cli("stop");
+    fs.rmSync(commandDirectory, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const setupArgs = ["setup", ...(settings.defaultRuntime ? [] : ["--runtime", runtime]),
+    ...(settings.defaultDir ? [] : ["--dir", dir]),
+    ...(runtime === "docker" && !settings.registryTags ? ["--tag", "test"] : [])];
+  const interactive = (mode, answer = mode === "mcp_events" ? "2" : "1", connection = "local", urlAnswers) => new Promise((resolve, reject) => {
+    const remote = mode === "mcp_events" && connection === "remote";
+    const responses = [
+      ...(Array.isArray(answer) ? answer : [answer]).map(value => ["Select Agent Event Mode [1-2]", value]),
+      ...(mode === "mcp_events" ? [
+        ...(settings.connectionAnswers || [remote ? "2" : "1"]).map(value => ["Select MCP Connection [1-2]", value]),
+        ...(urlAnswers || [remote ? "https://mcp.example.test/prefix" : ""])
+          .map(value => [remote ? "Public MCP Base URL" : "Webhook receiver URL", value])
+      ] : []),
+      ...(mode === "api_runtime" ? [
+        ["After starting the API server", ""], ["After saving runtime config", ""]
+      ] : []),
+      ...(remote ? [["Press Enter to restart Wattetheria and enable Remote MCP.", ""]] : []),
+      ["After saving MCP config", ""], ["After restarting your agent runtime", ""],
+      ["After verifying MCP access", ""]
+    ];
+    const child = spawn(process.execPath, ["-e", [
+      "process.stdin.isTTY = true; process.stdout.isTTY = true;",
+      `process.argv.splice(1, 0, ${JSON.stringify(cliPath)}); require(${JSON.stringify(cliPath)});`
+    ].join("\n"), ...setupArgs], { cwd: packageRoot, env });
+    let stdout = "";
+    let stderr = "";
+    let response = 0;
+    let cursor = 0;
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`Setup prompt timed out: ${stdout}\n${stderr}`));
+    }, 30000);
+    child.stdout.on("data", chunk => {
+      stdout += chunk;
+      if (response < responses.length) {
+        const [prompt, input] = responses[response];
+        const index = stdout.indexOf(prompt, cursor);
+        if (index >= 0) {
+          cursor = index + prompt.length;
+          response += 1;
+          child.stdin.write(`${input}\n`);
+        }
+      }
+    });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.once("error", error => { clearTimeout(timeout); reject(error); });
+    child.once("close", status => {
+      clearTimeout(timeout);
+      resolve({ status, stdout: require("node:util").stripVTControlCharacters(stdout), stderr,
+        answered: response, expectedAnswers: responses.length });
+    });
+  });
+  const starts = () => fs.existsSync(startsPath)
+    ? fs.readFileSync(startsPath, "utf8").trim().split("\n").map(line => JSON.parse(line))
+    : [];
+  const waitForStart = async (configPattern) => {
+    const started = () => {
+      const last = starts().at(-1);
+      return Boolean(last && (!configPattern || configPattern.test(last.env))
+        && (runtime !== "native" || require("../lib/native").isNativeStackRunning(dir)));
+    };
+    for (let attempt = 0; attempt < 50 && !started(); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.ok(started(), "deployment started with saved configuration");
+  };
+  const dockerCalls = () => fs.existsSync(callsPath)
+    ? fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse) : [];
+  const kernelEnvs = () => fs.existsSync(path.join(root, "kernel-env.jsonl"))
+    ? fs.readFileSync(path.join(root, "kernel-env.jsonl"), "utf8").trim().split("\n").map(JSON.parse) : [];
+  return { cli, setupArgs, interactive, envPath, npmMarker, starts, waitForStart, requests,
+    dockerCalls, kernelEnvs, root, commandDirectory, packageRoot, env, registryRequests };
+}
+
+for (const runtime of ["native", "docker"]) {
+  for (const mode of ["api_runtime", "mcp_events"]) {
+    test(`interactive ${runtime} setup selects ${mode} before first startup`,
+      { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+        const fixture = await setupFixture(context, runtime);
+        const result = await fixture.interactive(mode);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.answered, result.expectedAnswers);
+        assert.ok(fixture.requests.includes("/v1/health"));
+        assert.ok(fixture.requests.includes("/"));
+        assert.match(result.stdout, /Agent Event Mode/);
+        assert.doesNotMatch(result.stdout, /AGENT_EVENT_MODE/);
+        assert.ok(result.stdout.indexOf("Select Agent Event Mode") < result.stdout.indexOf("Checking "));
+        assert.match(result.stdout, /Install MCP in your agent runtime/);
+        assert.match(result.stdout, /Restart Wattetheria/);
+        assert.match(result.stdout, /Restart your agent runtime/);
+        assert.match(result.stdout, /Setup complete\./);
+        if (mode === "mcp_events") {
+          assert.doesNotMatch(result.stdout, /Start an agent runtime API server|Configure runtime|OpenAI-compatible|Open:/);
+          assert.match(result.stdout, /1\. Local MCP \(webhook\)/);
+          assert.match(result.stdout, /2\. Remote MCP/);
+          const host = runtime === "native" ? "127.0.0.1" : "host.docker.internal";
+          assert.ok(result.stdout.includes(`default: http://${host}:3000/webhook`));
+          const saved = fs.readFileSync(fixture.envPath, "utf8");
+          assert.ok(saved.includes(`WATTETHERIA_EVENT_WEBHOOK_URL=http://${host}:3000/webhook`));
+          const secret = saved.match(/^WATTETHERIA_EVENT_WEBHOOK_SECRET=(whsec_[A-Za-z0-9+/]+=*)$/m)?.[1];
+          assert.ok(secret, "automatically generated webhook signing secret");
+          assert.equal(Buffer.from(secret.slice(6), "base64").length, 32);
+          assert.ok(!result.stdout.includes(secret), "secret is not printed");
+          assert.doesNotMatch(result.stdout, /(?:Enter|Select|Type).*secret/i);
+          await fixture.waitForStart(/^WATTETHERIA_EVENT_WEBHOOK_SECRET=whsec_/m);
+          assert.ok(fixture.starts().at(-1).env.includes(`WATTETHERIA_EVENT_WEBHOOK_SECRET=${secret}`));
+          assert.doesNotMatch(saved, /^WATTETHERIA_MCP_PUBLIC_BIND=0\.0\.0\.0/m);
+        } else {
+          assert.match(result.stdout, /Start an agent runtime API server/);
+          assert.match(result.stdout, /Configure runtime/);
+        }
+        const count = mode === "mcp_events" ? 5 : 7;
+        assert.deepEqual([...result.stdout.matchAll(/\[(\d+)\/(\d+)\]/g)].map(match => [Number(match[1]), Number(match[2])]),
+          Array.from({ length: count }, (_, index) => [index + 1, count]));
+        assert.equal(invocationCount(fixture.npmMarker), 1);
+        await fixture.waitForStart();
+        for (const start of fixture.starts()) {
+          assert.match(start.env, new RegExp(`^WATTETHERIA_AGENT_EVENT_MODE=${mode}$`, "m"));
+          if (mode === "mcp_events") {
+            assert.match(start.env, /^WATTETHERIA_EVENT_WEBHOOK_SECRET=whsec_/m);
+          }
+          if (runtime === "native") {
+            assert.equal(start.args[start.args.indexOf("--agent-event-mode") + 1], mode);
+          }
+        }
+        if (runtime === "native") {
+          assert.equal(fixture.kernelEnvs().at(-1).WATTETHERIA_AGENT_EVENT_MODE, mode);
+          if (mode === "mcp_events") {
+            assert.match(fixture.kernelEnvs().at(-1).WATTETHERIA_EVENT_WEBHOOK_SECRET, /^whsec_/);
+          }
+        } else {
+          const operations = fixture.dockerCalls().flatMap(args => args.filter(arg => ["config", "pull", "up", "down"].includes(arg)));
+          assert.deepEqual(operations, ["config", "pull", "up", "down", "up"]);
+        }
+      });
+  }
+
+  test(`interactive ${runtime} setup configures Remote MCP and applies it on restart`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+      const fixture = await setupFixture(context, runtime);
+      const result = await fixture.interactive("mcp_events", "2", "remote", ["", "http://node.example", "https://mcp.example.test/prefix"]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.answered, result.expectedAnswers);
+      assert.match(result.stdout, /example: https:\/\/node\.example/);
+      assert.equal(result.stdout.split("Enter a public HTTPS base URL.").length - 1, 2);
+      assert.match(result.stdout, /npx wattetheria mcp url --dir/);
+      assert.doesNotMatch(result.stdout, /"command": "npx"|mcp-proxy|Webhook receiver URL|Configure runtime/);
+      assert.match(result.stdout, /Setup complete/);
+      const saved = fs.readFileSync(fixture.envPath, "utf8");
+      assert.match(saved, /^WATTETHERIA_MCP_PUBLIC_BIND=0\.0\.0\.0:7778$/m);
+      assert.match(saved, /^WATTETHERIA_MCP_PUBLIC_BASE_URL=https:\/\/mcp\.example\.test\/prefix$/m);
+      assert.doesNotMatch(saved, /^WATTETHERIA_EVENT_WEBHOOK_SECRET=whsec_/m);
+      await fixture.waitForStart(/^WATTETHERIA_MCP_PUBLIC_BIND=0\.0\.0\.0:7778$/m);
+      for (const start of fixture.starts()) {
+        assert.match(start.env, /^WATTETHERIA_MCP_PUBLIC_BIND=0\.0\.0\.0:7778$/m);
+      }
+      const noninteractive = await fixture.cli(...fixture.setupArgs);
+      assert.equal(noninteractive.status, 0, noninteractive.stderr);
+      assert.match(noninteractive.stdout, /npx wattetheria mcp url --dir/);
+      assert.match(noninteractive.stdout, /1\. Restart Wattetheria/);
+      assert.match(noninteractive.stdout, /2\. Add Wattetheria MCP/);
+      assert.doesNotMatch(noninteractive.stdout, /Select MCP Connection|Public MCP Base URL \(|mcp-proxy/);
+      assert.equal(fs.readFileSync(fixture.envPath, "utf8"), saved);
+    });
+
+  test(`${runtime} setup switches mode, preserves Brain config, and keeps the saved default`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+      const fixture = await setupFixture(context, runtime);
+      const initial = await fixture.cli(...fixture.setupArgs);
+      assert.equal(initial.status, 0, initial.stderr);
+      assert.match(initial.stdout, /Using api_runtime\./);
+      assert.match(initial.stdout, /Start an agent runtime API server/);
+      assert.doesNotMatch(initial.stdout, /Select Agent Event Mode/);
+      await fixture.waitForStart();
+      const brainEnv = fs.readFileSync(fixture.envPath, "utf8")
+        .replace(/^WATTETHERIA_BRAIN_BASE_URL=.*$/m, "WATTETHERIA_BRAIN_BASE_URL=http://brain.example/v1")
+        .replace(/^WATTETHERIA_BRAIN_MODEL=.*$/m, "WATTETHERIA_BRAIN_MODEL=existing-model")
+        .replace(/^WATTETHERIA_BRAIN_API_KEY=.*$/m, "WATTETHERIA_BRAIN_API_KEY=existing-key");
+      fs.writeFileSync(fixture.envPath, brainEnv);
+
+      for (const mode of ["mcp_events", "api_runtime"]) {
+        const switched = await fixture.interactive(mode);
+        assert.equal(switched.status, 0, switched.stderr);
+        assert.equal(switched.answered, switched.expectedAnswers);
+        assert.match(switched.stdout, /Restart Wattetheria/);
+        assert.doesNotMatch(switched.stdout, /Agent Event Mode changed/);
+        assert.equal(switched.stdout.split(runtime === "native" ? "Native services stopped." : "Stopping release stack...").length - 1, 1);
+        const saved = fs.readFileSync(fixture.envPath, "utf8");
+        assert.match(saved, new RegExp(`^WATTETHERIA_AGENT_EVENT_MODE=${mode}$`, "m"));
+        for (const line of brainEnv.split("\n").filter(line => line.startsWith("WATTETHERIA_BRAIN_"))) {
+          assert.ok(saved.split("\n").includes(line), `preserved ${line.split("=")[0]}`);
+        }
+        const repeat = await fixture.interactive(mode, "");
+        assert.equal(repeat.status, 0, repeat.stderr);
+        assert.equal(repeat.answered, repeat.expectedAnswers);
+        assert.ok(repeat.stdout.includes(`default: ${mode}`));
+        assert.doesNotMatch(repeat.stdout, /Agent Event Mode changed/);
+        assert.equal(fs.readFileSync(fixture.envPath, "utf8"), saved, "repeated setup preserves the webhook secret and config");
+        const noninteractive = await fixture.cli(...fixture.setupArgs);
+        assert.equal(noninteractive.status, 0, noninteractive.stderr);
+        assert.ok(noninteractive.stdout.includes(`Using ${mode}.`));
+        assert.doesNotMatch(noninteractive.stdout, /Select Agent Event Mode/);
+        assert.match(noninteractive.stdout, /Add Wattetheria MCP|Verify MCP access/);
+        if (mode === "mcp_events") {
+          assert.doesNotMatch(noninteractive.stdout, /Start an agent runtime API server|configure the runtime|OpenAI-compatible/);
+          assert.match(noninteractive.stdout, /1\. Add Wattetheria MCP/);
+          assert.match(noninteractive.stdout, /4\. Verify MCP access/);
+        } else {
+          assert.match(noninteractive.stdout, /Start an agent runtime API server/);
+          assert.match(noninteractive.stdout, /6\. Verify MCP access/);
+        }
+      }
+    });
+}
+
+for (const runtime of ["native", "docker"]) {
+  for (const connection of ["api", "local", "remote"]) {
+    test(`${runtime} setup ${connection}: default entry, running and stopped deployments, interactive and noninteractive`,
+      { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+      const fixture = await setupFixture(context, runtime, {
+        defaultRuntime: runtime === "docker", defaultDir: true,
+        connectionAnswers: connection === "remote" ? ["invalid", "2"] : ["invalid", ""],
+        openFailure: true, healthFailures: 1
+      });
+      const mode = connection === "api" ? "api_runtime" : "mcp_events";
+      const choice = connection === "api" ? "" : "2";
+      const invalidUrls = connection === "remote"
+        ? ["not a URL", "ftp://node.example", "https://user:pass@node.example", "https://:pass@node.example", "https://node.example/#fragment", "https://node.example/?query=1", "https://node.example/prefix"]
+        : ["not a URL", "ftp://localhost", "http://user:pass@localhost", "http://:pass@localhost", "http://localhost/#fragment", "https://receiver.example/events?agent=1"];
+      const first = await fixture.interactive(mode, ["invalid", choice], connection, invalidUrls);
+      assert.equal(first.status, 0, first.stderr);
+      assert.equal(first.answered, first.expectedAnswers);
+      assert.match(first.stdout, /Please choose 1 or 2/);
+      assert.match(first.stdout, /Still waiting for kernel health.*HTTP 503/);
+      assert.match(first.stdout, /\[ok\] kernel health/);
+      assert.match(first.stdout, /\[ok\] wattswarm ui/);
+      assert.ok(!fixture.setupArgs.includes("--no-health-checks"));
+      assert.equal(fixture.setupArgs.includes("--runtime"), runtime === "native");
+      const env = fs.readFileSync(fixture.envPath, "utf8");
+      assert.ok(env.includes(`WATTETHERIA_DEPLOYMENT_RUNTIME=${runtime}`));
+      if (connection === "api") assert.match(first.stdout, /Open the URL above in your browser/);
+      if (connection === "remote") assert.match(first.stdout, /npx wattetheria mcp url\r?\n/);
+      if (connection === "local") assert.match(env, /^WATTETHERIA_EVENT_WEBHOOK_URL=https:\/\/receiver\.example\/events\?agent=1$/m);
+      await fixture.waitForStart();
+      for (const state of ["running", "stopped"]) {
+        if (state === "stopped") assert.equal((await fixture.cli("stop")).status, 0);
+        const automatic = await fixture.cli("setup");
+        assert.equal(automatic.status, 0, automatic.stderr);
+        assert.match(automatic.stdout, state === "running" ? /Skipping start/ : /Starting existing stack/);
+        assert.match(automatic.stdout, /\[ok\] kernel health/);
+        assert.doesNotMatch(automatic.stdout, /Select Agent Event Mode|Select MCP Connection/);
+        assert.equal(fs.readFileSync(fixture.envPath, "utf8"), env);
+        await fixture.waitForStart();
+        if (state === "stopped") assert.equal((await fixture.cli("stop")).status, 0);
+        const manual = await fixture.interactive(mode, "", connection, [""]);
+        assert.equal(manual.status, 0, manual.stderr);
+        assert.equal(manual.answered, manual.expectedAnswers);
+        assert.match(manual.stdout, state === "running" ? /Skipping start/ : /Starting existing stack/);
+        assert.equal(fs.readFileSync(fixture.envPath, "utf8"), env);
+        await fixture.waitForStart();
+      }
+    });
+  }
+}
+
+for (const failure of ["--version", "version", "info", "config", "pull", "up", "down"]) {
+  test(`setup stops on Docker ${failure} failure instead of claiming completion`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+    const fixture = await setupFixture(context, "docker", { dockerFailure: failure, defaultRuntime: true });
+    const result = await fixture.interactive("mcp_events");
+    assert.equal(result.status, 1, result.stderr);
+    assert.doesNotMatch(result.stdout, /Setup complete|Verify MCP access/);
+    const calls = fixture.dockerCalls();
+    assert.ok(calls.some(args => args.includes(failure)));
+    if (["--version", "version", "info", "config", "pull"].includes(failure)) {
+      assert.equal(fixture.starts().length, 0);
+      assert.equal(fixture.requests.length, 0);
+    }
+    if (["--version", "version", "info"].includes(failure)) assert.equal(fs.existsSync(fixture.envPath), false);
+    if (failure === "down") assert.equal(calls.filter(args => args.includes("up")).length, 1);
+  });
+}
+
+test("setup does not continue after a failed Docker restart",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "docker", { dockerFailure: "up", failureOccurrence: 2 });
+  const result = await fixture.interactive("mcp_events", "2", "remote");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /injected Docker failure|Command failed/);
+  assert.match(result.stdout, /Restart Wattetheria/);
+  assert.doesNotMatch(result.stdout, /After saving MCP config|Restart your agent runtime|Setup complete/);
+  assert.equal(fixture.dockerCalls().filter(args => args.includes("up")).length, 2);
+});
+
+test("existing Docker setup stops when service status cannot be read",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "docker", { dockerFailure: "ps" });
+  assert.equal((await fixture.cli(...fixture.setupArgs)).status, 0);
+  const before = fixture.dockerCalls().filter(args => args.includes("up")).length;
+  const result = await fixture.interactive("mcp_events");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /injected Docker failure/);
+  assert.doesNotMatch(result.stdout, /Restart Wattetheria|Setup complete/);
+  assert.equal(fixture.dockerCalls().filter(args => args.includes("up")).length, before);
+});
+
+for (const connection of ["api", "local", "remote"]) {
+  test(`plain setup resolves latest Docker images for ${connection}, then update checks health`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+    const fixture = await setupFixture(context, "docker", {
+      defaultRuntime: true, defaultDir: true, registryTags: ["latest", "v1.2.3", "v1.3.0"]
+    });
+    assert.deepEqual(fixture.setupArgs, ["setup"]);
+    const mode = connection === "api" ? "api_runtime" : "mcp_events";
+    const result = await fixture.interactive(mode, connection === "api" ? "1" : "2", connection);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.answered, result.expectedAnswers);
+    assert.match(result.stdout, /Resolved latest published release tag v1.3.0/);
+    assert.equal(new Set(fixture.registryRequests).size, 4);
+    assert.match(fs.readFileSync(fixture.envPath, "utf8"), /^RELEASE_TAG=v1\.3\.0$/m);
+    assert.match(result.stdout, /Setup complete/);
+    const update = await fixture.cli("update");
+    assert.equal(update.status, 0, update.stderr);
+    assert.match(update.stdout, /already pinned to latest published tag v1.3.0/);
+    assert.match(update.stdout, /\[ok\] kernel health/);
+    assert.equal(fixture.registryRequests.length, 8);
+  });
+}
+
+test("plain setup stops when the registry has no published releases",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "docker", { defaultRuntime: true, registryTags: [] });
+  const result = await fixture.interactive("mcp_events");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /No published tags found/);
+  assert.doesNotMatch(result.stdout, /Setup complete/);
+  assert.equal(fixture.starts().length, 0);
+  assert.equal(fixture.requests.length, 0);
+});
+
+test("native setup rejects missing binaries without downloading or saving selected config",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "native");
+  fs.rmSync(path.join(fixture.root, "native"), { recursive: true });
+  const result = await fixture.interactive("mcp_events");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Native Wattetheria binaries were not found/);
+  assert.equal(fs.existsSync(fixture.envPath), false);
+  assert.equal(fs.existsSync(path.join(fixture.root, "cache")), false);
+  assert.equal(fixture.requests.length, 0);
+  assert.equal(fixture.starts().length, 0);
+});
+
+test("native setup and update reject Docker image tags without restarting",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "native");
+  const first = await fixture.cli(...fixture.setupArgs, "--tag", "test");
+  assert.equal(first.status, 1);
+  assert.match(first.stderr, /--tag selects Docker image tags/);
+  assert.equal(fs.existsSync(fixture.envPath), false);
+  assert.equal((await fixture.cli(...fixture.setupArgs)).status, 0);
+  const before = fixture.starts().length;
+  const update = await fixture.cli("update", "--tag", "test");
+  assert.equal(update.status, 1);
+  assert.match(update.stderr, /--tag selects Docker image tags/);
+  assert.equal(fixture.starts().length, before);
+});
+
+test("Docker update rejects an incomplete deployment without starting it",
+  { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+  const fixture = await setupFixture(context, "docker");
+  fs.mkdirSync(path.dirname(fixture.envPath), { recursive: true });
+  fs.writeFileSync(fixture.envPath, "WATTETHERIA_DEPLOYMENT_RUNTIME=docker\n");
+  const result = await fixture.cli("update");
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Deployment is not initialized/);
+  assert.equal(fixture.starts().length, 0);
+});
+
+for (const runtime of ["native", "docker"]) {
+  test(`${runtime} setup rejects a conflicting runtime before changing existing config`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+    const fixture = await setupFixture(context, runtime);
+    assert.equal((await fixture.cli(...fixture.setupArgs)).status, 0);
+    const before = fs.readFileSync(fixture.envPath, "utf8");
+    const result = await fixture.cli("setup", "--runtime", runtime === "native" ? "docker" : "native");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /deployment already exists/);
+    assert.doesNotMatch(result.stdout, /Agent Event Mode/);
+    assert.equal(fs.readFileSync(fixture.envPath, "utf8"), before);
+  });
+}
+
+for (const runtime of ["native", "docker"]) {
+  for (const scenario of ["missing-npm", "npm-error", "npm-error-no-detail", "invalid-version"]) {
+    test(`${runtime} CLI version check fails closed on ${scenario}`,
+      { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+      const fixture = await setupFixture(context, runtime);
+      const npmPath = path.join(fixture.commandDirectory, "npm");
+      const errors = {
+        "missing-npm": /Failed to query latest Wattetheria CLI version:/,
+        "npm-error": /Failed to query latest Wattetheria CLI version from npm: registry unavailable/,
+        "npm-error-no-detail": /Failed to query latest Wattetheria CLI version from npm\./,
+        "invalid-version": /Invalid Wattetheria CLI version: not-semver/
+      };
+      if (scenario === "missing-npm") {
+        fs.rmSync(npmPath);
+        fixture.env.PATH = fixture.commandDirectory;
+      } else {
+        fs.writeFileSync(npmPath, `#!${process.execPath}\n${scenario === "invalid-version"
+          ? 'console.log("not-semver");' : `${scenario === "npm-error" ? 'console.error("registry unavailable");' : ""} process.exit(1);`}\n`);
+      }
+      for (const command of ["setup", "install", "update"]) {
+        const result = await fixture.cli(command, "--runtime", runtime);
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, errors[scenario]);
+        assert.equal(fs.existsSync(fixture.envPath), false);
+        assert.equal(fixture.dockerCalls().length, 0);
+        assert.equal(fixture.starts().length, 0);
+      }
+    });
+  }
+  for (const [current, latest, outdated] of [
+    ["1.2.3", "2.0.0", true], ["1.2.3", "1.3.0", true], ["1.2.3", "1.2.4", true],
+    ["2.0.0", "1.2.3", false], ["1.3.0", "1.2.3", false], ["1.2.4", "1.2.3", false]
+  ]) {
+    test(`${runtime} setup compares ${current} with published ${latest}`,
+      { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+      const fixture = await setupFixture(context, runtime, { packageVersion: current, publishedVersion: latest });
+      const result = await fixture.cli(...fixture.setupArgs);
+      assert.equal(result.status, outdated ? 1 : 0, result.stderr);
+      assert.equal(invocationCount(fixture.npmMarker), 1);
+      if (outdated) {
+        assert.match(result.stderr, /Wattetheria CLI is outdated/);
+        assert.equal(fs.existsSync(fixture.envPath), false);
+        assert.equal(fixture.starts().length, 0);
+      } else {
+        assert.match(result.stdout, /Finish setup/);
+        assert.match(result.stdout, /\[ok\] kernel health/);
+      }
+    });
+  }
+  test(`${runtime} setup retains an existing custom Remote MCP bind and quoted URL`,
+    { skip: process.platform === "win32" && "uses POSIX executable shims" }, async context => {
+    const fixture = await setupFixture(context, runtime, { connectionAnswers: [""] });
+    assert.equal((await fixture.cli(...fixture.setupArgs)).status, 0);
+    fs.appendFileSync(fixture.envPath, '\nWATTETHERIA_AGENT_EVENT_MODE=mcp_events\nWATTETHERIA_MCP_PUBLIC_BIND=127.0.0.1:17778\nWATTETHERIA_MCP_PUBLIC_BASE_URL="https://node.example/prefix"\n');
+    const result = await fixture.interactive("mcp_events", "", "remote", [""]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.answered, result.expectedAnswers);
+    assert.match(result.stdout, /Select MCP Connection \[1-2\] \(default: 2\)/);
+    assert.match(result.stdout, /default: https:\/\/node.example\/prefix/);
+    assert.match(fs.readFileSync(fixture.envPath, "utf8"), /^WATTETHERIA_MCP_PUBLIC_BIND=127\.0\.0\.1:17778$/m);
+    await fixture.waitForStart();
+    if (runtime === "native") assert.equal(fixture.kernelEnvs().at(-1).WATTETHERIA_MCP_PUBLIC_BIND, "127.0.0.1:17778");
+  });
+}
 
 test("deployment runtime is read from the deployment env", (context) => {
   const deploymentDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-runtime-test-"));
@@ -633,8 +1246,9 @@ function writeFakeNativeBinaries(binDirectory, markerPath) {
   }
 }
 
+for (const command of ["install", "setup"]) {
 test(
-  "native install supervises local binaries without Docker",
+  `native ${command} supervises local binaries without Docker`,
   { skip: process.platform === "win32" && "uses POSIX executable shims" },
   async (context) => {
     const testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-test-"));
@@ -643,7 +1257,7 @@ test(
     const wattswarmMarker = path.join(testDirectory, "wattswarm-args");
     const npmMarker = path.join(testDirectory, "npm");
     const dockerMarker = path.join(testDirectory, "docker");
-    const commandDirectory = fakeCommandDirectory("999.0.0", npmMarker, dockerMarker);
+    const commandDirectory = fakeCommandDirectory(require("../package.json").version, npmMarker, dockerMarker);
     writeFakeNativeBinaries(binDirectory, wattswarmMarker);
     fs.mkdirSync(deploymentDirectory, { recursive: true });
     fs.writeFileSync(
@@ -667,15 +1281,19 @@ test(
       fs.rmSync(testDirectory, { recursive: true, force: true });
     });
 
-    const install = cli("install", "--runtime", "native", "--no-health-checks");
+    const install = cli(command, "--runtime", "native", "--no-health-checks");
     assert.equal(install.status, 0, install.stderr);
     assert.match(install.stdout, /Native supervisor started/);
 
     const deploymentEnv = fs.readFileSync(path.join(deploymentDirectory, ".env"), "utf8");
     assert.match(deploymentEnv, /^WATTETHERIA_DEPLOYMENT_RUNTIME=native$/m);
-    assert.match(deploymentEnv, /^WATTSWARM_STORAGE_BACKEND=sqlite$/m);
+    if (command === "install") {
+      assert.match(deploymentEnv, /^WATTSWARM_STORAGE_BACKEND=sqlite$/m);
+    } else {
+      assert.match(install.stdout, /Start existing Wattetheria deployment/);
+    }
     assert.doesNotMatch(deploymentEnv, /WATTSWARM_PG_/);
-    assert.equal(invocationCount(npmMarker), 0);
+    assert.equal(invocationCount(npmMarker), 1);
 
     let status;
     for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -715,6 +1333,7 @@ test(
     assert.equal(update.status, 0, update.stderr);
     assert.match(update.stdout, /Native services stopped\./);
     assert.match(update.stdout, /Native supervisor started/);
+    assert.equal(invocationCount(npmMarker), 2);
 
     const stop = cli("stop");
     assert.equal(stop.status, 0, stop.stderr);
@@ -723,6 +1342,7 @@ test(
     assert.equal(invocationCount(dockerMarker), 0);
   }
 );
+}
 
 test(
   "native supervisor restarts a service whose binary fails to start",

@@ -97,10 +97,35 @@ Run the first-time setup flow:
 npx wattetheria setup
 ```
 
-`setup` checks Docker, installs the stack, prompts you to start an agent
-runtime API server, opens the supervision console, prints the MCP config for
-your agent runtime, restarts Wattetheria, and leaves you at the MCP verification
-step.
+`setup` first asks you to select **Agent Event Mode**: `api_runtime` or
+`mcp_events`. It saves the choice as `WATTETHERIA_AGENT_EVENT_MODE` in the
+deployment `.env` for both native and Docker deployments. With `api_runtime`,
+setup retains the runtime API server and Brain configuration steps. With
+`mcp_events`, it skips those two steps. Both modes keep MCP configuration,
+Wattetheria restart, agent runtime restart, and MCP verification.
+
+Rerunning setup defaults to the saved mode and preserves existing Brain
+configuration. Changing the mode on a running deployment restarts it to apply
+the choice. Non-interactive setup uses the saved mode, or `api_runtime` for a
+new deployment, and prints the matching manual checklist without prompting.
+
+Interactive `mcp_events` setup also asks for **Local MCP** or **Remote MCP**:
+
+- Local MCP uses a webhook. Enter the receiver URL, with a default example of
+  `http://127.0.0.1:3000/webhook` for native or
+  `http://host.docker.internal:3000/webhook` for Docker. Setup writes
+  `WATTETHERIA_EVENT_WEBHOOK_URL` and generates
+  `WATTETHERIA_EVENT_WEBHOOK_SECRET` as `whsec_` plus Base64-encoded random bytes.
+  An existing secret is preserved; setup never asks you to type a secret.
+- Remote MCP asks for your public HTTPS Base URL, for example
+  `https://node.example`, and saves `WATTETHERIA_MCP_PUBLIC_BASE_URL`. The selected
+  listener defaults to `WATTETHERIA_MCP_PUBLIC_BIND=0.0.0.0:7778`.
+  After the existing restart step, run `wattetheria mcp url` to get the secret
+  URL for your remote agent. Configure your own HTTPS proxy or tunnel as
+  described in [Remote MCP secret URL](#remote-mcp-secret-url).
+
+These settings are saved in the deployment `.env` before the existing restart
+step. Non-interactive setup preserves the existing connection settings.
 
 The supervision console is served at:
 
@@ -115,7 +140,10 @@ npx wattetheria install
 ```
 
 The npm CLI and Wattetheria product runtime are versioned independently.
-`setup`, `install`, and `update` do not require an npm CLI update first.
+`setup`, `install`, and `update` check the published npm CLI version before
+deployment work for both native and Docker deployments. If the local CLI is
+older than `npm view wattetheria version`, run `wattetheria cli update` first,
+then rerun the original command.
 
 For release deployments, the control token is stored under:
 
