@@ -24,6 +24,8 @@ pub(crate) struct LocalConfig {
     pub(crate) brain_provider: BrainProviderConfig,
     #[serde(default)]
     pub(crate) runtime_session_mode: RuntimeSessionMode,
+    #[serde(default = "default_agent_event_mode")]
+    pub(crate) agent_event_mode: String,
     #[serde(default)]
     pub(crate) wattswarm_ui_base_url: Option<String>,
     #[serde(default)]
@@ -48,6 +50,10 @@ fn default_autonomy_interval_sec() -> u64 {
     30
 }
 
+fn default_agent_event_mode() -> String {
+    "api_runtime".to_owned()
+}
+
 impl Default for LocalConfig {
     fn default() -> Self {
         let bind = default_control_bind();
@@ -57,6 +63,7 @@ impl Default for LocalConfig {
             recovery_sources: Vec::new(),
             brain_provider: BrainProviderConfig::Rules,
             runtime_session_mode: RuntimeSessionMode::StablePerScope,
+            agent_event_mode: default_agent_event_mode(),
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             autonomy_enabled: false,
@@ -216,7 +223,9 @@ fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &L
         .arg("--control-plane-bind")
         .arg(&config.control_plane_bind)
         .arg("--brain-runtime-session-mode")
-        .arg(config.runtime_session_mode.as_str());
+        .arg(config.runtime_session_mode.as_str())
+        .arg("--agent-event-mode")
+        .arg(&config.agent_event_mode);
 
     if config.autonomy_enabled {
         command.arg("--autonomy-enabled");
@@ -445,5 +454,23 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--brain-runtime-session-mode" && pair[1] == "new_per_interaction"
         }));
+    }
+
+    #[test]
+    fn kernel_runtime_args_forward_agent_event_mode() {
+        let default: LocalConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(default.agent_event_mode, "api_runtime");
+        let selected: LocalConfig =
+            serde_json::from_value(json!({"agent_event_mode": "mcp_events"})).unwrap();
+        let mut command = Command::new("echo");
+        append_kernel_runtime_args(&mut command, Path::new("/tmp/wattetheria"), &selected);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--agent-event-mode" && pair[1] == "mcp_events")
+        );
     }
 }

@@ -10,7 +10,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-clap.workspace = true
+clap = { workspace = true, features = ["env"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -15,6 +15,10 @@ if [ "${WATTETHERIA_AUTONOMY_ENABLED:-false}" = "true" ]; then
   set -- "$@" --autonomy-enabled
 fi
 
+if [ -n "${WATTETHERIA_AGENT_EVENT_MODE:-}" ]; then
+  set -- "$@" --agent-event-mode "${WATTETHERIA_AGENT_EVENT_MODE}"
+fi
+
 if [ -n "${WATTETHERIA_BRAIN_PROVIDER_KIND:-}" ]; then
   set -- "$@" --brain-provider-kind "${WATTETHERIA_BRAIN_PROVIDER_KIND}"
 fi
@@ -72,6 +76,10 @@ fi
 
 if [ "${WATTETHERIA_MCP_TOKEN_AUTH:-false}" = "true" ]; then
   set -- "$@" --mcp-token-auth-required
+fi
+
+if [ -n "${WATTETHERIA_MCP_PUBLIC_BIND:-}" ]; then
+  set -- "$@" --mcp-public-bind "${WATTETHERIA_MCP_PUBLIC_BIND}"
 fi
 
 if [ -n "${WATTETHERIA_GATEWAY_CONFIG_PATH:-}" ]; then

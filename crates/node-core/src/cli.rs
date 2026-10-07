@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
+use wattetheria_control_plane::mcp_events::AgentEventMode;
 
 #[derive(Debug, Parser)]
 #[command(name = "wattetheria-kernel")]
@@ -11,12 +12,16 @@ pub struct Cli {
     pub recovery_sources: Vec<String>,
     #[arg(long, default_value = "127.0.0.1:7777")]
     pub control_plane_bind: String,
+    #[arg(long, env = "WATTETHERIA_MCP_PUBLIC_BIND")]
+    pub mcp_public_bind: Option<String>,
     #[arg(long)]
     pub wattswarm_ui_base_url: Option<String>,
     #[arg(long)]
     pub wattswarm_sync_grpc_endpoint: Option<String>,
     #[arg(long)]
     pub wattswarm_agent_event_callback_base_url: Option<String>,
+    #[arg(long, default_value = "api_runtime")]
+    pub agent_event_mode: AgentEventMode,
     #[arg(long)]
     pub agent_control_plane_endpoint: Option<String>,
     #[arg(long)]
@@ -59,6 +64,23 @@ pub struct Cli {
 mod tests {
     use super::Cli;
     use clap::Parser;
+
+    #[test]
+    fn agent_event_mode_is_explicit_and_defaults_to_api_runtime() {
+        use wattetheria_control_plane::mcp_events::AgentEventMode;
+
+        assert_eq!(
+            Cli::try_parse_from(["kernel"]).unwrap().agent_event_mode,
+            AgentEventMode::ApiRuntime
+        );
+        assert_eq!(
+            Cli::try_parse_from(["kernel", "--agent-event-mode", "mcp_events"])
+                .unwrap()
+                .agent_event_mode,
+            AgentEventMode::McpEvents
+        );
+        assert!(Cli::try_parse_from(["kernel", "--agent-event-mode", "other"]).is_err());
+    }
 
     #[test]
     fn runtime_session_mode_defaults_to_scoped_stable() {

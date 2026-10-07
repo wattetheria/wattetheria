@@ -6,6 +6,7 @@ mod auth;
 mod autonomy;
 mod diagnostics;
 mod gateway_dispatch;
+pub mod mcp_events;
 mod reliability_maintenance;
 mod runtime_sessions;
 pub mod social_host;
@@ -68,6 +69,7 @@ pub use routes::client_api::{
     SignedPublicClientSnapshot, build_signed_public_client_snapshot,
     push_signed_public_client_snapshot,
 };
+pub use routes::mcp::public_url::{PublicMcpUrl, public_mcp_app, serve_public_mcp};
 pub use routes::network::{
     RegistryRegistrationResult, apply_registry_registration_record, build_registration_request,
     run_registry_registration_once, sync_network_permission_checkpoint,
@@ -190,7 +192,10 @@ fn provider_identity_router() -> Router<ControlPlaneState> {
 }
 
 fn mcp_router() -> Router<ControlPlaneState> {
-    Router::new().route("/mcp", post(routes::mcp::mcp))
+    Router::new().route("/mcp", post(routes::mcp::mcp)).route(
+        "/v1/mcp/public-url/rotate",
+        post(routes::mcp::public_url::rotate),
+    )
 }
 
 fn servicenet_bridge_router() -> Router<ControlPlaneState> {

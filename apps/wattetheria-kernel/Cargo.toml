@@ -12,3 +12,8 @@ anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
 wattetheria-node-core = { path = "../../crates/node-core" }
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

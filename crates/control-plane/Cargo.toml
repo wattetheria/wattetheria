@@ -35,6 +35,11 @@ tower = "0.5"
 tracing.workspace = true
 reqwest.workspace = true
 reqwest-a2a.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+chacha20poly1305 = "0.10"
+rand.workspace = true
+standardwebhooks = "=1.0.1"
+subtle = "2.6"
 uuid.workspace = true
 wattetheria-social = { path = "../social" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }
@@ -49,7 +54,10 @@ protoc-bin-vendored = "3"
 tonic-build = "0.12"
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
 async-trait.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 http-body-util = "0.1"
+rcgen = "0.14.7"
+tokio-rustls = "0.26.4"

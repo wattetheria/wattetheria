@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -17,6 +17,179 @@ function runCli(args) {
     env: { ...process.env, WATTETHERIA_NO_BANNER: "1" },
   });
 }
+
+function runAsyncCli(args, env = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI_PATH, ...args], {
+      cwd: ROOT_DIR, env: { ...process.env, WATTETHERIA_NO_BANNER: "1", ...env }
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+function publicMcpDeployment(context, runtime = "native") {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-public-mcp-"));
+  const state = path.join(dir, "data", "wattetheria");
+  fs.mkdirSync(state, { recursive: true });
+  const envPath = path.join(dir, ".env");
+  fs.writeFileSync(envPath, `WATTETHERIA_DEPLOYMENT_RUNTIME=${runtime}\nWATTETHERIA_HOST_STATE_DIR=./data/wattetheria\n`);
+  const secret = require("node:crypto").randomBytes(32).toString("base64url");
+  const secretPath = path.join(state, "mcp_url_secret");
+  context.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return { dir, state, envPath, secret, secretPath };
+}
+
+test("public MCP CLI stays disabled without creating state or contacting Docker", (context) => {
+  const { dir, secretPath } = publicMcpDeployment(context);
+  for (const action of ["url", "rotate"]) {
+    const result = runCli(["mcp", action, "--dir", dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Public MCP is disabled/);
+    assert.match(result.stdout, /WATTETHERIA_MCP_PUBLIC_BIND=0\.0\.0\.0:7778/);
+    assert.equal(fs.existsSync(secretPath), false);
+  }
+});
+
+test("public MCP CLI prints a full URL or the path with a configuration hint", (context) => {
+  const { dir, envPath, secret, secretPath } = publicMcpDeployment(context);
+  fs.writeFileSync(secretPath, secret, { mode: 0o600 });
+  fs.appendFileSync(envPath, "WATTETHERIA_MCP_PUBLIC_BIND=0.0.0.0:7778\n");
+  const withoutBase = runCli(["mcp", "url", "--dir", dir]);
+  assert.equal(withoutBase.status, 0, withoutBase.stderr);
+  assert.match(withoutBase.stdout, new RegExp(`^/mcp/${secret}\\n`));
+  assert.match(withoutBase.stdout, /Configure WATTETHERIA_MCP_PUBLIC_BASE_URL/);
+  fs.appendFileSync(envPath, "WATTETHERIA_MCP_PUBLIC_BASE_URL=https://node.example/prefix/\n");
+  const complete = runCli(["mcp", "url", "--dir", dir]);
+  assert.equal(complete.status, 0, complete.stderr);
+  assert.equal(complete.stdout.trim(), `https://node.example/prefix/mcp/${secret}`);
+});
+
+test("public MCP rotation reads the existing token and uses the authenticated control endpoint", async (context) => {
+  const { dir, state, envPath, secret, secretPath } = publicMcpDeployment(context);
+  const token = "local-control-token";
+  fs.writeFileSync(path.join(state, "control.token"), `${token}\n`, { mode: 0o600 });
+  fs.appendFileSync(envPath, "WATTETHERIA_MCP_PUBLIC_BIND=127.0.0.1:7778\nWATTETHERIA_MCP_TOKEN_AUTH=false\nWATTETHERIA_MCP_PUBLIC_BASE_URL=https://node.example\n");
+  let calls = 0;
+  const server = require("node:http").createServer((request, response) => {
+    calls += 1;
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/mcp/public-url/rotate");
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    fs.writeFileSync(secretPath, secret, { mode: 0o600 });
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ path: `/mcp/${secret}`, revokedSubscriptions: 2 }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const result = await runAsyncCli(["mcp", "rotate", "--dir", dir, "--control-plane", `http://127.0.0.1:${server.address().port}`]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(calls, 1);
+  assert.match(result.stdout, new RegExp(`https://node.example/mcp/${secret}`));
+  assert.match(result.stdout, /Update the MCP URL in your remote agent/);
+  assert.match(result.stdout, /Subscribe again/);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(token));
+});
+
+test("existing Compose stacks publish a configurable MCP port with an optional listener", () => {
+  const port = "${WATTETHERIA_MCP_PUBLIC_BIND_HOST:-127.0.0.1}:${WATTETHERIA_MCP_PUBLIC_PORT:-7778}:7778";
+  for (const file of ["docker-compose.yml", "docker-compose.full.yml", "docker-compose.release.yml"]) {
+    const source = fs.readFileSync(path.join(ROOT_DIR, file), "utf8");
+    assert.ok(source.includes(`- "${port}"`), `${file} must use the configurable MCP port mapping`);
+    assert.doesNotMatch(source, /127\.0\.0\.1:7778:7778/);
+    assert.match(source, /WATTETHERIA_MCP_PUBLIC_BIND:\s+\$\{WATTETHERIA_MCP_PUBLIC_BIND:-\}/);
+  }
+  assert.deepEqual(Object.keys(require("../lib/mcp-public")), ["run"]);
+});
+
+test("Compose MCP port mappings preserve loopback by default and honor explicit overrides", (context) => {
+  if (spawnSync("docker", ["compose", "version"], { encoding: "utf8" }).status !== 0) {
+    context.skip("requires Docker Compose; no container startup is needed");
+    return;
+  }
+  const stacks = [
+    ["main", ["docker-compose.yml"]],
+    ["dev", ["docker-compose.yml", "docker-compose.dev.yml"]],
+    ["full", ["docker-compose.full.yml"]],
+    ["release", ["docker-compose.release.yml"]],
+  ];
+  for (const [name, files] of stacks) {
+    for (const custom of [false, true]) {
+      const env = { ...process.env, WATTSWARM_PG_PASSWORD: "compose-config-check", WATTETHERIA_COMPOSE_ENV_FILE: os.devNull };
+      delete env.WATTETHERIA_MCP_PUBLIC_PORT;
+      delete env.WATTETHERIA_MCP_PUBLIC_BIND_HOST;
+      if (custom) {
+        env.WATTETHERIA_MCP_PUBLIC_PORT = "18778";
+        env.WATTETHERIA_MCP_PUBLIC_BIND_HOST = "0.0.0.0";
+      }
+      const result = spawnSync("docker", [
+        "compose", "--env-file", os.devNull,
+        ...files.flatMap((file) => ["-f", file]), "config", "--format", "json",
+      ], { cwd: ROOT_DIR, encoding: "utf8", env });
+      assert.equal(result.status, 0, result.stderr);
+      const ports = JSON.parse(result.stdout).services.kernel.ports.filter((port) => port.target === 7778);
+      assert.equal(ports.length, 1, `${name} must publish one MCP port`);
+      assert.equal(ports[0].host_ip, custom ? "0.0.0.0" : "127.0.0.1", `${name} must preserve loopback unless explicitly overridden`);
+      assert.equal(String(ports[0].published), custom ? "18778" : "7778", `${name} must honor the configured host port`);
+    }
+  }
+});
+
+test("native and Docker entrypoints forward the optional public MCP bind", () => {
+  const { kernelArgs } = require("../lib/native");
+  const config = { env: new Map(), wattetheriaDataDir: "/state", wattswarmStateDir: "/swarm" };
+  assert.ok(!kernelArgs(config).includes("--mcp-public-bind"));
+  config.env.set("WATTETHERIA_MCP_PUBLIC_BIND", "0.0.0.0:7778");
+  config.env.set("WATTETHERIA_MCP_PUBLIC_BASE_URL", "https://node.example");
+  const args = kernelArgs(config);
+  assert.equal(args[args.indexOf("--mcp-public-bind") + 1], "0.0.0.0:7778");
+  assert.match(fs.readFileSync(path.join(ROOT_DIR, "scripts/docker-kernel-entrypoint.sh"), "utf8"), /--mcp-public-bind "\$\{WATTETHERIA_MCP_PUBLIC_BIND\}"/);
+  assert.ok(fs.readFileSync(path.join(ROOT_DIR, "docker-compose.dev.yml"), "utf8").includes('--mcp-public-bind "$$WATTETHERIA_MCP_PUBLIC_BIND"'));
+});
+
+test("Docker public MCP commands read private node files inside the kernel container",
+  { skip: process.platform === "win32" && "requires an executable Docker test shim" }, async (context) => {
+    const { dir, state, envPath, secret, secretPath } = publicMcpDeployment(context, "docker");
+    fs.writeFileSync(secretPath, secret, { mode: 0o600 });
+    fs.writeFileSync(path.join(state, "control.token"), "docker-local-token", { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: {}\n");
+    fs.appendFileSync(envPath, "WATTETHERIA_MCP_PUBLIC_BIND=0.0.0.0:7778\nWATTETHERIA_MCP_PUBLIC_BASE_URL=https://node.example\n");
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    const marker = path.join(dir, "docker-args.jsonl");
+    fs.writeFileSync(path.join(bin, "docker"), `#!${process.execPath}\n` +
+      `const fs = require('node:fs'); const args = process.argv.slice(2);\n` +
+      `fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify(args) + '\\n');\n` +
+      `const cat = args.indexOf('cat'); if (cat >= 0) process.stdout.write(fs.readFileSync(require('node:path').join(${JSON.stringify(state)}, require('node:path').basename(args[cat + 1])), 'utf8'));\n`);
+    fs.chmodSync(path.join(bin, "docker"), 0o755);
+    const env = { PATH: `${bin}${path.delimiter}${process.env.PATH || ""}` };
+    const printed = await runAsyncCli(["mcp", "url", "--dir", dir], env);
+    assert.equal(printed.status, 0, printed.stderr);
+    assert.equal(printed.stdout.trim(), `https://node.example/mcp/${secret}`);
+    const server = require("node:http").createServer((request, response) => {
+      assert.equal(request.headers.authorization, "Bearer docker-local-token");
+      assert.equal(request.url, "/v1/mcp/public-url/rotate");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ path: `/mcp/${secret}`, revokedSubscriptions: 0 }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    context.after(() => new Promise((resolve) => server.close(resolve)));
+    const rotated = await runAsyncCli(["mcp", "rotate", "--dir", dir, "--control-plane", `http://127.0.0.1:${server.address().port}`], env);
+    assert.equal(rotated.status, 0, rotated.stderr);
+    assert.doesNotMatch(rotated.stdout + rotated.stderr, /docker-local-token/);
+    const calls = fs.readFileSync(marker, "utf8").trim().split("\n").map((row) => JSON.parse(row));
+    for (const name of ["mcp_url_secret", "control.token"]) {
+      const call = calls.find((args) => args.includes(`/var/lib/wattetheria/${name}`));
+      assert.ok(call, `${name} was not read inside the container`);
+      assert.ok(call.includes("exec") && call.includes("-T") && call.includes("kernel"));
+      assert.deepEqual(call.filter((argument) => argument.endsWith(".yml")),
+        [path.join(dir, "docker-compose.yml")]);
+    }
+  });
 
 test("help separates network commands and lists all subcommands", () => {
   const result = runCli(["help"]);
@@ -398,6 +571,24 @@ test("orphan process identity matches the deployment arguments, not only the bin
     ]), false);
   }
   assert.equal(commandLineMatchesIdentity(commandLine, ["--listen", "127.0.0.1:8788"]), false);
+});
+
+test("native kernel forwards the selected agent event mode", () => {
+  const { kernelArgs } = require("../lib/native");
+  const config = {
+    env: new Map([["WATTETHERIA_AGENT_EVENT_MODE", "mcp_events"]]),
+    wattetheriaDataDir: "/state/wattetheria",
+    wattswarmStateDir: "/state/wattswarm",
+  };
+  const args = kernelArgs(config);
+  assert.equal(args[args.indexOf("--agent-event-mode") + 1], "mcp_events");
+  assert.ok(!kernelArgs({ ...config, env: new Map() }).includes("--agent-event-mode"));
+});
+
+test("Docker dev mode flags are evaluated in the container shell", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "docker-compose.dev.yml"), "utf8");
+  assert.ok(source.includes('[ -n "$${WATTETHERIA_AGENT_EVENT_MODE:-}" ] && set -- "$$@" --agent-event-mode "$$WATTETHERIA_AGENT_EVENT_MODE"'));
+  assert.ok(source.includes('[ -n "$${WATTETHERIA_BRAIN_PROVIDER_KIND:-}" ]'));
 });
 
 function freePort() {

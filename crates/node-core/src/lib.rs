@@ -1,6 +1,7 @@
 mod agent_participation;
 mod bootstrap;
 pub mod cli;
+mod public_mcp;
 mod recovery;
 mod runtime_loop;
 
@@ -19,6 +20,7 @@ use bootstrap::{load_or_create_control_token, parse_control_bind, resolve_brain_
 pub use cli::Cli;
 use recovery::startup_recover_events;
 use runtime_loop::{LoopContext, run_loop};
+use wattetheria_control_plane::mcp_events::{EnvWebhookConfig, McpEvents};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
     NodeGeoLocation, RateLimiter, ServiceNetProviderIdentity, StreamEvent, build_signed_node_event,
@@ -62,6 +64,7 @@ use wattetheria_social::SocialStore;
 
 struct RuntimeState {
     control_bind: SocketAddr,
+    mcp_public_bind: Option<SocketAddr>,
     identity: IdentityCompatView,
     online_proof: OnlineProofManager,
     control_state: ControlPlaneState,
@@ -92,6 +95,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
+    let public_mcp_task = runtime
+        .mcp_public_bind
+        .map(|bind| public_mcp::spawn(runtime.control_state.clone(), bind));
     let network_permission_sync_task =
         spawn_network_permission_sync_task(runtime.control_state.clone());
     let registry_registration_task =
@@ -106,6 +112,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     let gateway_dispatch_task = spawn_gateway_dispatch_tasks(&cli, &runtime.control_state);
     let reliability_maintenance_task =
         spawn_reliability_maintenance_task(runtime.control_state.clone());
+    let mcp_events_task = runtime
+        .control_state
+        .mcp_events
+        .clone()
+        .map(|events| tokio::spawn(async move { events.run_worker().await }));
 
     let run_result = run_loop(LoopContext {
         online_proof: &mut runtime.online_proof,
@@ -114,6 +125,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     })
     .await;
     control_task.abort();
+    if let Some(task) = public_mcp_task {
+        task.abort();
+    }
     network_permission_sync_task.abort();
     registry_registration_task.abort();
     if let Some(task) = wattswarm_sync_task {
@@ -126,6 +140,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         task.abort();
     }
     reliability_maintenance_task.abort();
+    if let Some(task) = mcp_events_task {
+        task.abort();
+    }
     if let Some(task) = autonomy_task {
         task.abort();
     }
@@ -237,6 +254,23 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let event_log = EventLog::new(events_path)?;
     let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;
     let control_token = load_or_create_control_token(cli.data_dir.join("control.token"))?;
+    let mcp_events = match McpEvents::open(
+        local_db_path,
+        cli.data_dir.join("mcp_events.key"),
+        identity.agent_did.clone(),
+        &control_token,
+    )
+    .await
+    {
+        Ok(events) => {
+            apply_env_event_webhook(&events).await;
+            Some(Arc::new(events))
+        }
+        Err(error) => {
+            tracing::warn!("MCP Events unavailable; kernel startup continues: {error:#}");
+            None
+        }
+    };
     let control_bind = parse_control_bind(&cli.control_plane_bind)?;
     let policy_state: PolicyState = local_db.load_or_migrate(
         local_db::domain::POLICY,
@@ -302,13 +336,14 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     info!(agent_did = %identity.agent_did, "kernel started");
 
     let (stream_tx, _) = broadcast::channel(128);
-    let control_state = build_control_state(
+    let mut control_state = build_control_state(
         cli,
         &identity,
         signer.clone(),
         servicenet_provider,
         &event_log,
         control_token,
+        mcp_events,
         swarm_bridge,
         governance_engine,
         policy_engine,
@@ -326,8 +361,10 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         stream_tx,
     )
     .await;
+    let mcp_public_bind = public_mcp::configure(cli, &mut control_state);
     Ok(RuntimeState {
         control_bind,
+        mcp_public_bind,
         identity,
         online_proof,
         control_state,
@@ -343,6 +380,7 @@ async fn build_control_state(
     servicenet_provider: ServiceNetProviderIdentity,
     event_log: &EventLog,
     control_token: String,
+    mcp_events: Option<Arc<McpEvents>>,
     swarm_bridge: Arc<dyn SwarmBridge>,
     governance_engine: Arc<Mutex<GovernanceEngine>>,
     policy_engine: PolicyEngine,
@@ -368,6 +406,9 @@ async fn build_control_state(
         started_at: chrono::Utc::now().timestamp(),
         auth_token: control_token,
         mcp_token_auth_required: cli.mcp_token_auth_required,
+        mcp_events,
+        mcp_public_url: None,
+        agent_event_mode: cli.agent_event_mode,
         event_log: event_log.clone(),
         swarm_bridge,
         governance_engine,
@@ -655,12 +696,16 @@ fn spawn_autonomy_task(
 }
 
 const CORE_AGENT_EXECUTOR_NAME: &str = "core-agent";
+/// wattswarm's own default for `core-agent` when its startup config names none.
+const WATTSWARM_DEFAULT_CORE_AGENT_BASE_URL: &str = "http://127.0.0.1:8787";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct WattswarmExecutorRegistration {
     endpoint_url: String,
     executor_name: String,
-    executor_base_url: String,
+    /// `None` keeps the model runtime wattswarm already has for `core-agent`;
+    /// MCP Events only needs the callback, not a brain of its own.
+    executor_base_url: Option<String>,
     agent_event_callback_base_url: String,
     commit_plane_endpoint: String,
     commit_plane_token_file: String,
@@ -672,8 +717,28 @@ struct ExecutorAddRequest<'a> {
     base_url: &'a str,
     agent_event_callback_base_url: Option<&'a str>,
     remote: bool,
+    target_node_id: Option<&'a str>,
+    scope_hint: Option<&'a str>,
     commit_plane_endpoint: Option<&'a str>,
     commit_plane_token_file: Option<&'a str>,
+}
+
+/// Starts or stops the operator's event webhook from the deployment env. A bad
+/// value only disables the webhook and is reported; it never stops the kernel.
+async fn apply_env_event_webhook(events: &McpEvents) {
+    let config = match EnvWebhookConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!("event webhook disabled: {error:#}");
+            None
+        }
+    };
+    let configured = config.is_some();
+    match events.apply_env_webhook(config).await {
+        Ok(()) if configured => info!("event webhook enabled for all agent events"),
+        Ok(()) => {}
+        Err(error) => tracing::error!("event webhook could not be applied: {error:#}"),
+    }
 }
 
 fn spawn_wattswarm_executor_registration_task(
@@ -717,7 +782,12 @@ fn resolve_wattswarm_executor_registration(
         .as_deref()
         .or(cli.agent_wattswarm_ui_base_url.as_deref())
         .and_then(trim_base_url)?;
-    let executor_base_url = resolve_executor_base_url(brain_config)?;
+    let executor_base_url = resolve_executor_base_url(brain_config);
+    if executor_base_url.is_none()
+        && cli.agent_event_mode != wattetheria_control_plane::mcp_events::AgentEventMode::McpEvents
+    {
+        return None;
+    }
     let agent_event_callback_base_url = resolve_agent_event_callback_base_url(cli);
     Some(WattswarmExecutorRegistration {
         endpoint_url: format!("{wattswarm_ui_base_url}/api/executors/add"),
@@ -769,13 +839,26 @@ async fn register_executor_once(
     client: &reqwest::Client,
     registration: &WattswarmExecutorRegistration,
 ) -> Result<()> {
+    let existing = registered_executor(client, registration).await?;
+    let existing_field = |name: &str| existing.as_ref().and_then(|entry| entry[name].as_str());
+    let base_url = registration
+        .executor_base_url
+        .as_deref()
+        .unwrap_or_else(|| {
+            existing_field("base_url")
+                .map(str::trim)
+                .filter(|base_url| !base_url.is_empty())
+                .unwrap_or(WATTSWARM_DEFAULT_CORE_AGENT_BASE_URL)
+        });
     client
         .post(&registration.endpoint_url)
         .json(&ExecutorAddRequest {
             name: &registration.executor_name,
-            base_url: &registration.executor_base_url,
+            base_url,
             agent_event_callback_base_url: Some(&registration.agent_event_callback_base_url),
-            remote: false,
+            remote: existing_field("kind") == Some("remote"),
+            target_node_id: existing_field("target_node_id"),
+            scope_hint: existing_field("scope_hint"),
             commit_plane_endpoint: Some(&registration.commit_plane_endpoint),
             commit_plane_token_file: Some(&registration.commit_plane_token_file),
         })
@@ -790,6 +873,33 @@ async fn register_executor_once(
         .error_for_status()
         .context("wattswarm executor registration returned error status")?;
     Ok(())
+}
+
+/// The add endpoint replaces the whole entry, so read the current one first.
+async fn registered_executor(
+    client: &reqwest::Client,
+    registration: &WattswarmExecutorRegistration,
+) -> Result<Option<serde_json::Value>> {
+    let list_url = format!(
+        "{}/list",
+        registration.endpoint_url.trim_end_matches("/add")
+    );
+    let listing: serde_json::Value = client
+        .get(&list_url)
+        .send()
+        .await
+        .with_context(|| format!("GET wattswarm executors {list_url}"))?
+        .error_for_status()
+        .context("wattswarm executor listing returned error status")?
+        .json()
+        .await
+        .context("decode wattswarm executor listing")?;
+    Ok(listing["executors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["name"] == registration.executor_name.as_str())
+        .cloned())
 }
 
 fn spawn_gateway_dispatch_tasks(
@@ -942,6 +1052,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: Some("http://127.0.0.1:7788".to_owned()),
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: None,
@@ -950,6 +1061,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -967,6 +1079,132 @@ mod tests {
         assert!(
             resolve_wattswarm_executor_registration(&cli, &BrainProviderConfig::Rules).is_none()
         );
+        assert!(
+            super::spawn_wattswarm_executor_registration_task(&cli, &BrainProviderConfig::Rules)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn mcp_events_mode_registers_the_callback_for_every_brain() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from([
+            "kernel",
+            "--agent-event-mode",
+            "mcp_events",
+            "--wattswarm-ui-base-url",
+            "http://127.0.0.1:7788",
+            "--wattswarm-agent-event-callback-base-url",
+            "http://wattetheria-kernel:7777",
+        ])
+        .unwrap();
+        for (brain, base_url) in [
+            (BrainProviderConfig::Rules, None),
+            (
+                BrainProviderConfig::OpenaiCompatible {
+                    base_url: "http://127.0.0.1:8642/v1/".into(),
+                    model: "model".into(),
+                    api_key_env: None,
+                    runtime_adapter: None,
+                },
+                Some("http://127.0.0.1:8642/v1"),
+            ),
+        ] {
+            let registration = resolve_wattswarm_executor_registration(&cli, &brain).unwrap();
+            assert_eq!(registration.executor_name, CORE_AGENT_EXECUTOR_NAME);
+            assert_eq!(registration.executor_base_url.as_deref(), base_url);
+            assert_eq!(
+                registration.agent_event_callback_base_url,
+                "http://wattetheria-kernel:7777"
+            );
+            assert_eq!(
+                registration.commit_plane_endpoint,
+                "http://wattetheria-kernel:7777"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn register_without_brain_keeps_the_existing_core_agent_runtime() {
+        for (existing, expected, remote, target, scope) in [
+            (
+                json!([{"name": "rt", "base_url": "http://runtime:8787"},
+                       {"name": "core-agent", "base_url": "http://runtime:9000",
+                        "kind": "remote", "target_node_id": "node-remote", "scope_hint": "scope-remote"}]),
+                "http://runtime:9000",
+                true,
+                Some("node-remote"),
+                Some("scope-remote"),
+            ),
+            (
+                json!([{"name": "rt", "base_url": "http://runtime:8787", "kind": "remote",
+                        "target_node_id": "other-node", "scope_hint": "other-scope"}]),
+                super::WATTSWARM_DEFAULT_CORE_AGENT_BASE_URL,
+                false,
+                None,
+                None,
+            ),
+            (
+                json!([{"name": "core-agent", "base_url": "http://local-runtime:8787", "kind": "local"}]),
+                "http://local-runtime:8787",
+                false,
+                None,
+                None,
+            ),
+        ] {
+            let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+            let seen_clone = Arc::clone(&seen);
+            let app = Router::new()
+                .route(
+                    "/api/executors/list",
+                    axum::routing::get(move || {
+                        let existing = existing.clone();
+                        async move { Json(json!({"ok": true, "executors": existing})) }
+                    }),
+                )
+                .route(
+                    "/api/executors/add",
+                    post(move |Json(payload): Json<Value>| {
+                        let seen = Arc::clone(&seen_clone);
+                        async move {
+                            seen.lock().expect("lock").push(payload);
+                            Json(json!({"ok": true}))
+                        }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind listener");
+            let addr = listener.local_addr().expect("listener addr");
+            let server = tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("serve app");
+            });
+            let registration = super::WattswarmExecutorRegistration {
+                endpoint_url: format!("http://{addr}/api/executors/add"),
+                executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
+                executor_base_url: None,
+                agent_event_callback_base_url: "http://127.0.0.1:7777".to_owned(),
+                commit_plane_endpoint: "http://127.0.0.1:7777".to_owned(),
+                commit_plane_token_file: "/tmp/wattetheria-token".to_owned(),
+            };
+
+            register_executor_once(&reqwest::Client::new(), &registration)
+                .await
+                .expect("register executor");
+            server.abort();
+
+            let seen = seen.lock().expect("lock");
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0]["base_url"].as_str(), Some(expected));
+            assert_eq!(seen[0]["remote"].as_bool(), Some(remote));
+            assert_eq!(seen[0]["target_node_id"].as_str(), target);
+            assert_eq!(seen[0]["scope_hint"].as_str(), scope);
+            assert_eq!(
+                seen[0]["agent_event_callback_base_url"].as_str(),
+                Some("http://127.0.0.1:7777")
+            );
+        }
     }
 
     #[test]
@@ -975,6 +1213,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: Some("http://wattswarm-kernel:7788/".to_owned()),
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: Some(
@@ -985,6 +1224,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -1014,7 +1254,10 @@ mod tests {
             registration.endpoint_url,
             "http://wattswarm-kernel:7788/api/executors/add"
         );
-        assert_eq!(registration.executor_base_url, "http://127.0.0.1:8787/v1");
+        assert_eq!(
+            registration.executor_base_url.as_deref(),
+            Some("http://127.0.0.1:8787/v1")
+        );
         assert_eq!(
             registration.agent_event_callback_base_url,
             "http://wattetheria-kernel:7777"
@@ -1031,6 +1274,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: None,
@@ -1039,6 +1283,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -1081,6 +1326,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: Some("http://wattswarm-kernel:7788".to_owned()),
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: Some("http://kernel:7777".to_owned()),
@@ -1089,6 +1335,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: Some("/var/lib/wattetheria".to_owned()),
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
             gateway_snapshot_interval_sec: 45,
@@ -1141,6 +1388,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: None,
@@ -1149,6 +1397,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: Some(config_path),
             gateway_snapshot_interval_sec: 45,
@@ -1189,6 +1438,7 @@ mod tests {
             data_dir: ".wattetheria".into(),
             recovery_sources: Vec::new(),
             control_plane_bind: "127.0.0.1:7777".to_owned(),
+            mcp_public_bind: None,
             wattswarm_ui_base_url: None,
             wattswarm_sync_grpc_endpoint: None,
             wattswarm_agent_event_callback_base_url: None,
@@ -1197,6 +1447,7 @@ mod tests {
             agent_wattswarm_sync_grpc_endpoint: None,
             agent_host_data_dir: None,
             mcp_token_auth_required: false,
+            agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: vec!["http://primary-gateway:8080/".to_owned()],
             gateway_config_path: Some(config_path),
             gateway_snapshot_interval_sec: 45,
@@ -1230,16 +1481,25 @@ mod tests {
     async fn register_executor_once_posts_executor_add_request() {
         let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
         let seen_clone = Arc::clone(&seen);
-        let app = Router::new().route(
-            "/api/executors/add",
-            post(move |Json(payload): Json<Value>| {
-                let seen = Arc::clone(&seen_clone);
-                async move {
-                    seen.lock().expect("lock").push(payload);
-                    Json(json!({"ok": true}))
-                }
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/api/executors/list",
+                axum::routing::get(|| async {
+                    Json(json!({"ok": true, "executors": [{"name": "core-agent",
+                    "base_url": "http://existing-runtime:9000", "kind": "remote",
+                    "target_node_id": "node-api", "scope_hint": "scope-api"}]}))
+                }),
+            )
+            .route(
+                "/api/executors/add",
+                post(move |Json(payload): Json<Value>| {
+                    let seen = Arc::clone(&seen_clone);
+                    async move {
+                        seen.lock().expect("lock").push(payload);
+                        Json(json!({"ok": true}))
+                    }
+                }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind listener");
@@ -1250,7 +1510,7 @@ mod tests {
         let registration = super::WattswarmExecutorRegistration {
             endpoint_url: format!("http://{addr}/api/executors/add"),
             executor_name: CORE_AGENT_EXECUTOR_NAME.to_owned(),
-            executor_base_url: "http://127.0.0.1:8787".to_owned(),
+            executor_base_url: Some("http://127.0.0.1:8787".to_owned()),
             agent_event_callback_base_url: "http://127.0.0.1:7777".to_owned(),
             commit_plane_endpoint: "http://127.0.0.1:7791".to_owned(),
             commit_plane_token_file: "/tmp/wattetheria-token".to_owned(),
@@ -1259,7 +1519,6 @@ mod tests {
         register_executor_once(&reqwest::Client::new(), &registration)
             .await
             .expect("register executor");
-
         let seen = seen.lock().expect("lock");
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0]["name"].as_str(), Some(CORE_AGENT_EXECUTOR_NAME));
@@ -1268,7 +1527,9 @@ mod tests {
             seen[0]["agent_event_callback_base_url"].as_str(),
             Some("http://127.0.0.1:7777")
         );
-        assert_eq!(seen[0]["remote"].as_bool(), Some(false));
+        assert_eq!(seen[0]["remote"].as_bool(), Some(true));
+        assert_eq!(seen[0]["target_node_id"].as_str(), Some("node-api"));
+        assert_eq!(seen[0]["scope_hint"].as_str(), Some("scope-api"));
         assert_eq!(
             seen[0]["commit_plane_endpoint"].as_str(),
             Some("http://127.0.0.1:7791")

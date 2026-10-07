@@ -42,6 +42,7 @@ use wattetheria_social::ports::repositories::RemoteIdentityRepository;
 
 pub(crate) mod collective;
 mod protocol;
+pub(crate) mod public_url;
 mod schema;
 
 use schema::input_schema;
@@ -100,6 +101,9 @@ pub(crate) async fn mcp(
     headers: HeaderMap,
     Json(request): Json<McpRequest>,
 ) -> Response {
+    if protocol::is_modern(&headers, &request.method, &request.params) {
+        return protocol::serve_modern(&state, &headers, request).await;
+    }
     let auth = match resolve_mcp_auth(&state, &headers, &request.method).await {
         Ok(token) => token,
         Err(response) => return response,
@@ -132,13 +136,7 @@ pub(crate) async fn mcp(
         "initialize" => protocol::initialize_result(&request.params),
         "notifications/initialized" => Value::Null,
         "ping" => json!({}),
-        "tools/list" => json!({
-            "tools": agent_tools()
-                .iter()
-                .filter(|tool| is_visible_agent_tool(tool.name))
-                .map(|tool| mcp_tool(tool, tool.is_available(&state)))
-                .collect::<Vec<_>>()
-        }),
+        "tools/list" => json!({"tools": mcp_tools(&state)}),
         "tools/call" => match call_tool(&state, &auth, request.params).await {
             Ok(result) => result,
             Err(response) => return response,
@@ -159,6 +157,14 @@ pub(crate) async fn mcp(
         "result": result,
     }))
     .into_response()
+}
+
+fn mcp_tools(state: &ControlPlaneState) -> Vec<McpTool> {
+    agent_tools()
+        .iter()
+        .filter(|tool| is_visible_agent_tool(tool.name))
+        .map(|tool| mcp_tool(tool, tool.is_available(state)))
+        .collect()
 }
 
 fn validate_bearer(state: &ControlPlaneState, headers: &HeaderMap) -> Option<String> {

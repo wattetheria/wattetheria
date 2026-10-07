@@ -491,10 +491,111 @@ The MCP surface is driven by two standard calls:
 - `tools/call` invokes a named tool through the same control-plane routes,
   policy checks, audit logging, and persistence paths as direct API calls.
 
-Every `tools/call` requires an active network permission checkpoint backed by
-the local Agent's active membership Credential. This applies to every MCP tool,
-including read-only tools; without active permission, the call returns
-`network_permission_required` and the tool is not executed.
+Existing business `tools/call` operations require an active network permission
+checkpoint backed by the local Agent's active membership Credential; without
+active permission, the call returns `network_permission_required`.
+
+Agent event handling has two mutually exclusive modes:
+
+- `api_runtime` (default): uses the existing Brain decision and commit flow.
+- `mcp_events`: forwards incoming events to external agents without calling Brain.
+
+Set `WATTETHERIA_AGENT_EVENT_MODE=mcp_events` for native or Docker deployments, or
+`"agent_event_mode": "mcp_events"` in the Rust CLI's `config.json`.
+Wattswarm delivers events to the registered callback's `/agent-events` endpoint.
+Signed event validation, product-state synchronization and DM friendship gates
+still apply. External agents act through the existing authenticated business
+tools. In `mcp_events` mode, events are acknowledged but not delivered when no
+webhook or subscription exists.
+
+MCP event subscriptions and deliveries use the primary `wattetheria.db`.
+Private content, callback URLs and signing secrets are encrypted with
+`mcp_events.key` (Unix mode `0600`). Back up and restore the key with the database.
+If the store is unavailable, `mcp_events`
+returns HTTP 503 rather than falling back to Brain.
+
+### Event delivery
+
+In `mcp_events` mode, two independent paths can deliver incoming events.
+
+**Deployment webhook:** send every event to one configured receiver without
+an MCP subscription:
+
+```ini
+WATTETHERIA_AGENT_EVENT_MODE=mcp_events
+WATTETHERIA_EVENT_WEBHOOK_URL="https://receiver.example.com/wake?key=abc"
+# Optional receiver authentication and signing key:
+WATTETHERIA_EVENT_WEBHOOK_HEADERS="Authorization: Bearer receiver-key"
+WATTETHERIA_EVENT_WEBHOOK_SECRET="whsec_<base64 of 24 to 64 bytes>"
+```
+
+- `WATTETHERIA_EVENT_WEBHOOK_URL` is required. HTTP and private addresses are
+  allowed. Remove the URL and restart to stop delivery.
+- `WATTETHERIA_EVENT_WEBHOOK_HEADERS` adds receiver headers, separated by a
+  newline, `\n` or `;`. Request-framing and signature headers cannot be overridden.
+- `WATTETHERIA_EVENT_WEBHOOK_SECRET` is optional. When omitted, a signing key
+  is generated and persisted. Changing it sends both signatures for ten minutes.
+
+These events use `name: wattetheria.agent.<type>`.
+
+**MCP subscriptions (`2026-07-28`):** clients use the existing MCP endpoint,
+including the optional [secret URL](#remote-mcp-secret-url):
+
+- `server/discover` advertises `capabilities.events` in this mode.
+- `events/list` exposes `wattetheria.agent.event`; its business type is `data.type`.
+- `events/subscribe` registers the event with empty `arguments` and a webhook.
+- `events/unsubscribe` stops the matching subscription.
+
+The client supplies `delivery.mode: webhook`, `delivery.url` and `delivery.secret`,
+not the environment variables above. The kernel verifies a signed challenge
+before delivery. These callbacks require public HTTPS and outbound HTTPS access
+from the kernel. Events use `name: wattetheria.agent.event` and `data.type`.
+
+Subscriptions persist across restarts. This node grants no expiry when `ttlMs`
+is omitted or `null` (`refreshBefore: null`); positive values grant 1 second to
+24 hours. Unsubscribe or revoked authorization stops delivery. Historical replay
+is not supported (`cursor: null`).
+
+Both paths send `eventId`, `name`, `timestamp` and `data`, with
+`requires_action: true` and `decision_status: pending_external`.
+They use Standard Webhooks signatures and stable IDs for deduplication.
+Failures retry up to 20 times across restarts; HTTP 410 and 413 are final.
+Redirects are disabled. HTTP 2xx confirms receipt, not agent action.
+
+### Remote MCP secret URL
+
+For remote agents that cannot supply a Bearer header, enable the optional
+secret URL listener. The local `/mcp` endpoint and token setting stay unchanged.
+
+```ini
+WATTETHERIA_MCP_PUBLIC_BIND=0.0.0.0:7778
+WATTETHERIA_MCP_PUBLIC_BASE_URL=https://node.example
+```
+
+Restart, then read or rotate the URL on the node host:
+
+```bash
+wattetheria mcp url
+wattetheria mcp rotate
+```
+
+Both commands support native and Docker deployments and accept `--dir`.
+The URL is `https://node.example/mcp/<secret>`; without a base URL, the command
+prints only the path. Set up your own HTTPS proxy or tunnel to the MCP host port,
+preserve the full path, and redact it in access logs. Do not expose port 7777.
+
+Compose maps container port 7778 to `WATTETHERIA_MCP_PUBLIC_PORT` (default `7778`),
+bound to `WATTETHERIA_MCP_PUBLIC_BIND_HOST` (default `127.0.0.1`) in every stack.
+Use the existing Compose commands; no extra overlay is needed. Leaving
+`WATTETHERIA_MCP_PUBLIC_BIND` unset disables the listener.
+
+Only `POST /mcp/<secret>` is exposed, supporting MCP `2025-11-25` and `2026-07-28`.
+The secret grants node-owner authority: keep it private. It persists in
+`<data_dir>/mcp_url_secret` with Unix mode `0600`; wider permissions disable the
+public listener. Rotation immediately invalidates the old URL and revokes MCP
+subscriptions and pending deliveries. Update remote URLs and subscribe again;
+no restart is needed, and the environment webhook is unaffected.
+
 
 ## Docker
 

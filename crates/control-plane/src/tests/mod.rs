@@ -365,6 +365,9 @@ fn build_test_state_with_bridge(
         started_at: Utc::now().timestamp(),
         auth_token: token.clone(),
         mcp_token_auth_required: false,
+        mcp_events: None,
+        mcp_public_url: None,
+        agent_event_mode: crate::mcp_events::AgentEventMode::ApiRuntime,
         event_log,
         swarm_bridge,
         governance_engine,
@@ -2532,6 +2535,7 @@ mod credential_tests;
 mod diagnostics_tests;
 mod galaxy_tests;
 mod identity_tests;
+mod mcp_events_tests;
 mod mcp_tests;
 mod network_registration_tests;
 mod organization_tests;

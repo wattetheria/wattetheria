@@ -1,3 +1,4 @@
+use crate::mcp_events::{AgentEventMode, McpEvents};
 use axum::extract::ws::Message;
 use axum::http::HeaderMap;
 use chrono::Utc;
@@ -122,6 +123,9 @@ pub struct ControlPlaneState {
     pub started_at: i64,
     pub auth_token: String,
     pub mcp_token_auth_required: bool,
+    pub mcp_events: Option<Arc<McpEvents>>,
+    pub mcp_public_url: Option<Arc<crate::PublicMcpUrl>>,
+    pub agent_event_mode: AgentEventMode,
     pub event_log: EventLog,
     pub swarm_bridge: Arc<dyn SwarmBridge>,
     pub governance_engine: Arc<Mutex<GovernanceEngine>>,

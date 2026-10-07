@@ -2003,6 +2003,9 @@ async fn process_agent_event_decision(
     verified_context: Option<&VerifiedAgentContext>,
     acked_at: u64,
 ) -> Response {
+    if state.agent_event_mode == crate::mcp_events::AgentEventMode::McpEvents {
+        return crate::mcp_events::receive_agent_event(state, &event, acked_at).await;
+    }
     let callback_request = json!({ "event": &event });
     add_mission_allowed_actions(state, &mut event);
     add_friend_request_review_action(&mut event);
@@ -2100,8 +2103,13 @@ pub(crate) async fn replay_deferred_dm_agent_events_for_friendship(
             continue;
         }
         let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
-        let _ =
+        let response =
             process_agent_event_decision(state, event, verified_context.as_ref(), acked_at).await;
+        if state.agent_event_mode == crate::mcp_events::AgentEventMode::McpEvents
+            && !response.status().is_success()
+        {
+            continue;
+        }
         state
             .social_store
             .mark_deferred_agent_event_replayed(&deferred.event_id, Utc::now().timestamp_millis())
