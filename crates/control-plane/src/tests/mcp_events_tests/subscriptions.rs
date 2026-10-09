@@ -119,6 +119,7 @@ async fn mcp_events_worker_drains_each_source_without_blocking_the_other() {
                     Some(&format!("http://{address}/hook")),
                     None,
                     parameters()["delivery"]["secret"].as_str(),
+                    None,
                 )
                 .unwrap(),
             )
@@ -516,6 +517,7 @@ async fn mcp_events_all_business_types_reach_one_subscription_and_the_env_webhoo
         Some(&format!("http://{address}/hook")),
         Some("Authorization: Bearer env-key"),
         Some(parameters()["delivery"]["secret"].as_str().unwrap()),
+        Some("true"),
     )
     .unwrap()
     .unwrap();
@@ -562,6 +564,7 @@ async fn mcp_events_all_business_types_reach_one_subscription_and_the_env_webhoo
             let body: Value = serde_json::from_slice(&record.body).unwrap();
             assert_eq!(body["name"], "wattetheria.agent.event");
             assert_eq!(body["cursor"], Value::Null);
+            assert!(body.get("text").is_none());
             body["data"]["type"].as_str().unwrap().to_owned()
         })
         .collect::<Vec<_>>();
@@ -573,7 +576,12 @@ async fn mcp_events_all_business_types_reach_one_subscription_and_the_env_webhoo
         let (headers, body) = env_requests.try_recv().unwrap();
         assert_eq!(headers["authorization"], "Bearer env-key");
         assert!(!headers.contains_key("x-mcp-subscription-id"));
-        let body: Value = serde_json::from_slice(&body).unwrap();
+        let mut body: Value = serde_json::from_slice(&body).unwrap();
+        let text = body.as_object_mut().unwrap().remove("text").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text.as_str().unwrap()).unwrap(),
+            body
+        );
         assert_ne!(body["name"], "wattetheria.agent.event");
         assert!(body.get("cursor").is_none());
         assert!(body["data"].get("type").is_none());

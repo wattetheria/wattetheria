@@ -78,6 +78,7 @@ impl Receiver {
             Some(&self.url),
             Some("Authorization: Bearer receiver-key"),
             secret,
+            None,
         )
         .unwrap()
         .unwrap()
@@ -160,6 +161,246 @@ async fn stored_secret(events: &McpEvents) -> (String, Option<String>) {
         subscription.callback_secret,
         subscription.old_callback_secret,
     )
+}
+
+fn stored_encrypted_payload(dir: &Path, event_id: &str) -> Vec<u8> {
+    rusqlite::Connection::open(dir.join("events.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT o.payload_enc FROM mcp_event_outbox o
+         JOIN mcp_event_occurrences p ON p.id = o.occurrence_id WHERE p.event_id = ?1",
+            [event_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+fn assert_signed_text(request: &Received) -> Value {
+    Webhook::new(SECRET)
+        .unwrap()
+        .verify(&request.body, &request.headers)
+        .unwrap();
+    let mut body: Value = serde_json::from_slice(&request.body).unwrap();
+    let text = body.as_object_mut().unwrap().remove("text").unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(text.as_str().unwrap()).unwrap(),
+        body
+    );
+    assert_eq!(body["data"]["requires_action"], true);
+    assert_eq!(body["data"]["decision_status"], "pending_external");
+    body
+}
+
+#[tokio::test]
+async fn unset_and_false_text_flags_send_original_bytes() {
+    for text in [None, Some("false")] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut receiver = Receiver::start().await;
+        let events = open(dir.path(), "token").await;
+        let config = EnvWebhookConfig::from_values(Some(&receiver.url), None, Some(SECRET), text)
+            .unwrap()
+            .unwrap();
+        events.apply_env_webhook(Some(config)).await.unwrap();
+        let input = event("friend_request", "no-text");
+        events.publish(&input, &pending_external()).await.unwrap();
+        assert!(events.delivery_tick(None).await.unwrap());
+        let requests = receiver.drain();
+        assert_eq!(requests.len(), 1);
+        let projected = catalog::project(&input, &pending_external()).unwrap();
+        let expected = webhook_body(
+            &event_id("callback", "no-text", "owner"),
+            projected.name,
+            "2023-11-14T22:13:20.000Z",
+            &projected.data,
+        )
+        .unwrap();
+        assert_eq!(requests[0].body.as_ref(), expected);
+        assert!(
+            serde_json::from_slice::<Value>(&requests[0].body)
+                .unwrap()
+                .get("text")
+                .is_none()
+        );
+        Webhook::new(SECRET)
+            .unwrap()
+            .verify(&requests[0].body, &requests[0].headers)
+            .unwrap();
+        assert_eq!(counts(&events).await, (1, 0, 0));
+    }
+}
+
+#[tokio::test]
+async fn text_mode_delivers_every_type_with_original_fields_and_final_body_signatures() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut receiver = Receiver::start().await;
+    let events = open(dir.path(), "token").await;
+    let mut config = receiver.config(Some(SECRET));
+    config.include_text = true;
+    events.apply_env_webhook(Some(config)).await.unwrap();
+    for kind in EVENT_TYPES {
+        events
+            .publish(&event(kind, kind), &pending_external())
+            .await
+            .unwrap();
+    }
+    deliver_pending(&events, EVENT_TYPES.len()).await;
+    let requests = receiver.drain();
+    assert_eq!(requests.len(), EVENT_TYPES.len());
+    let mut names = Vec::new();
+    for request in &requests {
+        assert_eq!(request.headers["authorization"], "Bearer receiver-key");
+        assert_eq!(request.query.as_deref(), Some("key=abc"));
+        let body = assert_signed_text(request);
+        assert_eq!(body.as_object().unwrap().len(), 4);
+        assert_eq!(body["timestamp"], "2023-11-14T22:13:20.000Z");
+        names.push(body["name"].as_str().unwrap().to_owned());
+    }
+    names.sort();
+    let mut expected = EVENT_TYPES.map(|kind| format!("wattetheria.agent.{kind}"));
+    expected.sort();
+    assert_eq!(names, expected);
+    assert_eq!(counts(&events).await, (1, 0, 0));
+}
+
+#[tokio::test]
+async fn text_body_and_webhook_id_are_stable_when_retrying_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut receiver = Receiver::start().await;
+    let events = open(dir.path(), "token").await;
+    let mut config = receiver.config(Some(SECRET));
+    config.include_text = true;
+    events
+        .apply_env_webhook(Some(config.clone()))
+        .await
+        .unwrap();
+    receiver.status.store(503, Ordering::SeqCst);
+    events
+        .publish(&event("friend_request", "retry-text"), &pending_external())
+        .await
+        .unwrap();
+    assert!(events.delivery_tick(None).await.unwrap());
+    let first = receiver.drain().pop().unwrap();
+    assert_signed_text(&first);
+    assert_eq!(counts(&events).await, (1, 1, 0));
+    drop(events);
+    let events = open(dir.path(), "token").await;
+    events.apply_env_webhook(Some(config)).await.unwrap();
+    receiver.status.store(200, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert!(events.delivery_tick(None).await.unwrap());
+    let second = receiver.drain().pop().unwrap();
+    assert_signed_text(&second);
+    assert_eq!(first.body, second.body);
+    assert_eq!(first.headers["webhook-id"], second.headers["webhook-id"]);
+    assert_eq!(counts(&events).await, (1, 0, 0));
+}
+
+#[tokio::test]
+async fn text_expansion_is_checked_against_final_request_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut receiver = Receiver::start().await;
+    let events = open(dir.path(), "token").await;
+    let mut config = receiver.config(Some(SECRET));
+    config.include_text = true;
+    events.apply_env_webhook(Some(config)).await.unwrap();
+    for (index, task_id) in [
+        "x".repeat(70 * 1024),
+        "x".repeat(140 * 1024),
+        "x".repeat(255 * 1024),
+        "\u{1f600}".repeat(63_000),
+        "\"\\\n\u{0000}".repeat(21_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut input = event("task_claim_received", &format!("large-text-{index}"));
+        input.payload = json!({"task_id": task_id});
+        events.publish(&input, &pending_external()).await.unwrap();
+        let id = event_id("callback", &input.event_id, "owner");
+        let stored = stored_encrypted_payload(dir.path(), &id);
+        assert!(events.delivery_tick(None).await.unwrap());
+        assert_eq!(stored_encrypted_payload(dir.path(), &id), stored);
+        let requests = receiver.drain();
+        assert_eq!(
+            requests.len(),
+            1,
+            "large event {index} must reach the receiver"
+        );
+        let request = &requests[0];
+        Webhook::new(SECRET)
+            .unwrap()
+            .verify(&request.body, &request.headers)
+            .unwrap();
+        assert!(request.body.len() <= super::super::webhook::MAX_REQUEST_BYTES);
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        let text = body["text"].as_str().unwrap();
+        assert!(text.encode_utf16().count() <= 65_536);
+        let preview: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(preview["text_truncated"], true);
+        assert_eq!(preview["eventId"], body["eventId"]);
+        assert_eq!(preview["name"], body["name"]);
+        assert_eq!(preview["timestamp"], body["timestamp"]);
+        assert_eq!(preview["data"]["requires_action"], true);
+        let shortened = preview["data"]["task_id"].as_str().unwrap();
+        assert!(task_id.starts_with(shortened));
+        assert!(shortened.len() < task_id.len());
+        if index < 2 {
+            assert_eq!(body["data"]["task_id"], task_id);
+            assert!(body.get("data_truncated").is_none());
+        } else {
+            assert_eq!(body["data_truncated"], true);
+            assert_eq!(body["data"]["task_id"], shortened);
+        }
+        assert_eq!(counts(&events).await, (1, 0, 0));
+    }
+}
+
+#[tokio::test]
+async fn large_text_preview_is_stable_on_retry_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut receiver = Receiver::start().await;
+    let events = open(dir.path(), "token").await;
+    let mut config = receiver.config(Some(SECRET));
+    config.include_text = true;
+    events
+        .apply_env_webhook(Some(config.clone()))
+        .await
+        .unwrap();
+    let mut input = event("task_claim_received", "large-retry");
+    input.payload = json!({"task_id": "x".repeat(255 * 1024)});
+    events.publish(&input, &pending_external()).await.unwrap();
+    let id = event_id("callback", &input.event_id, "owner");
+    let stored = stored_encrypted_payload(dir.path(), &id);
+    receiver.status.store(503, Ordering::SeqCst);
+    assert!(events.delivery_tick(None).await.unwrap());
+    let first = receiver.drain().pop().unwrap();
+    Webhook::new(SECRET)
+        .unwrap()
+        .verify(&first.body, &first.headers)
+        .unwrap();
+    let body: Value = serde_json::from_slice(&first.body).unwrap();
+    assert_eq!(body["data_truncated"], true);
+    assert_eq!(
+        serde_json::from_str::<Value>(body["text"].as_str().unwrap()).unwrap()["text_truncated"],
+        true
+    );
+    assert_eq!(counts(&events).await, (1, 1, 0));
+    drop(events);
+
+    let events = open(dir.path(), "token").await;
+    events.apply_env_webhook(Some(config)).await.unwrap();
+    receiver.status.store(200, Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert!(events.delivery_tick(None).await.unwrap());
+    let second = receiver.drain().pop().unwrap();
+    Webhook::new(SECRET)
+        .unwrap()
+        .verify(&second.body, &second.headers)
+        .unwrap();
+    assert_eq!(second.body, first.body);
+    assert_eq!(second.headers["webhook-id"], first.headers["webhook-id"]);
+    assert_eq!(stored_encrypted_payload(dir.path(), &id), stored);
+    assert_eq!(counts(&events).await, (1, 0, 0));
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ use standardwebhooks::{
     HEADER_WEBHOOK_ID, HEADER_WEBHOOK_SIGNATURE, HEADER_WEBHOOK_TIMESTAMP, Webhook,
 };
 
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
+pub(super) const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 

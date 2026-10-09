@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, RwLock};
 
 use super::catalog::{self, ProjectOutcome};
-use super::env_webhook::{EnvWebhookConfig, generate_secret};
+use super::env_webhook::{EnvWebhookConfig, body_with_text, generate_secret};
 use super::store::{
     DeliveryErrorCategory, DeliveryResult, EventStore, NewOccurrence, NewSubscription,
     OutboxRecord, Subscription, SubscriptionDiagnostic,
@@ -41,11 +42,12 @@ pub struct McpEvents {
     env_webhook: Arc<Mutex<Option<EnvWebhook>>>,
 }
 
-/// In-memory side of the environment webhook: its request headers come from the
-/// deployment environment on every start and are never written to the store.
+/// Request headers and body format come from the deployment environment on
+/// every start and are never written to the store.
 struct EnvWebhook {
     subscription_id: String,
     headers: HeaderMap,
+    include_text: bool,
 }
 
 impl McpEvents {
@@ -153,6 +155,7 @@ impl McpEvents {
         *self.env_webhook.lock().await = Some(EnvWebhook {
             subscription_id: id,
             headers: config.headers,
+            include_text: config.include_text,
         });
         Ok(())
     }
@@ -275,27 +278,39 @@ impl McpEvents {
             .and(item.old_callback_secret.as_deref());
         // Deliveries wait for the current configuration so they always carry
         // the receiver headers from this start's environment.
-        let headers = self
+        let env_config = self
             .env_webhook
             .lock()
             .await
             .as_ref()
             .filter(|env| env.subscription_id == item.subscription_id)
-            .map(|env| env.headers.clone());
+            .map(|env| (env.headers.clone(), env.include_text));
         let outcome = if item.source_kind == ENV_WEBHOOK_SOURCE_KIND {
-            let Some(headers) = headers else {
+            let Some((headers, include_text)) = env_config else {
                 return Ok(false);
             };
-            self.webhook
-                .post_event(
-                    &item.callback_url,
-                    &item.callback_secret,
-                    old_secret,
-                    &item.event_id,
-                    &item.payload,
-                    &headers,
-                )
-                .await
+            let body = if include_text {
+                body_with_text(&item.payload)
+                    .map(Cow::Owned)
+                    .map_err(|_| WebhookFailure::InvalidPayload)
+            } else {
+                Ok(Cow::Borrowed(item.payload.as_slice()))
+            };
+            match body {
+                Ok(body) => {
+                    self.webhook
+                        .post_event(
+                            &item.callback_url,
+                            &item.callback_secret,
+                            old_secret,
+                            &item.event_id,
+                            &body,
+                            &headers,
+                        )
+                        .await
+                }
+                Err(error) => Err(error),
+            }
         } else if item.source_kind == "mcp_subscription" {
             self.deliver_subscription(&item, old_secret).await
         } else {

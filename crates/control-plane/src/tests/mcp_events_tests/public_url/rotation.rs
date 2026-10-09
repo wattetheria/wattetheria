@@ -31,6 +31,7 @@ async fn env_receiver(
                 Some(&format!("http://{address}/hook")),
                 Some("x-receiver: env-authority"),
                 parameters()["delivery"]["secret"].as_str(),
+                None,
             )
             .unwrap(),
         )

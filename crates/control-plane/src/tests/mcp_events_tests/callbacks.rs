@@ -266,6 +266,7 @@ async fn mcp_events_mode_pushes_every_event_to_the_env_webhook_without_any_subsc
                 Some(&format!("http://{address}/wake")),
                 Some("Authorization: Bearer wake-key"),
                 None,
+                None,
             )
             .unwrap(),
         )
