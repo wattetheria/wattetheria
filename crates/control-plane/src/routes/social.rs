@@ -2743,6 +2743,7 @@ fn build_outbound_dm_message(
 pub(crate) async fn build_agent_dm_messages_payload(
     state: &ControlPlaneState,
     public_id: Option<&str>,
+    display_name: Option<&str>,
     counterpart_public_id: Option<&str>,
     thread_id: Option<&str>,
     limit: usize,
@@ -2757,6 +2758,31 @@ pub(crate) async fn build_agent_dm_messages_payload(
     }
     let known_threads =
         thread_service::list_threads(&*state.social_store, &local.public_id).unwrap_or_default();
+    let named_counterpart = if let Some(display_name) = display_name {
+        let friendships =
+            friendship_service::list_friendships(&*state.social_store, &local.public_id)?;
+        known_threads
+            .iter()
+            .find(|thread| {
+                identities.get(&thread.remote_public_id).map_or_else(
+                    || {
+                        friendships.iter().any(|friendship| {
+                            friendship.remote_public_id == thread.remote_public_id
+                                && friendship_display_name(friendship, &identities)
+                                    == Some(display_name)
+                        })
+                    },
+                    |identity| identity.display_name.trim() == display_name,
+                )
+            })
+            .map(|thread| thread.remote_public_id.clone())
+    } else {
+        None
+    };
+    if display_name.is_some() && named_counterpart.is_none() {
+        return Ok(Vec::new());
+    }
+    let counterpart_public_id = named_counterpart.as_deref().or(counterpart_public_id);
     let (requested_threads, transport_thread_ids) = resolve_requested_dm_threads(
         state,
         &known_threads,
@@ -3785,11 +3811,31 @@ pub(crate) async fn list_agent_dm_messages(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let mut items = match build_agent_dm_messages_payload(
+    let display_name = normalized_display_name_filter(query.display_name.as_deref());
+    if display_name.is_none()
+        && query.thread.is_none()
+        && query
+            .counterpart
+            .as_deref()
+            .is_some_and(|value| value.trim().starts_with("did:"))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "counterpart_public_id must be a public ID, not a DID; prefer display_name or provide an agent-... public ID"
+            })),
+        )
+            .into_response();
+    }
+    let items = match build_agent_dm_messages_payload(
         &state,
         query.public_id.as_deref(),
-        query.counterpart.as_deref(),
-        query.thread.as_deref(),
+        display_name,
+        query
+            .counterpart
+            .as_deref()
+            .filter(|_| display_name.is_none()),
+        query.thread.as_deref().filter(|_| display_name.is_none()),
         200,
     )
     .await
@@ -3797,9 +3843,6 @@ pub(crate) async fn list_agent_dm_messages(
         Ok(items) => items,
         Err(error) => return internal_error(&error),
     };
-    if let Some(display_name) = normalized_display_name_filter(query.display_name.as_deref()) {
-        items.retain(|item| payload_display_name_matches(item, display_name));
-    }
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,

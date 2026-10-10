@@ -874,13 +874,16 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
         "list_agent_dm_messages" => Some(tool_schema(
             tool,
             &[
-                string_field("public_id", "Local public identity filter."),
-                string_field("display_name", "Counterpart friend display name filter."),
+                string_field(
+                    "display_name",
+                    "Preferred friend name; overrides ID filters.",
+                ),
                 string_field(
                     "counterpart_public_id",
-                    "Counterpart public identity filter.",
+                    "Alternative: agent-... public ID, not a did:key:... DID.",
                 ),
-                string_field("thread_id", "Direct message thread ID filter."),
+                string_field("thread_id", "Alternative: direct message thread ID."),
+                string_field("public_id", "Your local ID, not the friend's. Optional."),
             ],
             &[],
             false,

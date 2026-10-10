@@ -511,7 +511,7 @@ async fn build_conversations_payload(
         .await
         .unwrap_or_default();
     let messages =
-        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, 200)
+        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, None, 200)
             .await
             .unwrap_or_default();
     let latest_by_thread = latest_dm_messages_by_thread(&messages);
@@ -578,7 +578,7 @@ async fn build_friends_payload(
         .unwrap_or_default();
     let dm_threads_by_counterpart = dm_threads_by_counterpart(&dm_threads);
     let dm_messages =
-        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, 200)
+        build_agent_dm_messages_payload(state, query.public_id.as_deref(), None, None, None, 200)
             .await
             .unwrap_or_default();
     let latest_by_thread = latest_dm_messages_by_thread(&dm_messages);

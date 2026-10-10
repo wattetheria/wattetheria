@@ -501,6 +501,33 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             .unwrap()
             .contains_key("display_name")
     );
+    assert!(
+        list_agent_dm_messages["description"]
+            .as_str()
+            .unwrap()
+            .contains("Prefer display_name")
+    );
+    assert!(
+        list_agent_dm_messages["inputSchema"]["properties"]["display_name"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("overrides ID filters")
+    );
+    assert!(
+        list_agent_dm_messages["inputSchema"]["properties"]["counterpart_public_id"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("not a did:key:")
+    );
+    assert_eq!(
+        list_agent_dm_messages["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .as_slice(),
+        &[] as &[Value]
+    );
+    assert_schema_optional(list_agent_dm_messages, "counterpart_public_id");
+    assert_schema_optional(list_agent_dm_messages, "thread_id");
     let send_agent_dm_message = find_tool(tools, "send_agent_dm_message");
     assert_schema_requires(send_agent_dm_message, &["content"]);
     assert!(
