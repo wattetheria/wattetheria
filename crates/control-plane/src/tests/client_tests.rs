@@ -77,6 +77,7 @@ async fn client_api_routes_align_with_client_dtos() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats,
         network_status: SwarmNetworkStatusView {
@@ -937,6 +938,7 @@ async fn client_friends_uses_social_friendships_as_canonical_source() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -1119,6 +1121,7 @@ async fn client_export_excludes_local_friends_and_dm() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()
@@ -1404,6 +1407,7 @@ async fn client_export_is_public_and_signed() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats,
         network_status: SwarmNetworkStatusView {
@@ -1811,6 +1815,7 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()
@@ -1906,6 +1911,7 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
     let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: [(identity.agent_did.clone(), AgentStats::default())]
             .into_iter()

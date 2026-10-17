@@ -12,6 +12,7 @@ pub mod payments;
 pub mod provider_identity;
 pub mod security;
 pub mod servicenet;
+pub mod space;
 pub mod storage;
 pub mod tasks;
 pub mod types;

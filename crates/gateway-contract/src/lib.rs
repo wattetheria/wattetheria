@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod space;
+pub use space::{SignedSpacePresence, SpacePresenceRecord, WorldEvent};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataKind {
     Presence,
+    SpacePresence,
     Identity,
     OperatorProfile,
     OrganizationSummary,
@@ -37,8 +41,9 @@ pub enum DataKind {
     WorldEvent,
 }
 
-pub const ALL_DATA_KINDS: [DataKind; 31] = [
+pub const ALL_DATA_KINDS: [DataKind; 32] = [
     DataKind::Presence,
+    DataKind::SpacePresence,
     DataKind::Identity,
     DataKind::OperatorProfile,
     DataKind::OrganizationSummary,

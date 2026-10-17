@@ -21,7 +21,7 @@ pub use network_registration_storage::{
     NetworkAgentCredentialRecord, NetworkPermissionCheckpoint,
 };
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 12;
 const SERVICENET_ASYNC_INVOCATIONS_TABLE: &str = "servicenet_async_invocations";
 pub const PRIMARY_DB_FILE: &str = "wattetheria.db";
 pub const LEGACY_SOCIAL_DB_FILE: &str = "social.db";
@@ -54,6 +54,7 @@ pub mod domain {
     pub const GALAXY_STATE: &str = "galaxy_state";
     pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";
     pub const TRAVEL_STATE_REGISTRY: &str = "travel_state_registry";
+    pub const OWN_SPACE_PRESENCE: &str = "own_space_presence";
     pub const ORACLE_REGISTRY: &str = "oracle_registry";
     pub const ONLINE_PROOF: &str = "online_proof";
     pub const POLICY: &str = "policy";
@@ -85,6 +86,7 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::GALAXY_STATE, "galaxy_state"),
     (domain::GALAXY_MAP_REGISTRY, "galaxy_map_registry"),
     (domain::TRAVEL_STATE_REGISTRY, "travel_state_registry"),
+    (domain::OWN_SPACE_PRESENCE, "own_space_presence"),
     (domain::ORACLE_REGISTRY, "oracle_registry_state"),
     (domain::ONLINE_PROOF, "online_proof_state"),
     (domain::POLICY, "policy_state"),
@@ -310,6 +312,16 @@ impl LocalDb {
                 &tx,
                 &legacy_table,
                 SERVICENET_ASYNC_INVOCATIONS_TABLE,
+            )?;
+        }
+
+        if current.unwrap_or(0) < 12 {
+            let legacy_table = format!("domain_{}", hex_encode(b"space_presence_registry"));
+            Self::migrate_legacy_domain_table(&tx, &legacy_table, domain::OWN_SPACE_PRESENCE)?;
+            Self::migrate_legacy_domain_table(
+                &tx,
+                "space_presence_registry",
+                domain::OWN_SPACE_PRESENCE,
             )?;
         }
 
@@ -831,6 +843,246 @@ mod tests {
             )
             .unwrap();
         assert_eq!(saved, "\"invocations\"");
+    }
+
+    #[test]
+    fn space_presence_registry_uses_readable_table_for_domain_operations() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let legacy_table = format!(
+            "domain_{}",
+            hex_encode(domain::OWN_SPACE_PRESENCE.as_bytes())
+        );
+        assert!(LocalDb::table_exists(&db.conn(), domain::OWN_SPACE_PRESENCE).unwrap());
+        assert!(!LocalDb::table_exists(&db.conn(), &legacy_table).unwrap());
+        db.save_domain(domain::OWN_SPACE_PRESENCE, &"signed-record")
+            .unwrap();
+        let saved: String = db
+            .conn()
+            .query_row(
+                "SELECT payload FROM own_space_presence WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "\"signed-record\"");
+        assert_eq!(
+            db.load_domain::<String>(domain::OWN_SPACE_PRESENCE)
+                .unwrap(),
+            Some("signed-record".to_owned())
+        );
+        assert_eq!(db.list_domains().unwrap(), [domain::OWN_SPACE_PRESENCE]);
+        db.delete_domain(domain::OWN_SPACE_PRESENCE).unwrap();
+        assert_eq!(db.list_domains().unwrap(), Vec::<String>::new());
+        assert!(!LocalDb::table_exists(&db.conn(), &legacy_table).unwrap());
+    }
+
+    fn create_v10_space_database(
+        path: &Path,
+        version: i64,
+        legacy_table: &str,
+        legacy_row: (&str, &str),
+        target_row: Option<(&str, &str)>,
+        reject_insert: bool,
+    ) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (10);",
+        )
+        .unwrap();
+        conn.execute("UPDATE schema_version SET version=?1", [version])
+            .unwrap();
+        for table in [legacy_table, "domain_756e72656c61746564"] {
+            LocalDb::create_domain_table(&conn, table).unwrap();
+            conn.execute(
+                &format!("INSERT INTO {} VALUES (1, ?1, ?2)", quote_ident(table)),
+                params![legacy_row.0, legacy_row.1],
+            )
+            .unwrap();
+        }
+        if target_row.is_some() || reject_insert {
+            LocalDb::create_domain_table(&conn, domain::OWN_SPACE_PRESENCE).unwrap();
+        }
+        if let Some((payload, timestamp)) = target_row {
+            conn.execute(
+                "INSERT INTO own_space_presence VALUES (1, ?1, ?2)",
+                params![payload, timestamp],
+            )
+            .unwrap();
+        }
+        if reject_insert {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_space_migration BEFORE INSERT ON own_space_presence
+                 BEGIN SELECT RAISE(ABORT, 'migration insert rejected'); END;",
+            )
+            .unwrap();
+        }
+        conn
+    }
+
+    fn space_migration_row(conn: &Connection, table: &str) -> (String, String) {
+        conn.query_row(
+            &format!(
+                "SELECT payload, updated_at FROM {} WHERE id=1",
+                quote_ident(table)
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    fn space_migration_schema(conn: &Connection) -> Vec<(String, String)> {
+        conn.prepare("SELECT name, sql FROM sqlite_master ORDER BY name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn space_presence_registry_v10_migration_preserves_bytes_or_rolls_back() {
+        let payload = "{ \"name\": \"space-record\", \"count\": 37 }";
+        let old_timestamp = "2026-10-01T02:03:04Z";
+        let target_timestamp = "2026-10-02T02:03:04Z";
+        for (version, legacy_table) in [
+            (
+                10,
+                format!("domain_{}", hex_encode(b"space_presence_registry")),
+            ),
+            (11, "space_presence_registry".to_owned()),
+        ] {
+            for (target_payload, reject_insert, expected_error) in [
+                (None, false, None),
+                (Some(payload), false, None),
+                (
+                    Some("{\"name\":\"conflict\",\"count\":38}"),
+                    false,
+                    Some("conflicting domain tables"),
+                ),
+                (None, true, Some("copy legacy domain table")),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join(PRIMARY_DB_FILE);
+                let conn = create_v10_space_database(
+                    &path,
+                    version,
+                    &legacy_table,
+                    (payload, old_timestamp),
+                    target_payload.map(|value| (value, target_timestamp)),
+                    reject_insert,
+                );
+                let schema_before = space_migration_schema(&conn);
+                let result = LocalDb::open(&path);
+                if let Some(expected_error) = expected_error {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains(expected_error), "{error}");
+                    if reject_insert {
+                        assert!(error.contains("migration insert rejected"), "{error}");
+                    }
+                    assert_eq!(
+                        conn.query_row("SELECT version FROM schema_version", [], |row| row
+                            .get::<_, i64>(0))
+                            .unwrap(),
+                        version
+                    );
+                    assert_eq!(space_migration_schema(&conn), schema_before);
+                    assert_eq!(
+                        space_migration_row(&conn, &legacy_table),
+                        (payload.to_owned(), old_timestamp.to_owned())
+                    );
+                    if let Some(target_payload) = target_payload {
+                        assert_eq!(
+                            space_migration_row(&conn, domain::OWN_SPACE_PRESENCE),
+                            (target_payload.to_owned(), target_timestamp.to_owned())
+                        );
+                    } else {
+                        assert_eq!(
+                            conn.query_row("SELECT count(*) FROM own_space_presence", [], |row| {
+                                row.get::<_, i64>(0)
+                            })
+                            .unwrap(),
+                            0
+                        );
+                    }
+                } else {
+                    drop(result.unwrap());
+                    let reopened = LocalDb::open(&path).unwrap();
+                    assert_eq!(
+                        reopened
+                            .conn()
+                            .query_row("SELECT version FROM schema_version", [], |row| row
+                                .get::<_, i64>(0))
+                            .unwrap(),
+                        12
+                    );
+                    assert!(!LocalDb::table_exists(&conn, &legacy_table).unwrap());
+                    let expected_timestamp = if target_payload.is_some() {
+                        target_timestamp
+                    } else {
+                        old_timestamp
+                    };
+                    assert_eq!(
+                        space_migration_row(&conn, domain::OWN_SPACE_PRESENCE),
+                        (payload.to_owned(), expected_timestamp.to_owned())
+                    );
+                    assert_eq!(
+                        reopened
+                            .load_domain::<SampleState>(domain::OWN_SPACE_PRESENCE)
+                            .unwrap(),
+                        Some(SampleState {
+                            name: "space-record".to_owned(),
+                            count: 37
+                        })
+                    );
+                }
+                assert_eq!(
+                    space_migration_row(&conn, "domain_756e72656c61746564"),
+                    (payload.to_owned(), old_timestamp.to_owned())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn space_table_migration_conflict_between_both_legacy_tables_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PRIMARY_DB_FILE);
+        let encoded = format!("domain_{}", hex_encode(b"space_presence_registry"));
+        let conn = create_v10_space_database(
+            &path,
+            10,
+            &encoded,
+            ("encoded-payload", "old-time"),
+            None,
+            false,
+        );
+        LocalDb::create_domain_table(&conn, "space_presence_registry").unwrap();
+        conn.execute(
+            "INSERT INTO space_presence_registry VALUES (1, ?1, ?2)",
+            params!["conflicting-payload", "other-time"],
+        )
+        .unwrap();
+        let schema = space_migration_schema(&conn);
+        let error = LocalDb::open(&path).unwrap_err().to_string();
+        assert!(error.contains("conflicting domain tables"), "{error}");
+        assert_eq!(space_migration_schema(&conn), schema);
+        assert_eq!(
+            space_migration_row(&conn, &encoded),
+            ("encoded-payload".to_owned(), "old-time".to_owned())
+        );
+        assert_eq!(
+            space_migration_row(&conn, "space_presence_registry"),
+            ("conflicting-payload".to_owned(), "other-time".to_owned())
+        );
+        assert!(!LocalDb::table_exists(&conn, "own_space_presence").unwrap());
+        assert_eq!(
+            conn.query_row("SELECT version FROM schema_version", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            10
+        );
     }
 
     #[test]

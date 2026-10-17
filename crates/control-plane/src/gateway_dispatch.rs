@@ -77,6 +77,7 @@ pub fn describe_stream_event(event: &StreamEvent) -> Option<GatewayDispatchDecis
         .or_else(|| plan_ranking_event(kind, payload))
         .or_else(|| plan_public_block_event(kind, payload))
         .or_else(|| plan_galaxy_event(kind, payload))
+        .or_else(|| plan_space_event(kind, payload))
     {
         return Some(GatewayDispatchDecision {
             data_kind: Some(plan.data_kind),
@@ -114,6 +115,50 @@ fn non_push_stream_decision(kind: &str, payload: &Value) -> Option<GatewayDispat
         "civilization.agent_dm.command" => Some(private_non_push_decision(payload, "thread_id")),
         _ => None,
     }
+}
+
+fn plan_space_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
+    if kind == "node.presence.heartbeat" {
+        let presence: wattetheria_gateway_contract::space::NodePresence =
+            serde_json::from_value(payload.clone()).ok()?;
+        return Some(GatewayDispatchPlan {
+            data_kind: GatewayDataKind::Presence,
+            visibility: GatewayVisibility::Public,
+            provisional_policy: GatewayProvisionalExportPolicy::EphemeralOnly,
+            scope: GatewayEventScope {
+                node_id: Some(presence.node_id.clone()),
+                ..GatewayEventScope::default()
+            },
+            identity_key: Some(presence.node_id),
+        });
+    }
+    if kind == "world.event.received" {
+        return Some(GatewayDispatchPlan {
+            data_kind: GatewayDataKind::WorldEvent,
+            visibility: GatewayVisibility::Public,
+            provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+            scope: GatewayEventScope::default(),
+            identity_key: payload
+                .get("announcement_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        });
+    }
+    if kind != "space.presence.updated" {
+        return None;
+    }
+    let signed: wattetheria_gateway_contract::SignedSpacePresence =
+        serde_json::from_value(payload.clone()).ok()?;
+    Some(GatewayDispatchPlan {
+        data_kind: GatewayDataKind::SpacePresence,
+        visibility: GatewayVisibility::Public,
+        provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+        scope: GatewayEventScope::default(),
+        identity_key: Some(format!(
+            "{}:{}",
+            signed.record.space_id, signed.record.agent_did
+        )),
+    })
 }
 
 fn topic_non_push_decision(

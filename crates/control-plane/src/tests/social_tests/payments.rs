@@ -56,6 +56,7 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -157,6 +158,7 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -324,6 +326,7 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -483,6 +486,7 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -591,6 +595,7 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -714,6 +719,7 @@ async fn agent_action_commit_payment_authorize_uses_ledger_remote_node_without_c
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

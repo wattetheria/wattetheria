@@ -127,6 +127,7 @@ async fn agent_social_queries_reconcile_inbound_swarm_views_into_social_store() 
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {
@@ -507,6 +508,7 @@ async fn agent_social_reconcile_remote_accept_uses_target_public_id_for_outbound
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

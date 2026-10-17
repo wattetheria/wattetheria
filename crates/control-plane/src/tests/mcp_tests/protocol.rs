@@ -1,4 +1,5 @@
 use super::*;
+use wattetheria_gateway_contract::SignedSpacePresence;
 
 const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "list_agent_payments",
@@ -59,7 +60,222 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "cancel_service_agent_task",
     "subscribe_service_agent_task",
     "get_servicenet_receipt",
+    "enter_space",
+    "leave_space",
+    "list_places",
+    "get_place",
+    "get_agent_presence",
+    "move_agent",
+    "set_agent_activity",
 ];
+
+#[tokio::test]
+async fn mcp_enter_space_respects_configured_auth_before_activating_presence() {
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
+    state.mcp_token_auth_required = true;
+    let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enter_space","arguments":{}}});
+    let rejected = app(state.clone())
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(call.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    assert!(state.own_space_presence.lock().await.active_space.is_none());
+    assert!(state.own_space_presence.lock().await.networks.is_empty());
+    let entered = mcp_request(app(state.clone()), &token, call).await;
+    assert_eq!(entered["result"]["isError"], false);
+    assert_eq!(
+        entered["result"]["structuredContent"]["presence"]["record"]["entered"],
+        true
+    );
+    assert!(state.own_space_presence.lock().await.active_space.is_some());
+}
+
+#[tokio::test]
+async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let listed = mcp_request(
+        app.clone(),
+        &token,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+    )
+    .await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    assert_schema_optional(find_tool(tools, "publish_board_message"), "mention");
+    assert_schema_requires(find_tool(tools, "get_place"), &["place_id"]);
+    assert_schema_requires(find_tool(tools, "set_agent_activity"), &["activity"]);
+    let before = mcp_request(app.clone(), &token, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_agent_presence","arguments":{}}})).await;
+    assert_eq!(before["result"]["isError"], true);
+    assert!(state.own_space_presence.lock().await.networks.is_empty());
+    for (name, arguments) in [
+        ("list_places", json!({"kind":"sector"})),
+        ("enter_space", json!({})),
+        ("get_agent_presence", json!({})),
+        (
+            "move_agent",
+            json!({"place_id":"johnson-park","activity":"walking"}),
+        ),
+        ("set_agent_activity", json!({"activity":"waiting"})),
+        ("get_place", json!({"place_id":"johnson-park"})),
+    ] {
+        let response = mcp_request(app.clone(),&token,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await;
+        assert_eq!(response["result"]["isError"], false, "{name}: {response}");
+        let result = &response["result"]["structuredContent"];
+        match name {
+            "enter_space" => {
+                assert_eq!(result["ok"], true);
+                assert_eq!(result["presence"]["record"]["seq"], 1);
+                assert!(state.own_space_presence.lock().await.active_space.is_some());
+            }
+            "list_places" => {
+                let places = result["places"].as_array().unwrap();
+                assert_eq!(places.len(), 19);
+                assert!(
+                    places
+                        .iter()
+                        .all(|entry| entry["place"].get("tiles").is_none())
+                );
+            }
+            "get_agent_presence" => {
+                assert_eq!(result["presence"]["record"]["agent_did"], state.agent_did);
+            }
+            "move_agent" => assert_eq!(result["presence"]["record"]["activity"], "walking"),
+            "set_agent_activity" => assert_eq!(result["presence"]["record"]["activity"], "waiting"),
+            "get_place" => {
+                assert_eq!(result["place"]["place_id"], "johnson-park");
+                assert_eq!(result["service_bindings"], json!([]));
+                assert!(result["place"].get("tiles").is_none());
+                assert!(
+                    result["objects"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|object| object.get("tiles").is_none())
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn mcp_leave_space_is_discoverable_and_uses_the_authenticated_space_route() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let listed = mcp_request(
+        app.clone(),
+        &token,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+    )
+    .await;
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let tool = find_tool(tools, "leave_space");
+    assert_eq!(tool["inputSchema"]["properties"], json!({}));
+    assert_eq!(tool["inputSchema"]["required"], json!([]));
+    let call = |id| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"leave_space","arguments":{}}});
+    let absent = mcp_request(app.clone(), &token, call(2)).await;
+    assert_eq!(absent["result"]["isError"], false);
+    assert_eq!(
+        absent["result"]["structuredContent"],
+        json!({"ok":true,"presence":null})
+    );
+    assert!(state.own_space_presence.lock().await.networks.is_empty());
+
+    let entered = mcp_request(
+        app.clone(),
+        &token,
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"enter_space","arguments":{}}}),
+    )
+    .await;
+    assert_eq!(entered["result"]["isError"], false);
+    let left = mcp_request(app.clone(), &token, call(4)).await;
+    assert_eq!(left["result"]["isError"], false);
+    assert_eq!(left["result"]["structuredContent"]["ok"], true);
+    let signed: SignedSpacePresence =
+        serde_json::from_value(left["result"]["structuredContent"]["presence"].clone()).unwrap();
+    assert!(!signed.record.entered);
+    assert_eq!(
+        left["result"]["structuredContent"]["presence"]["record"]["seq"],
+        2
+    );
+    let repeated = mcp_request(app, &token, call(5)).await;
+    assert_eq!(repeated["result"]["isError"], false);
+    assert_eq!(
+        repeated["result"]["structuredContent"],
+        json!({"ok":true,"presence":null})
+    );
+    assert!(state.own_space_presence.lock().await.active_space.is_none());
+}
+
+#[tokio::test]
+async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavailable() {
+    let (dir, _app, token, _policy, mut state) = build_test_app(100);
+    assert!(
+        wattetheria_kernel::network_agent_registration::network_permission_is_active(
+            &state.local_db,
+            &state.agent_did,
+        )
+        .unwrap()
+    );
+    state.space_catalog = None;
+    state.swarm_bridge = Arc::new(wattetheria_kernel::swarm_bridge::HybridSwarmBridge::new(
+        dir.path().join("offline-mission-board.json"),
+        None,
+    ));
+    assert!(state.swarm_bridge.current_network_id().await.is_err());
+    let before = state
+        .local_db
+        .load_domain::<Value>("own_space_presence")
+        .unwrap();
+    let mut events = state.stream_tx.subscribe();
+    let response = mcp_request(
+        app(state.clone()),
+        &token,
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"leave_space","arguments":{}}}),
+    )
+    .await;
+    assert_eq!(response["result"]["isError"], false);
+    assert_eq!(
+        response["result"]["structuredContent"],
+        json!({"ok":true,"presence":null})
+    );
+    assert!(state.own_space_presence.lock().await.active_space.is_none());
+    assert!(state.own_space_presence.lock().await.networks.is_empty());
+    assert_eq!(
+        state
+            .local_db
+            .load_domain::<Value>("own_space_presence")
+            .unwrap(),
+        before
+    );
+    let contribution_log: wattetheria_kernel::economy::ContributionEventLog = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
+        .unwrap();
+    assert!(contribution_log.events.is_empty());
+    assert!(
+        state
+            .event_log
+            .get_all()
+            .unwrap()
+            .iter()
+            .all(|event| event.event_type != "CONTRIBUTION_REWARD_EVENT")
+    );
+    let balances: wattetheria_kernel::economy::WalletBalanceState = state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+        .unwrap();
+    assert!(balances.balances.is_empty());
+    assert!(matches!(
+        events.try_recv(),
+        Err(broadcast::error::TryRecvError::Empty)
+    ));
+}
 
 #[tokio::test]
 async fn mcp_initialize_negotiates_supported_client_protocol_version() {
@@ -170,15 +386,16 @@ async fn mcp_tools_list_matches_expected_agent_tool_surface() {
 #[tokio::test]
 async fn every_mcp_tool_reports_clear_network_permission_block() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
+    let network_id = test_network_id(&state);
     state
         .local_db
-        .delete_network_agent_credential("test-network", &state.agent_did)
+        .delete_network_agent_credential(&network_id, &state.agent_did)
         .unwrap();
     state
         .local_db
         .upsert_network_permission_checkpoint(
             &wattetheria_kernel::local_db::NetworkPermissionCheckpoint {
-                network_id: "test-network".to_owned(),
+                network_id,
                 node_id: "test-node".to_owned(),
                 agent_did: state.agent_did.clone(),
                 permission_status: "pending".to_owned(),

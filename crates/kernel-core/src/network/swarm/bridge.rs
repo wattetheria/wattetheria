@@ -13,6 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+pub use wattswarm_protocol::types::EventAnnouncementPayload;
 use wattswarm_protocol::types::{ArtifactRef, ClaimRole, InlineEvidence, TaskContract};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,6 +46,13 @@ pub struct SwarmGlobalMessageView {
     pub author_node_id: String,
     pub content: Value,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SwarmGlobalMessagePage {
+    pub network_id: String,
+    pub messages: Vec<SwarmGlobalMessageView>,
+    pub next_after_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -434,6 +442,34 @@ pub trait SwarmBridge: Send + Sync {
         Err(anyhow!("wattswarm global history is not configured"))
     }
 
+    async fn get_topic_message(
+        &self,
+        _network_id: Option<&str>,
+        _feed_key: &str,
+        _scope_hint: &str,
+        _message_id: &str,
+    ) -> Result<Option<SwarmTopicMessageView>> {
+        Err(anyhow!("wattswarm topic lookup is not configured"))
+    }
+
+    async fn get_global_announcement(
+        &self,
+        _network_id: &str,
+        _announcement_id: &str,
+    ) -> Result<Option<EventAnnouncementPayload>> {
+        Err(anyhow!("wattswarm global lookup is not configured"))
+    }
+
+    async fn list_global_messages_after(
+        &self,
+        _limit: usize,
+        _after_sequence: u64,
+    ) -> Result<SwarmGlobalMessagePage> {
+        Err(anyhow!(
+            "wattswarm global forward history is not configured"
+        ))
+    }
+
     async fn public_bootstrap(&self) -> Result<bool> {
         Ok(false)
     }
@@ -778,6 +814,38 @@ impl SwarmBridge for HybridSwarmBridge {
 
     async fn public_bootstrap(&self) -> Result<bool> {
         self.topic_api()?.public_bootstrap().await
+    }
+
+    async fn get_topic_message(
+        &self,
+        network_id: Option<&str>,
+        feed_key: &str,
+        scope_hint: &str,
+        message_id: &str,
+    ) -> Result<Option<SwarmTopicMessageView>> {
+        self.topic_api()?
+            .get_topic_message(network_id, feed_key, scope_hint, message_id)
+            .await
+    }
+
+    async fn get_global_announcement(
+        &self,
+        network_id: &str,
+        announcement_id: &str,
+    ) -> Result<Option<EventAnnouncementPayload>> {
+        self.topic_api()?
+            .get_global_announcement(network_id, announcement_id)
+            .await
+    }
+
+    async fn list_global_messages_after(
+        &self,
+        limit: usize,
+        after_sequence: u64,
+    ) -> Result<SwarmGlobalMessagePage> {
+        self.topic_api()?
+            .list_global_messages_after(limit, after_sequence)
+            .await
     }
 
     async fn topic_cursor(
@@ -1167,6 +1235,78 @@ impl HttpWattswarmApi {
             .await
             .context("decode wattswarm global message response")?;
         Ok(response.messages)
+    }
+
+    async fn get_topic_message(
+        &self,
+        network_id: Option<&str>,
+        feed_key: &str,
+        scope_hint: &str,
+        message_id: &str,
+    ) -> Result<Option<SwarmTopicMessageView>> {
+        let response = self
+            .client
+            .get(format!("{}/api/topic/messages", self.base_url))
+            .query(&TopicMessageLookupQuery {
+                network_id,
+                feed_key,
+                scope_hint,
+                message_id,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<TopicMessagesResponse>()
+            .await
+            .context("decode wattswarm topic lookup response")?;
+        Ok(response.messages.into_iter().find(|message| {
+            message.message_id == message_id
+                && network_id.is_none_or(|network_id| message.network_id == network_id)
+                && message.feed_key == feed_key
+                && message.scope_hint == scope_hint
+        }))
+    }
+
+    async fn get_global_announcement(
+        &self,
+        network_id: &str,
+        announcement_id: &str,
+    ) -> Result<Option<EventAnnouncementPayload>> {
+        let response = self
+            .client
+            .get(format!("{}/api/global/messages", self.base_url))
+            .query(&[
+                ("network_id", network_id),
+                ("announcement_id", announcement_id),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<GlobalAnnouncementLookupResponse>()
+            .await
+            .context("decode wattswarm global lookup response")?;
+        Ok(response.announcement.filter(|announcement| {
+            announcement.network_id == network_id && announcement.announcement_id == announcement_id
+        }))
+    }
+
+    async fn list_global_messages_after(
+        &self,
+        limit: usize,
+        after_sequence: u64,
+    ) -> Result<SwarmGlobalMessagePage> {
+        self.client
+            .get(format!("{}/api/global/messages", self.base_url))
+            .query(&[
+                ("limit", limit.to_string()),
+                ("after_sequence", after_sequence.to_string()),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<SwarmGlobalMessagePage>()
+            .await
+            .context("decode wattswarm global forward history response")
     }
 
     async fn topic_cursor(
@@ -2002,6 +2142,14 @@ struct TopicMessagesQuery {
 }
 
 #[derive(Debug, Serialize)]
+struct TopicMessageLookupQuery<'a> {
+    network_id: Option<&'a str>,
+    feed_key: &'a str,
+    scope_hint: &'a str,
+    message_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct GlobalMessagesQuery {
     limit: usize,
     before_sequence: Option<u64>,
@@ -2053,6 +2201,11 @@ struct TopicMessagesResponse {
 #[derive(Debug, Deserialize)]
 struct GlobalMessagesResponse {
     messages: Vec<SwarmGlobalMessageView>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GlobalAnnouncementLookupResponse {
+    announcement: Option<EventAnnouncementPayload>,
 }
 
 #[derive(Debug, Deserialize)]

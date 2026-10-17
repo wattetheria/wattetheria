@@ -144,7 +144,7 @@ async fn mcp_get_agent_identity_requires_network_permission() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
     state
         .local_db
-        .delete_network_agent_credential("test-network", &state.agent_did)
+        .delete_network_agent_credential(&test_network_id(&state), &state.agent_did)
         .unwrap();
     let response = mcp_request(
         app,

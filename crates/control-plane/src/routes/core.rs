@@ -35,6 +35,9 @@ use wattetheria_kernel::swarm_bridge::{
 };
 use wattetheria_social::application::friend_request_service;
 
+#[path = "board_reply.rs"]
+mod board_reply;
+
 fn forwarded_agent_commit_headers(auth: &str, event_id: &str, decision_id: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     let auth_value = format!("Bearer {auth}");
@@ -212,6 +215,11 @@ fn agent_action_execution_type(
         ("payment_request" | "payment_update", "cancel") => Some("payments.cancel"),
         ("topic_message_requires_reply", "reply") if topic_reply_is_direct_message(&body.event) => {
             Some("social.agent_dm_send")
+        }
+        ("topic_message_requires_reply", "reply")
+            if board_reply::event_category(&body.event).is_some() =>
+        {
+            Some("board.message.reply")
         }
         ("topic_message_requires_reply", "reply") => Some("hive.message.reply"),
         ("topic_message_requires_reply", "join_collective_mission") => {
@@ -958,6 +966,9 @@ async fn commit_topic_reply(
     };
     if topic_reply_is_direct_message(&body.event) {
         return commit_topic_direct_message_reply(state, commit_headers, body, content).await;
+    }
+    if board_reply::event_category(&body.event).is_some() {
+        return board_reply::commit_board_reply(state, commit_headers, body, content).await;
     }
     let Some(feed_key) = required_payload_string(&body.event.payload, "/feed_key") else {
         return bad_request("missing feed_key");

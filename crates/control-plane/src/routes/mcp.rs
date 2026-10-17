@@ -48,6 +48,8 @@ mod schema;
 use schema::input_schema;
 
 const LOOPBACK_BODY_LIMIT: usize = 8 * 1024 * 1024;
+#[derive(Clone)]
+pub(crate) struct McpNoOp;
 const DEFAULT_GATEWAY_TASK_LIMIT: usize = 50;
 const MAX_GATEWAY_TASK_LIMIT: usize = 100;
 const MAX_GATEWAY_TASK_WINDOW: usize = 200;
@@ -266,7 +268,7 @@ async fn call_tool(
     }
 
     if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
-        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
+        record_mcp_tool_result(state, tool.name, &arguments, &result, false, started_at).await?;
         return Ok(result);
     }
 
@@ -289,8 +291,9 @@ async fn call_tool(
             return Err(response);
         }
     };
+    let no_op = response.extensions().get::<McpNoOp>().is_some();
     let result = response_to_tool_result(tool.name, &arguments, response).await;
-    record_mcp_tool_result(state, tool.name, &arguments, &result, started_at).await?;
+    record_mcp_tool_result(state, tool.name, &arguments, &result, no_op, started_at).await?;
     Ok(result)
 }
 
@@ -319,7 +322,7 @@ async fn network_permission_block_response(
             result_kind: "network_permission",
         },
     );
-    record_mcp_tool_result(state, tool.name, arguments, &result, started_at).await?;
+    record_mcp_tool_result(state, tool.name, arguments, &result, false, started_at).await?;
     Ok(Some(result))
 }
 
@@ -544,6 +547,7 @@ async fn record_mcp_tool_result(
     tool_name: &str,
     arguments: &Value,
     result: &Value,
+    no_op: bool,
     started_at: Instant,
 ) -> Result<(), Response> {
     let is_error = result
@@ -571,6 +575,7 @@ async fn record_mcp_tool_result(
         },
     );
     if !is_error
+        && !no_op
         && !is_read_only_mcp_tool(tool_name)
         && let Err(error) =
             record_mcp_success_contribution(state, tool_name, arguments, result).await
@@ -2218,7 +2223,7 @@ fn normalized_gateway_hives_url(gateway_url: &str) -> String {
     normalized_gateway_api_resource_url(gateway_url, "/api/hives", "/v1/wattetheria/hives")
 }
 
-fn normalized_gateway_api_resource_url(
+pub(crate) fn normalized_gateway_api_resource_url(
     gateway_url: &str,
     resource_path: &str,
     legacy_resource_path: &str,
@@ -3046,7 +3051,14 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 62] = [
+const AGENT_TOOLS: [AgentTool; 69] = [
+    AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
+    AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
+    AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
+    AgentTool { name: "get_place", method: Method::GET, path: "/v1/wattetheria/space/place", description: "Read a place, its current occupants, objects, and public events.", availability: Availability::Always },
+    AgentTool { name: "move_agent", method: Method::POST, path: "/v1/wattetheria/space/move", description: "Move the current agent to a place or another agent's current position.", availability: Availability::Always },
+    AgentTool { name: "set_agent_activity", method: Method::POST, path: "/v1/wattetheria/space/activity", description: "Set the current agent's activity at its current position.", availability: Availability::Always },
+    AgentTool { name: "get_agent_presence", method: Method::GET, path: "/v1/wattetheria/space/presence", description: "Read the current Agent Space presence for yourself or another agent.", availability: Availability::Always },
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
     AgentTool { name: "list_agent_payments", method: Method::GET, path: "/v1/wattetheria/payments/agent-payments", description: "List inbound and outbound payment sessions visible to the local agent.", availability: Availability::Always },

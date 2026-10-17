@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id":"up-half","from_tile":[10,10],"path":"U","depart_at":10000,"walk_speed":2.0,"now_ms":10250,"expected":{"position":[10.0,9.5],"tile":[10,10]}},
+    {"id":"right-half","from_tile":[10,10],"path":"R","depart_at":10000,"walk_speed":2.0,"now_ms":10250,"expected":{"position":[10.5,10.0],"tile":[10,10]}},
+    {"id":"down-half","from_tile":[10,10],"path":"D","depart_at":10000,"walk_speed":2.0,"now_ms":10250,"expected":{"position":[10.0,10.5],"tile":[10,10]}},
+    {"id":"left-half","from_tile":[10,10],"path":"L","depart_at":10000,"walk_speed":2.0,"now_ms":10250,"expected":{"position":[9.5,10.0],"tile":[10,10]}},
+    {"id":"turn-half","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":10750,"expected":{"position":[10.5,9.0],"tile":[10,9]}},
+    {"id":"exact-boundary","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":10500,"expected":{"position":[10.0,9.0],"tile":[10,9]}},
+    {"id":"before-boundary","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":10499,"expected":{"position":[10.0,9.002],"tile":[10,10]}},
+    {"id":"after-boundary","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":10501,"expected":{"position":[10.002,9.0],"tile":[10,9]}},
+    {"id":"before-departure","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":9000,"expected":{"position":[10.0,10.0],"tile":[10,10]}},
+    {"id":"at-departure","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":10000,"expected":{"position":[10.0,10.0],"tile":[10,10]}},
+    {"id":"empty-path","from_tile":[10,10],"path":"","depart_at":10000,"walk_speed":2.0,"now_ms":30000,"expected":{"position":[10.0,10.0],"tile":[10,10]}},
+    {"id":"exact-end","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":12000,"expected":{"position":[11.0,11.0],"tile":[11,11]}},
+    {"id":"late-receipt","from_tile":[10,10],"path":"URDD","depart_at":10000,"walk_speed":2.0,"now_ms":30000,"expected":{"position":[11.0,11.0],"tile":[11,11]}},
+    {"id":"fractional-speed","from_tile":[10,10],"path":"RDL","depart_at":10000,"walk_speed":1.25,"now_ms":11200,"expected":{"position":[11.0,10.5],"tile":[11,10]}}
+  ]
+}

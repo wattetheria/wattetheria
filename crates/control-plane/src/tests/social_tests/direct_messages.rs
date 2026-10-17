@@ -9,6 +9,7 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

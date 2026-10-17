@@ -4,6 +4,182 @@ struct FailingOncePermissionBridge {
     attempts: std::sync::atomic::AtomicUsize,
 }
 
+struct SpaceRegistrationBridge {
+    anchor: NetworkCredentialTrustAnchor,
+    updates: Mutex<Vec<wattetheria_kernel::network_agent_registration::NetworkPermissionUpdate>>,
+}
+
+#[async_trait::async_trait]
+impl SwarmBridge for SpaceRegistrationBridge {
+    async fn agent_view(&self, agent_did: &str) -> anyhow::Result<SwarmAgentView> {
+        Ok(SwarmAgentView {
+            agent_did: agent_did.to_owned(),
+            stats: AgentStats::default(),
+        })
+    }
+    async fn current_network_id(&self) -> anyhow::Result<String> {
+        Ok(self.anchor.network_id.clone())
+    }
+    async fn local_node_id(&self) -> anyhow::Result<String> {
+        Ok("registration-transport-node".to_owned())
+    }
+    async fn network_credential_trust_anchor(
+        &self,
+    ) -> anyhow::Result<NetworkCredentialTrustAnchor> {
+        Ok(self.anchor.clone())
+    }
+    async fn update_network_permission(
+        &self,
+        update: wattetheria_kernel::network_agent_registration::NetworkPermissionUpdate,
+    ) -> anyhow::Result<()> {
+        self.updates.lock().await.push(update);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn network_registration_approval_spawns_space_without_restart_and_does_not_reset_replay() {
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
+    let stored = state
+        .local_db
+        .load_network_agent_credential(&state.agent_did, None)
+        .unwrap()
+        .unwrap();
+    let bridge = Arc::new(SpaceRegistrationBridge {
+        anchor: serde_json::from_str(stored.trust_anchor_json.as_ref().unwrap()).unwrap(),
+        updates: Mutex::new(Vec::new()),
+    });
+    state.swarm_bridge = bridge.clone();
+    state.local_db = Arc::new(wattetheria_kernel::local_db::LocalDb::open_in_memory().unwrap());
+    let request = crate::routes::network::build_registration_request(&state)
+        .await
+        .unwrap();
+    let mut events = state.stream_tx.subscribe();
+    let pending = json!({"request":request,"status":"pending"});
+    assert_eq!(
+        crate::routes::network::apply_registry_registration_record(&state, &pending)
+            .await
+            .unwrap()
+            .status,
+        "pending"
+    );
+    let pending_registry = state.own_space_presence.lock().await;
+    assert_eq!(
+        pending_registry.get(
+            &test_network_id(&state),
+            state
+                .space_catalog
+                .as_ref()
+                .unwrap()
+                .current("the-ville")
+                .unwrap()
+        ),
+        None
+    );
+    drop(pending_registry);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let approved = json!({"request":request,"status":"approved","credential":serde_json::from_str::<Value>(&stored.credential_json).unwrap()});
+    assert_eq!(
+        crate::routes::network::apply_registry_registration_record(&state, &approved)
+            .await
+            .unwrap()
+            .status,
+        "approved"
+    );
+    assert!(state.own_space_presence.lock().await.active_space.is_none());
+    assert!(state.own_space_presence.lock().await.networks.is_empty());
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let entered = authed_post_json(
+        app(state.clone()),
+        &token,
+        "/v1/wattetheria/space/enter",
+        json!({}),
+    )
+    .await;
+    assert_eq!(entered["ok"], true);
+    let spawned = state
+        .own_space_presence
+        .lock()
+        .await
+        .get(
+            &test_network_id(&state),
+            state
+                .space_catalog
+                .as_ref()
+                .unwrap()
+                .current("the-ville")
+                .unwrap(),
+        )
+        .cloned()
+        .unwrap();
+    assert_eq!(spawned.record.seq, 1);
+    assert_eq!(spawned.record.destination_place_id, "johnson-park");
+    let event = events.recv().await.unwrap();
+    assert_eq!(event.kind, "space.presence.updated");
+    assert_eq!(event.payload, serde_json::to_value(&spawned).unwrap());
+    let moved = authed_post_json(
+        app(state.clone()),
+        &token,
+        "/v1/wattetheria/space/move",
+        json!({"place_id":"hobbs-cafe/cafe"}),
+    )
+    .await;
+    assert_eq!(moved["presence"]["record"]["seq"], 2);
+    let moved: wattetheria_gateway_contract::SignedSpacePresence =
+        serde_json::from_value(moved["presence"].clone()).unwrap();
+    events.recv().await.unwrap();
+    crate::routes::network::apply_registry_registration_record(&state, &approved)
+        .await
+        .unwrap();
+    let latest = state
+        .own_space_presence
+        .lock()
+        .await
+        .get(
+            &test_network_id(&state),
+            state
+                .space_catalog
+                .as_ref()
+                .unwrap()
+                .current("the-ville")
+                .unwrap(),
+        )
+        .cloned()
+        .unwrap();
+    assert_eq!(latest, moved);
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    let persisted = crate::OwnSpacePresence::load(
+        &state.local_db,
+        state.space_catalog.as_deref(),
+        &state.agent_did,
+    )
+    .unwrap();
+    assert!(persisted.active_space.is_none());
+    assert_eq!(
+        persisted.get(
+            &test_network_id(&state),
+            state
+                .space_catalog
+                .as_ref()
+                .unwrap()
+                .current("the-ville")
+                .unwrap()
+        ),
+        Some(&moved)
+    );
+    assert_eq!(bridge.updates.lock().await.len(), 2);
+}
+
 #[tokio::test]
 async fn each_new_registration_attempt_has_independent_identifiers() {
     let (_dir, _app, _token, _policy, state) = build_test_app(100);

@@ -46,6 +46,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 watt-did = { path = "../../../watt-did" }
 watt-credential.workspace = true
 watt-wallet = { path = "../../../watt-wallet" }
+wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
 [dev-dependencies]

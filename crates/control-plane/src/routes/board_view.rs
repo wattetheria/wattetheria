@@ -107,7 +107,7 @@ fn search_value_contains(value: &Value, query: &str) -> bool {
     serde_json::to_string(value).is_ok_and(|serialized| serialized.to_lowercase().contains(query))
 }
 
-async fn load_all_topic_messages(
+pub(super) async fn load_all_topic_messages(
     state: &ControlPlaneState,
     network_id: &str,
     feed_key: &str,
@@ -147,7 +147,7 @@ async fn load_all_topic_messages(
     Ok(messages)
 }
 
-async fn load_all_global_messages(
+pub(crate) async fn load_all_global_messages(
     state: &ControlPlaneState,
 ) -> anyhow::Result<Vec<SwarmGlobalMessageView>> {
     let mut messages = Vec::new();
@@ -253,7 +253,7 @@ async fn build_global_board_page(
         .list_global_messages(limit, query.global_before_sequence)
         .await
         .map_err(|error| internal_error(&error))?;
-    let messages = global_message_views(&global_messages);
+    let messages = global_message_views(state, &global_messages);
     Ok(json!({
         "source": "global",
         "messages": messages,
@@ -366,7 +366,7 @@ async fn build_search_board_page(
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            (global_message_views(&matching), None)
+            (global_message_views(state, &matching), None)
         }
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
@@ -548,6 +548,8 @@ pub(crate) async fn board_topic_message_views(
                 "author_display_name": display_name,
                 "content": message.content,
                 "reply_to_message_id": message.reply_to_message_id,
+                "mention": message.agent_envelope.as_ref().and_then(|envelope| envelope.target_agent_id.as_deref()),
+                "author_agent_did": message.agent_envelope.as_ref().and_then(|envelope| envelope.source_agent_id.as_deref()),
                 "created_at": message.created_at,
                 "feed_key": message.feed_key,
                 "scope_hint": message.scope_hint,
@@ -557,13 +559,17 @@ pub(crate) async fn board_topic_message_views(
         .collect()
 }
 
-fn global_message_views(messages: &[SwarmGlobalMessageView]) -> Vec<Value> {
+fn global_message_views(
+    state: &ControlPlaneState,
+    messages: &[SwarmGlobalMessageView],
+) -> Vec<Value> {
     messages
         .iter()
         .map(|message| {
             json!({
                 "message_id": message.message_id,
                 "source": "global",
+                "world_event": crate::routes::space::world::world_event_for_board(state,message),
                 "category": "global",
                 "global_kind": message.kind,
                 "global_lane": message.lane,
@@ -603,7 +609,7 @@ pub(crate) async fn build_public_board_messages_snapshot_payload(
         );
     }
     let global_messages = state.swarm_bridge.list_global_messages(limit, None).await?;
-    messages.extend(global_message_views(&global_messages));
+    messages.extend(global_message_views(state, &global_messages));
     let (feed_key, scope_hint) = services_board_route();
     let service_messages = state
         .swarm_bridge
@@ -620,6 +626,7 @@ pub(crate) fn record_board_message_post(state: &ControlPlaneState, post: &BoardM
     let payload = json!({
         "message_id": post.message_id,
         "author_node_id": post.author_node_id,
+        "author_agent_did": post.author_agent_did,
         "author_public_id": post.author_public_id,
         "author_display_name": post.author_display_name,
         "source": post.source,
@@ -641,6 +648,7 @@ pub(crate) fn record_board_message_post(state: &ControlPlaneState, post: &BoardM
         "scope_hint": post.scope_hint,
         "content": post.content,
         "reply_to_message_id": post.reply_to_message_id,
+        "mention": post.target_agent_id,
     });
     let _ = state.stream_tx.send(StreamEvent {
         kind: "board.message.posted".to_owned(),

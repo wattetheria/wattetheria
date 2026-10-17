@@ -47,6 +47,7 @@ pub mod routes {
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
     pub(crate) mod settlement_delegation;
+    pub(crate) mod space;
     pub(crate) mod supervision;
     pub(crate) mod topics;
 }
@@ -75,6 +76,11 @@ pub use routes::network::{
     run_registry_registration_once, sync_network_permission_checkpoint,
 };
 pub use routes::reward_events::prune_read_only_mcp_contributions;
+pub use routes::space::world::WorldEventRegistry;
+pub use routes::space::{
+    OwnSpacePresence, emit_current_space_presence, initialize_space_presence,
+    reconcile_space_presence, reset_space_presence,
+};
 pub use state::{
     ClientExportQuery, ControlPlaneState, GatewayEventSequence, GeoSource, NodeGeoLocation,
     RateLimiter, ServiceNetProviderIdentity, StreamEvent,
@@ -100,7 +106,37 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(provider_identity_router())
         .merge(servicenet_router())
         .merge(servicenet_bridge_router())
+        .merge(space_router())
         .with_state(state)
+}
+
+fn space_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/wattetheria/space/enter",
+            post(routes::space::enter_space),
+        )
+        .route(
+            "/v1/wattetheria/space/leave",
+            post(routes::space::leave_space),
+        )
+        .route(
+            "/v1/wattetheria/space/places",
+            get(routes::space::list_places),
+        )
+        .route("/v1/wattetheria/space/place", get(routes::space::get_place))
+        .route(
+            "/v1/wattetheria/space/presence",
+            get(routes::space::get_agent_presence),
+        )
+        .route(
+            "/v1/wattetheria/space/move",
+            post(routes::space::move_agent),
+        )
+        .route(
+            "/v1/wattetheria/space/activity",
+            post(routes::space::set_agent_activity),
+        )
 }
 
 fn agent_identity_router() -> Router<ControlPlaneState> {

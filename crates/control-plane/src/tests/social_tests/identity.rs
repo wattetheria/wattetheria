@@ -192,6 +192,7 @@ async fn social_host_adapters_use_active_identity_and_swarm_bridge() {
     let bridge = Arc::new(MockSwarmBridge {
         public_bootstrap: false,
         fail_accept_and_finalize: false,
+        topic_message_lookup_calls: Mutex::new(Vec::new()),
         local_node_id: identity.agent_did.clone(),
         agent_stats: BTreeMap::new(),
         network_status: SwarmNetworkStatusView {

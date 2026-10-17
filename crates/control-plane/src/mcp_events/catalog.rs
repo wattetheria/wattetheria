@@ -14,6 +14,7 @@ pub(crate) enum EventKind {
     TaskCompletionDecisionReceived,
     TaskSettledReceived,
     TopicMessageRequiresReply,
+    WorldEvent,
 }
 
 impl EventKind {
@@ -29,6 +30,7 @@ impl EventKind {
             "task_completion_decision_received" => Some(Self::TaskCompletionDecisionReceived),
             "task_settled_received" => Some(Self::TaskSettledReceived),
             "topic_message_requires_reply" => Some(Self::TopicMessageRequiresReply),
+            "world_event" => Some(Self::WorldEvent),
             _ => None,
         }
     }
@@ -47,6 +49,7 @@ impl EventKind {
             }
             Self::TaskSettledReceived => "wattetheria.agent.task_settled_received",
             Self::TopicMessageRequiresReply => "wattetheria.agent.topic_message_requires_reply",
+            Self::WorldEvent => "wattetheria.world.event",
         }
     }
 
@@ -96,6 +99,7 @@ impl EventKind {
                 ("contentRef", "string"),
                 ("contentSummary", "string"),
             ],
+            Self::WorldEvent => &[("announcement", "object")],
         }
     }
 
@@ -243,10 +247,19 @@ fn project_event_fields(
                 envelope
                     .message
                     .pointer("/payload/content")
+                    .or_else(|| envelope.message.pointer("/payload/message"))
                     .or_else(|| envelope.message.get("content"))
                     .filter(|content| content.is_string())
                     .cloned()
             });
+        }
+        EventKind::WorldEvent => {
+            let announcement: wattswarm_protocol::types::EventAnnouncementPayload =
+                serde_json::from_value(event.payload.clone()).ok()?;
+            data.insert(
+                "announcement".to_owned(),
+                serde_json::to_value(announcement).ok()?,
+            );
         }
     }
 
@@ -417,6 +430,7 @@ mod tests {
                 EventKind::TaskCompletionDecisionReceived => ("retry_requested", json!(true)),
                 EventKind::TaskSettledReceived => ("settlement_status", json!("settled")),
                 EventKind::TopicMessageRequiresReply => ("message_id", json!("msg-1")),
+                EventKind::WorldEvent => ("announcement", event.payload.clone()),
             };
             assert_eq!(projected.data[field], expected);
             let fields = projected.data.as_object().expect("object data");
@@ -475,6 +489,14 @@ mod tests {
         assert!(!signed.data.to_string().contains("never-export-prompt"));
         assert!(!signed.data.to_string().contains("never-export-signature"));
         assert!(!signed.data.to_string().contains("never-export-extension"));
+
+        event.agent_envelope = Some(test_envelope(json!({
+            "payload": {"message": "signed-board-content"},
+            "prompt": "never-export-prompt"
+        })));
+        let board = project(&event, &test_outcome()).expect("topic event");
+        assert_eq!(board.full_content, Some(json!("signed-board-content")));
+        assert!(!board.data.to_string().contains("signed-board-content"));
 
         event.event_type = "unsupported".to_owned();
         assert!(project(&event, &test_outcome()).is_none());

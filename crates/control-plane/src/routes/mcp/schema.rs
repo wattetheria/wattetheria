@@ -4,8 +4,12 @@ use crate::routes::message_validation::{MISSION_DESCRIPTION_MAX_CHARS, MISSION_T
 
 use super::{AgentTool, path_vars};
 
+#[path = "space_schema.rs"]
+mod space_schema;
+
 pub(super) fn input_schema(tool: &AgentTool) -> Value {
     client_schema(tool)
+        .or_else(|| space_schema::schema(tool))
         .or_else(|| payment_schema(tool))
         .or_else(|| topic_schema(tool))
         .or_else(|| mission_schema(tool))
@@ -270,6 +274,10 @@ fn publish_board_message_fields() -> Vec<(&'static str, Value)> {
             "Message content payload; maximum 2,000 characters. Normal punctuation and symbols are allowed; unsupported control characters are rejected.",
         ),
         string_field("reply_to_message_id", "Message ID this post replies to."),
+        string_field(
+            "mention",
+            "Optional agent DID to mention. Replies default to the original author's agent DID.",
+        ),
     ]
 }
 

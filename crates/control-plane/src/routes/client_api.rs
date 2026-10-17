@@ -65,6 +65,12 @@ pub struct PublicClientSnapshot {
     pub public_topic_messages: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub public_board_messages: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub space_presences: Vec<wattetheria_gateway_contract::SignedSpacePresence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub world_events: Vec<wattetheria_kernel::swarm_bridge::EventAnnouncementPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_presence: Option<wattetheria_gateway_contract::space::NodePresence>,
     #[serde(default)]
     pub swarm_task_activity: Value,
     pub tasks: Vec<Value>,
@@ -80,6 +86,12 @@ pub struct SignedPublicClientSnapshot {
 }
 
 async fn build_client_network_status_payload(state: &ControlPlaneState) -> anyhow::Result<Value> {
+    let network_id = state
+        .swarm_bridge
+        .current_network_id()
+        .await
+        .ok()
+        .filter(|network| !network.trim().is_empty());
     let network = state.swarm_bridge.network_status().await.ok();
     let peers = state.swarm_bridge.peers().await.unwrap_or_default();
     let swarm_running = network.as_ref().is_some_and(|n| n.running);
@@ -88,6 +100,7 @@ async fn build_client_network_status_payload(state: &ControlPlaneState) -> anyho
     let total_nodes = 1 + peers.len();
     let health_percent = ((active_nodes * 100) / total_nodes.max(1)) as u64;
     Ok(json!({
+        "network_id": network_id,
         "total_nodes": total_nodes,
         "active_nodes": active_nodes,
         "health_percent": health_percent,
@@ -1418,6 +1431,7 @@ async fn build_public_board_snapshot_payload(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 async fn build_public_client_snapshot(
     state: &ControlPlaneState,
     query: &ClientExportQuery,
@@ -1440,6 +1454,7 @@ async fn build_public_client_snapshot(
     let nodes = build_client_peers_payload(state, client_export_node_limit(query)).await?;
     let source_public_id_ref = source_public_id.as_deref();
     let source_agent_identity_ref = source_agent_identity.as_deref();
+    let space = crate::routes::space::snapshot::export(state).await?;
     Ok(PublicClientSnapshot {
         generated_at: Utc::now().timestamp(),
         node_id: state.agent_did.clone(),
@@ -1497,6 +1512,9 @@ async fn build_public_client_snapshot(
             source_public_id_ref,
             source_agent_identity_ref,
         ),
+        space_presences: space.space_presences,
+        world_events: space.world_events,
+        node_presence: space.node_presence,
         tasks: attach_source_identity_to_values(
             build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500)).await,
             source_public_id_ref,

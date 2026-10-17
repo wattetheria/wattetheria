@@ -18,11 +18,23 @@ pub async fn run_loop(ctx: LoopContext<'_>) -> Result<()> {
                 break;
             }
             _ = heartbeat.tick() => {
-                let _ = ctx.online_proof.heartbeat(&ctx.identity.agent_did);
+                let lease = ctx.online_proof.heartbeat(&ctx.identity.agent_did);
                 let _ = ctx.control_state.local_db.save_domain(
                     wattetheria_kernel::local_db::domain::ONLINE_PROOF,
                     ctx.online_proof,
                 );
+                if let Some(lease) = lease {
+                    let _ = ctx.control_state.stream_tx.send(wattetheria_control_plane::StreamEvent {
+                        kind:"node.presence.heartbeat".to_owned(),
+                        timestamp:lease.last_heartbeat,
+                        payload:serde_json::to_value(wattetheria_kernel::space::NodePresence {
+                            node_id:ctx.control_state.agent_did.clone(),
+                            agent_did:lease.agent_did,
+                            last_heartbeat_ms:lease.last_heartbeat * 1_000,
+                            heartbeat_interval_sec:lease.heartbeat_interval_sec,
+                        })?,
+                    });
+                }
             }
         }
     }

@@ -79,6 +79,8 @@ struct CivilizationRuntimeState {
     relationship_registry: RelationshipRegistry,
     organization_registry: OrganizationRegistry,
     hive_registry: HiveRegistry,
+    space_catalog: Option<wattetheria_kernel::space::SpaceCatalog>,
+    own_space_presence: wattetheria_control_plane::OwnSpacePresence,
     payment_ledger: PaymentLedger,
     galaxy_state: GalaxyState,
     galaxy_map_registry: GalaxyMapRegistry,
@@ -94,6 +96,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Err(error) => warn!(%error, "prune read-only MCP contribution rewards failed"),
     }
 
+    wattetheria_control_plane::reset_space_presence(&runtime.control_state).await?;
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let public_mcp_task = runtime
         .mcp_public_bind
@@ -110,6 +113,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let executor_registration_task =
         spawn_wattswarm_executor_registration_task(&cli, &runtime.brain_config);
     let gateway_dispatch_task = spawn_gateway_dispatch_tasks(&cli, &runtime.control_state);
+    wattetheria_control_plane::emit_current_space_presence(&runtime.control_state).await?;
     let reliability_maintenance_task =
         spawn_reliability_maintenance_task(runtime.control_state.clone());
     let mcp_events_task = runtime
@@ -423,6 +427,11 @@ async fn build_control_state(
         relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
         hive_registry: Arc::new(Mutex::new(civilization_state.hive_registry)),
+        space_catalog: civilization_state.space_catalog.map(Arc::new),
+        own_space_presence: Arc::new(Mutex::new(civilization_state.own_space_presence)),
+        world_event_registry: Arc::new(Mutex::new(
+            wattetheria_control_plane::WorldEventRegistry::default(),
+        )),
         payment_ledger: Arc::new(Mutex::new(civilization_state.payment_ledger)),
         galaxy_state: Arc::new(Mutex::new(civilization_state.galaxy_state)),
         galaxy_map_registry: Arc::new(Mutex::new(civilization_state.galaxy_map_registry)),
@@ -483,6 +492,7 @@ fn brain_provider_label(config: &BrainProviderConfig) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn load_civilization_runtime_state(
     cli: &Cli,
     identity: &IdentityCompatView,
@@ -513,6 +523,16 @@ fn load_civilization_runtime_state(
         &cli.data_dir.join("civilization/organizations.json"),
     )?;
     let hive_registry = load_or_migrate_hive_registry(local_db, cli)?;
+    let space_catalog = cli
+        .space_catalog_path
+        .as_deref()
+        .map(wattetheria_kernel::space::SpaceCatalog::load)
+        .transpose()?;
+    let own_space_presence = wattetheria_control_plane::OwnSpacePresence::load(
+        local_db,
+        space_catalog.as_ref(),
+        &identity.agent_did,
+    )?;
     let payment_ledger: PaymentLedger = local_db.load_or_migrate(
         local_db::domain::PAYMENT_LEDGER,
         &cli.data_dir.join("payments/ledger.json"),
@@ -585,6 +605,8 @@ fn load_civilization_runtime_state(
         relationship_registry,
         organization_registry,
         hive_registry,
+        space_catalog,
+        own_space_presence,
         payment_ledger,
         galaxy_state,
         galaxy_map_registry,
@@ -919,6 +941,11 @@ fn spawn_gateway_dispatch_tasks(
         let mut ticker = interval(Duration::from_secs(snapshot_interval_sec));
         loop {
             ticker.tick().await;
+            if let Err(error) =
+                wattetheria_control_plane::reconcile_space_presence(&snapshot_state).await
+            {
+                warn!(%error, "gateway space presence sequence recovery failed");
+            }
             for gateway_url in &snapshot_urls {
                 if let Err(error) = push_signed_snapshot(
                     &client,
@@ -936,9 +963,9 @@ fn spawn_gateway_dispatch_tasks(
 
     let event_urls = gateway_urls;
     let event_state = control_state.clone();
+    let mut receiver = event_state.stream_tx.subscribe();
     let event_task = tokio::spawn(async move {
         let client = reqwest::Client::new();
-        let mut receiver = event_state.stream_tx.subscribe();
         loop {
             match receiver.recv().await {
                 Ok(event) => match build_signed_node_event(&event_state, &event) {
@@ -1064,6 +1091,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "rules".to_owned(),
@@ -1227,6 +1255,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "openai-compatible".to_owned(),
@@ -1286,6 +1315,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "openai-compatible".to_owned(),
@@ -1338,6 +1368,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: None,
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "openai-compatible".to_owned(),
@@ -1400,6 +1431,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: Vec::new(),
             gateway_config_path: Some(config_path),
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "rules".to_owned(),
@@ -1450,6 +1482,7 @@ mod tests {
             agent_event_mode: wattetheria_control_plane::mcp_events::AgentEventMode::ApiRuntime,
             gateway_urls: vec!["http://primary-gateway:8080/".to_owned()],
             gateway_config_path: Some(config_path),
+            space_catalog_path: None,
             gateway_snapshot_interval_sec: 45,
             control_plane_rate_limit: 60,
             brain_provider_kind: "rules".to_owned(),

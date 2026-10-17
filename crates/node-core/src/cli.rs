@@ -36,6 +36,8 @@ pub struct Cli {
     pub gateway_urls: Vec<String>,
     #[arg(long = "gateway-config-path")]
     pub gateway_config_path: Option<PathBuf>,
+    #[arg(long, env = "WATTETHERIA_SPACE_CATALOG_PATH")]
+    pub space_catalog_path: Option<PathBuf>,
     #[arg(long, default_value_t = 45)]
     pub gateway_snapshot_interval_sec: u64,
     #[arg(long, default_value_t = 60)]
@@ -64,6 +66,16 @@ pub struct Cli {
 mod tests {
     use super::Cli;
     use clap::Parser;
+
+    #[test]
+    fn space_catalog_flag_accepts_an_external_catalog_path() {
+        let cli =
+            Cli::try_parse_from(["kernel", "--space-catalog-path", "/tmp/catalog.json"]).unwrap();
+        assert_eq!(
+            cli.space_catalog_path.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.json"))
+        );
+    }
 
     #[test]
     fn agent_event_mode_is_explicit_and_defaults_to_api_runtime() {

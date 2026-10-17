@@ -158,7 +158,9 @@ fn routes_to_noop(event_type: &str, action: &str) -> bool {
         "topic_message_requires_reply"
         | "task_claim_decision_received"
         | "task_completion_decision_received"
-        | "task_settled_received" => action == "ignore",
+        | "task_settled_received"
+        | "global_announcement_received"
+        | "world_event" => action == "ignore",
         "third_party_result" => matches!(action, "human_review" | "continue"),
         _ => false,
     }
@@ -2124,7 +2126,21 @@ pub(crate) async fn callback(
     Json(body): Json<AgentEventCallbackRequest>,
 ) -> Response {
     let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
-    let event = body.event;
+    let mut event = body.event;
+    if let Err(error) =
+        crate::routes::space::world::receive_world_announcement(&state, &mut event).await
+    {
+        return payment_event_bad_request(error.to_string());
+    }
+    if event.event_type == "global_announcement_received" {
+        return Json(AgentEventCallbackResponse {
+            ok: true,
+            acked_at: Some(acked_at),
+            detail: Some("generic announcement is outside the active Agent Space".to_owned()),
+            decision: None,
+        })
+        .into_response();
+    }
     let verified_context = match verified_context_for_event(&event) {
         Ok(context) => context,
         Err(response) => return response,

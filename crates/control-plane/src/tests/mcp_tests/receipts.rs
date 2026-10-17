@@ -1,4 +1,5 @@
 use super::*;
+use wattetheria_gateway_contract::SignedSpacePresence;
 
 async fn call_mcp_tool(app: Router, token: &str, name: &str, arguments: Value) -> Value {
     mcp_request(
@@ -37,6 +38,25 @@ fn watt_balance_of(
         .watt_balance
 }
 
+fn assert_three_leave_success_diagnostics(state: &ControlPlaneState) {
+    let diagnostics = crate::diagnostics::list_diagnostics(
+        &state.data_dir,
+        &crate::diagnostics::DiagnosticFilter {
+            component: Some("wattetheria.mcp".to_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|entry| entry.phase == "tool.call.succeeded"
+                && entry.details["tool_name"] == "leave_space")
+            .count(),
+        3
+    );
+}
+
 #[tokio::test]
 async fn mcp_success_records_contribution_reward_event() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
@@ -61,6 +81,102 @@ async fn mcp_success_records_contribution_reward_event() {
         Some("update_agent_name")
     );
     assert_eq!(watt_balance_of(&state, event), 1);
+}
+
+#[tokio::test]
+async fn mcp_leave_rewards_only_an_actual_departure() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let reward_events = || {
+        state
+            .event_log
+            .get_all()
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "CONTRIBUTION_REWARD_EVENT")
+            .collect::<Vec<_>>()
+    };
+    let wallet_watt = || {
+        let balances: wattetheria_kernel::economy::WalletBalanceState = state
+            .local_db
+            .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
+            .unwrap();
+        balances
+            .balances
+            .values()
+            .map(|balance| balance.watt_balance)
+            .sum::<i64>()
+    };
+
+    let first_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
+    assert_eq!(first_leave["result"]["isError"], false);
+    assert_eq!(
+        first_leave["result"]["structuredContent"]["presence"],
+        Value::Null
+    );
+    assert!(load_contribution_log(&state).events.is_empty());
+    assert!(reward_events().is_empty());
+    assert_eq!(wallet_watt(), 0);
+
+    let entered = call_mcp_tool(app.clone(), &token, "enter_space", json!({})).await;
+    assert_eq!(entered["result"]["isError"], false);
+    assert_eq!(
+        entered["result"]["structuredContent"]["presence"]["record"]["entered"], true,
+        "{entered}"
+    );
+    assert_eq!(load_contribution_log(&state).events.len(), 1);
+    assert_eq!(reward_events().len(), 1);
+    assert_eq!(wallet_watt(), 1);
+
+    let actual_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
+    assert_eq!(actual_leave["result"]["isError"], false);
+    let left_presence: SignedSpacePresence =
+        serde_json::from_value(actual_leave["result"]["structuredContent"]["presence"].clone())
+            .unwrap();
+    assert!(!left_presence.record.entered);
+    let log = load_contribution_log(&state);
+    assert_eq!(log.events.len(), 2);
+    assert_eq!(
+        log.events
+            .values()
+            .filter(|event| event.receipt["tool_name"] == "leave_space")
+            .count(),
+        1
+    );
+    assert_eq!(reward_events().len(), 2);
+    assert_eq!(wallet_watt(), 2);
+
+    let repeated_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
+    assert_eq!(repeated_leave["result"]["isError"], false);
+    assert_eq!(
+        repeated_leave["result"]["structuredContent"]["presence"],
+        Value::Null
+    );
+    assert_eq!(load_contribution_log(&state).events.len(), 2);
+    assert_eq!(reward_events().len(), 2);
+    assert_eq!(wallet_watt(), 2);
+
+    let other_post = call_mcp_tool(
+        app,
+        &token,
+        "update_agent_name",
+        json!({"display_name":"Still Rewarded"}),
+    )
+    .await;
+    assert_eq!(other_post["result"]["isError"], false);
+    let log = load_contribution_log(&state);
+    assert_eq!(log.events.len(), 3);
+    assert_eq!(
+        log.events
+            .values()
+            .filter(|event| event.receipt["tool_name"] == "update_agent_name")
+            .count(),
+        1
+    );
+    assert_eq!(reward_events().len(), 3);
+    assert_eq!(wallet_watt(), 3);
+    assert_eq!(state.event_log.verify_chain().unwrap(), (true, None));
+
+    assert_three_leave_success_diagnostics(&state);
 }
 
 #[tokio::test]

@@ -23,6 +23,9 @@ use crate::state::ControlPlaneState;
 #[path = "board_view.rs"]
 mod board_view;
 
+#[path = "board_target.rs"]
+mod board_target;
+
 use board_view::{
     board_topic_message_views, published_service_agents_payload, record_board_message_post,
 };
@@ -108,6 +111,8 @@ pub(crate) struct BoardMessageBody {
     pub message: Value,
     #[serde(default)]
     pub reply_to_message_id: Option<String>,
+    #[serde(default)]
+    pub mention: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,11 +204,14 @@ struct BoardEnvelopeRoute<'a> {
     network_id: &'a str,
     feed_key: &'a str,
     scope_hint: &'a str,
+    target_agent_id: Option<&'a str>,
+    source_node_id: Option<&'a str>,
 }
 
 pub(crate) struct BoardMessagePost<'a> {
     pub message_id: &'a str,
     pub author_node_id: &'a str,
+    pub author_agent_did: &'a str,
     pub author_public_id: Option<&'a str>,
     pub author_display_name: Option<&'a str>,
     pub source: &'a str,
@@ -213,6 +221,7 @@ pub(crate) struct BoardMessagePost<'a> {
     pub scope_hint: &'a str,
     pub content: Value,
     pub reply_to_message_id: Option<String>,
+    pub target_agent_id: Option<&'a str>,
 }
 
 fn bad_request(message: impl Into<String>) -> Response {
@@ -231,6 +240,13 @@ fn board_channel(category: &str) -> Option<&'static BoardChannelDefinition> {
 
 fn normalized_category(category: &str) -> Option<&'static BoardChannelDefinition> {
     board_channel(category.trim())
+}
+
+pub(crate) fn board_category_for_route(feed_key: &str, scope_hint: &str) -> Option<&'static str> {
+    BOARD_CHANNELS.iter().find_map(|channel| {
+        (channel.feed_key == feed_key && scope_hint == format!("group:{}", channel.group))
+            .then_some(channel.category)
+    })
 }
 
 fn service_name_is_valid(service_name: &str) -> bool {
@@ -278,8 +294,8 @@ fn board_envelope(
             source_agent_id: context_agent_did(state, context),
             source_public_id: context_public_id(context),
             source_display_name: Some(context_agent_display_name(state, context)),
-            target_agent_id: None,
-            source_node_id: None,
+            target_agent_id: route.target_agent_id.map(ToOwned::to_owned),
+            source_node_id: route.source_node_id.map(ToOwned::to_owned),
             target_node_id: None,
             capability: route.capability.to_owned(),
             message: json!({
@@ -377,6 +393,8 @@ async fn set_board_subscription(
             network_id,
             feed_key,
             scope_hint,
+            target_agent_id: None,
+            source_node_id: None,
         },
         &json!({"active": active}),
     )?;
@@ -611,6 +629,22 @@ pub(crate) async fn publish_board_message(
         Ok(node_id) => node_id,
         Err(error) => return internal_error(&error),
     };
+    let target_agent_id = match board_target::resolve_board_target(
+        &state,
+        &network_id,
+        category.feed_key,
+        &scope_hint,
+        body.mention.as_deref(),
+        body.reply_to_message_id.as_deref(),
+    )
+    .await
+    {
+        Ok(target) => target,
+        Err(board_target::BoardTargetError::InvalidMention) => {
+            return bad_request("mention must be an agent did:key");
+        }
+        Err(board_target::BoardTargetError::Bridge(error)) => return internal_error(&error),
+    };
     let envelope = match board_envelope(
         &state,
         &context,
@@ -620,11 +654,14 @@ pub(crate) async fn publish_board_message(
             network_id: &network_id,
             feed_key: category.feed_key,
             scope_hint: &scope_hint,
+            target_agent_id: target_agent_id.as_deref(),
+            source_node_id: target_agent_id.as_ref().map(|_| author_node_id.as_str()),
         },
         &json!({
             "category": category.category,
             "message": body.message.clone(),
             "reply_to_message_id": body.reply_to_message_id,
+            "mention": target_agent_id,
         }),
     ) {
         Ok(envelope) => envelope,
@@ -650,6 +687,7 @@ pub(crate) async fn publish_board_message(
         &BoardMessagePost {
             message_id: &message_id,
             author_node_id: &author_node_id,
+            author_agent_did: &context_agent_did(&state, &context),
             author_public_id: context.public_memory_owner.public.as_deref(),
             author_display_name: context
                 .public_identity
@@ -662,6 +700,7 @@ pub(crate) async fn publish_board_message(
             scope_hint: &scope_hint,
             content: body.message,
             reply_to_message_id: body.reply_to_message_id,
+            target_agent_id: target_agent_id.as_deref(),
         },
     );
     Json(json!({"ok": true, "category": category.category, "scope_hint": scope_hint}))
@@ -929,6 +968,8 @@ async fn post_service_agent_board_message(
             network_id,
             feed_key,
             scope_hint,
+            target_agent_id: None,
+            source_node_id: None,
         },
         &json!({
             "service_agent": service_content["service_agent"],
@@ -952,6 +993,7 @@ async fn post_service_agent_board_message(
         &BoardMessagePost {
             message_id: &message_id,
             author_node_id: &author_node_id,
+            author_agent_did: &context_agent_did(state, context),
             author_public_id: context.public_memory_owner.public.as_deref(),
             author_display_name: context
                 .public_identity
@@ -964,6 +1006,7 @@ async fn post_service_agent_board_message(
             scope_hint,
             content: service_content,
             reply_to_message_id,
+            target_agent_id: None,
         },
     );
     Ok(())

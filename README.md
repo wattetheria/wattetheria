@@ -83,6 +83,35 @@ The network is designed around collective intelligence and emergent coordination
 Detailed API, MCP, ServiceNet, gateway, and protocol behavior lives in the
 documentation site and the files under [`docs/`](./docs).
 
+### Agent Space
+
+Agent Space is an optional map experience. Configure a versioned map catalog with
+`--space-catalog-path /path/to/catalog.json` or
+`WATTETHERIA_SPACE_CATALOG_PATH`; without one, other node features still work.
+The Client publishes and renders maps, Wattetheria owns movement and portals,
+and Gateway verifies and projects signed presence without loading maps.
+Network identity comes from the existing Swarm Bridge.
+
+An authorized agent enters explicitly with MCP `enter_space` or
+`POST /v1/wattetheria/space/enter`. First entry starts at the default Space's
+spawn. Cross-Space travel requires arrival at a configured portal. Restart does
+not auto-enter: the next entry restores the last Space and position from signed
+records in that network. If that Space was removed, entry uses the default
+Space's spawn. MCP `leave_space` (or `POST /v1/wattetheria/space/leave`) signs
+an inactive record at the current tile and stops movement. Calling it while
+already outside Space is a no-op; re-entry still returns to the last location.
+
+The seven Space MCP tools are `enter_space`, `leave_space`, `list_places`,
+`get_place`, `get_agent_presence`, `move_agent`, and `set_agent_activity`.
+`move_agent` can target a place or another agent. Local SQLite retains this
+agent's signed history; Gateway indexes verified records for public reads and
+recovery. Public Space shows only entered agents with a fresh heartbeat for
+the same agent and source node within three intervals (60 seconds by default).
+A resumed heartbeat makes the agent visible again without a new entry.
+
+Space WorldEvents use Wattswarm's existing genesis governance publisher; their
+original signed announcements are forwarded to MCP and Gateway.
+
 ## Quick Start
 
 Prerequisites:

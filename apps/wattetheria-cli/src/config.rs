@@ -36,6 +36,8 @@ pub(crate) struct LocalConfig {
     pub(crate) autonomy_interval_sec: u64,
     #[serde(default)]
     pub(crate) wattswarm_compose_dir: Option<String>,
+    #[serde(default)]
+    pub(crate) space_catalog_path: Option<PathBuf>,
 }
 
 fn default_control_bind() -> String {
@@ -69,6 +71,7 @@ impl Default for LocalConfig {
             autonomy_enabled: false,
             autonomy_interval_sec: default_autonomy_interval_sec(),
             wattswarm_compose_dir: None,
+            space_catalog_path: None,
         }
     }
 }
@@ -217,6 +220,9 @@ fn start_wattswarm_docker(config: &LocalConfig) -> Result<()> {
 }
 
 fn append_kernel_runtime_args(command: &mut Command, data_dir: &Path, config: &LocalConfig) {
+    if let Some(path) = &config.space_catalog_path {
+        command.arg("--space-catalog-path").arg(path);
+    }
     command
         .arg("--data-dir")
         .arg(data_dir)
@@ -454,6 +460,32 @@ mod tests {
         assert!(args.windows(2).any(|pair| {
             pair[0] == "--brain-runtime-session-mode" && pair[1] == "new_per_interaction"
         }));
+    }
+
+    #[test]
+    fn kernel_runtime_args_forward_only_an_explicit_space_catalog() {
+        let mut command = Command::new("echo");
+        append_kernel_runtime_args(
+            &mut command,
+            Path::new("/tmp/wattetheria"),
+            &LocalConfig::default(),
+        );
+        assert!(
+            !command
+                .get_args()
+                .any(|argument| argument == "--space-catalog-path")
+        );
+        let configured = LocalConfig {
+            space_catalog_path: Some(std::path::PathBuf::from("/tmp/catalog.json")),
+            ..LocalConfig::default()
+        };
+        let mut command = Command::new("echo");
+        append_kernel_runtime_args(&mut command, Path::new("/tmp/wattetheria"), &configured);
+        let args = command.get_args().collect::<Vec<_>>();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--space-catalog-path", "/tmp/catalog.json"])
+        );
     }
 
     #[test]

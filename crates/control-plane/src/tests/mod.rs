@@ -116,6 +116,44 @@ fn build_test_app_with_bridge(
     (dir, router, token, policy_engine, state)
 }
 
+fn test_space_package() -> wattetheria_kernel::space::SpacePackage {
+    let package: wattetheria_kernel::space::SpacePackage = serde_json::from_str(include_str!(
+        "../../../kernel-core/src/space/fixtures/the-ville.json"
+    ))
+    .unwrap();
+    package.validate().unwrap();
+    package
+}
+
+fn test_network_id(state: &ControlPlaneState) -> String {
+    wattetheria_kernel::network_agent_registration::load_network_permission_checkpoint(
+        &state.local_db,
+        &state.agent_did,
+        None,
+    )
+    .unwrap()
+    .unwrap()
+    .network_id
+}
+
+fn test_space_catalog(
+    package: &wattetheria_kernel::space::SpacePackage,
+) -> wattetheria_kernel::space::SpaceCatalog {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        serde_json::to_vec(package).unwrap(),
+    )
+    .unwrap();
+    let catalog_path = dir.path().join("catalog.json");
+    std::fs::write(&catalog_path, serde_json::to_vec(&serde_json::json!({
+        "default_space_id": package.space_id,
+        "spaces": [{"space_id": package.space_id, "current_version": package.space_version,
+            "versions": [{"space_version":package.space_version,"package_path":"package.json","assets_path":"assets"}]}]
+    })).unwrap()).unwrap();
+    wattetheria_kernel::space::SpaceCatalog::load(&catalog_path).unwrap()
+}
+
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn build_test_state_with_bridge(
     rate_limit: usize,
@@ -143,7 +181,7 @@ fn build_test_state_with_bridge(
     let registration_request = RegistrationRequest {
         version: 1,
         request_id: "test-network-registration".to_owned(),
-        network_id: "test-network".to_owned(),
+        network_id: format!("local:{}", identity.agent_did),
         agent_did: identity.agent_did.clone(),
         nickname: "Test Agent".to_owned(),
         agent_card: None,
@@ -380,6 +418,9 @@ fn build_test_state_with_bridge(
         relationship_registry,
         organization_registry,
         hive_registry,
+        space_catalog: Some(Arc::new(test_space_catalog(&test_space_package()))),
+        own_space_presence: Arc::new(Mutex::new(crate::OwnSpacePresence::default())),
+        world_event_registry: Arc::new(Mutex::new(crate::WorldEventRegistry::default())),
         payment_ledger,
         galaxy_state,
         galaxy_map_registry,
@@ -1271,6 +1312,8 @@ type TopicSubscriptionRecord = (
     Option<SwarmAgentEnvelope>,
 );
 
+type TopicMessageLookupRecord = (Option<String>, String, String, String);
+
 struct MockSwarmBridge {
     local_node_id: String,
     public_bootstrap: bool,
@@ -1280,6 +1323,7 @@ struct MockSwarmBridge {
     discovered_agents: BTreeMap<String, SwarmDiscoveredAgent>,
     subscriptions: Mutex<Vec<TopicSubscriptionRecord>>,
     messages: Mutex<Vec<SwarmTopicMessageView>>,
+    topic_message_lookup_calls: Mutex<Vec<TopicMessageLookupRecord>>,
     relationship_views: Mutex<Vec<SwarmPeerRelationshipView>>,
     relationship_commands: Mutex<Vec<SwarmRelationshipActionCommand>>,
     dm_threads: Mutex<Vec<SwarmPeerDmThreadView>>,
@@ -1305,6 +1349,7 @@ impl MockSwarmBridge {
             discovered_agents: BTreeMap::new(),
             subscriptions: Mutex::new(Vec::new()),
             messages: Mutex::new(Vec::new()),
+            topic_message_lookup_calls: Mutex::new(Vec::new()),
             relationship_views: Mutex::new(Vec::new()),
             relationship_commands: Mutex::new(Vec::new()),
             dm_threads: Mutex::new(Vec::new()),
@@ -1397,6 +1442,33 @@ impl SwarmBridge for MockSwarmBridge {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    async fn get_topic_message(
+        &self,
+        network_id: Option<&str>,
+        feed_key: &str,
+        scope_hint: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<SwarmTopicMessageView>> {
+        self.topic_message_lookup_calls.lock().await.push((
+            network_id.map(ToOwned::to_owned),
+            feed_key.to_owned(),
+            scope_hint.to_owned(),
+            message_id.to_owned(),
+        ));
+        Ok(self
+            .messages
+            .lock()
+            .await
+            .iter()
+            .find(|message| {
+                message.message_id == message_id
+                    && network_id.is_none_or(|network_id| message.network_id == network_id)
+                    && message.feed_key == feed_key
+                    && message.scope_hint == scope_hint
+            })
+            .cloned())
     }
 
     async fn topic_cursor(
@@ -2542,5 +2614,7 @@ mod organization_tests;
 mod servicenet_publication_tests;
 mod servicenet_tests;
 mod social_tests;
+mod space_tests;
 mod swarm_tests;
 mod system_tests;
+mod world_event_tests;
