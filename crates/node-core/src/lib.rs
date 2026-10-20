@@ -492,6 +492,15 @@ fn brain_provider_label(config: &BrainProviderConfig) -> String {
     }
 }
 
+fn load_space_catalog(
+    path: Option<&Path>,
+) -> Result<Option<wattetheria_kernel::space::SpaceCatalog>> {
+    match path {
+        Some(path) => wattetheria_kernel::space::SpaceCatalog::load(path).map(Some),
+        None => wattetheria_kernel::space::SpaceCatalog::bundled(),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn load_civilization_runtime_state(
     cli: &Cli,
@@ -523,11 +532,30 @@ fn load_civilization_runtime_state(
         &cli.data_dir.join("civilization/organizations.json"),
     )?;
     let hive_registry = load_or_migrate_hive_registry(local_db, cli)?;
-    let space_catalog = cli
-        .space_catalog_path
-        .as_deref()
-        .map(wattetheria_kernel::space::SpaceCatalog::load)
-        .transpose()?;
+    let space_catalog = load_space_catalog(cli.space_catalog_path.as_deref())?;
+    let current_version = space_catalog
+        .as_ref()
+        .and_then(|catalog| {
+            catalog
+                .spaces
+                .iter()
+                .find(|entry| entry.space_id == catalog.default_space_id)
+                .map(|entry| entry.current_version.as_str())
+        })
+        .unwrap_or("none");
+    info!(
+        source = if cli.space_catalog_path.is_some() {
+            "specified_path"
+        } else {
+            "bundled"
+        },
+        catalog_path = ?cli.space_catalog_path,
+        default_space_id = space_catalog
+            .as_ref()
+            .map_or("none", |catalog| catalog.default_space_id.as_str()),
+        current_version,
+        "Space catalog state"
+    );
     let own_space_presence = wattetheria_control_plane::OwnSpacePresence::load(
         local_db,
         space_catalog.as_ref(),

@@ -49,6 +49,9 @@ watt-wallet = { path = "../../../watt-wallet" }
 wattetheria-gateway-contract = { path = "../gateway-contract" }
 wattswarm-protocol = { git = "https://github.com/wattetheria/wattswarm.git", branch = "main", package = "wattswarm-protocol" }
 
+[build-dependencies]
+serde_json.workspace = true
+
 [dev-dependencies]
 tower = "0.5"
 http-body-util = "0.1"

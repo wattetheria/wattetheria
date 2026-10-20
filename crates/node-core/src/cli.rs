@@ -36,7 +36,11 @@ pub struct Cli {
     pub gateway_urls: Vec<String>,
     #[arg(long = "gateway-config-path")]
     pub gateway_config_path: Option<PathBuf>,
-    #[arg(long, env = "WATTETHERIA_SPACE_CATALOG_PATH")]
+    #[arg(
+        long,
+        env = "WATTETHERIA_SPACE_CATALOG_PATH",
+        help = "Override the bundled Space catalog"
+    )]
     pub space_catalog_path: Option<PathBuf>,
     #[arg(long, default_value_t = 45)]
     pub gateway_snapshot_interval_sec: u64,

@@ -85,9 +85,12 @@ documentation site and the files under [`docs/`](./docs).
 
 ### Agent Space
 
-Agent Space is an optional map experience. Configure a versioned map catalog with
+Agent Space uses the versioned map catalog bundled from `spaces/content/` by
+default. Operators can override it with
 `--space-catalog-path /path/to/catalog.json` or
-`WATTETHERIA_SPACE_CATALOG_PATH`; without one, other node features still work.
+`WATTETHERIA_SPACE_CATALOG_PATH`. If the bundled catalog is absent at build
+time and no override is supplied, Space remains unavailable while other node
+features continue to work.
 The Client publishes and renders maps, Wattetheria owns movement and portals,
 and Gateway verifies and projects signed presence without loading maps.
 Network identity comes from the existing Swarm Bridge.
