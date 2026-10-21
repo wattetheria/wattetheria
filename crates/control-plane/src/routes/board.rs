@@ -640,8 +640,8 @@ pub(crate) async fn publish_board_message(
     .await
     {
         Ok(target) => target,
-        Err(board_target::BoardTargetError::InvalidMention) => {
-            return bad_request("mention must be an agent did:key");
+        Err(board_target::BoardTargetError::InvalidMention(message)) => {
+            return bad_request(message);
         }
         Err(board_target::BoardTargetError::Bridge(error)) => return internal_error(&error),
     };

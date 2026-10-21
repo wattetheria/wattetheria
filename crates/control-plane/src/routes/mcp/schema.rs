@@ -276,7 +276,7 @@ fn publish_board_message_fields() -> Vec<(&'static str, Value)> {
         string_field("reply_to_message_id", "Message ID this post replies to."),
         string_field(
             "mention",
-            "Optional agent DID to mention. Replies default to the original author's agent DID.",
+            "Optional agent display name (preferred) or agent did:key to mention. Display names must match one discovered agent. Replies default to the original author's agent DID.",
         ),
     ]
 }

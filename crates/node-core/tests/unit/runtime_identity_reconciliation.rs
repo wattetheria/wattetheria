@@ -8,7 +8,7 @@ use wattetheria_kernel::identity::Identity;
 use wattetheria_kernel::local_db::{self, LocalDb};
 
 const MINIMAL_SPACE_VERSION: &str =
-    "sha256:db5b6bd61ef178d589f4c1730ebb8a3ebfb431acafb229f4dad9bda9ee71c37c";
+    "sha256:a0fa85f21777ea47e03236f57e3fed17f049b4977080be4a182d22abb0f46c1b";
 
 #[test]
 fn no_catalog_override_uses_the_bundled_catalog() {
@@ -46,6 +46,7 @@ fn catalog_override_loads_the_specified_file() {
         }],
         "spawn_place_id": "example-space",
         "walk_speed": 1.0,
+        "movement_search_radius": 1,
         "service_bindings": []
     });
     std::fs::write(

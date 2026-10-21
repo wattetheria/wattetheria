@@ -13,6 +13,7 @@ mod reset_conflicts;
 mod restart_network;
 mod rolling_mapless;
 mod sequence_recovery;
+mod target_movement;
 
 fn current_package(state: &ControlPlaneState) -> &wattetheria_kernel::space::SpacePackage {
     state
@@ -712,11 +713,19 @@ async fn space_gateway_presence_query_and_target_movement_use_verified_current_t
     current_package(&state)
         .validate_record(&moved.record)
         .unwrap();
+    let stopped = moved
+        .record
+        .tile_at(current_package(&state).walk_speed, i64::MAX);
     assert_eq!(
-        moved
-            .record
-            .tile_at(current_package(&state).walk_speed, i64::MAX),
-        tile
+        stopped[0].abs_diff(tile[0]) + stopped[1].abs_diff(tile[1]),
+        1
+    );
+    assert_eq!(
+        moved.record.destination_place_id,
+        current_package(&state)
+            .place_at_tile(stopped)
+            .unwrap()
+            .place_id
     );
     assert_eq!(moved.record.activity, "meeting");
     assert_ne!(moved.record.agent_did, remote.agent_did);
@@ -965,6 +974,10 @@ async fn space_rejects_unregistered_agent_and_invalid_movement_or_object_without
         (
             "/v1/wattetheria/space/move",
             json!({"place_id":"johnson-park","target_agent_id":"someone"}),
+        ),
+        (
+            "/v1/wattetheria/space/move",
+            json!({"place_id":"johnson-park","tile":[1,1]}),
         ),
         (
             "/v1/wattetheria/space/activity",

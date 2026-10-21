@@ -3,10 +3,15 @@
   "spaces": [
     {
       "space_id": "the-ville",
-      "current_version": "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f",
+      "current_version": "sha256:9fbcfdf85be3ae410be47a3f8349df50e58c15c75ef593bbb716fbe809347ab5",
       "versions": [
         {
           "space_version": "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f",
+          "package_path": "the-ville/space-package-696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f.json",
+          "assets_path": "the-ville/"
+        },
+        {
+          "space_version": "sha256:9fbcfdf85be3ae410be47a3f8349df50e58c15c75ef593bbb716fbe809347ab5",
           "package_path": "the-ville/space-package.json",
           "assets_path": "the-ville/"
         }

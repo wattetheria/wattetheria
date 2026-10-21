@@ -21,6 +21,8 @@ pub struct SpacePackage {
     pub places: Vec<Place>,
     pub spawn_place_id: String,
     pub walk_speed: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_search_radius: Option<u32>,
     pub service_bindings: Vec<ServiceBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub portals: Vec<Portal>,

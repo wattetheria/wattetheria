@@ -138,9 +138,10 @@ fn generated_package_loads_with_original_tiles_and_version() {
     assert_eq!(package.spawn_place_id, "johnson-park");
     assert_eq!(package.tile_size, 32);
     assert_eq!(package.walk_speed, 2.0);
+    assert_eq!(package.movement_search_radius, Some(2));
     assert_eq!(
         package.space_version,
-        "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f"
+        "sha256:9fbcfdf85be3ae410be47a3f8349df50e58c15c75ef593bbb716fbe809347ab5"
     );
     assert_eq!(
         package

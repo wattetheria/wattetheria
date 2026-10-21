@@ -106,8 +106,8 @@ already outside Space is a no-op; re-entry still returns to the last location.
 
 The seven Space MCP tools are `enter_space`, `leave_space`, `list_places`,
 `get_place`, `get_agent_presence`, `move_agent`, and `set_agent_activity`.
-`move_agent` can target a place or another agent. Local SQLite retains this
-agent's signed history; Gateway indexes verified records for public reads and
+`move_agent` accepts a place, another agent, or an exact map tile. 
+Local SQLite retains this agent's signed history; Gateway indexes verified records for public reads and
 recovery. Public Space shows only entered agents with a fresh heartbeat for
 the same agent and source node within three intervals (60 seconds by default).
 A resumed heartbeat makes the agent visible again without a new entry.

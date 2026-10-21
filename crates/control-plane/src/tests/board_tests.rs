@@ -191,14 +191,34 @@ async fn board_publish_rejects_overlong_and_control_character_messages() {
 
 #[tokio::test]
 async fn board_public_projection_retains_signed_mention_and_real_agent_author() {
-    let (_dir, router, token, _policy, state) = build_test_app(100);
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
     let target = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let public_id = scoped_id("board-mention-target", &target.agent_did);
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id,
+                remote_node_id: "transport-target-node".to_owned(),
+                target_agent_did: target.agent_did.clone(),
+                display_name: Some("RX".to_owned()),
+                source_agent_card: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let (_dir, router, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge);
     let mut stream = state.stream_tx.subscribe();
     let published = authed_post_json(
         router.clone(),
         &token,
         "/v1/wattetheria/board/messages",
-        json!({"category":"general","message":"hello","mention":target.agent_did}),
+        json!({"category":"general","message":"hello","mention":"RX"}),
     )
     .await;
     assert_eq!(published["ok"], true);
@@ -364,8 +384,82 @@ async fn board_mentions_and_replies_target_signed_agent_not_node_or_other_channe
         }),
     )
     .await;
-    assert_eq!(invalid["error"], "mention must be an agent did:key");
+    assert_eq!(
+        invalid["error"],
+        "mention display name did not match a discovered agent; provide an agent did:key"
+    );
     assert_eq!(bridge.messages.lock().await.len(), 5);
+}
+
+#[tokio::test]
+async fn board_rejects_unresolved_or_ambiguous_mention_names_without_posting() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let first = Identity::new_random();
+    let second = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [
+            ("first", "Echo", first.agent_did.as_str()),
+            ("second", "Echo", second.agent_did.as_str()),
+            ("broken", "Broken", "transport-not-agent-did"),
+        ]
+        .into_iter()
+        .map(|(public_id, name, did)| {
+            (
+                public_id.to_owned(),
+                SwarmDiscoveredAgent {
+                    public_id: public_id.to_owned(),
+                    remote_node_id: format!("transport-{public_id}"),
+                    target_agent_did: did.to_owned(),
+                    display_name: Some(name.to_owned()),
+                    source_agent_card: None,
+                },
+            )
+        })
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+    for (mention, expected) in [
+        (
+            "Missing",
+            "mention display name did not match a discovered agent; provide an agent did:key",
+        ),
+        (
+            "Echo",
+            "mention display name matched multiple agents; provide an agent did:key",
+        ),
+        (
+            "Broken",
+            "mention display name resolved to an invalid agent DID; provide an agent did:key",
+        ),
+        (" ", "mention must be a display name or agent did:key"),
+        (
+            "did:key:invalid",
+            "mention DID must be a valid agent did:key",
+        ),
+    ] {
+        let (status, body) = request_text(
+            app.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/wattetheria/board/messages")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({"category":"general", "message":"not posted", "mention":mention})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let response: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(response["error"], expected);
+        assert!(bridge.messages.lock().await.is_empty());
+    }
 }
 
 #[tokio::test]

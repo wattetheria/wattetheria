@@ -1,5 +1,5 @@
 use super::{AgentTool, enum_field, string_field, tool_schema};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
     let (fields, required) = match tool.name {
@@ -50,11 +50,21 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             vec![
                 string_field(
                     "place_id",
-                    "Destination place ID; provide this or target_agent_id.",
+                    "Destination place ID; provide exactly one of this, target_agent_id or tile.",
                 ),
                 string_field(
                     "target_agent_id",
-                    "Target agent DID; provide this or place_id.",
+                    "Target agent DID; provide exactly one of this, place_id or tile.",
+                ),
+                (
+                    "tile",
+                    json!({
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0},
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "description": "Exact destination tile [x, y]; provide exactly one of this, place_id or target_agent_id."
+                    }),
                 ),
                 string_field("activity", "Activity at the destination."),
             ],

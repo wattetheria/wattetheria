@@ -15,10 +15,11 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wattetheria_gateway_contract::SignedSpacePresence;
 use wattetheria_gateway_contract::space::validate_activity;
-use wattetheria_kernel::space::{Place, PlaceKind};
+use wattetheria_kernel::space::{Place, PlaceKind, SpaceCatalog, SpacePackage};
 use wattetheria_kernel::swarm_bridge::EventAnnouncementPayload;
 
 use crate::auth::{authorize, internal_error};
@@ -44,6 +45,7 @@ pub(crate) struct EnterSpaceBody {
 pub(crate) struct MoveAgentBody {
     pub place_id: Option<String>,
     pub target_agent_id: Option<String>,
+    pub tile: Option<[u32; 2]>,
     pub activity: Option<String>,
 }
 
@@ -263,8 +265,11 @@ pub(crate) async fn move_agent(
     if let Err(response) = authorize(&state, &headers).await {
         return response;
     }
-    if body.place_id.is_some() == body.target_agent_id.is_some() {
-        return bad_request("provide exactly one of place_id or target_agent_id");
+    let choices = usize::from(body.place_id.is_some())
+        + usize::from(body.target_agent_id.is_some())
+        + usize::from(body.tile.is_some());
+    if choices != 1 {
+        return bad_request("provide exactly one of place_id, target_agent_id or tile");
     }
     if let Err(error) = validate_activity(body.activity.as_deref().unwrap_or_default()) {
         return bad_request(error);
@@ -277,46 +282,68 @@ pub(crate) async fn move_agent(
         Ok(selected) => selected,
         Err(error) => return bad_request(&error),
     };
-    let destination = if let Some(place_id) = &body.place_id {
-        match package.destination_tile(&state.agent_did, place_id) {
-            Ok(tile) => (tile, place_id.clone()),
-            Err(error) => return bad_request(&error),
-        }
+    let mut occupancy = if body.tile.is_none() {
+        movement_occupancies(&state, &package.space_id).await
     } else {
-        let target_id = body
-            .target_agent_id
-            .as_deref()
-            .expect("target choice checked");
-        let records = match network_presences(&state, &network, &package.space_id).await {
-            Ok(records) => records,
-            Err(error) => return internal_error(&error),
+        None
+    };
+    let target_tile = if let Some(target_id) = body.target_agent_id.as_deref() {
+        let (tile, records) = match person_target(&state, &network, &package, target_id, now).await
+        {
+            Ok(target) => target,
+            Err(response) => return response,
         };
-        let Some(target) = records
-            .iter()
-            .find(|record| record.record.agent_did == target_id)
-        else {
-            return bad_request("target agent presence not found");
-        };
-        let version = state
-            .space_catalog
-            .as_ref()
-            .and_then(|catalog| {
-                catalog.version(&target.record.space_id, &target.record.space_version)
-            })
-            .expect("presence geometry was verified");
-        let tile = target.record.tile_at(version.walk_speed, now);
-        let Some(place) = package.place_at_tile(tile) else {
-            return bad_request("target agent is outside a known place");
-        };
-        (tile, place.place_id.clone())
+        if occupancy.is_none() {
+            occupancy = Some(records);
+        }
+        Some(tile)
+    } else {
+        None
     };
     match registry::update_presence(&state, |previous, package| {
         let mut record = previous.context("agent has not joined the space")?.clone();
         record.from_tile = record.tile_at(package.walk_speed, now);
-        record.path = package.path(record.from_tile, destination.0)?;
+        let (destination_tile, destination_place_id) = if let Some(tile) = body.tile {
+            let place = package
+                .place_at_tile(tile)
+                .context("destination tile has no place")?;
+            (tile, place.place_id.clone())
+        } else if let Some(place_id) = &body.place_id {
+            let anchor = package.destination_tile(&state.agent_did, place_id)?;
+            let tile = if let Some(records) = &occupancy {
+                MovementSelection {
+                    catalog: registry::catalog(&state)?,
+                    package,
+                    presences: records,
+                    agent_did: &state.agent_did,
+                    network: &network,
+                    now,
+                }
+                .select(record.from_tile, anchor, Some(place_id))?
+            } else {
+                anchor
+            };
+            (tile, place_id.clone())
+        } else {
+            let target_tile = target_tile.expect("target choice checked");
+            let tile = MovementSelection {
+                catalog: registry::catalog(&state)?,
+                package,
+                presences: occupancy.as_deref().unwrap_or_default(),
+                agent_did: &state.agent_did,
+                network: &network,
+                now,
+            }
+            .select(record.from_tile, target_tile, None)?;
+            let place = package
+                .place_at_tile(tile)
+                .context("destination tile has no place")?;
+            (tile, place.place_id.clone())
+        };
+        record.path = package.path(record.from_tile, destination_tile)?;
         record.depart_at = now;
         record.updated_at = now;
-        record.destination_place_id = destination.1;
+        record.destination_place_id = destination_place_id;
         record.activity = body.activity.unwrap_or_default();
         record.object_place_id = None;
         Ok(record)
@@ -326,6 +353,231 @@ pub(crate) async fn move_agent(
         Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
         Err(error) => bad_request(&error),
     }
+}
+
+async fn person_target(
+    state: &ControlPlaneState,
+    network: &str,
+    package: &SpacePackage,
+    target_id: &str,
+    now: i64,
+) -> std::result::Result<([u32; 2], Vec<SignedSpacePresence>), Response> {
+    let records = network_presences(state, network, &package.space_id)
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let target = records
+        .iter()
+        .find(|record| record.record.agent_did == target_id)
+        .ok_or_else(|| bad_request("target agent presence not found"))?;
+    let version = state
+        .space_catalog
+        .as_ref()
+        .and_then(|catalog| catalog.version(&target.record.space_id, &target.record.space_version))
+        .expect("presence geometry was verified");
+    let tile = target.record.tile_at(version.walk_speed, now);
+    if package.place_at_tile(tile).is_none() {
+        return Err(bad_request("target agent is outside a known place"));
+    }
+    Ok((tile, records))
+}
+
+async fn movement_occupancies(
+    state: &ControlPlaneState,
+    space: &str,
+) -> Option<Vec<SignedSpacePresence>> {
+    let catalog = registry::catalog(state).ok()?;
+    let client = gateway_client().ok()?;
+    let mut available = false;
+    let mut latest = BTreeMap::<(String, String), SignedSpacePresence>::new();
+    for gateway in &state.gateway_urls {
+        let url = normalized_gateway_api_resource_url(
+            gateway,
+            "/api/spaces/presence",
+            "/api/spaces/presence",
+        );
+        let payload = async {
+            client
+                .get(url)
+                .query(&[("space_id", space)])
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<Value>()
+                .await
+        }
+        .await;
+        let Ok(payload) = payload else { continue };
+        let Some(records) = payload.get("presences").and_then(Value::as_array) else {
+            continue;
+        };
+        available = true;
+        for value in records {
+            let Ok(signed) = serde_json::from_value::<SignedSpacePresence>(value.clone()) else {
+                continue;
+            };
+            if signed.record.space_id != space
+                || registry::verify_presence_signature(&signed).is_err()
+            {
+                continue;
+            }
+            let key = (
+                signed.record.network_id.clone(),
+                signed.record.agent_did.clone(),
+            );
+            if latest
+                .get(&key)
+                .is_none_or(|old| signed.record.seq > old.record.seq)
+            {
+                latest.insert(key, signed);
+            }
+        }
+    }
+    if !available {
+        return None;
+    }
+    Some(
+        latest
+            .into_values()
+            .filter(|signed| {
+                signed.record.entered
+                    && catalog
+                        .version(space, &signed.record.space_version)
+                        .is_some_and(|package| registry::verify_presence(package, signed).is_ok())
+            })
+            .collect(),
+    )
+}
+
+struct MovementSelection<'a> {
+    catalog: &'a SpaceCatalog,
+    package: &'a SpacePackage,
+    presences: &'a [SignedSpacePresence],
+    agent_did: &'a str,
+    network: &'a str,
+    now: i64,
+}
+
+impl MovementSelection<'_> {
+    fn select(&self, from: [u32; 2], anchor: [u32; 2], place_id: Option<&str>) -> Result<[u32; 2]> {
+        let radius = self
+            .package
+            .movement_search_radius
+            .context("space package is missing movement search radius")?;
+        if place_id.is_none() && from != anchor && manhattan_distance(from, anchor) == 1 {
+            return Ok(from);
+        }
+        let loads = self.tile_loads();
+        let mut candidates = Vec::new();
+        for y in 0..self.package.size[1] {
+            for x in 0..self.package.size[0] {
+                let tile = [x, y];
+                if tile == anchor && place_id.is_none()
+                    || manhattan_distance(tile, anchor) > u64::from(radius)
+                    || !self.package.is_walkable(tile)
+                    || place_id.is_some_and(|id| {
+                        !self
+                            .package
+                            .place(id)
+                            .is_some_and(|place| place.tiles.contains(&tile))
+                    })
+                    || place_id.is_none() && self.package.place_at_tile(tile).is_none()
+                {
+                    continue;
+                }
+                if self.package.path(from, tile).is_err() {
+                    continue;
+                }
+                let walking_distance = if place_id.is_none() {
+                    let Ok(path_from_anchor) = self.package.path(anchor, tile) else {
+                        continue;
+                    };
+                    let walking_distance = path_from_anchor.len();
+                    if walking_distance > radius as usize {
+                        continue;
+                    }
+                    walking_distance
+                } else {
+                    0
+                };
+                candidates.push((walking_distance, tile));
+            }
+        }
+        if candidates.is_empty() {
+            return match place_id {
+                Some(_) => Ok(anchor),
+                None if from == anchor => Ok(from),
+                None => Err(anyhow::anyhow!("no reachable stopping tile near target")),
+            };
+        }
+        if place_id.is_some() {
+            candidates.sort_by_key(|(_, tile)| {
+                (
+                    loads.get(tile).copied().unwrap_or_default(),
+                    manhattan_distance(*tile, anchor),
+                    movement_tile_tie(self.agent_did, &self.package.space_id, *tile),
+                    tile[1],
+                    tile[0],
+                )
+            });
+        } else {
+            candidates.sort_by_key(|(walking_distance, tile)| {
+                (
+                    loads.get(tile).copied().unwrap_or_default(),
+                    *walking_distance,
+                    movement_tile_tie(self.agent_did, &self.package.space_id, *tile),
+                    tile[1],
+                    tile[0],
+                )
+            });
+        }
+        Ok(candidates[0].1)
+    }
+
+    fn tile_loads(&self) -> BTreeMap<[u32; 2], usize> {
+        let mut latest = BTreeMap::<(String, String), &SignedSpacePresence>::new();
+        for signed in self.presences {
+            let record = &signed.record;
+            let key = (record.network_id.clone(), record.agent_did.clone());
+            if record.network_id == self.network && record.agent_did == self.agent_did {
+                continue;
+            }
+            if latest
+                .get(&key)
+                .is_none_or(|old| record.seq > old.record.seq)
+            {
+                latest.insert(key, signed);
+            }
+        }
+        let mut loads = BTreeMap::new();
+        for signed in latest.into_values() {
+            let Some(version) = self
+                .catalog
+                .version(&signed.record.space_id, &signed.record.space_version)
+            else {
+                continue;
+            };
+            let current = signed.record.tile_at(version.walk_speed, self.now);
+            if self.package.is_walkable(current) {
+                *loads.entry(current).or_insert(0) += 1;
+            }
+            let destination = signed.record.tile_at(version.walk_speed, i64::MAX);
+            if destination != current && self.package.is_walkable(destination) {
+                *loads.entry(destination).or_insert(0) += 1;
+            }
+        }
+        loads
+    }
+}
+
+fn manhattan_distance(left: [u32; 2], right: [u32; 2]) -> u64 {
+    u64::from(left[0].abs_diff(right[0])) + u64::from(left[1].abs_diff(right[1]))
+}
+
+fn movement_tile_tie(agent_did: &str, space: &str, tile: [u32; 2]) -> [u8; 32] {
+    let digest = Sha256::digest(format!("{agent_did}\n{space}\n{},{}", tile[0], tile[1]));
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
 }
 
 pub(crate) async fn set_agent_activity(

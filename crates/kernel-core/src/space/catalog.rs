@@ -106,6 +106,15 @@ impl SpaceCatalog {
                 versions.contains_key(&entry.current_version),
                 "catalog current version is not trusted"
             );
+            let current = versions
+                .get(&entry.current_version)
+                .context("missing current Space package")?;
+            ensure!(
+                current.movement_search_radius.is_some_and(|radius| {
+                    radius > 0 && radius <= current.size[0].max(current.size[1])
+                }),
+                "catalog current Space package requires a valid movement_search_radius"
+            );
             catalog.packages.insert(entry.space_id.clone(), versions);
         }
         ensure!(
@@ -169,6 +178,49 @@ mod tests {
                 .any(|version| version.space_version == default.current_version)
         );
         package.validate().expect("current package validates");
+    }
+
+    #[test]
+    fn bundled_catalog_keeps_the_immutable_previous_package_trusted() {
+        let Some(catalog) = SpaceCatalog::bundled().unwrap() else {
+            return;
+        };
+        let previous_version =
+            "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f";
+        let current = catalog.current("the-ville").unwrap();
+        let previous = catalog.version("the-ville", previous_version).unwrap();
+
+        assert!(current.movement_search_radius.is_some());
+        assert_eq!(previous.space_version, previous_version);
+        assert_eq!(previous.movement_search_radius, None);
+        previous.validate().unwrap();
+    }
+
+    #[test]
+    fn catalog_rejects_a_package_without_search_radius_as_current() {
+        let previous_version =
+            "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f";
+        let catalog_bytes = serde_json::to_vec(&json!({
+            "default_space_id": "the-ville",
+            "spaces": [{
+                "space_id": "the-ville",
+                "current_version": previous_version,
+                "versions": [{
+                    "space_version": previous_version,
+                    "package_path": "previous.json",
+                    "assets_path": "assets"
+                }]
+            }]
+        }))
+        .unwrap();
+        let previous = include_bytes!(
+            "../../../../spaces/content/the-ville/space-package-696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f.json"
+        );
+
+        let error =
+            SpaceCatalog::from_sources(&catalog_bytes, |_| Ok(previous.to_vec())).unwrap_err();
+
+        assert!(error.to_string().contains("movement_search_radius"));
     }
 
     #[test]

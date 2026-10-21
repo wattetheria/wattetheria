@@ -98,6 +98,82 @@ async fn mcp_enter_space_respects_configured_auth_before_activating_presence() {
 }
 
 #[tokio::test]
+async fn mcp_board_mentions_resolve_display_name_and_preserve_did_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let target = Identity::new_random();
+    let fallback = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let public_id = scoped_id("board-mention-rx", &target.agent_did);
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            public_id.clone(),
+            SwarmDiscoveredAgent {
+                public_id: public_id.clone(),
+                remote_node_id: "transport-rx-node".to_owned(),
+                target_agent_did: target.agent_did.clone(),
+                display_name: Some("RX".to_owned()),
+                source_agent_card: Some(discovered_source_agent_card(
+                    &public_id,
+                    "RX",
+                    &target.agent_did,
+                    "transport-rx-node",
+                    "board-mention-rx",
+                )),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+    let mut stream = state.stream_tx.subscribe();
+    let mentions = ["RX", "@RX", fallback.agent_did.as_str()];
+    for (index, mention) in mentions.into_iter().enumerate() {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{
+                "name":"publish_board_message","arguments":{
+                    "category":"general","message":"hello","mention":mention,
+                    "reply_to_message_id":(index > 0).then_some("msg-1")
+                }
+            }}),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let expected = if index < 2 {
+            &target.agent_did
+        } else {
+            &fallback.agent_did
+        };
+        let event = loop {
+            let event = stream.recv().await.unwrap();
+            if event.kind == "board.message.posted" {
+                break event;
+            }
+        };
+        assert_eq!(event.payload["mention"].as_str(), Some(expected.as_str()));
+    }
+    let messages = bridge.messages.lock().await;
+    assert_eq!(messages.len(), 3);
+    for (message, expected) in
+        messages
+            .iter()
+            .zip([&target.agent_did, &target.agent_did, &fallback.agent_did])
+    {
+        let envelope = message.agent_envelope.as_ref().unwrap();
+        assert_envelope_signature_valid(envelope, &state.identity.public_key);
+        assert_eq!(envelope.target_agent_id.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            envelope.message["payload"]["mention"].as_str(),
+            Some(expected.as_str())
+        );
+    }
+}
+
+#[tokio::test]
 async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
     let listed = mcp_request(
@@ -108,6 +184,9 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
     .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
     assert_schema_optional(find_tool(tools, "publish_board_message"), "mention");
+    let mention_description = find_tool(tools, "publish_board_message")["inputSchema"]["properties"]["mention"]["description"].as_str().unwrap();
+    assert!(mention_description.contains("display name (preferred)"));
+    assert!(mention_description.contains("did:key"));
     assert_schema_requires(find_tool(tools, "get_place"), &["place_id"]);
     assert_schema_requires(find_tool(tools, "set_agent_activity"), &["activity"]);
     let before = mcp_request(app.clone(), &token, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_agent_presence","arguments":{}}})).await;
