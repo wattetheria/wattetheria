@@ -88,6 +88,7 @@ mod mission_claims;
 mod mission_settlement;
 mod mission_sync;
 mod payments;
+mod public_hive;
 mod replies;
 mod runtime;
 mod social;

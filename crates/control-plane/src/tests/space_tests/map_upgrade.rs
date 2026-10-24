@@ -441,6 +441,7 @@ pub(super) fn signed_spawn(
 ) -> SignedSpacePresence {
     let record = wattetheria_gateway_contract::SpacePresenceRecord {
         agent_did: identity.agent_did.clone(),
+        avatar_id: None,
         network_id: test_network_id(state),
         space_id: package.space_id.clone(),
         space_version: package.space_version.clone(),

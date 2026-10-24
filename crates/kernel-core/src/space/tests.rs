@@ -27,6 +27,7 @@ fn movement(package: &SpacePackage) -> SpacePresenceRecord {
         .unwrap();
     SpacePresenceRecord {
         agent_did: did,
+        avatar_id: None,
         network_id: String::new(),
         space_id: package.space_id.clone(),
         space_version: package.space_version.clone(),

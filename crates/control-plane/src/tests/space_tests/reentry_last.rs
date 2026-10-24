@@ -1,7 +1,7 @@
 use super::*;
 use wattetheria_kernel::space::SpacePackage;
 
-fn two_spaces(state: &mut ControlPlaneState) -> (SpacePackage, SpacePackage) {
+pub(super) fn two_spaces(state: &mut ControlPlaneState) -> (SpacePackage, SpacePackage) {
     let mut source = current_package(state).clone();
     let mut target = source.clone();
     target.space_id = "zz-second-space".to_owned();
@@ -58,10 +58,16 @@ pub(super) fn assert_default_spawn(
     seq: u64,
 ) {
     let package = current_package(state);
+    let avatar = signed
+        .record
+        .avatar_id
+        .expect("entry assigns an appearance");
+    assert!(avatar < wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT);
     assert_eq!(
         signed.record,
         wattetheria_gateway_contract::SpacePresenceRecord {
             agent_did: state.agent_did.clone(),
+            avatar_id: Some(avatar),
             network_id: test_network_id(state),
             space_id: package.space_id.clone(),
             space_version: package.space_version.clone(),
@@ -293,6 +299,7 @@ async fn raw_gateway_latest_restores_last_before_default_even_with_stale_local()
         let (source, target) = two_spaces(&mut state);
         let identity = wattetheria_kernel::agent_identity::load_agent_identity(dir.path()).unwrap();
         let mut remote = super::map_upgrade::signed_spawn(&state, &identity, &target, 20);
+        remote.record.avatar_id = Some(24);
         remote.record.entered = false;
         remote.record.destination_place_id = "hobbs-cafe/cafe".to_owned();
         remote.record.path = target

@@ -570,6 +570,7 @@ async fn trusted_old_speed_projects_position_and_replans_legal_current_destinati
         .unwrap();
     let record = SpacePresenceRecord {
         agent_did: state.agent_did.clone(),
+        avatar_id: None,
         network_id: test_network_id(&state),
         space_id: old.space_id.clone(),
         space_version: old.space_version.clone(),

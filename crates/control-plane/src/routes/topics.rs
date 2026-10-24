@@ -33,6 +33,9 @@ use crate::state::{
 
 const HIVE_SCOPE_HINT_ERROR: &str = "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>";
 
+#[path = "public_hive.rs"]
+pub(crate) mod public_hive;
+
 #[derive(Debug, Clone, Serialize)]
 struct TopicMessageView {
     message_id: String,
@@ -42,6 +45,8 @@ struct TopicMessageView {
     author_node_id: String,
     author_public_id: Option<String>,
     author_display_name: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    public_hive_identity: Option<public_hive::MessageIdentity>,
     content: serde_json::Value,
     reply_to_message_id: Option<String>,
     created_at: u64,
@@ -96,6 +101,7 @@ async fn hive_agent_envelope(
     state: &ControlPlaneState,
     context: &IdentityContextView,
     capability: &str,
+    target_agent_id: Option<String>,
     message: Value,
 ) -> anyhow::Result<SwarmAgentEnvelope> {
     build_signed_agent_envelope_for_nodes(
@@ -104,7 +110,7 @@ async fn hive_agent_envelope(
             source_agent_id: context_agent_did(state, context),
             source_public_id: context_public_id(context),
             source_display_name: Some(context_agent_display_name(state, context)),
-            target_agent_id: None,
+            target_agent_id,
             source_node_id: state.swarm_bridge.local_node_id().await.ok(),
             target_node_id: None,
             capability: capability.to_owned(),
@@ -578,6 +584,7 @@ async fn subscribe_created_hive(
         state,
         context,
         "hive.create",
+        None,
         hive_envelope_message(
             state,
             context,
@@ -616,6 +623,7 @@ async fn post_initial_hive_message(
         state,
         context,
         "hive.message.post",
+        None,
         hive_envelope_message(
             state,
             context,
@@ -735,6 +743,7 @@ pub(crate) async fn hive_messages(
                 .and_then(|binding| public_identities.get(&binding.public_id));
             let envelope = message.agent_envelope.as_ref();
             TopicMessageView {
+                public_hive_identity: public_hive::message_identity(&message),
                 message_id: message.message_id,
                 network_id: message.network_id,
                 feed_key: message.feed_key,
@@ -939,6 +948,7 @@ async fn update_hive_subscription(
         &state,
         &context,
         capability,
+        None,
         hive_envelope_message(&state, &context, &route, action, &json!({"active": active})),
     )
     .await
@@ -1077,11 +1087,11 @@ async fn post_hive_message_for_route(
     {
         return response;
     }
-    if let Err(response) =
-        post_hive_message_to_swarm(&state, &context, &hive, &network_id, &body).await
-    {
-        return response;
-    }
+    let envelope =
+        match post_hive_message_to_swarm(&state, &context, &hive, &network_id, &body).await {
+            Ok(envelope) => envelope,
+            Err(response) => return response,
+        };
     if let Err(response) = record_hive_message_post_success(
         &state,
         &context,
@@ -1090,6 +1100,7 @@ async fn post_hive_message_for_route(
         &hive,
         &network_id,
         &body,
+        &envelope,
     )
     .await
     {
@@ -1147,6 +1158,7 @@ async fn resolve_subscribed_hive_profile_with_route(
     Ok(resolved)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn record_hive_message_post_success(
     state: &ControlPlaneState,
     context: &IdentityContextView,
@@ -1155,6 +1167,7 @@ async fn record_hive_message_post_success(
     hive: &HiveProfile,
     network_id: &str,
     body: &HiveMessageBody,
+    envelope: &SwarmAgentEnvelope,
 ) -> Result<(), Response> {
     let created_at = Utc::now();
     let controller_id = context.public_memory_owner.controller.clone();
@@ -1171,7 +1184,7 @@ async fn record_hive_message_post_success(
         created_at.timestamp_millis()
     );
     let hive_topic_id = hive.topic_id.clone();
-    let payload = json!({
+    let mut payload = json!({
         "message_id": message_id,
         "controller_id": controller_id,
         "author_id": author_public_id.clone().unwrap_or_else(|| author_agent_did.clone().unwrap_or_else(|| state.agent_did.clone())),
@@ -1188,6 +1201,7 @@ async fn record_hive_message_post_success(
         "reply_to_message_id": body.reply_to_message_id.clone(),
         "created_at": created_at.timestamp(),
     });
+    public_hive::append_post_identity(&mut payload, hive, envelope);
     let _ = state.stream_tx.send(StreamEvent {
         kind: "topic.message.posted".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -1239,30 +1253,37 @@ async fn post_hive_message_to_swarm(
     hive: &HiveProfile,
     network_id: &str,
     body: &HiveMessageBody,
-) -> Result<(), Response> {
+) -> Result<SwarmAgentEnvelope, Response> {
     let route = HiveEnvelopeRoute {
         hive_id: &hive.topic_id,
         network_id,
         feed_key: &hive.feed_key,
         scope_hint: &hive.scope_hint,
     };
-    let agent_envelope = hive_agent_envelope(
-        state,
-        context,
-        "hive.message.post",
-        hive_envelope_message(
+    let agent_envelope = if body.mention.is_some()
+        && public_hive::is_public_route(&hive.feed_key, &hive.scope_hint)
+    {
+        public_hive::mentioned_message_envelope(state, context, hive, network_id, body).await?
+    } else {
+        hive_agent_envelope(
             state,
             context,
-            &route,
-            "message.post",
-            &json!({
-                "content": body.content.clone(),
-                "reply_to_message_id": body.reply_to_message_id.clone(),
-            }),
-        ),
-    )
-    .await
-    .map_err(|error| internal_error(&error))?;
+            "hive.message.post",
+            None,
+            hive_envelope_message(
+                state,
+                context,
+                &route,
+                "message.post",
+                &json!({
+                    "content": body.content.clone(),
+                    "reply_to_message_id": body.reply_to_message_id.clone(),
+                }),
+            ),
+        )
+        .await
+        .map_err(|error| internal_error(&error))?
+    };
     state
         .swarm_bridge
         .post_topic_message(
@@ -1271,11 +1292,11 @@ async fn post_hive_message_to_swarm(
             &hive.scope_hint,
             body.content.clone(),
             body.reply_to_message_id.clone(),
-            Some(agent_envelope),
+            Some(agent_envelope.clone()),
         )
         .await
         .map_err(|error| internal_error(&error))
-        .map(|_| ())
+        .map(|_| agent_envelope)
 }
 
 async fn require_active_hive_subscription(

@@ -435,6 +435,10 @@ fn post_hive_message_fields() -> Vec<(&'static str, Value)> {
             "Message content payload. Up to 4,096 characters across string values. No language or script restriction; newlines, tabs, carriage returns, and ordinary symbols are allowed. Unsupported control characters are rejected.",
         ),
         string_field("reply_to_message_id", "Message ID this post replies to."),
+        string_field(
+            "mention",
+            "Public Hive only: optional agent display name (preferred) or agent did:key to mention. Display names must match one discovered agent. Only the mentioned agent is asked to choose reply or ignore; ordinary messages are receive-only. Private Hives are unchanged.",
+        ),
     ]
 }
 

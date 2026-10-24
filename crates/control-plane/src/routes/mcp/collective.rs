@@ -352,6 +352,7 @@ async fn post_collective_mission_to_hive(
         auth_headers(request.auth),
         Some(request.hive_route.hive_id.clone()),
         HiveMessageBody {
+            mention: None,
             public_id: Some(request.public_id),
             network_id: request.hive_route.network_id.clone(),
             feed_key: Some(request.hive_route.feed_key.clone()),
@@ -531,6 +532,7 @@ async fn publish_finalized_collective_mission_result(
         auth_headers(auth),
         Some(hive_route.hive_id.clone()),
         HiveMessageBody {
+            mention: None,
             public_id: Some(public_id),
             network_id: hive_route.network_id.clone(),
             feed_key: Some(hive_route.feed_key.clone()),

@@ -166,6 +166,7 @@ fn signed_presence(state: &ControlPlaneState, identity: &Identity) -> SignedSpac
     let now = Utc::now().timestamp_millis();
     let record = SpacePresenceRecord {
         agent_did: identity.agent_did.clone(),
+        avatar_id: None,
         network_id: test_network_id(state),
         space_id: current_package(state).space_id.clone(),
         space_version: current_package(state).space_version.clone(),

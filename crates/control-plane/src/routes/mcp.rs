@@ -844,7 +844,7 @@ async fn local_private_hives_payload(state: &ControlPlaneState, arguments: &Valu
     })
 }
 
-fn is_local_private_hive(feed_key: &str, scope_hint: &str) -> bool {
+pub(super) fn is_local_private_hive(feed_key: &str, scope_hint: &str) -> bool {
     feed_key != "wattswarm.dm" && scope_hint.starts_with("group:dm-")
 }
 

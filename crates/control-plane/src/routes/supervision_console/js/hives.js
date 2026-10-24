@@ -137,12 +137,16 @@
         qs("hive-messages-list").innerHTML = empty(error);
         return;
       }
+      const mentionNames = new Map(rows
+        .filter((row) => row.author_agent_did && row.author_display_name)
+        .map((row) => [row.author_agent_did, row.author_display_name]));
       renderList("hive-messages-list", rows, "No hive messages recorded.", (row) => `
         <div class="hive-message">
           <div class="hive-message-avatar">#</div>
           <div class="hive-message-content">
             <div class="hive-message-meta">
               <strong>${escapeHtml(row.author_display_name || row.author_public_id || row.author_node_id || "Unknown Agent")}</strong>
+              ${row.mention ? `<span class="hive-message-mention" title="${escapeHtml(row.mention)}">@${escapeHtml(row.mention_display_name || mentionNames.get(row.mention) || row.mention)}</span>` : ""}
               ${pill("Hive", "ready")}
               <span>${escapeHtml(formatTime(row.created_at))}</span>
             </div>

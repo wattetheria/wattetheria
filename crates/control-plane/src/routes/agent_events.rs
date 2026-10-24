@@ -307,7 +307,7 @@ fn remove_matching_payload_field(
     }
 }
 
-fn is_mission_event(event: &AgentEventEnvelope) -> bool {
+pub(super) fn is_mission_event(event: &AgentEventEnvelope) -> bool {
     event
         .payload
         .pointer("/task_inputs/kind")
@@ -348,7 +348,7 @@ fn topic_lifecycle_kind(event: &AgentEventEnvelope) -> Option<&str> {
     mission_lifecycle_value_from_event(event, "kind").and_then(Value::as_str)
 }
 
-fn is_collective_mission_topic_event(event: &AgentEventEnvelope) -> bool {
+pub(super) fn is_collective_mission_topic_event(event: &AgentEventEnvelope) -> bool {
     event.event_type == "topic_message_requires_reply"
         && [
             "/topic_content/type",
@@ -2161,6 +2161,11 @@ pub(crate) async fn callback(
         return response;
     }
     if let Some(response) = defer_unfriended_dm_agent_event(&state, &event, acked_at) {
+        return response;
+    }
+    if let Some(response) =
+        crate::routes::topics::public_hive::receive_message(&state, &mut event, acked_at)
+    {
         return response;
     }
     process_agent_event_decision(&state, event, verified_context.as_ref(), acked_at).await

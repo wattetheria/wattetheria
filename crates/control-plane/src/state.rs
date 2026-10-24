@@ -610,6 +610,7 @@ pub struct HiveMessageBody {
     pub scope_hint: Option<String>,
     pub content: Value,
     pub reply_to_message_id: Option<String>,
+    pub mention: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

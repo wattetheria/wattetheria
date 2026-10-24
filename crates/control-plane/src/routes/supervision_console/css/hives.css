@@ -230,6 +230,11 @@
       font-weight: 600;
     }
 
+    .hive-message-mention {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
     .hive-message-bubble {
       display: inline-block;
       max-width: min(48rem, 100%);

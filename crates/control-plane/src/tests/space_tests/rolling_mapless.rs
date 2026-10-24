@@ -11,6 +11,7 @@ async fn gateway_highest_unknown_or_invalid_target_suppresses_old_source() {
         let now = Utc::now().timestamp_millis();
         let record = SpacePresenceRecord {
             agent_did: remote.agent_did.clone(),
+            avatar_id: None,
             network_id: test_network_id(&state),
             space_id: package.space_id.clone(),
             space_version: package.space_version.clone(),
@@ -110,6 +111,7 @@ async fn place_occupancy_uses_actual_tile_and_trusted_record_speed() {
     let now = Utc::now().timestamp_millis();
     let record = SpacePresenceRecord {
         agent_did: remote.agent_did.clone(),
+        avatar_id: None,
         network_id: test_network_id(&state),
         space_id: old.space_id.clone(),
         space_version: old.space_version.clone(),

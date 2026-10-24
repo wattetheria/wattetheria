@@ -3,6 +3,7 @@ use crate::routes::space::{OwnSpacePresence, initialize_space_presence};
 use wattetheria_gateway_contract::SignedSpacePresence;
 use wattetheria_kernel::local_db::LocalDb;
 
+mod avatars;
 mod background_boundaries;
 mod leave;
 mod map_upgrade;
@@ -651,6 +652,7 @@ async fn space_gateway_presence_query_and_target_movement_use_verified_current_t
         .unwrap();
     let record = wattetheria_gateway_contract::SpacePresenceRecord {
         agent_did: remote.agent_did.clone(),
+        avatar_id: None,
         network_id: test_network_id(&state),
         space_id: current_package(&state).space_id.clone(),
         space_version: current_package(&state).space_version.clone(),

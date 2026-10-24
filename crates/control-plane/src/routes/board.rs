@@ -24,7 +24,7 @@ use crate::state::ControlPlaneState;
 mod board_view;
 
 #[path = "board_target.rs"]
-mod board_target;
+pub(super) mod board_target;
 
 use board_view::{
     board_topic_message_views, published_service_agents_payload, record_board_message_post,

@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use wattetheria_gateway_contract::space::validate_activity;
 use wattetheria_gateway_contract::{SignedSpacePresence, SpacePresenceRecord};
@@ -25,6 +26,17 @@ pub struct OwnSpacePresence {
 }
 
 impl OwnSpacePresence {
+    fn assigned_avatar(&self, recovered: &[SignedSpacePresence]) -> u8 {
+        self.networks
+            .values()
+            .flat_map(BTreeMap::values)
+            .find_map(|signed| signed.record.avatar_id)
+            .or_else(|| recovered.iter().find_map(|signed| signed.record.avatar_id))
+            .unwrap_or_else(|| {
+                rand::rng().random_range(0..wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT)
+            })
+    }
+
     pub fn load(
         db: &LocalDb,
         catalog: Option<&SpaceCatalog>,
@@ -400,6 +412,10 @@ pub async fn initialize_space_presence(state: &ControlPlaneState) -> Result<Sign
     enter_configured_space(state, None, None).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the existing entry transaction together with its saved appearance assignment"
+)]
 pub(super) async fn enter_configured_space(
     state: &ControlPlaneState,
     requested: Option<&str>,
@@ -442,6 +458,7 @@ pub(super) async fn enter_configured_space(
         .current(requested.unwrap_or(resume))
         .context("unknown configured Space")?;
     if let Some(existing) = registry.visible_get(&network, target)
+        && existing.record.avatar_id.is_some()
         && !sequence_conflicts(existing, &recovery.records)
     {
         return Ok(existing.clone());
@@ -495,6 +512,7 @@ pub(super) async fn enter_configured_space(
     };
     record.entered = true;
     record.seq = seq;
+    record.avatar_id = Some(registry.assigned_avatar(&recovery.records));
     records.push(record);
     let signed = persist_records(state, &mut registry, &network, records)?;
     registry.active_space = Some((network, target.space_id.clone()));
@@ -561,6 +579,7 @@ fn spawn_record(
 ) -> Result<SpacePresenceRecord> {
     Ok(SpacePresenceRecord {
         agent_did: state.agent_did.clone(),
+        avatar_id: None,
         network_id: String::new(),
         space_id: package.space_id.clone(),
         space_version: package.space_version.clone(),

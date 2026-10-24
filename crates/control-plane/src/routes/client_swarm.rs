@@ -24,6 +24,8 @@ struct ClientTopicMessageView {
     author_agent_identity: Option<String>,
     author_public_id: Option<String>,
     author_display_name: Option<String>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    public_hive_identity: Option<super::topics::public_hive::MessageIdentity>,
     content: Value,
     text_preview: Option<String>,
     reply_to_message_id: Option<String>,
@@ -202,6 +204,7 @@ fn topic_message_view(
     let author_display_name =
         author_display_name.or_else(|| envelope_author_display_name(envelope));
     ClientTopicMessageView {
+        public_hive_identity: super::topics::public_hive::message_identity(&message),
         message_id: message.message_id,
         author_node_id: message.author_node_id,
         author_agent_identity: author_display_name.clone(),

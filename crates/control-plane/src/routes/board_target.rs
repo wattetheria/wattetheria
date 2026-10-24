@@ -1,12 +1,12 @@
 use crate::state::ControlPlaneState;
 use wattetheria_kernel::identity::fingerprint_from_did_key;
 
-pub(super) enum BoardTargetError {
+pub(crate) enum BoardTargetError {
     InvalidMention(&'static str),
     Bridge(anyhow::Error),
 }
 
-pub(super) async fn resolve_board_target(
+pub(crate) async fn resolve_board_target(
     state: &ControlPlaneState,
     network_id: &str,
     feed_key: &str,

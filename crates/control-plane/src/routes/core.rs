@@ -1037,6 +1037,7 @@ async fn commit_topic_reply(
         commit_headers.clone(),
         requested_hive_id.clone(),
         HiveMessageBody {
+            mention: None,
             public_id: payload_string(&body.decision.payload, "/public_id"),
             network_id,
             feed_key: Some(feed_key),
@@ -1046,17 +1047,16 @@ async fn commit_topic_reply(
         },
     )
     .await;
-    if response.status().is_success() {
-        let response_json = json!({"ok": true});
-        if let Err(error) = append_topic_reply_execution(
+    if response.status().is_success()
+        && let Err(error) = append_topic_reply_execution(
             &state,
             &commit_headers,
             requested_hive_id,
             &request_json,
-            &response_json,
-        ) {
-            return internal_error(&error);
-        }
+            &json!({"ok": true}),
+        )
+    {
+        return internal_error(&error);
     }
     response
 }

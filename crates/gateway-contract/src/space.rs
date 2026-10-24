@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const SPACE_AVATAR_COUNT: u8 = 25;
+
 pub fn validate_activity(activity: &str) -> Result<(), &'static str> {
     if activity.chars().count() > 2_000 {
         return Err("activity exceeds 2000 characters");
@@ -24,6 +26,8 @@ pub struct NodePresence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpacePresenceRecord {
     pub agent_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_id: Option<u8>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub network_id: String,
     pub space_id: String,
@@ -176,6 +180,7 @@ mod tests {
     fn utc_position_does_not_depend_on_receive_time() {
         let record = SpacePresenceRecord {
             agent_did: "agent".to_owned(),
+            avatar_id: None,
             network_id: "network".to_owned(),
             space_id: "the-ville".to_owned(),
             space_version: "sha256:version".to_owned(),
