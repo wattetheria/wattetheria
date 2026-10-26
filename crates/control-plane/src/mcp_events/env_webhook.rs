@@ -10,7 +10,9 @@ use rand::RngCore;
 use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
+use std::sync::Arc;
 
+use super::request::RequestConfig;
 use super::webhook::MAX_REQUEST_BYTES;
 
 const MAX_TEXT_CHARS: usize = 65_536;
@@ -19,9 +21,10 @@ pub const ENV_URL: &str = "WATTETHERIA_EVENT_WEBHOOK_URL";
 pub const ENV_HEADERS: &str = "WATTETHERIA_EVENT_WEBHOOK_HEADERS";
 pub const ENV_SECRET: &str = "WATTETHERIA_EVENT_WEBHOOK_SECRET";
 pub const ENV_TEXT: &str = "WATTETHERIA_EVENT_WEBHOOK_TEXT";
+pub const ENV_REQUEST: &str = "WATTETHERIA_EVENT_WEBHOOK_REQUEST";
 
 /// Headers that belong to the request framing or to the signature itself.
-const RESERVED_HEADERS: &[&str] = &[
+pub(super) const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-type",
     "content-length",
@@ -38,6 +41,7 @@ pub struct EnvWebhookConfig {
     pub(crate) headers: HeaderMap,
     pub(crate) secret: Option<String>,
     pub(crate) include_text: bool,
+    pub(crate) request: Option<Arc<RequestConfig>>,
 }
 
 impl EnvWebhookConfig {
@@ -49,6 +53,7 @@ impl EnvWebhookConfig {
             read(ENV_HEADERS).as_deref(),
             read(ENV_SECRET).as_deref(),
             read(ENV_TEXT).as_deref(),
+            read(ENV_REQUEST).as_deref(),
         )
     }
 
@@ -57,6 +62,7 @@ impl EnvWebhookConfig {
         headers: Option<&str>,
         secret: Option<&str>,
         text: Option<&str>,
+        request: Option<&str>,
     ) -> Result<Option<Self>> {
         let Some(url) = url.map(unquote_env_value).filter(|value| !value.is_empty()) else {
             return Ok(None);
@@ -80,6 +86,13 @@ impl EnvWebhookConfig {
             headers,
             secret,
             include_text,
+            request: request
+                .map(unquote_env_value)
+                .filter(|value| !value.is_empty())
+                .map(RequestConfig::parse)
+                .transpose()
+                .with_context(|| format!("{ENV_REQUEST} is invalid"))?
+                .map(Arc::new),
         }))
     }
 }
@@ -298,6 +311,7 @@ mod tests {
                 Some(&format!("{quote}{headers}{quote}")),
                 Some(&format!("{quote}{secret}{quote}")),
                 Some(&format!("{quote}true{quote}")),
+                None,
             )
             .unwrap()
             .unwrap();
@@ -309,18 +323,19 @@ mod tests {
             validate_secret(config.secret.as_deref().unwrap()).unwrap();
         }
         assert!(
-            EnvWebhookConfig::from_values(Some("\"\""), None, None, None)
+            EnvWebhookConfig::from_values(Some("\"\""), None, None, None, None)
                 .unwrap()
                 .is_none()
         );
         assert!(
-            EnvWebhookConfig::from_values(Some("''"), None, None, None)
+            EnvWebhookConfig::from_values(Some("''"), None, None, None, None)
                 .unwrap()
                 .is_none()
         );
         assert!(
             EnvWebhookConfig::from_values(
                 Some("\"https://receiver.example/hook'"),
+                None,
                 None,
                 None,
                 None
@@ -333,7 +348,7 @@ mod tests {
     fn unset_or_blank_url_means_not_configured() {
         for url in [None, Some(""), Some("   ")] {
             assert!(
-                EnvWebhookConfig::from_values(url, Some("X: y"), None, None)
+                EnvWebhookConfig::from_values(url, Some("X: y"), None, None, None)
                     .unwrap()
                     .is_none()
             );
@@ -347,7 +362,7 @@ mod tests {
             "http://10.0.0.5/hook?key=abc",
             "https://example.com/wake?token=t%2Fx",
         ] {
-            let config = EnvWebhookConfig::from_values(Some(url), None, None, None)
+            let config = EnvWebhookConfig::from_values(Some(url), None, None, None, None)
                 .unwrap()
                 .unwrap();
             assert_eq!(config.url, url);
@@ -362,7 +377,7 @@ mod tests {
             "https://example.com/#frag",
         ] {
             assert!(
-                EnvWebhookConfig::from_values(Some(url), None, None, None).is_err(),
+                EnvWebhookConfig::from_values(Some(url), None, None, None, None).is_err(),
                 "{url}"
             );
         }
@@ -384,6 +399,7 @@ mod tests {
                 None,
                 None,
                 text,
+                None,
             )
             .unwrap()
             .unwrap();
@@ -395,6 +411,7 @@ mod tests {
                 None,
                 None,
                 Some("invalid"),
+                None,
             )
             .is_err()
         );

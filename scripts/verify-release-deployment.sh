@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.release.yml"
 FULL_COMPOSE_FILE="$ROOT_DIR/docker-compose.full.yml"
 ENV_FILE="$ROOT_DIR/.env.release"
+NATIVE_ENV_FILE="$ROOT_DIR/.env.native"
 
 require_file() {
   local path="$1"
@@ -28,6 +29,7 @@ require_text() {
 require_file "$COMPOSE_FILE"
 require_file "$FULL_COMPOSE_FILE"
 require_file "$ENV_FILE"
+require_file "$NATIVE_ENV_FILE"
 
 require_text "$COMPOSE_FILE" "WATTETHERIA_GATEWAY_URLS" "kernel must accept explicit gateway URLs"
 require_text "$COMPOSE_FILE" "WATTETHERIA_GATEWAY_CONFIG_PATH" "kernel must read the Wattswarm startup config"
@@ -44,6 +46,8 @@ require_text "$ENV_FILE" "WATTETHERIA_DEPLOYMENT_RUNTIME=docker" "release env te
 require_text "$ENV_FILE" "WATTETHERIA_WATTSWARM_AGENT_EVENT_CALLBACK_BASE_URL=http://kernel:7777" "release env template must define the internal agent event callback base URL"
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_API_KEY=" "release env template must include the concrete brain API key value slot"
 require_text "$ENV_FILE" "WATTETHERIA_BRAIN_SESSION_MODE=stable_per_scope" "release env template must default to scoped stable runtime sessions"
+require_text "$ENV_FILE" "WATTETHERIA_EVENT_WEBHOOK_REQUEST=" "release env template must include the optional webhook request configuration"
+require_text "$NATIVE_ENV_FILE" "WATTETHERIA_EVENT_WEBHOOK_REQUEST=" "native env template must include the optional webhook request configuration"
 require_text "$ENV_FILE" "WATTSWARM_IROH_HOST_PORT=4002" "release env template must define the host Iroh UDP port"
 require_text "$ENV_FILE" "WATTSWARM_IROH_BIND_ADDR=0.0.0.0:4002" "release env template must define the fixed Iroh UDP bind address"
 require_text "$ENV_FILE" "WATTSWARM_IROH_PUBLISH_DIRECT_ADDRS=false" "release env template must publish Iroh direct addresses by default"

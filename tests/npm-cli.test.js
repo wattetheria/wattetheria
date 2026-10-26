@@ -10,6 +10,16 @@ const test = require("node:test");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const CLI_PATH = path.join(ROOT_DIR, "bin", "wattetheria.js");
 
+test("Docker and native release templates ship an inactive webhook request configuration", () => {
+  const metadata = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, "package.json"), "utf8"));
+  for (const name of [".env.release", ".env.native"]) {
+    assert.ok(metadata.files.includes(name), `${name} must be included in the npm package`);
+    const lines = fs.readFileSync(path.join(ROOT_DIR, name), "utf8").split(/\r?\n/)
+      .filter(line => line.startsWith("WATTETHERIA_EVENT_WEBHOOK_REQUEST="));
+    assert.deepEqual(lines, ["WATTETHERIA_EVENT_WEBHOOK_REQUEST="], `${name} must provide one empty default without credentials`);
+  }
+});
+
 function runCli(args) {
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
     cwd: ROOT_DIR,
@@ -804,10 +814,16 @@ for (const runtime of ["native", "docker"]) {
       assert.match(initial.stdout, /Start an agent runtime API server/);
       assert.doesNotMatch(initial.stdout, /Select Agent Event Mode/);
       await fixture.waitForStart();
+      assert.match(fs.readFileSync(fixture.envPath, "utf8"), /^WATTETHERIA_EVENT_WEBHOOK_REQUEST=$/m);
+      const requestLine = `WATTETHERIA_EVENT_WEBHOOK_REQUEST='${JSON.stringify({
+        body_template: { payload: { $ref: "/event" } },
+        signature: { algorithm: "sha256", secret: "existing-receiver-key", input: ["$secret", "$body"], encoding: "hex", header: "x-signature" },
+      })}'`;
       const brainEnv = fs.readFileSync(fixture.envPath, "utf8")
         .replace(/^WATTETHERIA_BRAIN_BASE_URL=.*$/m, "WATTETHERIA_BRAIN_BASE_URL=http://brain.example/v1")
         .replace(/^WATTETHERIA_BRAIN_MODEL=.*$/m, "WATTETHERIA_BRAIN_MODEL=existing-model")
-        .replace(/^WATTETHERIA_BRAIN_API_KEY=.*$/m, "WATTETHERIA_BRAIN_API_KEY=existing-key");
+        .replace(/^WATTETHERIA_BRAIN_API_KEY=.*$/m, "WATTETHERIA_BRAIN_API_KEY=existing-key")
+        .replace(/^WATTETHERIA_EVENT_WEBHOOK_REQUEST=.*$/m, requestLine);
       fs.writeFileSync(fixture.envPath, brainEnv);
 
       for (const mode of ["mcp_events", "api_runtime"]) {
@@ -819,6 +835,7 @@ for (const runtime of ["native", "docker"]) {
         assert.equal(switched.stdout.split(runtime === "native" ? "Native services stopped." : "Stopping release stack...").length - 1, 1);
         const saved = fs.readFileSync(fixture.envPath, "utf8");
         assert.match(saved, new RegExp(`^WATTETHERIA_AGENT_EVENT_MODE=${mode}$`, "m"));
+        assert.ok(saved.split("\n").includes(requestLine), "setup must preserve the configured request JSON and its literal signature variables");
         for (const line of brainEnv.split("\n").filter(line => line.startsWith("WATTETHERIA_BRAIN_"))) {
           assert.ok(saved.split("\n").includes(line), `preserved ${line.split("=")[0]}`);
         }

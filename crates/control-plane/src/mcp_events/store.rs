@@ -463,5 +463,5 @@ impl EventStore {
 }
 
 #[cfg(test)]
-#[path = "store_tests.rs"]
+#[path = "../tests/mcp_events_tests/store_tests.rs"]
 mod tests;

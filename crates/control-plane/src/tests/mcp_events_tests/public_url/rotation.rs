@@ -32,6 +32,7 @@ async fn env_receiver(
                 Some("x-receiver: env-authority"),
                 parameters()["delivery"]["secret"].as_str(),
                 None,
+                None,
             )
             .unwrap(),
         )

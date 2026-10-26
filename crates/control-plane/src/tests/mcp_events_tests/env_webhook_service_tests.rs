@@ -12,6 +12,9 @@ use tokio::task::JoinHandle;
 
 use super::*;
 
+#[path = "env_webhook_request_tests.rs"]
+mod request_tests;
+
 const SECRET: &str = "whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD";
 const EVENT_TYPES: [&str; 10] = [
     "friend_request",
@@ -78,6 +81,7 @@ impl Receiver {
             Some(&self.url),
             Some("Authorization: Bearer receiver-key"),
             secret,
+            None,
             None,
         )
         .unwrap()
@@ -197,9 +201,10 @@ async fn unset_and_false_text_flags_send_original_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let mut receiver = Receiver::start().await;
         let events = open(dir.path(), "token").await;
-        let config = EnvWebhookConfig::from_values(Some(&receiver.url), None, Some(SECRET), text)
-            .unwrap()
-            .unwrap();
+        let config =
+            EnvWebhookConfig::from_values(Some(&receiver.url), None, Some(SECRET), text, None)
+                .unwrap()
+                .unwrap();
         events.apply_env_webhook(Some(config)).await.unwrap();
         let input = event("friend_request", "no-text");
         events.publish(&input, &pending_external()).await.unwrap();

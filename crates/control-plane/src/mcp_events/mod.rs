@@ -1,6 +1,7 @@
 pub(crate) mod catalog;
 pub(crate) mod crypto;
 pub mod env_webhook;
+mod request;
 mod service;
 pub(crate) mod sqlite;
 pub(crate) mod store;

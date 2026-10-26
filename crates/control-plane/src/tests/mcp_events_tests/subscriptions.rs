@@ -120,6 +120,7 @@ async fn mcp_events_worker_drains_each_source_without_blocking_the_other() {
                     None,
                     parameters()["delivery"]["secret"].as_str(),
                     None,
+                    None,
                 )
                 .unwrap(),
             )
@@ -518,6 +519,7 @@ async fn mcp_events_all_business_types_reach_one_subscription_and_the_env_webhoo
         Some("Authorization: Bearer env-key"),
         Some(parameters()["delivery"]["secret"].as_str().unwrap()),
         Some("true"),
+        None,
     )
     .unwrap()
     .unwrap();

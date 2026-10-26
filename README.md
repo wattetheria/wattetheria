@@ -603,6 +603,12 @@ WATTETHERIA_EVENT_WEBHOOK_SECRET="whsec_<base64 of 24 to 64 bytes>"
   newline, `\n` or `;`. Request-framing and signature headers cannot be overridden.
 - `WATTETHERIA_EVENT_WEBHOOK_SECRET` is optional. When omitted, a signing key
   is generated and persisted. Changing it sends both signatures for ten minutes.
+- `WATTETHERIA_EVENT_WEBHOOK_TEXT=true` adds a top-level `text` containing the
+  serialized event. It defaults to `false`.
+- `WATTETHERIA_EVENT_WEBHOOK_REQUEST` optionally configures a JSON body template,
+  dynamic headers, a receiver signature and a JSON success condition. No platform
+  or domain is inferred. Without it, existing delivery is unchanged. See
+  [configurable webhook requests](#configurable-webhook-requests).
 
 These events use `name: wattetheria.agent.<type>`.
 
@@ -628,7 +634,72 @@ Both paths send `eventId`, `name`, `timestamp` and `data`, with
 `requires_action: true` and `decision_status: pending_external`.
 They use Standard Webhooks signatures and stable IDs for deduplication.
 Failures retry up to 20 times across restarts; HTTP 410 and 413 are final.
-Redirects are disabled. HTTP 2xx confirms receipt, not agent action.
+Redirects are disabled. HTTP 2xx confirms receipt, not agent action. A configured
+response condition must also match before an environment webhook is acknowledged.
+
+#### Configurable webhook requests
+
+`WATTETHERIA_EVENT_WEBHOOK_REQUEST` accepts a JSON object with optional
+`body_template`, `headers`, `signature` and `response` fields. In the deployment
+`.env`, store the JSON on one line and enclose the entire value in single quotes
+(`'`), not double quotes or no quotes. Docker Compose expands `$ref`, `$json`,
+`$timestamp` and other `$` variables in unquoted or double-quoted values,
+replacing undefined variables with empty strings. Single quotes preserve them
+literally. The value can contain credentials.
+
+```dotenv
+WATTETHERIA_EVENT_WEBHOOK_REQUEST='{"body_template":{"payload":{"$ref":"/event"}}}'
+```
+
+The following fuller example is formatted across lines for readability. Compact
+it onto one line and wrap it in single quotes before adding it to `.env`:
+
+```json
+{
+  "body_template": {
+    "id": {"$ref": "/event/eventId"},
+    "token": "receiver-token",
+    "content": {"$json": {"text": {"$json": {"$ref": "/event"}}}}
+  },
+  "headers": {
+    "X-Request-Time": {"$ref": "/timestamp"},
+    "X-Request-Nonce": {"$ref": "/nonce"}
+  },
+  "signature": {
+    "algorithm": "sha256",
+    "secret": "receiver-signing-key",
+    "input": ["$timestamp", "$nonce", "$secret", "$body"],
+    "encoding": "hex",
+    "header": "X-Request-Signature"
+  },
+  "response": {"pointer": "/success", "equals": true}
+}
+```
+
+- Templates are JSON values, not executable code or interpolated JSON text.
+  A single-key `{"$ref":"/event/data/content"}` copies a value using a JSON
+  Pointer and preserves its type. `{"$json": <template>}` renders and serializes
+  its value into a JSON string. Other values remain literal. Missing references
+  fail delivery rather than silently substituting an empty value.
+- References can access `event`, `timestamp` (Unix seconds as a string) and
+  `nonce` (a fresh UUID). `event` is the normal request, including `text` when
+  `WATTETHERIA_EVENT_WEBHOOK_TEXT=true`. Omitting `body_template` preserves the
+  exact original bytes. The final body must not exceed 256 KiB.
+- Header templates must produce strings and override matching static receiver
+  headers. Framing and Standard Webhooks headers remain reserved; a configured
+  signature header cannot also be a template header.
+- Signature inputs are concatenated in order. `$timestamp`, `$nonce`, `$secret`
+  and `$body` are variables; other strings are literal separators. The supported
+  algorithm is `sha256`, with `hex` or `base64` encoding. `$body` is the final
+  serialized request. Omitting `signature` adds no receiver-specific signature;
+  existing Standard Webhooks signatures always cover the final bytes.
+- `response` requires the successful HTTP response's JSON value at `pointer` to
+  equal `equals`. Mismatches, missing fields, invalid JSON and responses over
+  256 KiB are retried. HTTP 410 and 413 remain terminal.
+- These settings apply only to the environment webhook, never MCP subscriptions.
+  Configuration stays in the deployment environment, not event storage. Retries
+  preserve the stored event and event ID, with fresh timestamps and nonces for
+  each attempt. Use `/event/eventId` for receiver message IDs and deduplication.
 
 ### Remote MCP secret URL
 

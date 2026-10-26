@@ -12,11 +12,12 @@ use tokio::sync::{Mutex, RwLock};
 
 use super::catalog::{self, ProjectOutcome};
 use super::env_webhook::{EnvWebhookConfig, body_with_text, generate_secret};
+use super::request::RequestConfig;
 use super::store::{
     DeliveryErrorCategory, DeliveryResult, EventStore, NewOccurrence, NewSubscription,
     OutboxRecord, Subscription, SubscriptionDiagnostic,
 };
-use super::webhook::{WebhookClient, WebhookFailure, validate_secret};
+use super::webhook::{WebhookClient, WebhookFailure, WebhookRequest, validate_secret};
 use crate::routes::agent_events::AgentEventEnvelope;
 use reqwest::header::HeaderMap;
 
@@ -48,6 +49,7 @@ struct EnvWebhook {
     subscription_id: String,
     headers: HeaderMap,
     include_text: bool,
+    request: Option<Arc<RequestConfig>>,
 }
 
 impl McpEvents {
@@ -156,6 +158,7 @@ impl McpEvents {
             subscription_id: id,
             headers: config.headers,
             include_text: config.include_text,
+            request: config.request,
         });
         Ok(())
     }
@@ -284,9 +287,9 @@ impl McpEvents {
             .await
             .as_ref()
             .filter(|env| env.subscription_id == item.subscription_id)
-            .map(|env| (env.headers.clone(), env.include_text));
+            .map(|env| (env.headers.clone(), env.include_text, env.request.clone()));
         let outcome = if item.source_kind == ENV_WEBHOOK_SOURCE_KIND {
-            let Some((headers, include_text)) = env_config else {
+            let Some((headers, include_text, request)) = env_config else {
                 return Ok(false);
             };
             let body = if include_text {
@@ -304,8 +307,11 @@ impl McpEvents {
                             &item.callback_secret,
                             old_secret,
                             &item.event_id,
-                            &body,
-                            &headers,
+                            WebhookRequest {
+                                body: &body,
+                                headers: &headers,
+                                config: request.as_deref(),
+                            },
                         )
                         .await
                 }
@@ -381,8 +387,12 @@ fn classify_delivery(
                 WebhookFailure::InvalidPayload => DeliveryErrorCategory::InvalidPayload,
                 WebhookFailure::RequestTooLarge => DeliveryErrorCategory::RequestTooLarge,
                 WebhookFailure::Transport => DeliveryErrorCategory::Transport,
+                WebhookFailure::ReceiverRejected => DeliveryErrorCategory::HttpRetryable,
             };
-            if error == WebhookFailure::Transport {
+            if matches!(
+                error,
+                WebhookFailure::Transport | WebhookFailure::ReceiverRejected
+            ) {
                 DeliveryResult::Retry {
                     http_status: None,
                     category,
@@ -537,5 +547,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "env_webhook_service_tests.rs"]
+#[path = "../tests/mcp_events_tests/env_webhook_service_tests.rs"]
 mod env_webhook_service_tests;

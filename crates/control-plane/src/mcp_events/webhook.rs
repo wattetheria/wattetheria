@@ -1,5 +1,6 @@
 use std::{net::IpAddr, net::SocketAddr, time::Duration};
 
+use super::request::RequestConfig;
 use base64::Engine;
 use reqwest::{
     Client, Url,
@@ -28,6 +29,13 @@ pub(crate) enum WebhookFailure {
     InvalidPayload,
     RequestTooLarge,
     Transport,
+    ReceiverRejected,
+}
+
+pub(crate) struct WebhookRequest<'a> {
+    pub(crate) body: &'a [u8],
+    pub(crate) headers: &'a HeaderMap,
+    pub(crate) config: Option<&'a RequestConfig>,
 }
 
 impl WebhookClient {
@@ -68,7 +76,9 @@ impl WebhookClient {
                 HeaderValue::from_str(subscription_id)
                     .map_err(|_| WebhookFailure::InvalidPayload)?,
             );
-            post_event_with_client(&client, url, secret, old_secret, event_id, body, &headers).await
+            post_event_with_client(&client, url, secret, old_secret, event_id, body, &headers)
+                .await
+                .map(|response| response.status().as_u16())
         })
         .await
         .map_err(|_| WebhookFailure::Transport)?
@@ -83,12 +93,20 @@ impl WebhookClient {
         secret: &str,
         old_secret: Option<&str>,
         event_id: &str,
-        body: &[u8],
-        extra_headers: &HeaderMap,
+        request: WebhookRequest<'_>,
     ) -> Result<u16, WebhookFailure> {
         tokio::time::timeout(REQUEST_TIMEOUT, async {
             let client = client_for_url(url).await?;
-            post_event_with_client(
+            let prepared = request
+                .config
+                .map(|config| config.prepare(request.body, request.headers))
+                .transpose()?;
+            let (body, extra_headers) = prepared
+                .as_ref()
+                .map_or((request.body, request.headers), |prepared| {
+                    (prepared.body.as_slice(), &prepared.headers)
+                });
+            let response = post_event_with_client(
                 &client,
                 url,
                 secret,
@@ -97,7 +115,11 @@ impl WebhookClient {
                 body,
                 extra_headers,
             )
-            .await
+            .await?;
+            match request.config {
+                Some(request) => request.check_response(response).await,
+                None => Ok(response.status().as_u16()),
+            }
         })
         .await
         .map_err(|_| WebhookFailure::Transport)?
@@ -179,7 +201,7 @@ async fn post_event_with_client(
     event_id: &str,
     body: &[u8],
     extra_headers: &HeaderMap,
-) -> Result<u16, WebhookFailure> {
+) -> Result<reqwest::Response, WebhookFailure> {
     if body.len() > MAX_REQUEST_BYTES {
         return Err(WebhookFailure::RequestTooLarge);
     }
@@ -196,7 +218,7 @@ async fn post_event_with_client(
         .send()
         .await
         .map_err(|_| WebhookFailure::Transport)?;
-    Ok(response.status().as_u16())
+    Ok(response)
 }
 
 fn signed_headers(
@@ -470,8 +492,9 @@ pub(crate) mod tests {
                 &oversized,
                 &HeaderMap::new()
             )
-            .await,
-            Err(WebhookFailure::RequestTooLarge)
+            .await
+            .unwrap_err(),
+            WebhookFailure::RequestTooLarge
         );
         receiver.abort();
     }
@@ -565,7 +588,17 @@ pub(crate) mod tests {
         let body = br#"{"eventId":"evt_env"}"#;
         assert_eq!(
             WebhookClient::default()
-                .post_event(&url, SECRET, None, "evt_env", body, &extra)
+                .post_event(
+                    &url,
+                    SECRET,
+                    None,
+                    "evt_env",
+                    WebhookRequest {
+                        body,
+                        headers: &extra,
+                        config: None
+                    }
+                )
                 .await
                 .unwrap(),
             200
@@ -685,7 +718,7 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .unwrap();
-            assert_eq!(delivered, status);
+            assert_eq!(delivered.status().as_u16(), status);
             let captured = server.await.unwrap();
             assert_eq!(captured.body, body);
             assert_eq!(captured.headers[HEADER_WEBHOOK_ID], "evt_1");
