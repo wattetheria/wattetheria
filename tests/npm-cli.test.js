@@ -280,7 +280,7 @@ test(
 );
 
 test(
-  "network uses the cached native CLI from a GitHub Release",
+  "network uses the cached native CLI from a native release",
   { skip: process.platform === "win32" && "uses a POSIX executable shim" },
   (context) => {
     const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wattetheria-native-cache-test-"));

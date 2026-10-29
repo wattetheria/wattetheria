@@ -168,10 +168,29 @@ jobs:
       - name: Verify package contents
         run: npm pack npm/native/${{ matrix.target_key }} --dry-run
 
+      - name: Verify native release package binaries
+        run: node scripts/check-native-package-binary.js npm/native-release/${{ matrix.target_key }}
+
+      - name: Pack native release npm package
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          npm pkg set "version=${RELEASE_VERSION}" --prefix npm/native-release/${{ matrix.target_key }}
+          mkdir -p native-npm-package
+          npm pack ./npm/native-release/${{ matrix.target_key }} --pack-destination native-npm-package
+
       - uses: actions/upload-artifact@v4
         with:
           name: wattetheria-native-${{ matrix.target_key }}
           path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-npm-package-${{ matrix.target_key }}
+          path: native-npm-package/*.tgz
           if-no-files-found: error
           retention-days: 1
 
@@ -210,3 +229,48 @@ jobs:
           GH_TOKEN: ${{ secrets.WATTETHERIA_RELEASE_TOKEN || github.token }}
           RELEASE_TAG: v${{ inputs.release_version }}
         run: gh release upload "$RELEASE_TAG" --repo wattetheria/wattetheria --clobber native-release-assets/*
+
+  publish-native-npm-packages:
+    if: ${{ !inputs.dry_run }}
+    needs:
+      - native
+      - release-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-npm-package-*
+          path: native-npm-packages
+          merge-multiple: true
+
+      - name: Validate collected native npm packages
+        run: |
+          count=$(find native-npm-packages -maxdepth 1 -name '*.tgz' -type f | wc -l | tr -d ' ')
+          if [ "$count" -ne 6 ]; then
+            echo "Expected 6 native npm packages, found $count." >&2
+            exit 1
+          fi
+
+      - name: Publish native npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          # Match the GitHub Release prerelease rule so prereleases never become npm latest.
+          npm_tag=latest
+          if [[ "v${RELEASE_VERSION}" =~ -(alpha|beta|rc) ]]; then
+            npm_tag=next
+          fi
+          for package in native-npm-packages/*.tgz; do
+            package_name=$(tar -xOzf "$package" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
+            if npm view "${package_name}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+              echo "${package_name}@${RELEASE_VERSION} is already published; skipping."
+              continue
+            fi
+            npm publish "$package" --access public --tag "$npm_tag"
+          done

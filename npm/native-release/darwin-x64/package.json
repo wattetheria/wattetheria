@@ -1,0 +1,19 @@
+{
+  "name": "@wattetheria/native-darwin-x64",
+  "version": "0.0.0",
+  "description": "Wattetheria native release binaries for macOS x64",
+  "license": "AGPL-3.0-only",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

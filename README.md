@@ -212,10 +212,19 @@ or, without the interactive setup steps:
 npx wattetheria install --runtime native
 ```
 
-The native binaries are downloaded from the latest Wattetheria GitHub Release
-and cached under `~/.wattetheria/native`. Native runtime releases are separate
-from npm CLI releases and use the same product version as the GHCR images:
-image tags use `X`, and the corresponding GitHub Release tag is `vX`.
+The native binaries are downloaded from the npm package
+`@wattetheria/native-<platform>-<arch>` and cached under `~/.wattetheria/native`.
+Native release packages are separate from the npm CLI packages (`wattetheria`
+and `@wattetheria/cli-*`) and use the same product version as the GHCR images:
+image tags use `X`, the native package version is `X`, and the corresponding
+GitHub Release tag is `vX`.
+
+The download uses the npm registry that runs the CLI, so users in mainland
+China can install through the npmmirror registry:
+
+```bash
+npx --registry=https://registry.npmmirror.com wattetheria setup --runtime native
+```
 
 Every deployment records its runtime in the deployment `.env` as
 `WATTETHERIA_DEPLOYMENT_RUNTIME=docker` or `WATTETHERIA_DEPLOYMENT_RUNTIME=native`

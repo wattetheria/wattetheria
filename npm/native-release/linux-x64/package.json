@@ -1,0 +1,19 @@
+{
+  "name": "@wattetheria/native-linux-x64",
+  "version": "0.0.0",
+  "description": "Wattetheria native release binaries for Linux x64",
+  "license": "AGPL-3.0-only",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

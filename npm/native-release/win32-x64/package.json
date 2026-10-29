@@ -1,0 +1,19 @@
+{
+  "name": "@wattetheria/native-win32-x64",
+  "version": "0.0.0",
+  "description": "Wattetheria native release binaries for Windows x64",
+  "license": "AGPL-3.0-only",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

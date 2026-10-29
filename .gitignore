@@ -1,6 +1,7 @@
 target/
 bin/native/
 npm/native/*/bin/
+npm/native-release/*/bin/
 /.wattetheria
 .env
 .env.release.local

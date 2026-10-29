@@ -7,6 +7,7 @@ const path = require("node:path");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BASE_NAME = "wattetheria-client-cli";
 const NATIVE_PACKAGE_PREFIX = "@wattetheria/cli";
+const NATIVE_RELEASE_PACKAGE_PREFIX = "@wattetheria/native";
 const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 const SUPPORTED_ARCHES = new Set(["x64", "arm64"]);
 
@@ -68,6 +69,10 @@ function nativePackageDir(key) {
   return path.join(ROOT_DIR, "npm", "native", key);
 }
 
+function nativeReleasePackageDir(key) {
+  return path.join(ROOT_DIR, "npm", "native-release", key);
+}
+
 function copyBinary(source, targetDir, platform, targetName = binaryName(platform)) {
   const target = path.join(targetDir, targetName);
   fs.mkdirSync(targetDir, { recursive: true });
@@ -121,12 +126,19 @@ function stageNativeCli(options) {
   }
 
   if (options.releaseAssetsDir) {
+    const releasePackageDir = nativeReleasePackageDir(key);
+    if (!fs.existsSync(path.join(releasePackageDir, "package.json"))) {
+      throw new Error(
+        `Native release package manifest not found for ${NATIVE_RELEASE_PACKAGE_PREFIX}-${key}.`
+      );
+    }
     fs.mkdirSync(options.releaseAssetsDir, { recursive: true });
     for (const baseName of [BASE_NAME, "wattetheria-kernel", "wattswarm", "wattswarm-runtime"]) {
       const name = options.platform === "win32" ? `${baseName}.exe` : baseName;
       const sourcePath = path.join(packageDir, "bin", name);
       const assetName = `wattetheria-native-${key}-${name}`;
       copyBinary(sourcePath, options.releaseAssetsDir, options.platform, assetName);
+      console.log(`staged ${copyBinary(sourcePath, path.join(releasePackageDir, "bin"), options.platform, name)}`);
     }
   }
 }
