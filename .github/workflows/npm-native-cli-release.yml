@@ -266,7 +266,8 @@ jobs:
           if [[ "v${RELEASE_VERSION}" =~ -(alpha|beta|rc) ]]; then
             npm_tag=next
           fi
-          for package in native-npm-packages/*.tgz; do
+          # The ./ prefix keeps npm from parsing dir/file.tgz as a GitHub shorthand.
+          for package in ./native-npm-packages/*.tgz; do
             package_name=$(tar -xOzf "$package" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
             if npm view "${package_name}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
               echo "${package_name}@${RELEASE_VERSION} is already published; skipping."
