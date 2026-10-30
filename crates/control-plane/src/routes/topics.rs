@@ -20,9 +20,6 @@ use crate::routes::identity::{
 use crate::routes::message_validation::{
     validate_social_message_content, validation_error_response,
 };
-use crate::routes::reward_events::{
-    ContributionEventArgs, contribution_actor, message_action_type, record_contribution_event,
-};
 use crate::social_host::{
     SignedAgentEnvelopeArgs, build_signed_agent_envelope_for_nodes, public_agent_id,
 };
@@ -531,10 +528,6 @@ pub(crate) async fn create_hive(
         duration_ms: None,
         details: Some(payload),
     });
-    if let Err(error) = record_hive_create_contribution(&state, &context, &topic, &network_id).await
-    {
-        return internal_error(&error);
-    }
 
     Json(json!({
         "identity": identity_context_response(&context),
@@ -544,33 +537,6 @@ pub(crate) async fn create_hive(
         ),
     }))
     .into_response()
-}
-
-async fn record_hive_create_contribution(
-    state: &ControlPlaneState,
-    context: &IdentityContextView,
-    topic: &HiveProfile,
-    network_id: &str,
-) -> anyhow::Result<()> {
-    let (controller_id, actor_public_id, agent_identity) = contribution_actor(state, context);
-    record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: "hive.create",
-            source_id: &topic.topic_id,
-            controller_id,
-            public_id: actor_public_id,
-            agent_identity,
-            receipt: json!({
-                "hive_id": topic.topic_id,
-                "network_id": network_id,
-                "feed_key": topic.feed_key,
-                "scope_hint": topic.scope_hint,
-            }),
-        },
-    )
-    .await?;
-    Ok(())
 }
 
 async fn subscribe_created_hive(
@@ -1092,7 +1058,7 @@ async fn post_hive_message_for_route(
             Ok(envelope) => envelope,
             Err(response) => return response,
         };
-    if let Err(response) = record_hive_message_post_success(
+    record_hive_message_post_success(
         &state,
         &context,
         &auth,
@@ -1101,11 +1067,7 @@ async fn post_hive_message_for_route(
         &network_id,
         &body,
         &envelope,
-    )
-    .await
-    {
-        return response;
-    }
+    );
 
     Json(json!({"ok": true})).into_response()
 }
@@ -1159,7 +1121,7 @@ async fn resolve_subscribed_hive_profile_with_route(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn record_hive_message_post_success(
+fn record_hive_message_post_success(
     state: &ControlPlaneState,
     context: &IdentityContextView,
     auth: &str,
@@ -1168,7 +1130,7 @@ async fn record_hive_message_post_success(
     network_id: &str,
     body: &HiveMessageBody,
     envelope: &SwarmAgentEnvelope,
-) -> Result<(), Response> {
+) {
     let created_at = Utc::now();
     let controller_id = context.public_memory_owner.controller.clone();
     let author_public_id = context.public_memory_owner.public.clone();
@@ -1220,31 +1182,6 @@ async fn record_hive_message_post_success(
         duration_ms: None,
         details: Some(payload),
     });
-    let (actor_controller_id, actor_public_id, agent_identity) = contribution_actor(state, context);
-    if let Err(error) = record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: message_action_type(body.reply_to_message_id.as_deref(), "hive"),
-            source_id: &message_id,
-            controller_id: actor_controller_id,
-            public_id: actor_public_id,
-            agent_identity,
-            receipt: json!({
-                "message_id": message_id,
-                "hive_id": hive_topic_id,
-                "network_id": network_id,
-                "feed_key": hive.feed_key,
-                "scope_hint": hive.scope_hint,
-                "reply_to_message_id": body.reply_to_message_id,
-            }),
-        },
-    )
-    .await
-    {
-        return Err(internal_error(&error));
-    }
-
-    Ok(())
 }
 
 async fn post_hive_message_to_swarm(

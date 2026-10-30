@@ -14,27 +14,6 @@ pub struct EconomicPolicy {
     pub enabled: bool,
     pub genesis_supply_watt: i64,
     pub per_agent_daily_cap_watt: i64,
-    pub rewards: FixedRewardSchedule,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct FixedRewardSchedule {
-    pub mission_publish_watt: i64,
-    pub mission_settle_publisher_watt: i64,
-    pub topic_post_watt: i64,
-    pub topic_reply_watt: i64,
-    pub custom_agent_publish_watt: i64,
-    pub external_agent_call_success_watt: i64,
-    #[serde(default = "default_mcp_tool_success_watt")]
-    pub mcp_tool_success_watt: i64,
-    #[serde(default = "default_hive_create_watt")]
-    pub hive_create_watt: i64,
-    #[serde(default = "default_system_puzzle_propose_success_watt")]
-    pub system_puzzle_propose_success_watt: i64,
-    #[serde(default = "default_system_puzzle_solve_watt")]
-    pub system_puzzle_solve_watt: i64,
-    #[serde(default = "default_system_puzzle_verify_success_watt")]
-    pub system_puzzle_verify_success_watt: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,47 +73,8 @@ impl Default for EconomicPolicy {
             enabled: true,
             genesis_supply_watt: 1_000_000_000,
             per_agent_daily_cap_watt: 10_000,
-            rewards: FixedRewardSchedule::default(),
         }
     }
-}
-
-impl Default for FixedRewardSchedule {
-    fn default() -> Self {
-        Self {
-            mission_publish_watt: 1,
-            mission_settle_publisher_watt: 2,
-            topic_post_watt: 1,
-            topic_reply_watt: 1,
-            custom_agent_publish_watt: 5,
-            external_agent_call_success_watt: 1,
-            mcp_tool_success_watt: default_mcp_tool_success_watt(),
-            hive_create_watt: default_hive_create_watt(),
-            system_puzzle_propose_success_watt: default_system_puzzle_propose_success_watt(),
-            system_puzzle_solve_watt: default_system_puzzle_solve_watt(),
-            system_puzzle_verify_success_watt: default_system_puzzle_verify_success_watt(),
-        }
-    }
-}
-
-const fn default_mcp_tool_success_watt() -> i64 {
-    1
-}
-
-const fn default_hive_create_watt() -> i64 {
-    1
-}
-
-const fn default_system_puzzle_propose_success_watt() -> i64 {
-    1
-}
-
-const fn default_system_puzzle_solve_watt() -> i64 {
-    8
-}
-
-const fn default_system_puzzle_verify_success_watt() -> i64 {
-    2
 }
 
 impl WalletBoundBalance {
@@ -248,24 +188,6 @@ pub fn wallet_bound_balance_from_missions(
     policy: &EconomicPolicy,
     missions: &MissionBoard,
     controller_id: &str,
-    public_id: Option<&str>,
-) -> WalletBoundBalance {
-    wallet_bound_balance_from_rewards(
-        policy,
-        missions,
-        &ContributionEventLog::default(),
-        controller_id,
-        public_id,
-    )
-}
-
-#[must_use]
-pub fn wallet_bound_balance_from_rewards(
-    policy: &EconomicPolicy,
-    missions: &MissionBoard,
-    contribution_events: &ContributionEventLog,
-    controller_id: &str,
-    public_id: Option<&str>,
 ) -> WalletBoundBalance {
     if !policy.enabled {
         return WalletBoundBalance {
@@ -278,10 +200,7 @@ pub fn wallet_bound_balance_from_rewards(
 
     let mut deltas = Vec::new();
     for mission in missions.list(None) {
-        collect_mission_deltas(policy, &mission, controller_id, public_id, &mut deltas);
-    }
-    for event in contribution_events.iter() {
-        collect_contribution_event_delta(policy, event, controller_id, public_id, &mut deltas);
+        collect_mission_deltas(&mission, controller_id, &mut deltas);
     }
     deltas.sort_by(|left, right| {
         left.timestamp
@@ -304,81 +223,11 @@ pub fn wallet_bound_balance_from_rewards(
     balance
 }
 
-fn collect_contribution_event_delta(
-    policy: &EconomicPolicy,
-    event: &ContributionEvent,
-    controller_id: &str,
-    public_id: Option<&str>,
-    deltas: &mut Vec<RewardDelta>,
-) {
-    if !owns_event(event, controller_id, public_id) {
-        return;
-    }
-    let watt = contribution_event_watt(policy, &event.action_type);
-    if watt == 0 {
-        return;
-    }
-    deltas.push(RewardDelta {
-        timestamp: event.occurred_at,
-        source_id: format!("contribution:{}:{}", event.action_type, event.event_id),
-        watt,
-        reputation: 0,
-        capacity: 0,
-    });
-}
-
-fn owns_event(event: &ContributionEvent, controller_id: &str, public_id: Option<&str>) -> bool {
-    event.controller_id == controller_id
-        || event
-            .public_id
-            .as_deref()
-            .is_some_and(|id| public_id == Some(id))
-}
-
-fn contribution_event_watt(policy: &EconomicPolicy, action_type: &str) -> i64 {
-    match action_type {
-        "topic.message.reply" | "hive.message.reply" => policy.rewards.topic_reply_watt,
-        "topic.message.post" | "hive.message.post" => policy.rewards.topic_post_watt,
-        "hive.create" => policy.rewards.hive_create_watt,
-        "custom_agent.publish" => policy.rewards.custom_agent_publish_watt,
-        "servicenet.agent.invoke.success" => policy.rewards.external_agent_call_success_watt,
-        "mcp.tool.success" => policy.rewards.mcp_tool_success_watt,
-        "system_puzzle.propose.success" => policy.rewards.system_puzzle_propose_success_watt,
-        "system_puzzle.solve" => policy.rewards.system_puzzle_solve_watt,
-        "system_puzzle.verify.success" => policy.rewards.system_puzzle_verify_success_watt,
-        _ => 0,
-    }
-}
-
 fn collect_mission_deltas(
-    policy: &EconomicPolicy,
     mission: &CivilMission,
     controller_id: &str,
-    public_id: Option<&str>,
     deltas: &mut Vec<RewardDelta>,
 ) {
-    if mission.status == MissionStatus::Cancelled {
-        return;
-    }
-    if owns_identifier(&mission.publisher, controller_id, public_id) {
-        deltas.push(RewardDelta {
-            timestamp: mission.created_at,
-            source_id: format!("mission.publish:{}", mission.mission_id),
-            watt: policy.rewards.mission_publish_watt,
-            reputation: 0,
-            capacity: 0,
-        });
-        if mission.status == MissionStatus::Settled {
-            deltas.push(RewardDelta {
-                timestamp: mission.settled_at.unwrap_or(mission.created_at),
-                source_id: format!("mission.settle.publisher:{}", mission.mission_id),
-                watt: policy.rewards.mission_settle_publisher_watt,
-                reputation: 0,
-                capacity: 0,
-            });
-        }
-    }
-
     if mission.status == MissionStatus::Settled
         && mission.completed_by.as_deref() == Some(controller_id)
         && let Some(reward) = mission.reward.as_ref()
@@ -391,10 +240,6 @@ fn collect_mission_deltas(
             capacity: reward.capacity,
         });
     }
-}
-
-fn owns_identifier(value: &str, controller_id: &str, public_id: Option<&str>) -> bool {
-    value == controller_id || public_id == Some(value)
 }
 
 fn capped_watt_delta(
@@ -423,19 +268,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn default_policy_is_fixed_by_action_type() {
+    fn default_policy_is_enabled_with_daily_cap() {
         let policy = EconomicPolicy::default();
 
         assert!(policy.enabled);
         assert_eq!(policy.version, 1);
-        assert_eq!(policy.rewards.mission_publish_watt, 1);
-        assert_eq!(policy.rewards.mission_settle_publisher_watt, 2);
-        assert_eq!(policy.rewards.custom_agent_publish_watt, 5);
-        assert_eq!(policy.rewards.mcp_tool_success_watt, 1);
-        assert_eq!(policy.rewards.hive_create_watt, 1);
-        assert_eq!(policy.rewards.system_puzzle_propose_success_watt, 1);
-        assert_eq!(policy.rewards.system_puzzle_solve_watt, 8);
-        assert_eq!(policy.rewards.system_puzzle_verify_success_watt, 2);
+        assert_eq!(policy.genesis_supply_watt, 1_000_000_000);
+        assert_eq!(policy.per_agent_daily_cap_watt, 10_000);
     }
 
     #[test]
@@ -460,13 +299,9 @@ mod tests {
             json!({}),
         );
 
-        let published = wallet_bound_balance_from_missions(
-            &EconomicPolicy::default(),
-            &board,
-            "agent-a",
-            Some("captain-public"),
-        );
-        assert_eq!(published.watt, 1);
+        let published =
+            wallet_bound_balance_from_missions(&EconomicPolicy::default(), &board, "agent-a");
+        assert_eq!(published.watt, 0);
 
         board.claim(&mission.mission_id, "agent-a").unwrap();
         board
@@ -474,78 +309,11 @@ mod tests {
             .unwrap();
         board.settle(&mission.mission_id).unwrap();
 
-        let settled = wallet_bound_balance_from_missions(
-            &EconomicPolicy::default(),
-            &board,
-            "agent-a",
-            Some("captain-public"),
-        );
-        assert_eq!(settled.watt, 43);
+        let settled =
+            wallet_bound_balance_from_missions(&EconomicPolicy::default(), &board, "agent-a");
+        assert_eq!(settled.watt, 40);
         assert_eq!(settled.reputation, 4);
         assert_eq!(settled.capacity, 1);
-    }
-
-    #[test]
-    fn contribution_events_extend_wallet_projection_without_central_balance_mutation() {
-        let board = MissionBoard::default();
-        let mut events = ContributionEventLog::default();
-        assert!(events.append(ContributionEvent {
-            event_id: "event-hive-post".to_string(),
-            action_type: "hive.message.post".to_string(),
-            source_id: "hive:alpha:message:1".to_string(),
-            controller_id: "agent-a".to_string(),
-            public_id: Some("captain-public".to_string()),
-            agent_identity: Some("Captain".to_string()),
-            occurred_at: 100,
-            receipt: json!({"message_id": "1"}),
-        }));
-        assert!(events.append(ContributionEvent {
-            event_id: "event-mcp-success".to_string(),
-            action_type: "mcp.tool.success".to_string(),
-            source_id: "mcp:list_hives:1".to_string(),
-            controller_id: "agent-a".to_string(),
-            public_id: Some("captain-public".to_string()),
-            agent_identity: Some("Captain".to_string()),
-            occurred_at: 101,
-            receipt: json!({"tool_name": "list_hives"}),
-        }));
-        assert!(events.append(ContributionEvent {
-            event_id: "event-system-puzzle-solve".to_string(),
-            action_type: "system_puzzle.solve".to_string(),
-            source_id: "system-puzzle:mission-1:solution-1:solve".to_string(),
-            controller_id: "agent-a".to_string(),
-            public_id: Some("captain-public".to_string()),
-            agent_identity: Some("Captain".to_string()),
-            occurred_at: 103,
-            receipt: json!({"challenge_id": "challenge-1"}),
-        }));
-        assert!(!events.append(ContributionEvent {
-            event_id: "event-mcp-success".to_string(),
-            action_type: "mcp.tool.success".to_string(),
-            source_id: "mcp:list_hives:duplicate".to_string(),
-            controller_id: "agent-a".to_string(),
-            public_id: Some("captain-public".to_string()),
-            agent_identity: Some("Captain".to_string()),
-            occurred_at: 102,
-            receipt: json!({"tool_name": "list_hives"}),
-        }));
-
-        let balance = wallet_bound_balance_from_rewards(
-            &EconomicPolicy::default(),
-            &board,
-            &events,
-            "agent-a",
-            Some("captain-public"),
-        );
-
-        assert_eq!(balance.watt, 10);
-        assert_eq!(balance.reputation, 0);
-        assert_eq!(balance.capacity, 0);
-        let stats = balance.stats();
-        assert_eq!(ranking_compute(&stats), 1);
-        assert_eq!(ranking_prestige(&stats), 0);
-        assert_eq!(ranking_score_tenths(&stats), 110);
-        assert!((ranking_score(&stats) - 11.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -574,7 +342,7 @@ mod tests {
             json!({}),
         );
 
-        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a", None);
+        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a");
         assert_eq!(balance.watt, 0);
         assert_eq!(balance.reputation, 0);
         assert_eq!(balance.capacity, 0);
@@ -585,10 +353,6 @@ mod tests {
         let mut board = MissionBoard::default();
         let policy = EconomicPolicy {
             per_agent_daily_cap_watt: 10,
-            rewards: FixedRewardSchedule {
-                mission_publish_watt: 8,
-                ..FixedRewardSchedule::default()
-            },
             ..EconomicPolicy::default()
         };
         let first = board.publish(
@@ -634,7 +398,7 @@ mod tests {
         board.complete(&second.mission_id, "agent-a", None).unwrap();
         board.settle(&second.mission_id).unwrap();
 
-        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a", None);
+        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a");
         assert_eq!(balance.watt, 10);
         assert_eq!(balance.reputation, 8);
         assert_eq!(balance.capacity, 2);

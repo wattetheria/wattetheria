@@ -12,7 +12,6 @@ use crate::routes::mcp::{
     fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
 };
 use crate::routes::message_validation::{validate_mission_inputs, validation_error_response};
-use crate::routes::reward_events::{ContributionEventArgs, record_contribution_event};
 use crate::routes::reward_view::refresh_known_wallet_balances;
 use crate::routes::settlement_delegation::{
     normalize_publish_delegation, payload_with_settlement_delegation,
@@ -30,15 +29,13 @@ use wattetheria_kernel::civilization::missions::{
     CivilMission, MissionStatus, NetworkMissionClaimMetadata, NetworkMissionClaimRecord,
     NetworkMissionClaimRegistry,
 };
-use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
+use wattetheria_kernel::identities::PublicIdentity;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
     SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskSettleCommand,
 };
-use wattetheria_kernel::tasks::system_puzzle::{
-    SystemPuzzleSettlement, system_puzzle_settlement_from_mission,
-};
+use wattetheria_kernel::tasks::system_puzzle::system_puzzle_settlement_from_mission;
 use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
@@ -1198,155 +1195,6 @@ fn mission_lifecycle_target_node_id_from_settle(body: &MissionSettleBody) -> Opt
     .find_map(|path| value_path_string(route, path))
 }
 
-struct MissionRewardActor {
-    controller_id: String,
-    public_id: Option<String>,
-    agent_identity: Option<String>,
-}
-
-impl MissionRewardActor {
-    fn matches_public_id(&self, public_id: &str) -> bool {
-        self.public_id.as_deref() == Some(public_id) || self.controller_id == public_id
-    }
-}
-
-async fn mission_reward_actor_for_participant(
-    state: &ControlPlaneState,
-    participant_id: &str,
-    fallback_agent_identity: Option<&str>,
-) -> MissionRewardActor {
-    let participant_id = participant_id.trim();
-    let identities = state.public_identity_registry.lock().await.list();
-    let bindings = state.controller_binding_registry.lock().await.list();
-    let identity = mission_identity_for_participant(&identities, Some(participant_id));
-    if let Some(identity) = identity {
-        let binding = bindings
-            .iter()
-            .find(|binding| binding.active && binding.public_id == identity.public_id);
-        return MissionRewardActor {
-            controller_id: controller_id_for_identity(identity, binding),
-            public_id: Some(identity.public_id.clone()),
-            agent_identity: Some(identity.display_name.clone()),
-        };
-    }
-
-    MissionRewardActor {
-        controller_id: participant_id.to_string(),
-        public_id: Some(participant_id.to_string()),
-        agent_identity: fallback_agent_identity
-            .map(ToOwned::to_owned)
-            .or_else(|| Some(participant_id.to_string())),
-    }
-}
-
-fn controller_id_for_identity(
-    identity: &PublicIdentity,
-    binding: Option<&ControllerBinding>,
-) -> String {
-    binding
-        .and_then(|binding| binding.controller_node_id.clone())
-        .or_else(|| {
-            binding
-                .map(|binding| binding.controller_ref.clone())
-                .filter(|controller_ref| {
-                    !controller_ref.trim().is_empty() && controller_ref != "local-default"
-                })
-        })
-        .unwrap_or_else(|| identity.public_id.clone())
-}
-
-async fn record_system_puzzle_settlement_rewards(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-    settlement: &SystemPuzzleSettlement,
-) -> anyhow::Result<()> {
-    let mission_verifier_id = mission
-        .completed_by
-        .as_deref()
-        .context("system puzzle settled mission is missing completed_by")?;
-    let proposer = mission_reward_actor_for_participant(
-        state,
-        &settlement.proposer_public_id,
-        settlement.proposer_agent_identity.as_deref(),
-    )
-    .await;
-    let solver = mission_reward_actor_for_participant(
-        state,
-        &settlement.solver_public_id,
-        settlement.solver_agent_identity.as_deref(),
-    )
-    .await;
-    let verifier = mission_reward_actor_for_participant(
-        state,
-        mission_verifier_id,
-        settlement.verifier_agent_identity.as_deref(),
-    )
-    .await;
-    if !verifier.matches_public_id(&settlement.verifier_public_id)
-        && mission_verifier_id != settlement.verifier_public_id
-    {
-        bail!("system puzzle verification receipt verifier does not match mission completer");
-    }
-
-    let receipt = json!({
-        "mission_id": mission.mission_id,
-        "challenge_id": settlement.challenge_id,
-        "solution_id": settlement.solution_id,
-        "reward_policy": settlement.reward_policy,
-        "verification_receipt": settlement.receipt,
-        "gateway_authoritative": false,
-    });
-    let propose_source_id = format!(
-        "system-puzzle:{}:{}:propose",
-        mission.mission_id, settlement.challenge_id
-    );
-    let solve_source_id = format!(
-        "system-puzzle:{}:{}:solve",
-        mission.mission_id, settlement.solution_id
-    );
-    let verify_source_id = format!(
-        "system-puzzle:{}:{}:verify:{}",
-        mission.mission_id, settlement.solution_id, settlement.verifier_public_id
-    );
-    record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: "system_puzzle.propose.success",
-            source_id: &propose_source_id,
-            controller_id: &proposer.controller_id,
-            public_id: proposer.public_id.as_deref(),
-            agent_identity: proposer.agent_identity.as_deref(),
-            receipt: receipt.clone(),
-        },
-    )
-    .await?;
-    record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: "system_puzzle.solve",
-            source_id: &solve_source_id,
-            controller_id: &solver.controller_id,
-            public_id: solver.public_id.as_deref(),
-            agent_identity: solver.agent_identity.as_deref(),
-            receipt: receipt.clone(),
-        },
-    )
-    .await?;
-    record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: "system_puzzle.verify.success",
-            source_id: &verify_source_id,
-            controller_id: &verifier.controller_id,
-            public_id: verifier.public_id.as_deref(),
-            agent_identity: verifier.agent_identity.as_deref(),
-            receipt,
-        },
-    )
-    .await?;
-    Ok(())
-}
-
 async fn mission_gateway_payload_with_current_contract(
     state: &ControlPlaneState,
     mission: &CivilMission,
@@ -1839,21 +1687,25 @@ async fn finalize_mission_task_before_settle(
         .map_err(|error| internal_error(&error))
 }
 
-async fn system_puzzle_settlement_for_mission(
+/// Refuses to settle a system puzzle verification mission whose proof or
+/// receipt fails validation (wrong verdict, mismatched ids, self-verification).
+async fn reject_invalid_system_puzzle_settlement(
     state: &ControlPlaneState,
     mission_id: &str,
-) -> Result<Option<SystemPuzzleSettlement>, Response> {
+) -> Result<(), Response> {
     let board = state.mission_board.lock().await;
-    match board.get(mission_id) {
-        Some(mission) => system_puzzle_settlement_from_mission(&mission).map_err(|error| {
+    let Some(mission) = board.get(mission_id) else {
+        return Ok(());
+    };
+    system_puzzle_settlement_from_mission(&mission)
+        .map(|_| ())
+        .map_err(|error| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": error.to_string()})),
             )
                 .into_response()
-        }),
-        None => Ok(None),
-    }
+        })
 }
 
 async fn settle_mission_board(
@@ -2713,11 +2565,9 @@ pub(crate) async fn mission_settle(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let system_puzzle_settlement =
-        match system_puzzle_settlement_for_mission(&state, &body.mission_id).await {
-            Ok(settlement) => settlement,
-            Err(response) => return response,
-        };
+    if let Err(response) = reject_invalid_system_puzzle_settlement(&state, &body.mission_id).await {
+        return response;
+    }
 
     let mission = match settle_mission_board(&state, &body.mission_id).await {
         Ok(mission) => mission,
@@ -2725,16 +2575,6 @@ pub(crate) async fn mission_settle(
     };
     if let Err(response) = fund_mission_treasury(&state, &mission).await {
         return response;
-    }
-    if let Some(settlement) = system_puzzle_settlement.as_ref()
-        && let Err(error) =
-            record_system_puzzle_settlement_rewards(&state, &mission, settlement).await
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": error.to_string()})),
-        )
-            .into_response();
     }
     if let Err(error) = refresh_known_wallet_balances(&state).await {
         return internal_error(&error);

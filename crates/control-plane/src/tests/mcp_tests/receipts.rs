@@ -15,29 +15,6 @@ async fn call_mcp_tool(app: Router, token: &str, name: &str, arguments: Value) -
     .await
 }
 
-fn load_contribution_log(
-    state: &ControlPlaneState,
-) -> wattetheria_kernel::economy::ContributionEventLog {
-    state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
-        .unwrap()
-}
-
-fn watt_balance_of(
-    state: &ControlPlaneState,
-    event: &wattetheria_kernel::economy::ContributionEvent,
-) -> i64 {
-    let balances: wattetheria_kernel::economy::WalletBalanceState = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
-        .unwrap();
-    balances
-        .get(&event.controller_id, event.public_id.as_deref())
-        .unwrap()
-        .watt_balance
-}
-
 fn assert_three_leave_success_diagnostics(state: &ControlPlaneState) {
     let diagnostics = crate::diagnostics::list_diagnostics(
         &state.data_dir,
@@ -58,54 +35,8 @@ fn assert_three_leave_success_diagnostics(state: &ControlPlaneState) {
 }
 
 #[tokio::test]
-async fn mcp_success_records_contribution_reward_event() {
+async fn mcp_leave_space_reports_departure_only_once() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
-
-    let response = call_mcp_tool(
-        app.clone(),
-        &token,
-        "update_agent_name",
-        json!({"display_name": "Rewarded Name"}),
-    )
-    .await;
-
-    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    let log = load_contribution_log(&state);
-    let event = log
-        .events
-        .values()
-        .find(|event| event.action_type == "mcp.tool.success")
-        .unwrap();
-    assert_eq!(
-        event.receipt["tool_name"].as_str(),
-        Some("update_agent_name")
-    );
-    assert_eq!(watt_balance_of(&state, event), 1);
-}
-
-#[tokio::test]
-async fn mcp_leave_rewards_only_an_actual_departure() {
-    let (_dir, app, token, _policy, state) = build_test_app(100);
-    let reward_events = || {
-        state
-            .event_log
-            .get_all()
-            .unwrap()
-            .into_iter()
-            .filter(|event| event.event_type == "CONTRIBUTION_REWARD_EVENT")
-            .collect::<Vec<_>>()
-    };
-    let wallet_watt = || {
-        let balances: wattetheria_kernel::economy::WalletBalanceState = state
-            .local_db
-            .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
-            .unwrap();
-        balances
-            .balances
-            .values()
-            .map(|balance| balance.watt_balance)
-            .sum::<i64>()
-    };
 
     let first_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
     assert_eq!(first_leave["result"]["isError"], false);
@@ -113,9 +44,6 @@ async fn mcp_leave_rewards_only_an_actual_departure() {
         first_leave["result"]["structuredContent"]["presence"],
         Value::Null
     );
-    assert!(load_contribution_log(&state).events.is_empty());
-    assert!(reward_events().is_empty());
-    assert_eq!(wallet_watt(), 0);
 
     let entered = call_mcp_tool(app.clone(), &token, "enter_space", json!({})).await;
     assert_eq!(entered["result"]["isError"], false);
@@ -123,9 +51,6 @@ async fn mcp_leave_rewards_only_an_actual_departure() {
         entered["result"]["structuredContent"]["presence"]["record"]["entered"], true,
         "{entered}"
     );
-    assert_eq!(load_contribution_log(&state).events.len(), 1);
-    assert_eq!(reward_events().len(), 1);
-    assert_eq!(wallet_watt(), 1);
 
     let actual_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
     assert_eq!(actual_leave["result"]["isError"], false);
@@ -133,222 +58,16 @@ async fn mcp_leave_rewards_only_an_actual_departure() {
         serde_json::from_value(actual_leave["result"]["structuredContent"]["presence"].clone())
             .unwrap();
     assert!(!left_presence.record.entered);
-    let log = load_contribution_log(&state);
-    assert_eq!(log.events.len(), 2);
-    assert_eq!(
-        log.events
-            .values()
-            .filter(|event| event.receipt["tool_name"] == "leave_space")
-            .count(),
-        1
-    );
-    assert_eq!(reward_events().len(), 2);
-    assert_eq!(wallet_watt(), 2);
 
-    let repeated_leave = call_mcp_tool(app.clone(), &token, "leave_space", json!({})).await;
+    let repeated_leave = call_mcp_tool(app, &token, "leave_space", json!({})).await;
     assert_eq!(repeated_leave["result"]["isError"], false);
     assert_eq!(
         repeated_leave["result"]["structuredContent"]["presence"],
         Value::Null
     );
-    assert_eq!(load_contribution_log(&state).events.len(), 2);
-    assert_eq!(reward_events().len(), 2);
-    assert_eq!(wallet_watt(), 2);
-
-    let other_post = call_mcp_tool(
-        app,
-        &token,
-        "update_agent_name",
-        json!({"display_name":"Still Rewarded"}),
-    )
-    .await;
-    assert_eq!(other_post["result"]["isError"], false);
-    let log = load_contribution_log(&state);
-    assert_eq!(log.events.len(), 3);
-    assert_eq!(
-        log.events
-            .values()
-            .filter(|event| event.receipt["tool_name"] == "update_agent_name")
-            .count(),
-        1
-    );
-    assert_eq!(reward_events().len(), 3);
-    assert_eq!(wallet_watt(), 3);
     assert_eq!(state.event_log.verify_chain().unwrap(), (true, None));
 
     assert_three_leave_success_diagnostics(&state);
-}
-
-#[tokio::test]
-async fn mcp_read_only_tools_record_no_contribution_reward() {
-    let (_dir, app, token, _policy, state) = build_test_app(100);
-
-    for tool in ["client_export", "list_nearby", "list_friend_requests"] {
-        call_mcp_tool(app.clone(), &token, tool, json!({})).await;
-    }
-
-    assert!(load_contribution_log(&state).events.is_empty());
-    assert!(crate::routes::mcp::is_read_only_mcp_tool(
-        "list_agent_dm_messages"
-    ));
-    assert!(crate::routes::mcp::is_read_only_mcp_tool(
-        "get_service_agent_task"
-    ));
-    assert!(!crate::routes::mcp::is_read_only_mcp_tool(
-        "send_agent_dm_message"
-    ));
-    assert!(!crate::routes::mcp::is_read_only_mcp_tool(
-        "send_service_agent_message"
-    ));
-}
-
-#[tokio::test]
-async fn prune_removes_read_only_mcp_rewards_and_reprojects_balance() {
-    let (_dir, app, token, _policy, state) = build_test_app(100);
-    call_mcp_tool(
-        app.clone(),
-        &token,
-        "update_agent_name",
-        json!({"display_name": "Kept Name"}),
-    )
-    .await;
-    let mut log = load_contribution_log(&state);
-    let kept = log.events.values().next().unwrap().clone();
-    for (action_type, tool_name) in [
-        ("mcp.tool.success", "list_nearby"),
-        ("mcp.tool.success", "list_agent_dm_messages"),
-        (
-            "servicenet.agent.invoke.success",
-            "list_service_agent_tasks",
-        ),
-    ] {
-        let mut farmed = kept.clone();
-        farmed.event_id = format!("reward:farmed:{tool_name}");
-        farmed.action_type = action_type.to_owned();
-        farmed.receipt = json!({"tool_name": tool_name, "result": {"content": []}});
-        log.append(farmed);
-    }
-    state
-        .local_db
-        .save_domain(
-            wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG,
-            &log,
-        )
-        .unwrap();
-    crate::routes::reward_view::refresh_known_wallet_balances(&state)
-        .await
-        .unwrap();
-    assert_eq!(watt_balance_of(&state, &kept), 4);
-
-    let removed = crate::prune_read_only_mcp_contributions(&state)
-        .await
-        .unwrap();
-
-    assert_eq!(removed, 3);
-    let log = load_contribution_log(&state);
-    assert_eq!(log.events.len(), 1);
-    assert!(log.events.contains_key(&kept.event_id));
-    assert_eq!(watt_balance_of(&state, &kept), 1);
-    assert_eq!(
-        crate::prune_read_only_mcp_contributions(&state)
-            .await
-            .unwrap(),
-        0
-    );
-}
-
-#[tokio::test]
-async fn mcp_success_receipt_redacts_sensitive_arguments_and_results() {
-    let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
-    let (_dir, _app, token, _policy, state) = build_test_app(100);
-    let state = ControlPlaneState {
-        servicenet_client: Some(Arc::new(
-            ServiceNetClient::new(format!("http://{servicenet_addr}")).unwrap(),
-        )),
-        ..state
-    };
-    let app = app(state.clone());
-
-    let response = mcp_request(
-        app,
-        &token,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "send_service_agent_message",
-                "arguments": {
-                    "service_address": "alpha@wattetheria",
-                    "message": "hello servicenet",
-                    "auth_token": "servicenet-secret-token",
-                    "auth_context_id": "00000000-0000-0000-0000-00000000abcd",
-                    "input": {
-                        "api_key": "input-api-secret",
-                        "safe_value": "kept"
-                    },
-                    "settlement": {
-                        "layer": "web3",
-                        "rail": "x402",
-                        "request": {
-                            "settlement_receipt": alpha_x402_settlement_receipt(),
-                            "client_secret": "settlement-client-secret",
-                            "payment_account_ref": "payment-account-123"
-                        }
-                    }
-                }
-            }
-        }),
-    )
-    .await;
-
-    assert_eq!(response["result"]["isError"].as_bool(), Some(false));
-    let log: wattetheria_kernel::economy::ContributionEventLog = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
-        .unwrap();
-    let event = log
-        .events
-        .values()
-        .find(|event| event.action_type == "servicenet.agent.invoke.success")
-        .unwrap();
-    let receipt = &event.receipt;
-    assert_eq!(
-        receipt["arguments"]["auth_token"].as_str(),
-        Some("[REDACTED]")
-    );
-    assert_eq!(
-        receipt["arguments"]["auth_context_id"].as_str(),
-        Some("[REDACTED]")
-    );
-    assert_eq!(
-        receipt["arguments"]["input"]["api_key"].as_str(),
-        Some("[REDACTED]")
-    );
-    assert_eq!(
-        receipt["arguments"]["input"]["safe_value"].as_str(),
-        Some("kept")
-    );
-    assert_eq!(
-        receipt["arguments"]["settlement"]["request"]["client_secret"].as_str(),
-        Some("[REDACTED]")
-    );
-    assert_eq!(
-        receipt["result"]["structuredContent"]["settlement"]["request"]["client_secret"].as_str(),
-        Some("[REDACTED]")
-    );
-    assert_eq!(
-        receipt["result"]["structuredContent"]["settlement"]["request"]["payment_account_ref"]
-            .as_str(),
-        Some("payment-account-123")
-    );
-    let receipt_json = serde_json::to_string(receipt).unwrap();
-    assert!(!receipt_json.contains("servicenet-secret-token"));
-    assert!(!receipt_json.contains("00000000-0000-0000-0000-00000000abcd"));
-    assert!(!receipt_json.contains("input-api-secret"));
-    assert!(!receipt_json.contains("settlement-client-secret"));
-
-    servicenet_server.abort();
 }
 
 #[tokio::test]

@@ -89,13 +89,6 @@ struct CivilizationRuntimeState {
 
 pub async fn run(cli: Cli) -> Result<()> {
     let mut runtime = setup_runtime(&cli).await?;
-    match wattetheria_control_plane::prune_read_only_mcp_contributions(&runtime.control_state).await
-    {
-        Ok(0) => {}
-        Ok(removed) => info!(removed, "pruned read-only MCP contribution rewards"),
-        Err(error) => warn!(%error, "prune read-only MCP contribution rewards failed"),
-    }
-
     wattetheria_control_plane::reset_space_presence(&runtime.control_state).await?;
     let control_task = spawn_control_plane(runtime.control_state.clone(), runtime.control_bind);
     let public_mcp_task = runtime

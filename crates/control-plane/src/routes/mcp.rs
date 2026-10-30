@@ -14,9 +14,6 @@ use uuid::Uuid;
 use crate::auth::{authorize, bearer_token, internal_error, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
 use crate::routes::identity::{identity_context_response, resolve_identity_context};
-use crate::routes::reward_events::{
-    ContributionEventArgs, contribution_actor, record_contribution_event,
-};
 use crate::routes::servicenet::envelope::{
     normalize_servicenet_invoke_body, servicenet_invoke_agent_envelope,
 };
@@ -48,8 +45,6 @@ mod schema;
 use schema::input_schema;
 
 const LOOPBACK_BODY_LIMIT: usize = 8 * 1024 * 1024;
-#[derive(Clone)]
-pub(crate) struct McpNoOp;
 const DEFAULT_GATEWAY_TASK_LIMIT: usize = 50;
 const MAX_GATEWAY_TASK_LIMIT: usize = 100;
 const MAX_GATEWAY_TASK_WINDOW: usize = 200;
@@ -60,7 +55,6 @@ const DEFAULT_SERVICENET_AGENT_LIMIT: usize = 50;
 const MAX_SERVICENET_AGENT_LIMIT: usize = 100;
 const A2A_X402_EXTENSION_URI: &str = "https://github.com/google-a2a/a2a-x402/v0.1";
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
-const MCP_RECEIPT_REDACTED_VALUE: &str = "[REDACTED]";
 #[derive(Debug, Clone)]
 struct AgentTool {
     name: &'static str,
@@ -261,14 +255,12 @@ async fn call_tool(
         },
     );
 
-    if let Some(result) =
-        network_permission_block_response(state, tool, &arguments, started_at).await?
-    {
+    if let Some(result) = network_permission_block_response(state, tool, &arguments, started_at) {
         return Ok(result);
     }
 
     if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
-        record_mcp_tool_result(state, tool.name, &arguments, &result, false, started_at).await?;
+        record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
 
@@ -291,21 +283,18 @@ async fn call_tool(
             return Err(response);
         }
     };
-    let no_op = response.extensions().get::<McpNoOp>().is_some();
     let result = response_to_tool_result(tool.name, &arguments, response).await;
-    record_mcp_tool_result(state, tool.name, &arguments, &result, no_op, started_at).await?;
+    record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
     Ok(result)
 }
 
-async fn network_permission_block_response(
+fn network_permission_block_response(
     state: &ControlPlaneState,
     tool: &AgentTool,
     arguments: &Value,
     started_at: Instant,
-) -> Result<Option<Value>, Response> {
-    let Some(result) = network_permission_block_result(state) else {
-        return Ok(None);
-    };
+) -> Option<Value> {
+    let result = network_permission_block_result(state)?;
     record_mcp_tool_diagnostic(
         state,
         arguments,
@@ -322,8 +311,8 @@ async fn network_permission_block_response(
             result_kind: "network_permission",
         },
     );
-    record_mcp_tool_result(state, tool.name, arguments, &result, false, started_at).await?;
-    Ok(Some(result))
+    record_mcp_tool_result(state, tool.name, arguments, &result, started_at);
+    Some(result)
 }
 
 fn network_permission_block_result(state: &ControlPlaneState) -> Option<Value> {
@@ -542,14 +531,13 @@ fn normalize_agent_display_name_lookup(display_name: &str) -> String {
         .to_owned()
 }
 
-async fn record_mcp_tool_result(
+fn record_mcp_tool_result(
     state: &ControlPlaneState,
     tool_name: &str,
     arguments: &Value,
     result: &Value,
-    no_op: bool,
     started_at: Instant,
-) -> Result<(), Response> {
+) {
     let is_error = result
         .get("isError")
         .and_then(Value::as_bool)
@@ -574,105 +562,6 @@ async fn record_mcp_tool_result(
             result_kind: "tool_result",
         },
     );
-    if !is_error
-        && !no_op
-        && !is_read_only_mcp_tool(tool_name)
-        && let Err(error) =
-            record_mcp_success_contribution(state, tool_name, arguments, result).await
-    {
-        return Err(internal_error(&error));
-    }
-    Ok(())
-}
-
-async fn record_mcp_success_contribution(
-    state: &ControlPlaneState,
-    tool_name: &str,
-    arguments: &Value,
-    result: &Value,
-) -> anyhow::Result<()> {
-    let public_id = arguments.get("public_id").and_then(Value::as_str);
-    let context = resolve_identity_context(state, public_id, None).await;
-    let (controller_id, actor_public_id, agent_identity) = contribution_actor(state, &context);
-    let source_id = format!("mcp:{tool_name}:{}", Uuid::new_v4());
-    let redacted_arguments = redact_mcp_receipt_value(arguments);
-    let redacted_result = redact_mcp_receipt_value(result);
-    record_contribution_event(
-        state,
-        ContributionEventArgs {
-            action_type: mcp_success_action_type(tool_name),
-            source_id: &source_id,
-            controller_id,
-            public_id: actor_public_id,
-            agent_identity,
-            receipt: json!({
-                "tool_name": tool_name,
-                "arguments": redacted_arguments,
-                "result": redacted_result,
-            }),
-        },
-    )
-    .await?;
-    Ok(())
-}
-
-fn redact_mcp_receipt_value(value: &Value) -> Value {
-    match value {
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .map(|(key, value)| {
-                    let value = if mcp_receipt_key_is_sensitive(key) {
-                        Value::String(MCP_RECEIPT_REDACTED_VALUE.to_owned())
-                    } else {
-                        redact_mcp_receipt_value(value)
-                    };
-                    (key.clone(), value)
-                })
-                .collect::<Map<_, _>>(),
-        ),
-        Value::Array(items) => Value::Array(items.iter().map(redact_mcp_receipt_value).collect()),
-        Value::String(text) => redact_json_string_value(text).unwrap_or_else(|| value.clone()),
-        _ => value.clone(),
-    }
-}
-
-fn redact_json_string_value(text: &str) -> Option<Value> {
-    let parsed = serde_json::from_str::<Value>(text).ok()?;
-    let redacted = redact_mcp_receipt_value(&parsed);
-    serde_json::to_string_pretty(&redacted)
-        .or_else(|_| serde_json::to_string(&redacted))
-        .ok()
-        .map(Value::String)
-}
-
-fn mcp_receipt_key_is_sensitive(key: &str) -> bool {
-    let normalized = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|character| character.to_ascii_lowercase())
-        .collect::<String>();
-    normalized == "authcontextid"
-        || normalized == "authorization"
-        || normalized.contains("authtoken")
-        || normalized.contains("bearer")
-        || normalized.contains("credential")
-        || normalized.contains("privatekey")
-        || normalized.contains("password")
-        || normalized.contains("secret")
-        || normalized.contains("apikey")
-        || normalized.ends_with("token")
-}
-
-fn mcp_success_action_type(tool_name: &str) -> &'static str {
-    match tool_name {
-        "send_service_agent_message"
-        | "get_service_agent_task"
-        | "list_service_agent_tasks"
-        | "cancel_service_agent_task"
-        | "subscribe_service_agent_task" => "servicenet.agent.invoke.success",
-        _ => "mcp.tool.success",
-    }
 }
 
 struct McpToolDiagnosticEvent<'a> {
@@ -3022,22 +2911,6 @@ impl AgentTool {
 
 fn agent_tools() -> &'static [AgentTool] {
     &AGENT_TOOLS
-}
-
-/// POST tools that only read remote task state.
-const READ_ONLY_POST_TOOLS: [&str; 3] = [
-    "get_service_agent_task",
-    "get_servicenet_agent_task",
-    "list_service_agent_tasks",
-];
-
-/// Read-only tools earn no contribution reward: any polling client could
-/// otherwise farm Watt and ranking by repeating queries.
-pub(crate) fn is_read_only_mcp_tool(tool_name: &str) -> bool {
-    READ_ONLY_POST_TOOLS.contains(&tool_name)
-        || AGENT_TOOLS
-            .iter()
-            .any(|tool| tool.name == tool_name && tool.method == Method::GET)
 }
 
 fn is_visible_agent_tool(name: &str) -> bool {

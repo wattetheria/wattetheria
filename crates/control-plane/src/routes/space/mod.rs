@@ -23,7 +23,7 @@ use wattetheria_kernel::space::{Place, PlaceKind, SpaceCatalog, SpacePackage};
 use wattetheria_kernel::swarm_bridge::EventAnnouncementPayload;
 
 use crate::auth::{authorize, internal_error};
-use crate::routes::mcp::{McpNoOp, normalized_gateway_api_resource_url};
+use crate::routes::mcp::normalized_gateway_api_resource_url;
 use crate::state::ControlPlaneState;
 
 #[derive(Default, Deserialize)]
@@ -248,11 +248,7 @@ pub(crate) async fn leave_space(
     }
     match registry::leave_configured_space(&state).await {
         Ok(Some(presence)) => Json(json!({"ok":true,"presence":presence})).into_response(),
-        Ok(None) => {
-            let mut response = Json(json!({"ok":true,"presence":null})).into_response();
-            response.extensions_mut().insert(McpNoOp);
-            response
-        }
+        Ok(None) => Json(json!({"ok":true,"presence":null})).into_response(),
         Err(error) => bad_request(&error),
     }
 }

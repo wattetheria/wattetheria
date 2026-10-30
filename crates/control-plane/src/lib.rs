@@ -42,7 +42,6 @@ pub mod routes {
     pub(crate) mod policy;
     pub(crate) mod provider_credentials;
     pub(crate) mod provider_identity;
-    pub(crate) mod reward_events;
     pub(crate) mod reward_view;
     pub(crate) mod runtime_config;
     pub(crate) mod servicenet;
@@ -75,7 +74,6 @@ pub use routes::network::{
     RegistryRegistrationResult, apply_registry_registration_record, build_registration_request,
     run_registry_registration_once, sync_network_permission_checkpoint,
 };
-pub use routes::reward_events::prune_read_only_mcp_contributions;
 pub use routes::space::world::WorldEventRegistry;
 pub use routes::space::{
     OwnSpacePresence, emit_current_space_presence, initialize_space_presence,

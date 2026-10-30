@@ -278,18 +278,13 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
     assert_eq!(tasks_json[0]["task_bounty_watt"].as_i64(), Some(24));
     assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
-    assert_eq!(
-        tasks_json[0]["network_publish_reward_watt"].as_i64(),
-        Some(1)
+    assert!(tasks_json[0].get("network_publish_reward_watt").is_none());
+    assert!(
+        tasks_json[0]
+            .get("network_settle_publisher_reward_watt")
+            .is_none()
     );
-    assert_eq!(
-        tasks_json[0]["network_settle_publisher_reward_watt"].as_i64(),
-        Some(2)
-    );
-    assert_eq!(
-        tasks_json[0]["publisher_network_reward_watt"].as_i64(),
-        Some(1)
-    );
+    assert!(tasks_json[0].get("publisher_network_reward_watt").is_none());
 
     let organizations_json = authed_get_json(app.clone(), &token, "/v1/client/organizations").await;
     assert_eq!(organizations_json.as_array().unwrap().len(), 1);
@@ -384,10 +379,7 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
     assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
     assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
-    assert_eq!(
-        tasks_json[0]["publisher_network_reward_watt"].as_i64(),
-        Some(3)
-    );
+    assert!(tasks_json[0].get("publisher_network_reward_watt").is_none());
     assert!(
         tasks_json[0]["created_by_agent_identity"]
             .as_str()
@@ -402,7 +394,7 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
         .unwrap()
         .unwrap();
     let stored = balance_state.get(&agent_did, Some(&public_id)).unwrap();
-    assert_eq!(stored.watt_balance, 27);
+    assert_eq!(stored.watt_balance, 24);
     assert_eq!(stored.policy_version, 1);
 
     let self_json = authed_get_json(
@@ -411,7 +403,7 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
         &format!("/v1/client/self?public_id={public_id}"),
     )
     .await;
-    assert_eq!(self_json["watt_balance"].as_i64(), Some(27));
+    assert_eq!(self_json["watt_balance"].as_i64(), Some(24));
     assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
 }
 
@@ -455,9 +447,8 @@ async fn client_self_recovers_invalid_wallet_balance_state_payload() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
-    use sha2::Digest as _;
-    use wattetheria_kernel::economy::ContributionEventLog;
+async fn system_puzzle_settle_rejects_self_verified_receipt() {
+    use wattetheria_kernel::civilization::missions::MissionStatus;
     use wattetheria_kernel::tasks::system_puzzle::{
         PROOF_SCHEME_ZK_HASHCASH_V1, SYSTEM_PUZZLE_CHALLENGE_TASK_KIND,
         SYSTEM_PUZZLE_VERIFICATION_TASK_KIND, SystemPuzzleChallenge, SystemPuzzleProofEnvelope,
@@ -472,7 +463,6 @@ async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
         .unwrap()
         .to_string();
     let solver_public_id = bootstrap_broker_identity(app.clone(), &token, &agent_did).await;
-    let verifier_public_id = "agent-verifier-public";
     let challenge = SystemPuzzleChallenge {
         task_kind: SYSTEM_PUZZLE_CHALLENGE_TASK_KIND.to_string(),
         challenge_id: "challenge-2026-06-01T00-00Z".to_string(),
@@ -513,13 +503,13 @@ async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
         solution_id: "solution-1".to_string(),
         proof: proof.clone(),
     };
-    let receipt = SystemPuzzleVerificationReceipt {
+    let self_verified_receipt = SystemPuzzleVerificationReceipt {
         task_kind: SYSTEM_PUZZLE_VERIFICATION_TASK_KIND.to_string(),
         challenge_id: challenge.challenge_id.clone(),
         solution_id: "solution-1".to_string(),
         solver_public_id: solver_public_id.clone(),
-        verifier_public_id: verifier_public_id.to_string(),
-        verifier_agent_identity: Some("Agent-Verifier".to_string()),
+        verifier_public_id: solver_public_id.clone(),
+        verifier_agent_identity: Some("Agent-Solver".to_string()),
         verdict: VERIFICATION_VERDICT_VALID.to_string(),
         proof_hash: proof_hash(&proof).unwrap(),
         verified_at: 2,
@@ -554,25 +544,22 @@ async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
         app.clone(),
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/claim"),
-        json!({"mission_id": mission_id, "agent_did": verifier_public_id}),
+        json!({"mission_id": mission_id, "agent_did": solver_public_id}),
     )
     .await;
-    let completed = authed_post_json(
+    let _completed = authed_post_json(
         app.clone(),
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/complete"),
         json!({
             "mission_id": mission_id,
-            "agent_did": verifier_public_id,
-            "result": receipt
+            "agent_did": solver_public_id,
+            "result": self_verified_receipt
         }),
     )
     .await;
-    assert_eq!(
-        completed["completion_result"]["verdict"].as_str(),
-        Some(VERIFICATION_VERDICT_VALID)
-    );
-    let _settled = authed_post_json(
+
+    let status = authed_post(
         app,
         &token,
         &format!("/v1/wattetheria/missions/{mission_id}/settle"),
@@ -580,18 +567,12 @@ async fn system_puzzle_settle_records_solver_verifier_and_proposer_rewards() {
     )
     .await;
 
-    let log: ContributionEventLog = state
-        .local_db
-        .load_domain(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
-        .unwrap()
-        .unwrap();
-    let action_types = log
-        .iter()
-        .map(|event| event.action_type.as_str())
-        .collect::<Vec<_>>();
-    assert!(action_types.contains(&"system_puzzle.propose.success"));
-    assert!(action_types.contains(&"system_puzzle.solve"));
-    assert!(action_types.contains(&"system_puzzle.verify.success"));
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let board = state.mission_board.lock().await;
+    assert_eq!(
+        board.get(mission_id).unwrap().status,
+        MissionStatus::Completed
+    );
 }
 
 #[tokio::test]
