@@ -105,6 +105,7 @@ pub(super) fn signed_floor(state: &ControlPlaneState, seq: u64) -> SignedSpacePr
     let record = wattetheria_gateway_contract::SpacePresenceRecord {
         agent_did: state.agent_did.clone(),
         avatar_id: None,
+        skin_id: None,
         network_id: test_network_id(state),
         space_id: current_package(state).space_id.clone(),
         space_version: "retained-old-map".to_owned(),

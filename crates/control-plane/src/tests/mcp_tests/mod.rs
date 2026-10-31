@@ -129,5 +129,6 @@ mod protocol;
 mod receipts;
 mod schemas;
 mod servicenet;
+mod skins;
 mod space_movement;
 mod wallet;

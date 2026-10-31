@@ -26,15 +26,28 @@ pub struct OwnSpacePresence {
 }
 
 impl OwnSpacePresence {
-    fn assigned_avatar(&self, recovered: &[SignedSpacePresence]) -> u8 {
-        self.networks
-            .values()
-            .flat_map(BTreeMap::values)
-            .find_map(|signed| signed.record.avatar_id)
-            .or_else(|| recovered.iter().find_map(|signed| signed.record.avatar_id))
-            .unwrap_or_else(|| {
-                rand::rng().random_range(0..wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT)
-            })
+    /// The look the agent chose most recently, across every Space and network it has records
+    /// in: the built-in skin index plus the custom skin, if any. Own records win ties with the
+    /// gateway's copies. A brand-new agent gets a random built-in skin.
+    fn assigned_skin(&self, recovered: &[SignedSpacePresence]) -> (u8, Option<String>) {
+        recovered
+            .iter()
+            .chain(self.networks.values().flat_map(BTreeMap::values))
+            .filter(|signed| signed.record.avatar_id.is_some())
+            .max_by_key(|signed| signed.record.updated_at)
+            .map_or_else(
+                || {
+                    let random = rand::rng()
+                        .random_range(0..wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT);
+                    (random, None)
+                },
+                |signed| {
+                    (
+                        signed.record.avatar_id.unwrap_or_default(),
+                        signed.record.skin_id.clone(),
+                    )
+                },
+            )
     }
 
     pub fn load(
@@ -512,7 +525,12 @@ pub(super) async fn enter_configured_space(
     };
     record.entered = true;
     record.seq = seq;
-    record.avatar_id = Some(registry.assigned_avatar(&recovery.records));
+    let (avatar_id, skin_id) = registry.assigned_skin(&recovery.records);
+    record.avatar_id = Some(avatar_id);
+    record.skin_id = match skin_id {
+        Some(skin_id) => confirm_skin_ownership(state, skin_id).await,
+        None => None,
+    };
     records.push(record);
     let signed = persist_records(state, &mut registry, &network, records)?;
     registry.active_space = Some((network, target.space_id.clone()));
@@ -580,6 +598,7 @@ fn spawn_record(
     Ok(SpacePresenceRecord {
         agent_did: state.agent_did.clone(),
         avatar_id: None,
+        skin_id: None,
         network_id: String::new(),
         space_id: package.space_id.clone(),
         space_version: package.space_version.clone(),
@@ -782,6 +801,29 @@ fn sequence_conflicts(existing: &SignedSpacePresence, recovered: &[SignedSpacePr
 struct GatewaySequenceRecovery {
     records: Vec<SignedSpacePresence>,
     successful_query: bool,
+}
+
+/// Keeps a remembered custom skin only while the gateway still lists this agent among its
+/// publishers (a reset gateway would refuse the entry otherwise). Without a reachable gateway
+/// the remembered choice stands.
+async fn confirm_skin_ownership(state: &ControlPlaneState, skin_id: String) -> Option<String> {
+    let Some(client) = crate::ledger_client::LedgerClient::from_state(state) else {
+        return Some(skin_id);
+    };
+    match client.owns_skin(&state.agent_did, &skin_id).await {
+        Ok(true) => Some(skin_id),
+        Ok(false) => {
+            tracing::info!(
+                skin_id,
+                "custom skin unknown to the gateway; entering with the built-in skin"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "skin ownership check unavailable; keeping the remembered skin");
+            Some(skin_id)
+        }
+    }
 }
 
 async fn recover_gateway_sequence(

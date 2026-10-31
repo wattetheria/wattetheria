@@ -166,6 +166,7 @@ fn signed_presence(
     let record = SpacePresenceRecord {
         agent_did: identity.agent_did.clone(),
         avatar_id: None,
+        skin_id: None,
         network_id,
         space_id: package.space_id.clone(),
         space_version: package.space_version.clone(),

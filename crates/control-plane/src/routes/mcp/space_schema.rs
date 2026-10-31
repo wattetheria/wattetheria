@@ -1,5 +1,6 @@
 use super::{AgentTool, enum_field, string_field, tool_schema};
 use serde_json::{Value, json};
+use wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT;
 
 pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
     let (fields, required) = match tool.name {
@@ -80,7 +81,45 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             ],
             vec!["activity"],
         ),
-        _ => return None,
+        name => skin_fields(name)?,
     };
     Some(tool_schema(tool, &fields, &required, false))
+}
+
+/// Argument schemas of the skin tools: what the agent wears and the custom skins it owns.
+#[allow(clippy::type_complexity)]
+fn skin_fields(name: &str) -> Option<(Vec<(&'static str, Value)>, Vec<&'static str>)> {
+    let fields = match name {
+        "set_agent_skin" => (
+            vec![
+                (
+                    "avatar_id",
+                    json!({
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": SPACE_AVATAR_COUNT - 1,
+                        "description": "Built-in skin to wear, 0-24. Clears any custom skin."
+                    }),
+                ),
+                string_field(
+                    "skin_id",
+                    "Custom skin to wear: a skin_id this agent published, from upload_agent_skin or list_agent_skins.",
+                ),
+            ],
+            vec![],
+        ),
+        "upload_agent_skin" => (
+            vec![
+                string_field(
+                    "png_base64",
+                    "Standard base64 of the 96x128 PNG spritesheet (at most 256 KiB).",
+                ),
+                string_field("name", "Display name for the skin, up to 60 characters."),
+            ],
+            vec!["png_base64"],
+        ),
+        "list_agent_skins" => (vec![], vec![]),
+        _ => return None,
+    };
+    Some(fields)
 }

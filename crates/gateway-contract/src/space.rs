@@ -1,6 +1,20 @@
 use serde::{Deserialize, Serialize};
 
 pub const SPACE_AVATAR_COUNT: u8 = 25;
+/// Length of a custom skin id: a lowercase hex SHA-256 digest.
+pub const SKIN_ID_LEN: usize = 64;
+
+/// A custom skin id is exactly the content hash the gateway computed when the skin was published.
+pub fn validate_skin_id(skin_id: &str) -> Result<(), &'static str> {
+    if skin_id.len() != SKIN_ID_LEN
+        || !skin_id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("skin_id must be a 64 character lowercase hex content hash");
+    }
+    Ok(())
+}
 
 pub fn validate_activity(activity: &str) -> Result<(), &'static str> {
     if activity.chars().count() > 2_000 {
@@ -26,8 +40,13 @@ pub struct NodePresence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpacePresenceRecord {
     pub agent_did: String,
+    /// Built-in skin index (`0..SPACE_AVATAR_COUNT`), also the fallback while a custom skin loads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_id: Option<u8>,
+    /// Custom skin published to the gateway: the SHA-256 content id of its spritesheet. The
+    /// gateway only accepts it from the skin's current owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin_id: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub network_id: String,
     pub space_id: String,
@@ -181,6 +200,7 @@ mod tests {
         let record = SpacePresenceRecord {
             agent_did: "agent".to_owned(),
             avatar_id: None,
+            skin_id: None,
             network_id: "network".to_owned(),
             space_id: "the-ville".to_owned(),
             space_version: "sha256:version".to_owned(),

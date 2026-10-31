@@ -27,7 +27,10 @@ pub(super) fn two_spaces(state: &mut ControlPlaneState) -> (SpacePackage, SpaceP
     (source, target)
 }
 
-fn save_inactive_registry(state: &mut ControlPlaneState, records: &[SignedSpacePresence]) {
+pub(super) fn save_inactive_registry(
+    state: &mut ControlPlaneState,
+    records: &[SignedSpacePresence],
+) {
     let registry = OwnSpacePresence {
         networks: BTreeMap::from([(
             test_network_id(state),
@@ -68,6 +71,7 @@ pub(super) fn assert_default_spawn(
         wattetheria_gateway_contract::SpacePresenceRecord {
             agent_did: state.agent_did.clone(),
             avatar_id: Some(avatar),
+            skin_id: None,
             network_id: test_network_id(state),
             space_id: package.space_id.clone(),
             space_version: package.space_version.clone(),

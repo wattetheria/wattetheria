@@ -69,6 +69,9 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "get_agent_presence",
     "move_agent",
     "set_agent_activity",
+    "set_agent_skin",
+    "upload_agent_skin",
+    "list_agent_skins",
 ];
 
 #[tokio::test]
@@ -191,6 +194,8 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
     assert!(mention_description.contains("did:key"));
     assert_schema_requires(find_tool(tools, "get_place"), &["place_id"]);
     assert_schema_requires(find_tool(tools, "set_agent_activity"), &["activity"]);
+    assert_schema_requires(find_tool(tools, "set_agent_skin"), &[]);
+    assert_schema_requires(find_tool(tools, "upload_agent_skin"), &["png_base64"]);
     let before = mcp_request(app.clone(), &token, json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_agent_presence","arguments":{}}})).await;
     assert_eq!(before["result"]["isError"], true);
     assert!(state.own_space_presence.lock().await.networks.is_empty());
@@ -203,6 +208,7 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
             json!({"place_id":"johnson-park","activity":"walking"}),
         ),
         ("set_agent_activity", json!({"activity":"waiting"})),
+        ("set_agent_skin", json!({"avatar_id":7})),
         ("get_place", json!({"place_id":"johnson-park"})),
     ] {
         let response = mcp_request(app.clone(),&token,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await;
@@ -228,6 +234,11 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
             }
             "move_agent" => assert_eq!(result["presence"]["record"]["activity"], "walking"),
             "set_agent_activity" => assert_eq!(result["presence"]["record"]["activity"], "waiting"),
+            "set_agent_skin" => {
+                assert_eq!(result["presence"]["record"]["avatar_id"], 7);
+                assert_eq!(result["presence"]["record"]["activity"], "waiting");
+                assert_eq!(result["presence"]["record"]["path"], "");
+            }
             "get_place" => {
                 assert_eq!(result["place"]["place_id"], "johnson-park");
                 assert_eq!(result["service_bindings"], json!([]));

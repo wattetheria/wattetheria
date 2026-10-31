@@ -18,11 +18,14 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wattetheria_gateway_contract::SignedSpacePresence;
-use wattetheria_gateway_contract::space::validate_activity;
+use wattetheria_gateway_contract::space::{
+    SPACE_AVATAR_COUNT, validate_activity, validate_skin_id,
+};
 use wattetheria_kernel::space::{Place, PlaceKind, SpaceCatalog, SpacePackage};
 use wattetheria_kernel::swarm_bridge::EventAnnouncementPayload;
 
 use crate::auth::{authorize, internal_error};
+use crate::ledger_client::{LedgerClient, LedgerError};
 use crate::routes::mcp::normalized_gateway_api_resource_url;
 use crate::state::ControlPlaneState;
 
@@ -53,6 +56,23 @@ pub(crate) struct MoveAgentBody {
 pub(crate) struct SetActivityBody {
     pub activity: String,
     pub object_place_id: Option<String>,
+}
+
+/// Exactly one of the two: a built-in skin index, or the id of a custom skin this agent owns.
+#[derive(Debug, Deserialize)]
+pub(crate) struct SetSkinBody {
+    #[serde(default)]
+    pub avatar_id: Option<u8>,
+    #[serde(default)]
+    pub skin_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct UploadSkinBody {
+    /// Standard base64 of a 96×128 PNG spritesheet laid out like the built-in avatars.
+    pub png_base64: String,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 fn bad_request(error: &(impl ToString + ?Sized)) -> Response {
@@ -612,6 +632,171 @@ pub(crate) async fn set_agent_activity(
         Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
         Err(error) => bad_request(&error),
     }
+}
+
+/// Changes what this agent wears: a built-in skin (`avatar_id`) or a custom skin it owns
+/// (`skin_id`). The choice is signed into a fresh presence record at the agent's current
+/// position, so the map changes at once and the choice survives re-entry. A custom skin keeps
+/// the built-in one as the fallback clients draw while the custom image loads.
+pub(crate) async fn set_agent_skin(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<SetSkinBody>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers).await {
+        return response;
+    }
+    let choice = match (body.avatar_id, body.skin_id) {
+        (Some(avatar_id), None) if avatar_id < SPACE_AVATAR_COUNT => Ok(avatar_id),
+        (Some(_), None) => {
+            return bad_request(&format!("avatar_id must be below {SPACE_AVATAR_COUNT}"));
+        }
+        (None, Some(skin_id)) => Err(skin_id),
+        _ => {
+            return bad_request(
+                "provide exactly one of avatar_id (built-in skin, 0-24) or skin_id (a custom skin you own)",
+            );
+        }
+    };
+    if state.own_space_presence.lock().await.active_space.is_none() {
+        return bad_request("agent has not entered the space; call enter_space first");
+    }
+    if let Err(skin_id) = &choice {
+        if let Err(error) = validate_skin_id(skin_id) {
+            return bad_request(error);
+        }
+        let Some(client) = LedgerClient::from_state(&state) else {
+            return bad_request(
+                "custom skins live on the gateway; this node has no gateway configured",
+            );
+        };
+        match client.owns_skin(&state.agent_did, skin_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return bad_request(&format!(
+                    "skin {skin_id} is not one you published; upload it with upload_agent_skin first"
+                ));
+            }
+            Err(error) => return skin_error_response(&LedgerError::Unavailable(error)),
+        }
+    }
+    match restyle_presence(&state, |record| match &choice {
+        Ok(avatar_id) => {
+            record.avatar_id = Some(*avatar_id);
+            record.skin_id = None;
+        }
+        Err(skin_id) => record.skin_id = Some(skin_id.clone()),
+    })
+    .await
+    {
+        Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Err(error) => bad_request(&error),
+    }
+}
+
+/// Publishes a custom skin on the gateway; the gateway charges the publication fee from this
+/// agent's Watt in the same transaction. The skin is not worn until `set_agent_skin`. Several
+/// agents may publish the same image; each pays once and all of them may wear it.
+pub(crate) async fn upload_agent_skin(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<UploadSkinBody>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers).await {
+        return response;
+    }
+    let png_base64 = body.png_base64.trim();
+    if png_base64.is_empty() {
+        return bad_request("png_base64 is required");
+    }
+    let Some(client) = LedgerClient::from_state(&state) else {
+        return bad_request(
+            "custom skins live on the gateway; this node has no gateway configured",
+        );
+    };
+    match client
+        .publish_skin(&state, body.name.as_deref(), png_base64)
+        .await
+    {
+        Ok(published) => Json(json!({"ok": true, "published": published})).into_response(),
+        Err(error) => skin_error_response(&error),
+    }
+}
+
+/// Skins this agent has published on the gateway, plus what it currently wears.
+pub(crate) async fn list_agent_skins(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers).await {
+        return response;
+    }
+    let Some(client) = LedgerClient::from_state(&state) else {
+        return bad_request(
+            "custom skins live on the gateway; this node has no gateway configured",
+        );
+    };
+    let owned = match client.skins_owned_by(&state.agent_did).await {
+        Ok(owned) => owned,
+        Err(error) => return skin_error_response(&LedgerError::Unavailable(error)),
+    };
+    let wearing = current_look(&state).await;
+    Json(json!({
+        "ok": true,
+        "owner": state.agent_did,
+        "skins": owned["skins"],
+        "fee_watt": owned["fee_watt"],
+        "wearing": wearing,
+    }))
+    .into_response()
+}
+
+/// What the agent wears in its active Space, `None` when it has not entered one.
+async fn current_look(state: &ControlPlaneState) -> Option<Value> {
+    let registry = state.own_space_presence.lock().await;
+    let (network, space) = registry.active_space.as_ref()?;
+    let signed = registry.networks.get(network)?.get(space)?;
+    Some(json!({
+        "avatar_id": signed.record.avatar_id,
+        "skin_id": signed.record.skin_id,
+    }))
+}
+
+/// Re-signs the current presence at the agent's present tile with `apply` folded in: movement
+/// stops where the agent is, the destination becomes the place under it.
+async fn restyle_presence(
+    state: &ControlPlaneState,
+    apply: impl FnOnce(&mut wattetheria_gateway_contract::SpacePresenceRecord),
+) -> Result<SignedSpacePresence> {
+    let now = chrono::Utc::now().timestamp_millis();
+    registry::update_presence(state, |previous, package| {
+        let mut record = previous.context("agent has not joined the space")?.clone();
+        record.from_tile = record.tile_at(package.walk_speed, now);
+        record.path.clear();
+        record.depart_at = now;
+        record.updated_at = now;
+        record.destination_place_id.clone_from(
+            &package
+                .place_at_tile(record.from_tile)
+                .context("current tile has no place")?
+                .place_id,
+        );
+        apply(&mut record);
+        Ok(record)
+    })
+    .await
+}
+
+/// Gateway skin errors keep their meaning: no Watt is 402, an unknown skin 404, a refusal the
+/// gateway explained (bad image, not the owner) keeps its status, an unreachable gateway 502.
+fn skin_error_response(error: &LedgerError) -> Response {
+    let status = match error {
+        LedgerError::InsufficientBalance(_) => StatusCode::PAYMENT_REQUIRED,
+        LedgerError::NotFound(_) => StatusCode::NOT_FOUND,
+        LedgerError::Rejected(status, _) if status.is_client_error() => *status,
+        LedgerError::Rejected(..) | LedgerError::Unavailable(_) => StatusCode::BAD_GATEWAY,
+    };
+    (status, Json(json!({"error": error.to_string()}))).into_response()
 }
 
 async fn network_presences(

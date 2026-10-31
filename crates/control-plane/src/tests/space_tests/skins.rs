@@ -14,7 +14,7 @@ fn reopen(state: &mut ControlPlaneState, path: &std::path::Path) {
 }
 
 #[tokio::test]
-async fn avatar_assignment_survives_sqlite_reopen_movement_leave_and_portal() {
+async fn skin_assignment_survives_sqlite_reopen_movement_leave_and_portal() {
     let (dir, _app, token, _policy, state) = build_test_app(100);
     let path = dir.path().join("appearance.db");
     let mut state = disk_state(state, &path);
@@ -85,7 +85,7 @@ async fn avatar_assignment_survives_sqlite_reopen_movement_leave_and_portal() {
 }
 
 #[tokio::test]
-async fn avatarless_signed_record_is_preserved_until_explicit_entry_then_upgraded_once() {
+async fn skinless_signed_record_is_preserved_until_explicit_entry_then_upgraded_once() {
     let (dir, _app, _token, _policy, state) = build_test_app(100);
     let path = dir.path().join("upgrade-appearance.db");
     let mut state = disk_state(state, &path);
@@ -154,7 +154,7 @@ async fn avatarless_signed_record_is_preserved_until_explicit_entry_then_upgrade
 }
 
 #[tokio::test]
-async fn failed_avatar_assignment_does_not_change_saved_record_or_emit_presence() {
+async fn failed_skin_assignment_does_not_change_saved_record_or_emit_presence() {
     let (dir, _app, _token, _policy, state) = build_test_app(100);
     let state = disk_state(state, &dir.path().join("failed-appearance.db"));
     let conn = rusqlite::Connection::open(dir.path().join("failed-appearance.db")).unwrap();
@@ -176,7 +176,7 @@ async fn failed_avatar_assignment_does_not_change_saved_record_or_emit_presence(
 }
 
 #[tokio::test]
-async fn avatar_assignment_survives_network_change_and_signed_gateway_recovery() {
+async fn skin_assignment_survives_network_change_and_signed_gateway_recovery() {
     let (dir, _app, _token, _policy, state) = build_test_app(100);
     let path = dir.path().join("network-appearance.db");
     let mut state = disk_state(state, &path);
@@ -228,7 +228,7 @@ async fn avatar_assignment_survives_network_change_and_signed_gateway_recovery()
 }
 
 #[tokio::test]
-async fn concurrent_first_entries_share_one_persisted_appearance() {
+async fn concurrent_first_entries_share_one_persisted_skin() {
     let (dir, _app, _token, _policy, state) = build_test_app(100);
     let state = disk_state(state, &dir.path().join("concurrent-appearance.db"));
     let (first, second, third) = tokio::join!(
@@ -250,4 +250,66 @@ async fn concurrent_first_entries_share_one_persisted_appearance() {
         saved.stored(&test_network_id(&state), "the-ville"),
         Some(&first)
     );
+}
+
+#[tokio::test]
+async fn reentry_wears_the_most_recent_choice_across_spaces() {
+    let (dir, _app, token, _policy, state) = build_test_app(100);
+    let mut state = disk_state(state, &dir.path().join("latest-skin.db"));
+    let (default, other) = super::reentry_last::two_spaces(&mut state);
+    let network = test_network_id(&state);
+    let custom = "c".repeat(64);
+    // An older choice in the default Space (which sorts first) and a newer one, with a custom
+    // skin, made later in the other Space.
+    let mut older = wattetheria_gateway_contract::SpacePresenceRecord {
+        agent_did: state.agent_did.clone(),
+        avatar_id: Some(3),
+        skin_id: None,
+        network_id: network.clone(),
+        space_id: default.space_id.clone(),
+        space_version: default.space_version.clone(),
+        entered: false,
+        seq: 5,
+        from_tile: default
+            .destination_tile(&state.agent_did, &default.spawn_place_id)
+            .unwrap(),
+        path: String::new(),
+        depart_at: 1_000,
+        destination_place_id: default.spawn_place_id.clone(),
+        activity: String::new(),
+        object_place_id: None,
+        updated_at: 1_000,
+    };
+    let mut newer = older.clone();
+    newer.space_id.clone_from(&other.space_id);
+    newer.space_version.clone_from(&other.space_version);
+    newer.from_tile = other
+        .destination_tile(&state.agent_did, &other.spawn_place_id)
+        .unwrap();
+    newer.destination_place_id.clone_from(&other.spawn_place_id);
+    newer.avatar_id = Some(9);
+    newer.skin_id = Some(custom.clone());
+    newer.seq = 6;
+    newer.depart_at = 2_000;
+    newer.updated_at = 2_000;
+    older.seq = 7;
+    let records: Vec<SignedSpacePresence> = [older, newer]
+        .into_iter()
+        .map(|record| SignedSpacePresence {
+            signature: state.sign_payload(&record).unwrap(),
+            public_key: state.identity.public_key.clone(),
+            record,
+        })
+        .collect();
+    super::reentry_last::save_inactive_registry(&mut state, &records);
+    let entered = authed_post_json(
+        app(state.clone()),
+        &token,
+        "/v1/wattetheria/space/enter",
+        json!({}),
+    )
+    .await;
+    assert_eq!(entered["ok"], true, "{entered}");
+    assert_eq!(entered["presence"]["record"]["avatar_id"], 9);
+    assert_eq!(entered["presence"]["record"]["skin_id"], custom);
 }

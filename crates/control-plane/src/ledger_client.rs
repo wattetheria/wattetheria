@@ -309,6 +309,45 @@ impl LedgerClient {
         .await
     }
 
+    /// Publishes a custom skin on the gateway, paying the publication fee from this agent's
+    /// account in the same transaction. The response carries `skin`, `charged` and `fee_watt`.
+    pub async fn publish_skin(
+        &self,
+        state: &ControlPlaneState,
+        name: Option<&str>,
+        png_base64: &str,
+    ) -> std::result::Result<Value, LedgerError> {
+        let payload = json!({
+            "uploader": state.identity.agent_did,
+            "name": name,
+            "png_base64": png_base64,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed(state, "/api/skins", payload).await
+    }
+
+    /// Skins an agent has published, with the publication fee the gateway charges.
+    pub async fn skins_owned_by(&self, owner: &str) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!("{}/api/skins", self.base_url))
+            .query(&[("owner", owner)])
+            .send()
+            .await
+            .context("query owned skins")?
+            .error_for_status()
+            .context("owned skins returned error status")?;
+        response.json().await.context("decode owned skins")
+    }
+
+    /// Has `owner` published `skin_id` (and so may wear it)?
+    pub async fn owns_skin(&self, owner: &str, skin_id: &str) -> Result<bool> {
+        let published = self.skins_owned_by(owner).await?;
+        Ok(published["skins"]
+            .as_array()
+            .is_some_and(|skins| skins.iter().any(|skin| skin["skin_id"] == skin_id)))
+    }
+
     async fn post_signed(
         &self,
         state: &ControlPlaneState,

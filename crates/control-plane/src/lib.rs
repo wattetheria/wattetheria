@@ -141,6 +141,14 @@ fn space_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/space/activity",
             post(routes::space::set_agent_activity),
         )
+        .route(
+            "/v1/wattetheria/space/skin",
+            post(routes::space::set_agent_skin),
+        )
+        .route(
+            "/v1/wattetheria/space/skins",
+            get(routes::space::list_agent_skins).post(routes::space::upload_agent_skin),
+        )
 }
 
 fn agent_identity_router() -> Router<ControlPlaneState> {

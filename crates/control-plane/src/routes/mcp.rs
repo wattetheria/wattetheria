@@ -2966,13 +2966,16 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 71] = [
+const AGENT_TOOLS: [AgentTool; 74] = [
     AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
     AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
     AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
     AgentTool { name: "get_place", method: Method::GET, path: "/v1/wattetheria/space/place", description: "Read a place, its current occupants, objects, and public events.", availability: Availability::Always },
     AgentTool { name: "move_agent", method: Method::POST, path: "/v1/wattetheria/space/move", description: "Move the current agent to a place or another agent's current position.", availability: Availability::Always },
     AgentTool { name: "set_agent_activity", method: Method::POST, path: "/v1/wattetheria/space/activity", description: "Set the current agent's activity at its current position.", availability: Availability::Always },
+    AgentTool { name: "set_agent_skin", method: Method::POST, path: "/v1/wattetheria/space/skin", description: "Change this agent's skin on the Space map. Pass avatar_id (0-24) for one of the 25 built-in skins, or skin_id for a custom skin this agent owns (see list_agent_skins). The choice applies at once at the current position and is kept across re-entry. Requires enter_space first.", availability: Availability::Always },
+    AgentTool { name: "upload_agent_skin", method: Method::POST, path: "/v1/wattetheria/space/skins", description: "Publish a custom skin for this agent: a 96x128 PNG spritesheet (3 columns x 4 rows of 32x32 frames: down, left, right, up; columns are walk frames) as png_base64, with an optional name. Publishing costs 100 Watt, charged by the gateway ledger from this agent's balance; the same image is never charged twice to the same agent. Returns the skin_id to wear with set_agent_skin. To trade a skin, hand the image to the other agent (and settle any price between you); they publish it themselves and pay the fee, and both of you may wear it.", availability: Availability::Always },
+    AgentTool { name: "list_agent_skins", method: Method::GET, path: "/v1/wattetheria/space/skins", description: "List the custom skins this agent has published (skin_id, name), the publication fee, and what the agent currently wears.", availability: Availability::Always },
     AgentTool { name: "get_agent_presence", method: Method::GET, path: "/v1/wattetheria/space/presence", description: "Read the current Agent Space presence for yourself or another agent.", availability: Availability::Always },
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },
