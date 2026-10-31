@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wattetheria_gateway_contract::SignedSpacePresence;
 use wattetheria_gateway_contract::space::{
-    SPACE_AVATAR_COUNT, validate_activity, validate_skin_id,
+    BUILTIN_SKIN_NAMES, SkinChoice, builtin_skin_label, parse_skin_label, validate_activity,
 };
 use wattetheria_kernel::space::{Place, PlaceKind, SpaceCatalog, SpacePackage};
 use wattetheria_kernel::swarm_bridge::EventAnnouncementPayload;
@@ -58,13 +58,10 @@ pub(crate) struct SetActivityBody {
     pub object_place_id: Option<String>,
 }
 
-/// Exactly one of the two: a built-in skin index, or the id of a custom skin this agent owns.
+/// One skin label: `builtin:N` for a built-in skin, or the id of a custom skin this agent owns.
 #[derive(Debug, Deserialize)]
 pub(crate) struct SetSkinBody {
-    #[serde(default)]
-    pub avatar_id: Option<u8>,
-    #[serde(default)]
-    pub skin_id: Option<String>,
+    pub skin_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,7 +232,7 @@ pub(crate) async fn get_agent_presence(
             catalog.version(&presence.record.space_id, &presence.record.space_version)
         })
         .expect("presence geometry was verified");
-    Json(json!({"space_id":package.space_id,"server_time_ms":now,"position":presence.record.position_at(version.walk_speed,now),"presence":presence})).into_response()
+    Json(json!({"space_id":package.space_id,"server_time_ms":now,"position":presence.record.position_at(version.walk_speed,now),"skin":presence.record.skin(),"presence":presence})).into_response()
 }
 
 pub(crate) async fn enter_space(
@@ -254,7 +251,7 @@ pub(crate) async fn enter_space(
     )
     .await
     {
-        Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Ok(presence) => Json(presence_response(&presence)).into_response(),
         Err(error) => bad_request(&error),
     }
 }
@@ -267,7 +264,7 @@ pub(crate) async fn leave_space(
         return response;
     }
     match registry::leave_configured_space(&state).await {
-        Ok(Some(presence)) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Ok(Some(presence)) => Json(presence_response(&presence)).into_response(),
         Ok(None) => Json(json!({"ok":true,"presence":null})).into_response(),
         Err(error) => bad_request(&error),
     }
@@ -366,7 +363,7 @@ pub(crate) async fn move_agent(
     })
     .await
     {
-        Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Ok(presence) => Json(presence_response(&presence)).into_response(),
         Err(error) => bad_request(&error),
     }
 }
@@ -629,15 +626,15 @@ pub(crate) async fn set_agent_activity(
     })
     .await
     {
-        Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Ok(presence) => Json(presence_response(&presence)).into_response(),
         Err(error) => bad_request(&error),
     }
 }
 
-/// Changes what this agent wears: a built-in skin (`avatar_id`) or a custom skin it owns
-/// (`skin_id`). The choice is signed into a fresh presence record at the agent's current
-/// position, so the map changes at once and the choice survives re-entry. A custom skin keeps
-/// the built-in one as the fallback clients draw while the custom image loads.
+/// Changes what this agent wears: `builtin:N` or the id of a custom skin it owns. The choice is
+/// signed into a fresh presence record at the agent's current position, so the map changes at
+/// once and the choice survives re-entry. A custom skin keeps the previous built-in one in the
+/// record as the fallback clients draw while the custom image loads.
 pub(crate) async fn set_agent_skin(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -646,25 +643,14 @@ pub(crate) async fn set_agent_skin(
     if let Err(response) = authorize(&state, &headers).await {
         return response;
     }
-    let choice = match (body.avatar_id, body.skin_id) {
-        (Some(avatar_id), None) if avatar_id < SPACE_AVATAR_COUNT => Ok(avatar_id),
-        (Some(_), None) => {
-            return bad_request(&format!("avatar_id must be below {SPACE_AVATAR_COUNT}"));
-        }
-        (None, Some(skin_id)) => Err(skin_id),
-        _ => {
-            return bad_request(
-                "provide exactly one of avatar_id (built-in skin, 0-24) or skin_id (a custom skin you own)",
-            );
-        }
+    let choice = match parse_skin_label(body.skin_id.trim()) {
+        Ok(choice) => choice,
+        Err(error) => return bad_request(&error),
     };
     if state.own_space_presence.lock().await.active_space.is_none() {
         return bad_request("agent has not entered the space; call enter_space first");
     }
-    if let Err(skin_id) = &choice {
-        if let Err(error) = validate_skin_id(skin_id) {
-            return bad_request(error);
-        }
+    if let SkinChoice::Custom(skin_id) = &choice {
         let Some(client) = LedgerClient::from_state(&state) else {
             return bad_request(
                 "custom skins live on the gateway; this node has no gateway configured",
@@ -681,15 +667,15 @@ pub(crate) async fn set_agent_skin(
         }
     }
     match restyle_presence(&state, |record| match &choice {
-        Ok(avatar_id) => {
+        SkinChoice::BuiltIn(avatar_id) => {
             record.avatar_id = Some(*avatar_id);
             record.skin_id = None;
         }
-        Err(skin_id) => record.skin_id = Some(skin_id.clone()),
+        SkinChoice::Custom(skin_id) => record.skin_id = Some(skin_id.clone()),
     })
     .await
     {
-        Ok(presence) => Json(json!({"ok":true,"presence":presence})).into_response(),
+        Ok(presence) => Json(presence_response(&presence)).into_response(),
         Err(error) => bad_request(&error),
     }
 }
@@ -723,8 +709,82 @@ pub(crate) async fn upload_agent_skin(
     }
 }
 
+/// Paging of the custom part of `list_skins`.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct SkinGalleryQuery {
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+}
+
+/// Adds the gateway's public image URL to each skin of a gateway listing.
+fn with_image_urls(client: &LedgerClient, skins: &Value) -> Vec<Value> {
+    skins
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut skin| {
+            if let Some(id) = skin["skin_id"].as_str() {
+                skin["image_url"] = Value::String(client.skin_image_url(id));
+            }
+            skin
+        })
+        .collect()
+}
+
+/// Every skin an agent can wear: the built-in ones by label and description, and the custom
+/// skins published on the gateway with their image URLs. Without a gateway only the built-in
+/// list is available.
+pub(crate) async fn list_skins(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Query(query): Query<SkinGalleryQuery>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers).await {
+        return response;
+    }
+    let builtin = BUILTIN_SKIN_NAMES
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            json!({
+                "skin_id": builtin_skin_label(u8::try_from(index).unwrap_or(u8::MAX)),
+                "name": name,
+            })
+        })
+        .collect::<Vec<_>>();
+    let (custom, fee_watt, gateway) = match LedgerClient::from_state(&state) {
+        None => (Vec::new(), Value::Null, Value::Null),
+        Some(client) => {
+            let page = match client
+                .skin_gallery(query.limit.unwrap_or(100), query.offset.unwrap_or(0))
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => return skin_error_response(&LedgerError::Unavailable(error)),
+            };
+            (
+                with_image_urls(&client, &page["skins"]),
+                page["fee_watt"].clone(),
+                Value::String(client.base_url().to_owned()),
+            )
+        }
+    };
+    Json(json!({
+        "ok": true,
+        "builtin": builtin,
+        "custom": custom,
+        "fee_watt": fee_watt,
+        "gateway": gateway,
+        "wearing": current_look(&state).await,
+    }))
+    .into_response()
+}
+
 /// Skins this agent has published on the gateway, plus what it currently wears.
-pub(crate) async fn list_agent_skins(
+pub(crate) async fn list_my_skins(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
 ) -> Response {
@@ -744,22 +804,25 @@ pub(crate) async fn list_agent_skins(
     Json(json!({
         "ok": true,
         "owner": state.agent_did,
-        "skins": owned["skins"],
+        "skins": with_image_urls(&client, &owned["skins"]),
         "fee_watt": owned["fee_watt"],
         "wearing": wearing,
     }))
     .into_response()
 }
 
-/// What the agent wears in its active Space, `None` when it has not entered one.
-async fn current_look(state: &ControlPlaneState) -> Option<Value> {
+/// The skin label the agent wears in its active Space, `None` when it has not entered one.
+async fn current_look(state: &ControlPlaneState) -> Option<String> {
     let registry = state.own_space_presence.lock().await;
     let (network, space) = registry.active_space.as_ref()?;
     let signed = registry.networks.get(network)?.get(space)?;
-    Some(json!({
-        "avatar_id": signed.record.avatar_id,
-        "skin_id": signed.record.skin_id,
-    }))
+    Some(signed.record.skin())
+}
+
+/// The reply of every tool that re-signs this agent's presence: the signed record as pushed to
+/// the gateway, plus the one `skin` label for what the agent wears.
+fn presence_response(presence: &SignedSpacePresence) -> Value {
+    json!({"ok": true, "skin": presence.record.skin(), "presence": presence})
 }
 
 /// Re-signs the current presence at the agent's present tile with `apply` folded in: movement

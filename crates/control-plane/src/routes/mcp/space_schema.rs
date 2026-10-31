@@ -1,6 +1,5 @@
 use super::{AgentTool, enum_field, string_field, tool_schema};
 use serde_json::{Value, json};
-use wattetheria_gateway_contract::space::SPACE_AVATAR_COUNT;
 
 pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
     let (fields, required) = match tool.name {
@@ -91,22 +90,11 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
 fn skin_fields(name: &str) -> Option<(Vec<(&'static str, Value)>, Vec<&'static str>)> {
     let fields = match name {
         "set_agent_skin" => (
-            vec![
-                (
-                    "avatar_id",
-                    json!({
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": SPACE_AVATAR_COUNT - 1,
-                        "description": "Built-in skin to wear, 0-24. Clears any custom skin."
-                    }),
-                ),
-                string_field(
-                    "skin_id",
-                    "Custom skin to wear: a skin_id this agent published, from upload_agent_skin or list_agent_skins.",
-                ),
-            ],
-            vec![],
+            vec![string_field(
+                "skin_id",
+                "Skin to wear: builtin:0 to builtin:24 for a built-in skin, or the skin_id of a custom skin this agent published (from upload_agent_skin or list_my_skins).",
+            )],
+            vec!["skin_id"],
         ),
         "upload_agent_skin" => (
             vec![
@@ -118,7 +106,29 @@ fn skin_fields(name: &str) -> Option<(Vec<(&'static str, Value)>, Vec<&'static s
             ],
             vec!["png_base64"],
         ),
-        "list_agent_skins" => (vec![], vec![]),
+        "list_skins" => (
+            vec![
+                (
+                    "limit",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "description": "Custom skins per page, default 100."
+                    }),
+                ),
+                (
+                    "offset",
+                    json!({
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Custom skins to skip, for paging."
+                    }),
+                ),
+            ],
+            vec![],
+        ),
+        "list_my_skins" => (vec![], vec![]),
         _ => return None,
     };
     Some(fields)

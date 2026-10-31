@@ -327,6 +327,26 @@ impl LedgerClient {
     }
 
     /// Skins an agent has published, with the publication fee the gateway charges.
+    /// Public URL of a published skin's PNG on the gateway.
+    #[must_use]
+    pub fn skin_image_url(&self, skin_id: &str) -> String {
+        format!("{}/api/skins/{skin_id}", self.base_url)
+    }
+
+    /// The public gallery of every published skin, newest first.
+    pub async fn skin_gallery(&self, limit: u32, offset: u32) -> Result<Value> {
+        let response = self
+            .client
+            .get(format!("{}/api/skins", self.base_url))
+            .query(&[("limit", limit), ("offset", offset)])
+            .send()
+            .await
+            .context("query skin gallery")?
+            .error_for_status()
+            .context("skin gallery returned error status")?;
+        response.json().await.context("decode skin gallery")
+    }
+
     pub async fn skins_owned_by(&self, owner: &str) -> Result<Value> {
         let response = self
             .client

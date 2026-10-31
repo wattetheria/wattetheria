@@ -3,6 +3,71 @@ use serde::{Deserialize, Serialize};
 pub const SPACE_AVATAR_COUNT: u8 = 25;
 /// Length of a custom skin id: a lowercase hex SHA-256 digest.
 pub const SKIN_ID_LEN: usize = 64;
+/// Prefix of the skin label that names a built-in skin, as in `builtin:7`.
+pub const BUILTIN_SKIN_PREFIX: &str = "builtin:";
+
+/// What each built-in skin looks like, by index, so an agent can pick one without seeing it.
+pub const BUILTIN_SKIN_NAMES: [&str; SPACE_AVATAR_COUNT as usize] = [
+    "Blonde girl, purple dress with teal collar",
+    "Spiky blond boy, green vest",
+    "White cat with a leaf wreath and a bell",
+    "Brown-haired boy, white shirt and teal pants",
+    "Blond boy, green vest",
+    "Dark messy-haired boy, green vest",
+    "Blonde girl with a bob, green vest",
+    "Brown-haired woman with glasses, blue dress",
+    "Girl with a dark ponytail, sailor uniform with red tie",
+    "Blond boy with cropped hair, green jacket",
+    "Dark-haired man, blue sweater",
+    "Blond man, green suit",
+    "Olive-haired boy, green vest",
+    "Dark-skinned girl with pigtails, green dress",
+    "Woman with a hair bun and glasses, dark suit",
+    "Elderly man with glasses, dark suit and red tie",
+    "Orange tabby cat",
+    "Blonde girl with long hair, green dress",
+    "Brown-haired man, white shirt and dark pants",
+    "Dark-haired man with a side part, blue jacket",
+    "Blonde woman with purple glasses, red dress",
+    "Brown-haired man with glasses, dark suit",
+    "Elderly man with grey hair, dark suit",
+    "Olive-haired woman, green dress",
+    "Girl with long dark hair, black uniform with red tie",
+];
+
+/// Label and description of one built-in skin.
+#[must_use]
+pub fn builtin_skin_label(index: u8) -> String {
+    format!("{BUILTIN_SKIN_PREFIX}{index}")
+}
+
+/// What an agent asked to wear, parsed from one skin label: `builtin:N` for one of the
+/// built-in skins, or the content hash of a published custom skin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkinChoice {
+    BuiltIn(u8),
+    Custom(String),
+}
+
+/// Parses a skin label as the skin tools accept and print it.
+pub fn parse_skin_label(label: &str) -> Result<SkinChoice, String> {
+    if let Some(index) = label.strip_prefix(BUILTIN_SKIN_PREFIX) {
+        return match index.parse::<u8>() {
+            Ok(index) if index < SPACE_AVATAR_COUNT => Ok(SkinChoice::BuiltIn(index)),
+            _ => Err(format!(
+                "built-in skins are {BUILTIN_SKIN_PREFIX}0 to {BUILTIN_SKIN_PREFIX}{}",
+                SPACE_AVATAR_COUNT - 1
+            )),
+        };
+    }
+    validate_skin_id(label)
+        .map(|()| SkinChoice::Custom(label.to_owned()))
+        .map_err(|_| {
+            format!(
+                "skin_id must be {BUILTIN_SKIN_PREFIX}N (N below {SPACE_AVATAR_COUNT}) or the 64 character hex id of a published custom skin"
+            )
+        })
+}
 
 /// A custom skin id is exactly the content hash the gateway computed when the skin was published.
 pub fn validate_skin_id(skin_id: &str) -> Result<(), &'static str> {
@@ -82,6 +147,18 @@ pub struct WorldEvent {
 }
 
 impl SpacePresenceRecord {
+    /// The one label for what this agent wears: its custom skin id when it wears one, otherwise
+    /// `builtin:N` for its built-in skin.
+    #[must_use]
+    pub fn skin(&self) -> String {
+        self.skin_id.clone().unwrap_or_else(|| {
+            format!(
+                "{BUILTIN_SKIN_PREFIX}{}",
+                self.avatar_id.unwrap_or_default()
+            )
+        })
+    }
+
     #[must_use]
     #[allow(clippy::cast_precision_loss)]
     pub fn position_at(&self, walk_speed: f64, now_ms: i64) -> [f64; 2] {

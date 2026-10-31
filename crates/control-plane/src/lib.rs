@@ -147,7 +147,11 @@ fn space_router() -> Router<ControlPlaneState> {
         )
         .route(
             "/v1/wattetheria/space/skins",
-            get(routes::space::list_agent_skins).post(routes::space::upload_agent_skin),
+            get(routes::space::list_skins).post(routes::space::upload_agent_skin),
+        )
+        .route(
+            "/v1/wattetheria/space/skins/mine",
+            get(routes::space::list_my_skins),
         )
 }
 

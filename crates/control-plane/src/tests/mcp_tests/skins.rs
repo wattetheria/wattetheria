@@ -32,9 +32,23 @@ async fn spawn_mock_gateway() -> (String, MockSkins) {
             "/api/skins",
             axum::routing::get(
                 |AxumState(mock): AxumState<MockSkins>, Query(query): Query<Value>| async move {
-                    let asked = query["owner"].as_str().unwrap_or_default().to_owned();
-                    let skins = if mock.publishers.lock().await.contains(&asked) {
-                        json!([skin_json(&asked)])
+                    let publishers = mock.publishers.lock().await;
+                    let Some(asked) = query["owner"].as_str() else {
+                        // The public gallery: the one image, if anyone has published it.
+                        let skins = publishers.iter().next().map_or_else(
+                            || json!([]),
+                            |first| {
+                                let mut skin = skin_json(first);
+                                skin["publishers"] = json!(publishers.iter().collect::<Vec<_>>());
+                                json!([skin])
+                            },
+                        );
+                        return Json(json!({
+                            "skins": skins, "limit": query["limit"], "offset": query["offset"], "fee_watt": 100
+                        }));
+                    };
+                    let skins = if publishers.contains(asked) {
+                        json!([skin_json(asked)])
                     } else {
                         json!([])
                     };
@@ -82,7 +96,7 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
     let (gateway_url, mock) = spawn_mock_gateway().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let state = ControlPlaneState {
-        gateway_urls: vec![gateway_url],
+        gateway_urls: vec![gateway_url.clone()],
         ..state
     };
     let app = app(state.clone());
@@ -91,6 +105,10 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
     let built_in = entered["result"]["structuredContent"]["presence"]["record"]["avatar_id"]
         .as_u64()
         .unwrap();
+    assert_eq!(
+        entered["result"]["structuredContent"]["skin"],
+        format!("builtin:{built_in}")
+    );
 
     // A skin this agent never published cannot be worn, even if someone else published it.
     mock.publishers
@@ -135,22 +153,55 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
         false
     );
 
-    let listed = call(app.clone(), &token, "list_agent_skins", json!({})).await;
+    let listed = call(app.clone(), &token, "list_my_skins", json!({})).await;
     assert_eq!(listed["result"]["isError"], false, "{listed}");
     let content = &listed["result"]["structuredContent"];
     assert_eq!(content["skins"][0]["skin_id"], SKIN);
+    assert_eq!(
+        content["skins"][0]["image_url"],
+        format!("{gateway_url}/api/skins/{SKIN}")
+    );
     assert_eq!(content["fee_watt"], 100);
-    assert_eq!(content["wearing"]["avatar_id"], built_in);
-    assert_eq!(content["wearing"]["skin_id"], Value::Null);
+    assert_eq!(content["wearing"], format!("builtin:{built_in}"));
 
-    let both = call(
+    // Everything wearable: the named built-in skins plus the gateway gallery with image links.
+    let all = call(
         app.clone(),
         &token,
-        "set_agent_skin",
-        json!({"skin_id": SKIN, "avatar_id": 1}),
+        "list_skins",
+        json!({"limit": 5, "offset": 0}),
     )
     .await;
-    assert_eq!(both["result"]["isError"], true, "{both}");
+    assert_eq!(all["result"]["isError"], false, "{all}");
+    let content = &all["result"]["structuredContent"];
+    let catalog = content["builtin"].as_array().unwrap();
+    assert_eq!(catalog.len(), 25);
+    assert_eq!(catalog[0]["skin_id"], "builtin:0");
+    assert_eq!(catalog[24]["skin_id"], "builtin:24");
+    assert!(catalog[16]["name"].as_str().unwrap().contains("cat"));
+    assert_eq!(content["custom"][0]["skin_id"], SKIN);
+    let publishers = content["custom"][0]["publishers"].as_array().unwrap();
+    assert!(
+        publishers.contains(&json!(state.agent_did)),
+        "{publishers:?}"
+    );
+    assert_eq!(
+        content["custom"][0]["image_url"],
+        format!("{gateway_url}/api/skins/{SKIN}")
+    );
+    assert_eq!(content["gateway"], gateway_url);
+    assert_eq!(content["wearing"], format!("builtin:{built_in}"));
+
+    for bad in ["builtin:25", "builtin:x", "BUILTIN:1", "not-a-hash"] {
+        let rejected = call(
+            app.clone(),
+            &token,
+            "set_agent_skin",
+            json!({"skin_id": bad}),
+        )
+        .await;
+        assert_eq!(rejected["result"]["isError"], true, "{bad}: {rejected}");
+    }
     let worn = call(
         app.clone(),
         &token,
@@ -159,23 +210,22 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
     )
     .await;
     assert_eq!(worn["result"]["isError"], false, "{worn}");
+    assert_eq!(worn["result"]["structuredContent"]["skin"], SKIN);
     let record = &worn["result"]["structuredContent"]["presence"]["record"];
     assert_eq!(record["skin_id"], SKIN);
     assert_eq!(
         record["avatar_id"], built_in,
-        "built-in skin stays as the fallback"
+        "built-in skin stays in the signed record as the fallback"
     );
-    let listed = call(app.clone(), &token, "list_agent_skins", json!({})).await;
-    assert_eq!(
-        listed["result"]["structuredContent"]["wearing"]["skin_id"],
-        SKIN
-    );
+    let listed = call(app.clone(), &token, "list_my_skins", json!({})).await;
+    assert_eq!(listed["result"]["structuredContent"]["wearing"], SKIN);
 
     // Re-entry remembers the custom skin while the gateway still lists it.
     let left = call(app.clone(), &token, "leave_space", json!({})).await;
     assert_eq!(left["result"]["isError"], false, "{left}");
     let reentered = call(app.clone(), &token, "enter_space", json!({})).await;
     assert_eq!(reentered["result"]["isError"], false, "{reentered}");
+    assert_eq!(reentered["result"]["structuredContent"]["skin"], SKIN);
     assert_eq!(
         reentered["result"]["structuredContent"]["presence"]["record"]["skin_id"],
         SKIN
@@ -187,14 +237,28 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
     assert_eq!(left["result"]["isError"], false, "{left}");
     let reentered = call(app.clone(), &token, "enter_space", json!({})).await;
     assert_eq!(reentered["result"]["isError"], false, "{reentered}");
+    assert_eq!(
+        reentered["result"]["structuredContent"]["skin"],
+        format!("builtin:{built_in}")
+    );
     let record = &reentered["result"]["structuredContent"]["presence"]["record"];
     assert_eq!(record["skin_id"], Value::Null);
     assert_eq!(record["avatar_id"], built_in);
 
-    let back_to_built_in = call(app, &token, "set_agent_skin", json!({"avatar_id": 4})).await;
+    let back_to_built_in = call(
+        app,
+        &token,
+        "set_agent_skin",
+        json!({"skin_id": "builtin:4"}),
+    )
+    .await;
     assert_eq!(
         back_to_built_in["result"]["isError"], false,
         "{back_to_built_in}"
+    );
+    assert_eq!(
+        back_to_built_in["result"]["structuredContent"]["skin"],
+        "builtin:4"
     );
     let record = &back_to_built_in["result"]["structuredContent"]["presence"]["record"];
     assert_eq!(record["avatar_id"], 4);
@@ -209,7 +273,7 @@ async fn custom_skins_need_a_gateway() {
     for (name, arguments) in [
         ("set_agent_skin", json!({"skin_id": SKIN})),
         ("upload_agent_skin", json!({"png_base64": "QUJDRA=="})),
-        ("list_agent_skins", json!({})),
+        ("list_my_skins", json!({})),
     ] {
         let response = call(app.clone(), &token, name, arguments).await;
         assert_eq!(response["result"]["isError"], true, "{name}: {response}");
@@ -218,7 +282,21 @@ async fn custom_skins_need_a_gateway() {
             "{name}: {response}"
         );
     }
-    let malformed = call(app, &token, "set_agent_skin", json!({"skin_id": "nope"})).await;
+    let malformed = call(
+        app.clone(),
+        &token,
+        "set_agent_skin",
+        json!({"skin_id": "nope"}),
+    )
+    .await;
     assert_eq!(malformed["result"]["isError"], true, "{malformed}");
     assert!(malformed.to_string().contains("hex"), "{malformed}");
+
+    // Built-in skins are listed even without a gateway; the custom part is simply empty.
+    let all = call(app, &token, "list_skins", json!({})).await;
+    assert_eq!(all["result"]["isError"], false, "{all}");
+    let content = &all["result"]["structuredContent"];
+    assert_eq!(content["builtin"].as_array().unwrap().len(), 25);
+    assert_eq!(content["custom"], json!([]));
+    assert_eq!(content["gateway"], Value::Null);
 }
