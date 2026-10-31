@@ -253,11 +253,7 @@ fn event_template(
         ),
         profile,
         domain,
-        starter_reward(
-            22 + severity_bonus * 6,
-            2 + severity_bonus,
-            4 + severity_bonus,
-        ),
+        starter_reward(2 + severity_bonus),
         anchor.clone(),
         vec![
             role_slug(&profile.role).to_string(),
@@ -296,7 +292,7 @@ fn role_template(
         ),
         profile,
         spec.domain,
-        starter_reward(spec.agent_watt, spec.reputation, spec.treasury_share_watt),
+        starter_reward(spec.reputation),
         anchor,
         vec![
             role_slug(&profile.role).to_string(),
@@ -311,9 +307,7 @@ struct RoleTemplateSpec {
     domain: MissionDomain,
     verb: &'static str,
     target: &'static str,
-    agent_watt: i64,
     reputation: i64,
-    treasury_share_watt: i64,
 }
 
 fn role_template_spec(role: &RolePath, stage: &GameStage) -> RoleTemplateSpec {
@@ -327,121 +321,52 @@ fn role_template_spec(role: &RolePath, stage: &GameStage) -> RoleTemplateSpec {
 
 fn operator_spec(stage: &GameStage) -> RoleTemplateSpec {
     match stage {
-        GameStage::Survival => spec(
-            MissionDomain::Wealth,
-            "stabilize",
-            "relay throughput",
-            24,
-            2,
-            4,
-        ),
+        GameStage::Survival => spec(MissionDomain::Wealth, "stabilize", "relay throughput", 2),
         GameStage::Foothold => spec(
             MissionDomain::Power,
             "scale",
             "infrastructure reliability",
-            34,
             3,
-            6,
         ),
         GameStage::Influence => spec(
             MissionDomain::Power,
             "coordinate",
             "public infrastructure flow",
-            48,
             5,
-            8,
         ),
-        GameStage::Expansion => spec(
-            MissionDomain::Wealth,
-            "prepare",
-            "expansion logistics",
-            60,
-            6,
-            10,
-        ),
+        GameStage::Expansion => spec(MissionDomain::Wealth, "prepare", "expansion logistics", 6),
     }
 }
 
 fn broker_spec(stage: &GameStage) -> RoleTemplateSpec {
     match stage {
-        GameStage::Survival => spec(MissionDomain::Trade, "seed", "route liquidity", 26, 3, 5),
-        GameStage::Foothold => spec(
-            MissionDomain::Wealth,
-            "rebalance",
-            "frontier demand",
-            38,
-            4,
-            7,
-        ),
-        GameStage::Influence => spec(MissionDomain::Trade, "shape", "corridor pricing", 52, 5, 9),
-        GameStage::Expansion => spec(
-            MissionDomain::Trade,
-            "open",
-            "new market corridors",
-            66,
-            7,
-            12,
-        ),
+        GameStage::Survival => spec(MissionDomain::Trade, "seed", "route liquidity", 3),
+        GameStage::Foothold => spec(MissionDomain::Wealth, "rebalance", "frontier demand", 4),
+        GameStage::Influence => spec(MissionDomain::Trade, "shape", "corridor pricing", 5),
+        GameStage::Expansion => spec(MissionDomain::Trade, "open", "new market corridors", 7),
     }
 }
 
 fn enforcer_spec(stage: &GameStage) -> RoleTemplateSpec {
     match stage {
-        GameStage::Survival => spec(
-            MissionDomain::Security,
-            "patrol",
-            "home-route risk",
-            26,
-            3,
-            5,
-        ),
-        GameStage::Foothold => spec(MissionDomain::Power, "escort", "civic convoys", 38, 4, 7),
+        GameStage::Survival => spec(MissionDomain::Security, "patrol", "home-route risk", 3),
+        GameStage::Foothold => spec(MissionDomain::Power, "escort", "civic convoys", 4),
         GameStage::Influence => spec(
             MissionDomain::Security,
             "suppress",
             "frontier instability",
-            52,
             6,
-            9,
         ),
-        GameStage::Expansion => spec(
-            MissionDomain::Power,
-            "secure",
-            "new expansion lanes",
-            66,
-            7,
-            12,
-        ),
+        GameStage::Expansion => spec(MissionDomain::Power, "secure", "new expansion lanes", 7),
     }
 }
 
 fn artificer_spec(stage: &GameStage) -> RoleTemplateSpec {
     match stage {
-        GameStage::Survival => spec(
-            MissionDomain::Culture,
-            "signal",
-            "home-zone identity",
-            22,
-            3,
-            4,
-        ),
-        GameStage::Foothold => spec(
-            MissionDomain::Trade,
-            "attract",
-            "corridor attention",
-            34,
-            4,
-            6,
-        ),
-        GameStage::Influence => spec(MissionDomain::Culture, "shape", "public gravity", 48, 6, 8),
-        GameStage::Expansion => spec(
-            MissionDomain::Culture,
-            "design",
-            "expansion landmarks",
-            62,
-            7,
-            10,
-        ),
+        GameStage::Survival => spec(MissionDomain::Culture, "signal", "home-zone identity", 3),
+        GameStage::Foothold => spec(MissionDomain::Trade, "attract", "corridor attention", 4),
+        GameStage::Influence => spec(MissionDomain::Culture, "shape", "public gravity", 6),
+        GameStage::Expansion => spec(MissionDomain::Culture, "design", "expansion landmarks", 7),
     }
 }
 
@@ -449,17 +374,13 @@ fn spec(
     domain: MissionDomain,
     verb: &'static str,
     target: &'static str,
-    agent_watt: i64,
     reputation: i64,
-    treasury_share_watt: i64,
 ) -> RoleTemplateSpec {
     RoleTemplateSpec {
         domain,
         verb,
         target,
-        agent_watt,
         reputation,
-        treasury_share_watt,
     }
 }
 
@@ -469,38 +390,30 @@ fn civic_template(
     anchor: MissionAnchor,
 ) -> GameMissionTemplate {
     let stage_key = stage_label(&stage).to_string();
-    let (domain, title, description, watt, reputation, treasury) = match stage {
+    let (domain, title, description, reputation) = match stage {
         GameStage::Survival => (
             MissionDomain::Power,
             "Document local civic conditions",
             "Build the first public record that turns private work into civic legibility.",
-            20,
             2,
-            4,
         ),
         GameStage::Foothold => (
             MissionDomain::Power,
             "Support local treasury and stability",
             "Use your home anchor to prove that repeatable work can support public order.",
-            32,
             3,
-            6,
         ),
         GameStage::Influence => (
             MissionDomain::Power,
             "Prepare governance readiness",
             "Cross the final civic gates between private success and formal sovereignty participation.",
-            46,
             5,
-            8,
         ),
         GameStage::Expansion => (
             MissionDomain::Power,
             "Stage frontier expansion support",
             "Demonstrate that your current base can underwrite the next layer of map growth.",
-            58,
             6,
-            10,
         ),
     };
 
@@ -511,7 +424,7 @@ fn civic_template(
         description,
         profile,
         domain,
-        starter_reward(watt, reputation, treasury),
+        starter_reward(reputation),
         anchor,
         vec![
             role_slug(&profile.role).to_string(),
@@ -666,12 +579,12 @@ fn next_stage(stage: &GameStage) -> Option<GameStage> {
     }
 }
 
-fn starter_reward(agent_watt: i64, reputation: i64, treasury_share_watt: i64) -> MissionReward {
+/// System-published missions carry no Watt; see `starter::starter_reward`.
+fn starter_reward(reputation: i64) -> MissionReward {
     MissionReward {
-        agent_watt,
+        agent_watt: 0,
         reputation,
         capacity: 1,
-        treasury_share_watt,
     }
 }
 

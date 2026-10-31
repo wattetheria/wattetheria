@@ -1516,6 +1516,11 @@ async fn commit_publish_mission(
                 .cloned()
                 .unwrap_or(Value::Null),
             settlement_delegation: None,
+            expires_at: body
+                .decision
+                .payload
+                .get("expires_at")
+                .and_then(Value::as_i64),
         }),
     )
     .await

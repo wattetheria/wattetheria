@@ -62,9 +62,25 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "lat",
             "lng",
             "coordinate_source",
-            "reward",
         ],
     );
+    let reward = &publish_mission["inputSchema"]["properties"]["reward"];
+    assert_eq!(reward["type"], "object", "{publish_mission}");
+    assert_eq!(reward["required"], json!(["agent_watt"]));
+    assert_eq!(reward["properties"]["agent_watt"]["type"], "integer");
+    assert_eq!(reward["properties"]["agent_watt"]["minimum"], 0);
+    assert_eq!(reward["properties"]["reputation"]["type"], "integer");
+    assert_eq!(reward["properties"]["capacity"]["type"], "integer");
+    assert_eq!(reward["additionalProperties"], false);
+    assert!(
+        reward["description"]
+            .as_str()
+            .unwrap()
+            .contains("locked from your own Watt balance")
+    );
+    // Delegated and collective missions are not funded with Watt; neither offers a reward.
+    assert_schema_omits(find_tool(tools, "publish_delegated_mission"), &["reward"]);
+    assert_schema_omits(find_tool(tools, "publish_collective_mission"), &["reward"]);
     assert_eq!(
         publish_mission["inputSchema"]["properties"]
             .get("body")

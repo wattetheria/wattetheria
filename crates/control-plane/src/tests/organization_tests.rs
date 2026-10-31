@@ -179,10 +179,9 @@ async fn organization_endpoints_and_views_work() {
             "required_faction": "freeport",
             "treasury_commit_watt": 5,
             "reward": {
-                "agent_watt": 30,
+                "agent_watt": 0,
                 "reputation": 3,
-                "capacity": 2,
-                "treasury_share_watt": 4
+                "capacity": 2
             },
             "payload": {
                 "organization_id": "aurora-consortium"
@@ -222,10 +221,9 @@ async fn organization_endpoints_and_views_work() {
             "required_faction": "freeport",
             "treasury_commit_watt": 0,
             "reward": {
-                "agent_watt": 20,
+                "agent_watt": 0,
                 "reputation": 2,
-                "capacity": 1,
-                "treasury_share_watt": 3
+                "capacity": 1
             },
             "payload": {
                 "organization_id": "aurora-consortium"

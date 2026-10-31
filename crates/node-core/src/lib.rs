@@ -41,7 +41,6 @@ use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
 use wattetheria_kernel::civilization::topics::HiveRegistry;
-use wattetheria_kernel::economy::{EconomicPolicy, WalletBalanceState};
 use wattetheria_kernel::event_log::EventLog;
 use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::identity::IdentityCompatView;
@@ -98,6 +97,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         spawn_network_permission_sync_task(runtime.control_state.clone());
     let registry_registration_task =
         spawn_registry_registration_task(runtime.control_state.clone());
+    let _mission_ledger_sweep_task = spawn_mission_ledger_sweep_task(runtime.control_state.clone());
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
     let wattswarm_sync_task = spawn_wattswarm_sync_bridge(
         runtime.control_state.clone(),
@@ -158,6 +158,7 @@ fn spawn_registry_registration_task(state: ControlPlaneState) -> tokio::task::Jo
                         request_id = %result.request_id,
                         "network Agent registration is active; Wattswarm permission callback completed"
                     );
+                    spawn_welcome_bonus_claim(state.clone());
                     break;
                 }
                 Ok(result) => {
@@ -174,6 +175,82 @@ fn spawn_registry_registration_task(state: ControlPlaneState) -> tokio::task::Jo
             }
         }
     })
+}
+
+const MISSION_LEDGER_SWEEP_INTERVAL: Duration = Duration::from_mins(5);
+
+/// Expires overdue missions and retries pending bounty refunds against the gateway ledger, at
+/// start and then every few minutes, so no Watt stays stranded in escrow after a lost reply.
+fn spawn_mission_ledger_sweep_task(state: ControlPlaneState) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(MISSION_LEDGER_SWEEP_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let report = wattetheria_control_plane::reconcile_mission_escrows(
+                &state,
+                wattetheria_control_plane::MISSION_ESCROW_STALE_AFTER_SECS,
+            )
+            .await;
+            if report != wattetheria_control_plane::MissionEscrowSweepReport::default() {
+                info!(
+                    expired = report.expired,
+                    refunds_settled = report.refunds_settled,
+                    refunds_pending = report.refunds_pending,
+                    escrows_confirmed = report.escrows_confirmed,
+                    escrows_abandoned = report.escrows_abandoned,
+                    "mission ledger sweep finished"
+                );
+            }
+        }
+    })
+}
+
+/// Presents the Agent's membership Credential to the gateway ledger so it receives its
+/// one-time welcome bonus. The ledger grants once per DID, so repeating is safe; a failed
+/// claim (gateway down, not yet upgraded) is retried with backoff until the ledger answers.
+fn spawn_welcome_bonus_claim(state: ControlPlaneState) {
+    tokio::spawn(async move {
+        let mut attempt: u32 = 0;
+        loop {
+            match wattetheria_control_plane::ledger_client::claim_welcome_bonus(&state).await {
+                Ok(Some(outcome)) => {
+                    if outcome.get("granted").and_then(serde_json::Value::as_bool) == Some(true) {
+                        info!(
+                            balance = outcome
+                                .get("balance")
+                                .and_then(serde_json::Value::as_i64)
+                                .unwrap_or_default(),
+                            "ledger welcome bonus granted"
+                        );
+                    }
+                    return;
+                }
+                // No gateway or no Credential: nothing to claim until the next trigger.
+                Ok(None) => return,
+                Err(error) => {
+                    let delay = welcome_bonus_retry_delay(attempt);
+                    warn!(
+                        attempt,
+                        retry_in_secs = delay.as_secs(),
+                        "ledger welcome bonus claim failed: {error:#}"
+                    );
+                    attempt = attempt.saturating_add(1);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    });
+}
+
+/// 30s, 1m, 2m, 4m, 8m, 16m, then every 30m.
+fn welcome_bonus_retry_delay(attempt: u32) -> Duration {
+    const BASE_SECS: u64 = 30;
+    const MAX_SECS: u64 = 30 * 60;
+    let secs = BASE_SECS
+        .checked_shl(attempt)
+        .unwrap_or(MAX_SECS)
+        .min(MAX_SECS);
+    Duration::from_secs(secs)
 }
 
 fn spawn_network_permission_sync_task(state: ControlPlaneState) -> tokio::task::JoinHandle<()> {
@@ -196,7 +273,10 @@ fn spawn_network_permission_sync_task(state: ControlPlaneState) -> tokio::task::
                 &state.agent_did,
                 Some(&checkpoint.network_id),
             ) {
-                Ok(Some(_)) => None,
+                Ok(Some(_)) => {
+                    spawn_welcome_bonus_claim(state.clone());
+                    None
+                }
                 Ok(None) => Some("membership Credential is missing or expired".to_owned()),
                 Err(error) => Some(format!(
                     "membership Credential verification failed: {error:#}"
@@ -558,18 +638,6 @@ fn load_civilization_runtime_state(
         local_db::domain::PAYMENT_LEDGER,
         &cli.data_dir.join("payments/ledger.json"),
     )?;
-    let economic_policy: EconomicPolicy =
-        local_db.load_domain_or_default(local_db::domain::ECONOMIC_POLICY)?;
-    local_db.save_domain(local_db::domain::ECONOMIC_POLICY, &economic_policy)?;
-    let watt_balance_state: WalletBalanceState =
-        match local_db.load_domain_or_default(local_db::domain::WATT_BALANCE_STATE) {
-            Ok(state) => state,
-            Err(error) => {
-                warn!("reset invalid watt balance state during startup: {error:#}");
-                WalletBalanceState::default()
-            }
-        };
-    local_db.save_domain(local_db::domain::WATT_BALANCE_STATE, &watt_balance_state)?;
     let galaxy_state: GalaxyState = load_or_migrate_galaxy(
         local_db,
         &cli.data_dir.join("galaxy/state.json"),
@@ -1076,11 +1144,23 @@ mod tests {
     use super::{
         CORE_AGENT_EXECUTOR_NAME, Cli, derive_grpc_endpoint_from_ui_base, register_executor_once,
         resolve_gateway_urls, resolve_servicenet_base_url, resolve_wattswarm_executor_registration,
+        welcome_bonus_retry_delay,
     };
     use axum::{Json, Router, routing::post};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use wattetheria_kernel::brain::BrainProviderConfig;
+
+    #[test]
+    fn welcome_bonus_retry_backs_off_and_caps_at_thirty_minutes() {
+        assert_eq!(welcome_bonus_retry_delay(0), Duration::from_secs(30));
+        assert_eq!(welcome_bonus_retry_delay(1), Duration::from_mins(1));
+        assert_eq!(welcome_bonus_retry_delay(5), Duration::from_mins(16));
+        assert_eq!(welcome_bonus_retry_delay(6), Duration::from_mins(30));
+        assert_eq!(welcome_bonus_retry_delay(40), Duration::from_mins(30));
+        assert_eq!(welcome_bonus_retry_delay(u32::MAX), Duration::from_mins(30));
+    }
 
     #[test]
     fn derive_grpc_endpoint_from_ui_base_rewrites_port() {

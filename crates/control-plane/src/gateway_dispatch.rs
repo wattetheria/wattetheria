@@ -331,26 +331,25 @@ fn proposal_id_from_payload(payload: &Value) -> Option<String> {
 
 fn plan_mission_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
     match kind {
-        "mission.published" | "mission.claimed" | "mission.completed" | "mission.settled" => {
-            Some(GatewayDispatchPlan {
-                data_kind: GatewayDataKind::MissionLifecycle,
-                visibility: GatewayVisibility::Public,
-                provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
-                scope: GatewayEventScope {
-                    node_id: None,
-                    topic_id: None,
-                    organization_id: organization_id_from_payload(payload),
-                    task_id: payload
-                        .get("mission_id")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                },
-                identity_key: payload
+        "mission.published" | "mission.claimed" | "mission.completed" | "mission.settled"
+        | "mission.cancelled" => Some(GatewayDispatchPlan {
+            data_kind: GatewayDataKind::MissionLifecycle,
+            visibility: GatewayVisibility::Public,
+            provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
+            scope: GatewayEventScope {
+                node_id: None,
+                topic_id: None,
+                organization_id: organization_id_from_payload(payload),
+                task_id: payload
                     .get("mission_id")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
-            })
-        }
+            },
+            identity_key: payload
+                .get("mission_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        }),
         "organization.mission.published" => Some(GatewayDispatchPlan {
             data_kind: GatewayDataKind::MissionLifecycle,
             visibility: GatewayVisibility::Public,
@@ -816,6 +815,23 @@ mod tests {
         assert_eq!(
             normalized_gateway_snapshot_ingest_url("https://gw.example/api/ingest/snapshot"),
             "https://gw.example/api/ingest/snapshot"
+        );
+    }
+
+    #[test]
+    fn mission_cancellation_is_routed_like_other_lifecycle_events() {
+        let event = StreamEvent {
+            kind: "mission.cancelled".to_string(),
+            timestamp: 1,
+            payload: json!({"mission_id": "mission-3", "publisher": "org-3"}),
+        };
+        let plan = plan_mission_event(&event.kind, &event.payload).expect("cancel plan");
+        assert_eq!(plan.data_kind, GatewayDataKind::MissionLifecycle);
+        assert_eq!(plan.scope.task_id.as_deref(), Some("mission-3"));
+        let decision = describe_stream_event(&event).expect("mission decision");
+        assert_eq!(
+            decision.push_disposition,
+            GatewayPushDisposition::PushEligible
         );
     }
 

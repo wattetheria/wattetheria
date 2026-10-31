@@ -159,7 +159,6 @@ async fn galaxy_travel_state_and_session_flow_work() {
         TradeMissionSpec {
             title: "Deep watch market relay",
             description: "Unlock deep-space market visibility",
-            reward_watt: 35,
             reward_reputation: 4,
             objective: "deep-watch",
             required_faction: None,

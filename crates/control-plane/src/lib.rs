@@ -6,7 +6,12 @@ mod auth;
 mod autonomy;
 mod diagnostics;
 mod gateway_dispatch;
+pub mod ledger_client;
 pub mod mcp_events;
+pub use routes::missions::{
+    ESCROW_STALE_AFTER_SECS as MISSION_ESCROW_STALE_AFTER_SECS, MissionEscrowSweepReport,
+    reconcile_mission_escrows,
+};
 mod reliability_maintenance;
 mod runtime_sessions;
 pub mod social_host;
@@ -49,6 +54,7 @@ pub mod routes {
     pub(crate) mod space;
     pub(crate) mod supervision;
     pub(crate) mod topics;
+    pub(crate) mod wallet;
 }
 mod state;
 
@@ -295,6 +301,11 @@ fn client_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/missions/my",
             get(routes::client::my_missions),
+        )
+        .route("/v1/wattetheria/wallet", get(routes::wallet::get_wallet))
+        .route(
+            "/v1/wattetheria/wallet/entries",
+            get(routes::wallet::list_wallet_entries),
         )
         .route(
             "/v1/supervision/governance",
@@ -676,6 +687,11 @@ fn civilization_router() -> Router<ControlPlaneState> {
             "/v1/world/events/generate",
             post(routes::civilization::galaxy_event_generate),
         )
+        .merge(mission_lifecycle_router())
+}
+
+fn mission_lifecycle_router() -> Router<ControlPlaneState> {
+    Router::new()
         .route(
             "/v1/wattetheria/missions",
             get(routes::missions::mission_list).post(routes::missions::mission_publish),
@@ -695,6 +711,10 @@ fn civilization_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/missions/{mission_id}/settle",
             post(routes::missions::mission_settle_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/cancel",
+            post(routes::missions::mission_cancel_by_id),
         )
 }
 

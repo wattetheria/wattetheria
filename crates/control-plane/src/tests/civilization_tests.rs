@@ -2,7 +2,7 @@ use super::*;
 
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn mission_lifecycle_settles_and_funds_treasury() {
+async fn mission_lifecycle_settles_without_minting_treasury_watt() {
     let (_dir, app, token, _, state) = build_test_app(30);
 
     let publish_body = json!({
@@ -16,10 +16,9 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
         "required_role": "enforcer",
         "required_faction": null,
         "reward": {
-            "agent_watt": 120,
+            "agent_watt": 0,
             "reputation": 8,
-            "capacity": 2,
-            "treasury_share_watt": 30
+            "capacity": 2
         },
         "payload": {"objective": "relay_repair"}
     });
@@ -104,8 +103,9 @@ async fn mission_lifecycle_settles_and_funds_treasury() {
         .load_domain::<GovernanceEngine>(wattetheria_kernel::local_db::domain::GOVERNANCE)
         .unwrap()
         .unwrap();
+    // Settling no longer mints a treasury share: Watt only moves through the gateway ledger.
     let planet = persisted.list_planets().remove(0);
-    assert_eq!(planet.treasury_watt, 30);
+    assert_eq!(planet.treasury_watt, 0);
 }
 #[tokio::test]
 async fn governance_lifecycle_endpoints_work() {
@@ -204,7 +204,7 @@ async fn civilization_briefing_and_generated_galaxy_events_work() {
                 "zone_id": "genesis-core",
                 "required_role": "enforcer",
                 "required_faction": null,
-                "reward": {"agent_watt": 20, "reputation": 3, "capacity": 1, "treasury_share_watt": 2},
+                "reward": {"agent_watt": 0, "reputation": 3, "capacity": 1},
                 "payload": {}
             }),
             StatusCode::CREATED,

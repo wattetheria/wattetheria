@@ -223,7 +223,6 @@ mod tests {
                 agent_watt: 10,
                 reputation: 2,
                 capacity: 1,
-                treasury_share_watt: 1,
             },
             serde_json::json!({}),
         );

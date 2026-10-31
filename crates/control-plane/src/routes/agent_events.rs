@@ -9,7 +9,7 @@ use uuid::Uuid;
 use watt_did::{Did, PaymentAccountBindingProof, VerifiedAgentContext};
 use watt_wallet::verify_payment_account_binding_proof;
 use wattetheria_kernel::brain::AgentEventResolution;
-use wattetheria_kernel::civilization::missions::NetworkMissionClaimRegistry;
+use wattetheria_kernel::civilization::missions::{MissionStatus, NetworkMissionClaimRegistry};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
@@ -1216,7 +1216,21 @@ async fn sync_mission_lifecycle_event_to_state(
             );
             Ok(())
         }
-        (true, false) => sync_mission_lifecycle_to_board(state, event, &mission_id, kind).await,
+        (true, false) => {
+            let Some(signer) = verified_context else {
+                return Err(payment_event_bad_request(
+                    "signed agent_envelope is required for mission lifecycle event",
+                ));
+            };
+            sync_mission_lifecycle_to_board(
+                state,
+                event,
+                &mission_id,
+                kind,
+                &signer.agent_did.to_string(),
+            )
+            .await
+        }
         (false, true) => {
             let updated = registry.update_status_by_mission(&mission_id, status);
             if updated.is_some() {
@@ -1246,25 +1260,83 @@ async fn sync_mission_lifecycle_event_to_state(
     }
 }
 
+/// Applies a relayed lifecycle notice about a locally published mission. The acting agent is
+/// the verified signer of the envelope, never a DID named in the content: a claimer field that
+/// disagrees with the signer is rejected, so nobody can act (or get paid) in someone else's name.
 async fn sync_mission_lifecycle_to_board(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
     mission_id: &str,
     kind: &str,
+    signer_agent_did: &str,
 ) -> Result<(), Response> {
-    let agent_did = mission_lifecycle_string_from_event(event, "claimer_agent_did")
-        .or_else(|| mission_lifecycle_string_from_event(event, "agent_did"))
-        .unwrap_or_default();
+    if signer_agent_did == state.agent_did {
+        // This node's own transitions happen through the local mission routes; a notice it signed
+        // itself (claim approval, completion decision, settlement) coming back around is an echo.
+        record_agent_event_diagnostic(
+            state,
+            event,
+            "info",
+            "mission_lifecycle.sync.skipped",
+            "own_lifecycle_echo",
+            "mission lifecycle sync skipped because the envelope was signed by this node",
+            &json!({"mission_id": mission_id, "kind": kind}),
+        );
+        return Ok(());
+    }
+    let agent_did = signer_agent_did.to_owned();
+    let claimed_as = mission_lifecycle_string_from_event(event, "claimer_agent_did")
+        .or_else(|| mission_lifecycle_string_from_event(event, "agent_did"));
     let result = mission_lifecycle_value_from_event(event, "result").cloned();
-    let updated = {
+    let (updated, was_cancelled) = {
         let mut board = state.mission_board.lock().await;
-        let updated = match kind {
+        let before = board.get(mission_id);
+        let was_cancelled = before
+            .as_ref()
+            .is_some_and(|mission| mission.status == MissionStatus::Cancelled);
+        let outcome = match kind {
+            _ if claimed_as
+                .as_deref()
+                .is_some_and(|claimed_as| claimed_as != agent_did) =>
+            {
+                Err(anyhow::anyhow!(
+                    "envelope signed by {agent_did} names {} as the claimer",
+                    claimed_as.as_deref().unwrap_or_default()
+                ))
+            }
             "mission_claim_approved" => board.apply_remote_claim_approved(mission_id, &agent_did),
             "mission_completed" => board.apply_remote_completed(mission_id, &agent_did, result),
-            "mission_settled" => {
-                board.apply_remote_settled(mission_id, Some(agent_did.as_str()), result)
+            // Settling a locally published mission releases its escrowed bounty, which only the
+            // local settle route does. A relayed "settled" is accepted only as the echo of that
+            // settlement; anything else leaves the board untouched.
+            "mission_settled" => match before {
+                Some(mission) if mission.status == MissionStatus::Settled => Ok(Some(mission)),
+                Some(mission) => Err(anyhow::anyhow!(
+                    "mission {mission_id} is {:?}; settlement must go through the local settle route",
+                    mission.status
+                )),
+                None => Ok(None),
+            },
+            _ => Ok(None),
+        };
+        let updated = match outcome {
+            Ok(updated) => updated,
+            Err(error) => {
+                record_agent_event_diagnostic(
+                    state,
+                    event,
+                    "warn",
+                    "mission_lifecycle.sync.rejected",
+                    "untrusted_lifecycle_transition",
+                    format!("mission lifecycle sync rejected: {error}"),
+                    &json!({
+                        "mission_id": mission_id,
+                        "kind": kind,
+                        "agent_did": agent_did,
+                    }),
+                );
+                return Ok(());
             }
-            _ => None,
         };
         if updated.is_some() {
             state
@@ -1272,8 +1344,22 @@ async fn sync_mission_lifecycle_to_board(
                 .save_domain(local_db::domain::MISSION_BOARD, &*board)
                 .map_err(|error| payment_event_bad_request(error.to_string()))?;
         }
-        updated
+        (updated, was_cancelled)
     };
+    if let Some(mission) = updated
+        .as_ref()
+        .filter(|mission| mission.status == MissionStatus::Cancelled && !was_cancelled)
+    {
+        // The remote update arrived after the mission expired: the board cancelled it instead;
+        // tell the gateway and let the sweep refund the escrow.
+        crate::routes::missions::announce_mission_cancelled(
+            state,
+            mission,
+            Some("expired".to_owned()),
+            None,
+        )
+        .await;
+    }
     if updated.is_none() {
         record_agent_event_diagnostic(
             state,

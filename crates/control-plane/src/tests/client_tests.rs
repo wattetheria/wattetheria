@@ -51,7 +51,7 @@ fn network_claim_test_metadata(title: &str, mission_id: &str) -> NetworkMissionC
         task_status: None,
         mission_feed_key: Some("wattetheria.missions".to_string()),
         mission_scope_hint: Some(format!("group:{mission_id}")),
-        reward: Some(json!({"agent_watt": 10})),
+        reward: Some(json!({"agent_watt": 0})),
         reward_watt: Some(10),
         executor_bounty_watt: Some(10),
         publisher_network_reward_watt: Some(1),
@@ -158,7 +158,6 @@ async fn client_api_routes_align_with_client_dtos() {
         TradeMissionSpec {
             title: "Calibrate relay",
             description: "Tune the frontier relay.",
-            reward_watt: 24,
             reward_reputation: 3,
             objective: "relay_calibration",
             required_faction: None,
@@ -258,7 +257,7 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(self_json["id"].as_str(), Some(captain.as_str()));
     assert_eq!(self_json["display_name"].as_str(), Some("Captain Aurora"));
     assert_eq!(self_json["watt_balance"].as_i64(), Some(0));
-    assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
+    assert_eq!(self_json["watt_balance_available"].as_bool(), Some(false));
     assert_eq!(
         self_json["agent_did"].as_str(),
         Some(identity.agent_did.as_str())
@@ -275,9 +274,10 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
     assert_eq!(tasks_json[0]["title"].as_str(), Some("Calibrate relay"));
     assert_eq!(tasks_json[0]["status"].as_str(), Some("published"));
-    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
-    assert_eq!(tasks_json[0]["task_bounty_watt"].as_i64(), Some(24));
-    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
+    // Fixtures publish without a gateway ledger, so they carry no Watt bounty.
+    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(0));
+    assert_eq!(tasks_json[0]["task_bounty_watt"].as_i64(), Some(0));
+    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(0));
     assert!(tasks_json[0].get("network_publish_reward_watt").is_none());
     assert!(
         tasks_json[0]
@@ -320,8 +320,8 @@ async fn client_api_routes_align_with_client_dtos() {
 }
 
 #[tokio::test]
-async fn client_self_reports_wallet_bound_mission_rewards() {
-    let (_dir, app, token, _, state) = build_test_app(20);
+async fn client_self_reports_ledger_watt_and_mission_bounty() {
+    let (_dir, app, token, _, _state) = build_test_app(20);
     let identity = authed_get_json(app.clone(), &token, "/v1/client/self").await;
     let agent_did = identity["wallet_bound_agent_did"]
         .as_str()
@@ -343,10 +343,9 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
             "required_role": null,
             "required_faction": null,
             "reward": {
-                "agent_watt": 24,
+                "agent_watt": 0,
                 "reputation": 3,
-                "capacity": 1,
-                "treasury_share_watt": 0
+                "capacity": 1
             },
             "payload": {"objective": "wallet-bound-balance"}
         }),
@@ -377,8 +376,8 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
 
     let tasks_json = authed_get_json(app.clone(), &token, "/v1/client/tasks").await;
     assert_eq!(tasks_json.as_array().unwrap().len(), 1);
-    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(24));
-    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(24));
+    assert_eq!(tasks_json[0]["reward_watt"].as_i64(), Some(0));
+    assert_eq!(tasks_json[0]["executor_bounty_watt"].as_i64(), Some(0));
     assert!(tasks_json[0].get("publisher_network_reward_watt").is_none());
     assert!(
         tasks_json[0]["created_by_agent_identity"]
@@ -388,61 +387,21 @@ async fn client_self_reports_wallet_bound_mission_rewards() {
     assert!(tasks_json[0]["claimer_agent_identity"].as_str().is_some());
     assert!(tasks_json[0]["claimer_public_id"].as_str().is_some());
 
-    let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
-        .local_db
-        .load_domain(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
-        .unwrap()
-        .unwrap();
-    let stored = balance_state.get(&agent_did, Some(&public_id)).unwrap();
-    assert_eq!(stored.watt_balance, 24);
-    assert_eq!(stored.policy_version, 1);
-
+    // Watt is no longer derived from settled missions: without a gateway ledger the node
+    // reports zero and says the balance is unavailable.
     let self_json = authed_get_json(
         app,
         &token,
         &format!("/v1/client/self?public_id={public_id}"),
     )
     .await;
-    assert_eq!(self_json["watt_balance"].as_i64(), Some(24));
-    assert_eq!(self_json["reward_policy_version"].as_u64(), Some(1));
-}
-
-#[tokio::test]
-async fn client_self_recovers_invalid_wallet_balance_state_payload() {
-    let (_dir, app, token, _identity, state) = build_test_app(20);
-    let public_id = bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
-    state
-        .local_db
-        .save_domain(
-            wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE,
-            &json!({
-                "generated_at": 1_781_550_374_613_i64,
-                "node_id": "node-1",
-                "network_id": "mainnet:watt-etheria",
-                "running": true,
-                "peers": ["peer-a"]
-            }),
-        )
-        .expect("seed invalid wallet balance payload");
-
-    let self_json = authed_get_json(
-        app,
-        &token,
-        &format!("/v1/client/self?public_id={public_id}"),
-    )
-    .await;
-
     assert_eq!(self_json["watt_balance"].as_i64(), Some(0));
-    let balance_state: wattetheria_kernel::economy::WalletBalanceState = state
-        .local_db
-        .load_domain(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
-        .expect("read repaired wallet balance state")
-        .expect("wallet balance state exists");
-    assert!(
-        balance_state
-            .get(&state.agent_did, Some(&public_id))
-            .is_some()
+    assert_eq!(self_json["watt_balance_available"].as_bool(), Some(false));
+    assert_eq!(
+        self_json["watt_ledger_account"].as_str(),
+        Some(agent_did.as_str())
     );
+    assert!(self_json.get("reward_policy_version").is_none());
 }
 
 #[tokio::test]
@@ -532,8 +491,7 @@ async fn system_puzzle_settle_rejects_self_verified_receipt() {
             "reward": {
                 "agent_watt": 0,
                 "reputation": 0,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": payload
         }),
@@ -746,10 +704,9 @@ async fn task_result_commit_settles_mission_from_wattswarm_event() {
             "required_role": null,
             "required_faction": null,
             "reward": {
-                "agent_watt": 8,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"objective": "remote-result"}
         }),
@@ -847,7 +804,7 @@ async fn task_result_commit_preserves_mission_state_when_swarm_finalize_fails() 
             "publisher": public_id,
             "publisher_kind": "player",
             "domain": "trade",
-            "reward": {"agent_watt": 1, "reputation": 0, "capacity": 0, "treasury_share_watt": 0},
+            "reward": {"agent_watt": 0, "reputation": 0, "capacity": 0},
             "payload": {"objective": "fail-test"}
         }),
     )
@@ -1468,10 +1425,9 @@ async fn client_export_includes_task_contract_for_network_mission_claims() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 10,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"cargo": "ore"}
         }),
@@ -1521,10 +1477,9 @@ async fn client_export_separates_published_and_claimed_mission_tasks() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 10,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"cargo": "ore"}
         }),
@@ -1616,10 +1571,9 @@ async fn mission_lifecycle_events_keep_network_task_projection_shape() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 10,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"cargo": "ore"}
         }),
@@ -1966,4 +1920,1506 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
     );
 
     server.abort();
+}
+
+type MockLedgerCalls = Arc<Mutex<Vec<(String, Value)>>>;
+
+#[derive(Clone)]
+struct MockLedger {
+    calls: MockLedgerCalls,
+    balance: i64,
+    /// Commit the lock but answer with a server error, like a gateway whose reply was lost.
+    lose_lock_response: bool,
+    /// Answer every lock with a server error without committing anything.
+    lock_hard_fail: bool,
+    /// While set, refunds answer with a server error.
+    refund_unavailable: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl MockLedger {
+    fn with_balance(calls: MockLedgerCalls, balance: i64) -> Self {
+        Self {
+            calls,
+            balance,
+            lose_lock_response: false,
+            lock_hard_fail: false,
+            refund_unavailable: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+}
+type MockLedgerState = axum::extract::State<MockLedger>;
+
+/// A stand-in for the gateway ledger: records every signed request, refuses locks above the
+/// configured balance and remembers which escrows exist, like the real `/api/ledger/*` routes.
+#[allow(clippy::too_many_lines)]
+fn mock_ledger_router(ledger: MockLedger) -> Router {
+    fn escrow_status(calls: &[(String, Value)], escrow_id: &str) -> Option<(String, Value)> {
+        let mut found = None;
+        for (kind, body) in calls {
+            if body["payload"]["escrow_id"].as_str() != Some(escrow_id) {
+                continue;
+            }
+            match kind.as_str() {
+                "lock" => found = Some(("locked".to_string(), body["payload"].clone())),
+                "release" => {
+                    if let Some((status, _)) = found.as_mut() {
+                        *status = "released".to_string();
+                    }
+                }
+                "refund" => {
+                    if let Some((status, _)) = found.as_mut() {
+                        *status = "refunded".to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        found
+    }
+    async fn lock(
+        axum::extract::State(ledger): MockLedgerState,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        let amount = body["payload"]["amount"].as_i64().unwrap_or(0);
+        if amount > ledger.balance {
+            ledger
+                .calls
+                .lock()
+                .await
+                .push(("lock_refused".to_string(), body.clone()));
+            return (
+                StatusCode::PAYMENT_REQUIRED,
+                Json(json!({"error": format!("insufficient balance: needs {amount}")})),
+            )
+                .into_response();
+        }
+        if ledger.lock_hard_fail {
+            ledger
+                .calls
+                .lock()
+                .await
+                .push(("lock_failed".to_string(), body.clone()));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "database unavailable"})),
+            )
+                .into_response();
+        }
+        ledger
+            .calls
+            .lock()
+            .await
+            .push(("lock".to_string(), body.clone()));
+        if ledger.lose_lock_response {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "connection reset"})),
+            )
+                .into_response();
+        }
+        Json(json!({"escrow_id": body["payload"]["escrow_id"], "status": "locked"})).into_response()
+    }
+    async fn get_escrow(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(escrow_id): Path<String>,
+    ) -> axum::response::Response {
+        let calls = ledger.calls.lock().await;
+        match escrow_status(&calls, &escrow_id) {
+            Some((status, lock_payload)) => Json(json!({
+                "escrow_id": escrow_id,
+                "payer_account": lock_payload["payer"],
+                "amount": lock_payload["amount"],
+                "status": status,
+            }))
+            .into_response(),
+            None => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("escrow {escrow_id} not found")})),
+            )
+                .into_response(),
+        }
+    }
+    async fn release(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(escrow_id): Path<String>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        ledger
+            .calls
+            .lock()
+            .await
+            .push(("release".to_string(), body));
+        Json(json!({"escrow_id": escrow_id, "status": "released"})).into_response()
+    }
+    async fn refund(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(escrow_id): Path<String>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        let mut calls = ledger.calls.lock().await;
+        if escrow_status(&calls, &escrow_id).is_none() {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("escrow {escrow_id} not found")})),
+            )
+                .into_response();
+        }
+        if ledger
+            .refund_unavailable
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            calls.push(("refund_failed".to_string(), body));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "database unavailable"})),
+            )
+                .into_response();
+        }
+        calls.push(("refund".to_string(), body));
+        Json(json!({"escrow_id": escrow_id, "status": "refunded"})).into_response()
+    }
+    fn account_escrows(calls: &[(String, Value)], account_id: &str) -> Vec<Value> {
+        let mut escrows: Vec<Value> = Vec::new();
+        for (kind, body) in calls {
+            let payload = &body["payload"];
+            let Some(escrow_id) = payload["escrow_id"].as_str() else {
+                continue;
+            };
+            match kind.as_str() {
+                "lock" if payload["payer"].as_str() == Some(account_id) => escrows.push(json!({
+                    "escrow_id": escrow_id,
+                    "payer_account": payload["payer"],
+                    "payee_account": Value::Null,
+                    "amount": payload["amount"],
+                    "reference": payload["reference"],
+                    "payer_label": payload["payer_label"],
+                    "payee_label": Value::Null,
+                    "subject": payload["subject"],
+                    "status": "locked",
+                })),
+                "release" | "refund" => {
+                    if let Some(escrow) = escrows
+                        .iter_mut()
+                        .find(|escrow| escrow["escrow_id"].as_str() == Some(escrow_id))
+                    {
+                        escrow["status"] = json!(if kind == "release" {
+                            "released"
+                        } else {
+                            "refunded"
+                        });
+                        escrow["payee_account"] = payload["payee"].clone();
+                        escrow["payee_label"] = payload["payee_label"].clone();
+                    }
+                }
+                _ => {}
+            }
+        }
+        escrows
+    }
+    async fn account(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(account_id): Path<String>,
+    ) -> Json<Value> {
+        let calls = ledger.calls.lock().await;
+        let locked: i64 = account_escrows(&calls, &account_id)
+            .iter()
+            .filter(|escrow| escrow["status"] == "locked")
+            .filter_map(|escrow| escrow["amount"].as_i64())
+            .sum();
+        Json(json!({
+            "account_id": account_id,
+            "balance": ledger.balance,
+            "locked_in_escrow": locked,
+            "exists": true,
+        }))
+    }
+    async fn escrows(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(account_id): Path<String>,
+        Query(query): Query<BTreeMap<String, String>>,
+    ) -> Json<Value> {
+        let mut calls = ledger.calls.lock().await;
+        let status = query.get("status").cloned();
+        let escrows: Vec<Value> = account_escrows(&calls, &account_id)
+            .into_iter()
+            .filter(|escrow| {
+                status
+                    .as_deref()
+                    .is_none_or(|status| escrow["status"].as_str() == Some(status))
+            })
+            .collect();
+        calls.push((
+            "escrows".to_string(),
+            json!({"account_id": account_id, "query": query}),
+        ));
+        Json(json!({"account_id": account_id, "escrows": escrows}))
+    }
+    /// A fixed five-entry history (seq 1..=5) so cursor handling is observable.
+    async fn entries(
+        axum::extract::State(ledger): MockLedgerState,
+        Path(account_id): Path<String>,
+        Query(query): Query<BTreeMap<String, String>>,
+    ) -> Json<Value> {
+        let limit: usize = query
+            .get("limit")
+            .and_then(|limit| limit.parse().ok())
+            .unwrap_or(100);
+        let before_seq: i64 = query
+            .get("before_seq")
+            .and_then(|seq| seq.parse().ok())
+            .unwrap_or(i64::MAX);
+        let history = [
+            (
+                5,
+                "escrow_release",
+                "in",
+                "did:key:z6MkPublisherPat",
+                Some("Pat"),
+                "Mission bounty: Map the reef",
+            ),
+            (4, "transfer", "out", "did:key:z6MkFriendFay", None, "Tip"),
+            (
+                3,
+                "escrow_lock",
+                "out",
+                "system:escrow",
+                None,
+                "Mission bounty: Escrowed task",
+            ),
+            (
+                2,
+                "transfer",
+                "in",
+                "did:key:z6MkFriendFay",
+                Some("Fay"),
+                "Loan",
+            ),
+            (1, "welcome", "in", "system:issuer", None, "Welcome bonus"),
+        ];
+        let page: Vec<Value> = history
+            .iter()
+            .filter(|(seq, ..)| *seq < before_seq)
+            .take(limit)
+            .map(|(seq, kind, direction, counterparty, label, subject)| {
+                let mut entry = json!({
+                    "seq": seq,
+                    "kind": kind,
+                    "direction": direction,
+                    "amount": 10 * seq,
+                    "counterparty_account": counterparty,
+                    "counterparty_label": label,
+                    "subject": subject,
+                });
+                if *kind == "escrow_lock" {
+                    entry["escrow_id"] = json!("mission-lock-3");
+                    entry["escrow_status"] = json!("released");
+                    entry["escrow_payee_account"] = json!("did:key:z6MkWorkerWen");
+                    entry["escrow_payee_label"] = json!("Wen");
+                    entry["escrow_resolved_at_ms"] = json!(1_700_000_000_000_i64);
+                }
+                entry
+            })
+            .collect();
+        let next_before_seq = (page.len() == limit)
+            .then(|| page.last().and_then(|entry| entry["seq"].as_i64()))
+            .flatten();
+        ledger.calls.lock().await.push((
+            "entries".to_string(),
+            json!({"account_id": account_id, "query": query}),
+        ));
+        Json(json!({
+            "account_id": account_id,
+            "entries": page,
+            "next_before_seq": next_before_seq,
+        }))
+    }
+    Router::new()
+        .route("/api/ledger/escrows", post(lock))
+        .route("/api/ledger/escrows/{escrow_id}", get(get_escrow))
+        .route("/api/ledger/escrows/{escrow_id}/release", post(release))
+        .route("/api/ledger/escrows/{escrow_id}/refund", post(refund))
+        .route("/api/ledger/accounts/{account_id}", get(account))
+        .route("/api/ledger/accounts/{account_id}/escrows", get(escrows))
+        .route("/api/ledger/accounts/{account_id}/entries", get(entries))
+        .with_state(ledger)
+}
+
+#[tokio::test]
+async fn mcp_publish_mission_with_a_watt_bounty_locks_it_in_the_ledger() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, _public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 100)).await;
+    let own_name = local_agent_display_name(app.clone(), &token).await;
+
+    let mission = mcp_tool_call(
+        app.clone(),
+        &token,
+        "publish_mission",
+        json!({
+            "title": "Chart the trade lane",
+            "description": "Published through MCP with a Watt bounty.",
+            "domain": "trade",
+            "payload": {"objective": "chart"},
+            "reward": {"agent_watt": 70}
+        }),
+    )
+    .await;
+    assert_eq!(mission["_is_error"], json!(false), "{mission}");
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    assert_eq!(mission["reward"]["agent_watt"], json!(70));
+    assert_eq!(mission["escrow_id"], json!(mission_id));
+    {
+        let recorded = calls.lock().await;
+        let (kind, body) = recorded
+            .iter()
+            .find(|(kind, _)| kind == "lock")
+            .expect("the MCP publish locks the bounty");
+        assert_eq!(kind, "lock");
+        assert_eq!(body["payload"]["escrow_id"], json!(mission_id));
+        assert_eq!(body["payload"]["payer"], json!(state.agent_did));
+        assert_eq!(body["payload"]["amount"], json!(70));
+        assert_eq!(body["payload"]["payer_label"], json!(own_name));
+        assert_eq!(
+            body["payload"]["subject"],
+            json!("Mission bounty: Chart the trade lane")
+        );
+    }
+    let wallet = mcp_tool_call(app.clone(), &token, "get_watt_balance", json!({})).await;
+    assert_eq!(wallet["locked_in_escrow"], json!(70), "{wallet}");
+    assert_eq!(wallet["locked_escrows"][0]["escrow_id"], json!(mission_id));
+
+    // Beyond the balance: refused as insufficient_watt and nothing stays open.
+    let refused = mcp_tool_call(
+        app.clone(),
+        &token,
+        "publish_mission",
+        json!({
+            "title": "Too rich",
+            "description": "More than the publisher holds.",
+            "domain": "trade",
+            "payload": {"objective": "overdraw"},
+            "reward": {"agent_watt": 500}
+        }),
+    )
+    .await;
+    assert_eq!(refused["_is_error"], json!(true), "{refused}");
+    assert_eq!(refused["code"], json!("insufficient_watt"));
+    let board = state.mission_board.lock().await;
+    assert!(
+        board
+            .list(Some(
+                &wattetheria_kernel::civilization::missions::MissionStatus::Open
+            ))
+            .into_iter()
+            .all(|mission| mission.title != "Too rich")
+    );
+}
+
+/// Display name of the identity the node itself reports as current.
+async fn local_agent_display_name(app: Router, token: &str) -> String {
+    let identity = authed_get_json(app, token, "/v1/civilization/public-identity").await;
+    identity["public_identity"]["display_name"]
+        .as_str()
+        .unwrap_or_else(|| panic!("node reports no current public identity: {identity}"))
+        .to_owned()
+}
+
+async fn mcp_tool_call(app: Router, token: &str, name: &str, arguments: Value) -> Value {
+    let response = authed_post_json(
+        app,
+        token,
+        "/mcp",
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}
+        }),
+    )
+    .await;
+    let text = response["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("MCP tool {name} returned no text content: {response}"));
+    let mut payload: Value = serde_json::from_str(text).unwrap();
+    payload["_is_error"] = response["result"]["isError"].clone();
+    payload
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn wallet_reads_own_balance_locked_bounties_and_history_from_the_ledger() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 300)).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 120),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+
+    // The wallet is labelled with the same identity `get_agent_identity` reports.
+    let own_name = local_agent_display_name(app.clone(), &token).await;
+    let wallet = authed_get_json(app.clone(), &token, "/v1/wattetheria/wallet").await;
+    assert_eq!(wallet["agent_did"], json!(state.agent_did), "{wallet}");
+    assert_eq!(wallet["display_name"], json!(own_name));
+    assert_eq!(wallet["balance"], json!(300));
+    assert_eq!(wallet["locked_in_escrow"], json!(120));
+    assert_eq!(wallet["locked_escrows"].as_array().unwrap().len(), 1);
+    let locked = &wallet["locked_escrows"][0];
+    assert_eq!(locked["escrow_id"], json!(mission_id));
+    assert_eq!(locked["subject"], json!("Mission bounty: Escrowed task"));
+    assert_eq!(locked["payer_label"], json!(own_name));
+    {
+        let recorded = calls.lock().await;
+        let (kind, query) = recorded
+            .iter()
+            .find(|(kind, _)| kind == "escrows")
+            .expect("wallet asks the ledger for escrows");
+        assert_eq!(kind, "escrows");
+        assert_eq!(query["account_id"], json!(state.agent_did));
+        assert_eq!(query["query"]["status"], json!("locked"));
+    }
+
+    let page = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/wallet/entries?limit=2",
+    )
+    .await;
+    assert_eq!(page["agent_did"], json!(state.agent_did), "{page}");
+    let kinds: Vec<&str> = page["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["escrow_release", "transfer"]);
+    assert_eq!(page["entries"][0]["direction"], json!("in"));
+    assert_eq!(page["entries"][0]["counterparty_label"], json!("Pat"));
+    assert_eq!(page["next_before_seq"], json!(4));
+    let next = authed_get_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/wallet/entries?limit=2&before_seq=4",
+    )
+    .await;
+    let kinds: Vec<&str> = next["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["escrow_lock", "transfer"], "{next}");
+    assert_eq!(next["next_before_seq"], json!(2));
+    // The publisher's lock entry carries the escrow outcome the ledger attached to it.
+    let lock = &next["entries"][0];
+    assert_eq!(lock["escrow_status"], json!("released"));
+    assert_eq!(lock["escrow_payee_account"], json!("did:key:z6MkWorkerWen"));
+    assert_eq!(lock["escrow_payee_label"], json!("Wen"));
+    assert_eq!(lock["escrow_resolved_at_ms"], json!(1_700_000_000_000_i64));
+    assert!(next["entries"][1].get("escrow_status").is_none());
+    {
+        let recorded = calls.lock().await;
+        let entry_queries: Vec<&Value> = recorded
+            .iter()
+            .filter(|(kind, _)| kind == "entries")
+            .map(|(_, query)| query)
+            .collect();
+        assert_eq!(entry_queries.len(), 2);
+        assert_eq!(entry_queries[0]["account_id"], json!(state.agent_did));
+        assert_eq!(entry_queries[0]["query"]["limit"], json!("2"));
+        assert_eq!(entry_queries[1]["query"]["before_seq"], json!("4"));
+    }
+    let bad_cursor = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/v1/wattetheria/wallet/entries?before_seq=0")
+                .header("authorization", format!("Bearer {token}"))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_cursor.status(), StatusCode::BAD_REQUEST);
+
+    // The same two views through the MCP tools agents actually use.
+    let balance = mcp_tool_call(app.clone(), &token, "get_watt_balance", json!({})).await;
+    assert_eq!(balance["_is_error"], json!(false), "{balance}");
+    assert_eq!(balance["balance"], json!(300));
+    assert_eq!(balance["locked_in_escrow"], json!(120));
+    assert_eq!(balance["agent_did"], json!(state.agent_did));
+    let history = mcp_tool_call(
+        app.clone(),
+        &token,
+        "list_watt_ledger_entries",
+        json!({"limit": 1, "before_seq": 2}),
+    )
+    .await;
+    assert_eq!(history["_is_error"], json!(false), "{history}");
+    assert_eq!(history["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(history["entries"][0]["kind"], json!("welcome"));
+    assert_eq!(
+        history["entries"][0]["counterparty_account"],
+        json!("system:issuer")
+    );
+    // A full page always carries a cursor; the next call returns an empty page.
+    assert_eq!(history["next_before_seq"], json!(1));
+    let end = mcp_tool_call(
+        app.clone(),
+        &token,
+        "list_watt_ledger_entries",
+        json!({"limit": 1, "before_seq": 1}),
+    )
+    .await;
+    assert_eq!(end["entries"], json!([]), "{end}");
+    assert_eq!(end["next_before_seq"], Value::Null);
+}
+
+/// Boots a node whose only gateway is the given mock ledger. Returns the app, its state, the
+/// control token and the bootstrapped broker `public_id`.
+async fn ledger_backed_node(
+    ledger: MockLedger,
+) -> (
+    Router,
+    crate::state::ControlPlaneState,
+    String,
+    String,
+    tempfile::TempDir,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ledger_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, mock_ledger_router(ledger))
+            .await
+            .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge: Arc<dyn SwarmBridge> =
+        Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (dir, mut state, token, _) =
+        build_test_state_with_bridge(20, dir, identity, event_log, bridge);
+    state.gateway_urls = vec![format!("http://{ledger_addr}/api/ingest/snapshot")];
+    let app = crate::app(state.clone());
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    (app, state, token, public_id, dir)
+}
+
+fn escrowed_mission_body(public_id: &str, bounty: i64) -> Value {
+    json!({
+        "title": "Escrowed task",
+        "description": "Bounty locked in the ledger.",
+        "publisher": public_id,
+        "publisher_kind": "player",
+        "domain": "trade",
+        "subnet_id": null,
+        "zone_id": null,
+        "required_role": null,
+        "required_faction": null,
+        "reward": {"agent_watt": bounty, "reputation": 1, "capacity": 1},
+        "payload": {"objective": "escrow"}
+    })
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn mission_bounty_is_escrowed_and_released_through_the_gateway_ledger() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let payer_did = state.identity.agent_did.clone();
+    let executor_did = "did:key:z6MkExecutorForEscrowTest".to_string();
+
+    let publish = |bounty: i64| escrowed_mission_body(&public_id, bounty);
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        publish(100),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        mission["escrow_id"],
+        json!(mission_id),
+        "published mission records its ledger escrow: {mission}"
+    );
+    {
+        let recorded = calls.lock().await;
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        let (kind, body) = &recorded[0];
+        assert_eq!(kind, "lock");
+        assert_eq!(body["payload"]["escrow_id"], json!(mission_id));
+        assert_eq!(body["payload"]["payer"], json!(payer_did));
+        assert_eq!(body["payload"]["amount"], json!(100));
+        assert_eq!(
+            body["payload"]["payer_label"],
+            json!(local_agent_display_name(app.clone(), &token).await),
+            "the publisher's current display name travels with the lock"
+        );
+        assert_eq!(
+            body["payload"]["subject"],
+            json!("Mission bounty: Escrowed task")
+        );
+        assert!(
+            verify_payload(
+                &body["payload"],
+                body["signature"].as_str().unwrap(),
+                body["public_key"].as_str().unwrap(),
+            )
+            .unwrap(),
+            "ledger request must be signed by the node identity"
+        );
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/wattetheria/missions")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(publish(500).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], json!("insufficient_watt"));
+    {
+        let board = state.mission_board.lock().await;
+        let open: Vec<_> = board
+            .list(Some(
+                &wattetheria_kernel::civilization::missions::MissionStatus::Open,
+            ))
+            .into_iter()
+            .map(|mission| mission.mission_id)
+            .collect();
+        assert_eq!(
+            open,
+            vec![mission_id.clone()],
+            "unfunded mission must not stay open"
+        );
+        assert_eq!(
+            board
+                .list(Some(
+                    &wattetheria_kernel::civilization::missions::MissionStatus::Cancelled
+                ))
+                .len(),
+            1
+        );
+    }
+
+    let claimed = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({
+            "mission_id": mission_id,
+            "agent_did": executor_did,
+            "claim_route": {"decision_payload": {"display_name": "Remote Rita"}}
+        }),
+    )
+    .await;
+    assert_eq!(
+        claimed["claimed_by_display_name"],
+        json!("Remote Rita"),
+        "the claimer's name from the claim is kept on the mission: {claimed}"
+    );
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({"mission_id": mission_id, "agent_did": executor_did}),
+    )
+    .await;
+    let settled = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+        json!({"mission_id": mission_id}),
+    )
+    .await;
+    assert_eq!(settled["status"], json!("settled"), "{settled}");
+    {
+        let recorded = calls.lock().await;
+        let (kind, body) = recorded.last().unwrap();
+        assert_eq!(kind, "release");
+        assert_eq!(body["payload"]["escrow_id"], json!(mission_id));
+        assert_eq!(body["payload"]["payer"], json!(payer_did));
+        assert_eq!(body["payload"]["payee"], json!(executor_did));
+        assert_eq!(
+            body["payload"]["payee_label"],
+            json!("Remote Rita"),
+            "the executor's name travels with the payout"
+        );
+        assert_eq!(
+            recorded.iter().filter(|(kind, _)| kind == "lock").count(),
+            1,
+            "one funded lock"
+        );
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|(kind, _)| kind == "lock_refused")
+                .count(),
+            1,
+            "one refused lock"
+        );
+    }
+
+    let self_json = authed_get_json(app, &token, "/v1/client/self").await;
+    assert_eq!(self_json["watt_balance"].as_i64(), Some(150));
+    assert_eq!(self_json["watt_balance_available"].as_bool(), Some(true));
+}
+
+#[tokio::test]
+async fn cancelling_an_escrowed_mission_refunds_the_bounty() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let payer_did = state.identity.agent_did.clone();
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 40),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+
+    let cancelled = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/cancel"),
+        json!({"reason": "publisher withdrew"}),
+    )
+    .await;
+    assert_eq!(cancelled["status"], json!("cancelled"), "{cancelled}");
+    {
+        let recorded = calls.lock().await;
+        let kinds: Vec<&str> = recorded.iter().map(|(kind, _)| kind.as_str()).collect();
+        assert_eq!(kinds, vec!["lock", "refund"], "{recorded:?}");
+        let (_, refund) = recorded.last().unwrap();
+        assert_eq!(refund["payload"]["escrow_id"], json!(mission_id));
+        assert_eq!(refund["payload"]["payer"], json!(payer_did));
+    }
+    // Cancelling again is idempotent and does not touch the ledger.
+    let again = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/cancel"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(again["status"], json!("cancelled"));
+    assert_eq!(calls.lock().await.len(), 2);
+
+    // A settled mission cannot be cancelled.
+    let executor_did = "did:key:z6MkExecutorForCancelTest".to_string();
+    let other = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 10),
+    )
+    .await;
+    let other_id = other["mission_id"].as_str().unwrap().to_string();
+    for step in ["claim", "complete"] {
+        let _ = authed_post_json(
+            app.clone(),
+            &token,
+            &format!("/v1/wattetheria/missions/{other_id}/{step}"),
+            json!({"mission_id": other_id, "agent_did": executor_did}),
+        )
+        .await;
+    }
+    let _ = authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{other_id}/settle"),
+        json!({"mission_id": other_id}),
+    )
+    .await;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/v1/wattetheria/missions/{other_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn lost_escrow_lock_response_is_reconciled_against_the_ledger() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) = ledger_backed_node(MockLedger {
+        lose_lock_response: true,
+        ..MockLedger::with_balance(calls.clone(), 150)
+    })
+    .await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 60),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    // The ledger committed the lock even though its reply was an error: the node must find the
+    // escrow and keep the mission funded instead of cancelling it and stranding the Watt.
+    assert_eq!(mission["status"], json!("open"), "{mission}");
+    assert_eq!(mission["escrow_id"], json!(mission_id), "{mission}");
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(stored.escrow_id.as_deref(), Some(mission_id.as_str()));
+    }
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["lock".to_string()],
+        "no refund for a lock that stands"
+    );
+}
+
+#[tokio::test]
+async fn publishing_a_bounty_without_a_gateway_is_rejected() {
+    let (_dir, app, token, _, state) = build_test_app(20);
+    assert_eq!(state.gateway_urls, Vec::<String>::new());
+    let public_id = bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/wattetheria/missions")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    escrowed_mission_body(&public_id, 25).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["code"], json!("ledger_unavailable"));
+    {
+        let board = state.mission_board.lock().await;
+        assert!(
+            board
+                .list(Some(
+                    &wattetheria_kernel::civilization::missions::MissionStatus::Open
+                ))
+                .is_empty(),
+            "an unfunded bounty mission must not stay open"
+        );
+    }
+    // Missions without a bounty still publish without a ledger.
+    let free = authed_post_json(
+        app,
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 0),
+    )
+    .await;
+    assert_eq!(free["status"], json!("open"), "{free}");
+    assert!(free.get("escrow_id").is_none());
+}
+
+#[tokio::test]
+async fn failed_refund_keeps_the_escrow_pending_until_a_retry_succeeds() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let refund_unavailable = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (app, state, token, public_id, _dir) = ledger_backed_node(MockLedger {
+        refund_unavailable: refund_unavailable.clone(),
+        ..MockLedger::with_balance(calls.clone(), 150)
+    })
+    .await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 30),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+
+    let mut events = state.stream_tx.subscribe();
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/v1/wattetheria/missions/{mission_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    // The cancellation is announced even though the refund failed, so the gateway learns of
+    // it now rather than only once a retry succeeds.
+    let mut announced = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.kind == "mission.cancelled" {
+            announced.push(event.payload);
+        }
+    }
+    assert_eq!(announced.len(), 1, "{announced:?}");
+    assert_eq!(announced[0]["mission_id"], json!(mission_id));
+    {
+        // Cancelled on the board first, so nobody can complete it, with the refund pending.
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Cancelled
+        );
+        assert_eq!(stored.escrow_id.as_deref(), Some(mission_id.as_str()));
+    }
+    // A complete racing in after the cancel is refused.
+    let complete = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/v1/wattetheria/missions/{mission_id}/complete"))
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    json!({"mission_id": mission_id, "agent_did": "did:key:z6MkLateWorker"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !complete.status().is_success(),
+        "complete after cancel must fail: {}",
+        complete.status()
+    );
+
+    // The sweep retries while the ledger is down and keeps the refund pending.
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.refunds_pending, 1);
+    assert_eq!(report.refunds_settled, 0);
+    refund_unavailable.store(false, std::sync::atomic::Ordering::SeqCst);
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.refunds_settled, 1);
+    assert_eq!(report.refunds_pending, 0);
+    {
+        let board = state.mission_board.lock().await;
+        assert!(board.get(&mission_id).unwrap().escrow_id.is_none());
+    }
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["lock", "refund_failed", "refund_failed", "refund"]
+    );
+}
+
+#[tokio::test]
+async fn unconfirmed_lock_is_tracked_as_a_pending_refund_until_stale() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) = ledger_backed_node(MockLedger {
+        lock_hard_fail: true,
+        ..MockLedger::with_balance(calls.clone(), 150)
+    })
+    .await;
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/wattetheria/missions")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    escrowed_mission_body(&public_id, 70).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let (mission_id, stored) = {
+        let board = state.mission_board.lock().await;
+        let cancelled = board.list(Some(
+            &wattetheria_kernel::civilization::missions::MissionStatus::Cancelled,
+        ));
+        assert_eq!(cancelled.len(), 1);
+        (cancelled[0].mission_id.clone(), cancelled[0].clone())
+    };
+    // A 5xx is not proof that nothing was locked: the escrow stays recorded as pending.
+    assert_eq!(stored.escrow_id.as_deref(), Some(mission_id.as_str()));
+    // Within the grace period the ledger's "not found" is not trusted yet.
+    let report = crate::reconcile_mission_escrows(&state, 3600).await;
+    assert_eq!(report.refunds_pending, 1);
+    // Once stale, a lock that never landed is forgotten.
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.refunds_settled, 1);
+    let board = state.mission_board.lock().await;
+    assert!(board.get(&mission_id).unwrap().escrow_id.is_none());
+}
+
+#[tokio::test]
+async fn unconfirmed_escrow_the_ledger_holds_is_confirmed_by_the_sweep() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 30),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    {
+        let board = state.mission_board.lock().await;
+        assert!(board.get(&mission_id).unwrap().escrow_confirmed);
+    }
+    // Simulate the node dying between the lock request and persisting its outcome: the escrow
+    // id is on the mission (recorded before the request) but unconfirmed.
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .record_bounty_escrow_intent(&mission_id, &mission_id)
+            .unwrap();
+    }
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.escrows_confirmed, 1);
+    assert_eq!(report.escrows_abandoned, 0);
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Open
+        );
+        assert!(stored.escrow_confirmed);
+        assert_eq!(stored.escrow_id.as_deref(), Some(mission_id.as_str()));
+    }
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(kinds, vec!["lock"], "no refund or second lock");
+    // The confirmed escrow then pays out on settlement as usual.
+    let worker = "did:key:z6MkSweepWorker";
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(kinds, vec!["lock", "release"]);
+}
+
+#[tokio::test]
+async fn unconfirmed_escrow_the_ledger_never_saw_cancels_the_mission_once_stale() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    // Publish without a bounty, then pretend the node recorded an escrow intent and died before
+    // the lock request ever reached the ledger.
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 0),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .record_bounty_escrow_intent(&mission_id, &mission_id)
+            .unwrap();
+    }
+    let mut events = state.stream_tx.subscribe();
+    // Within the grace period the request may still land: nothing changes.
+    let report = crate::reconcile_mission_escrows(&state, 3600).await;
+    assert_eq!(report, crate::MissionEscrowSweepReport::default());
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Open
+        );
+        assert!(stored.has_unconfirmed_escrow());
+    }
+    // Once stale, the unfunded mission is cancelled, announced, and the escrow forgotten.
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.escrows_abandoned, 1);
+    assert_eq!(report.escrows_confirmed, 0);
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Cancelled
+        );
+        assert!(stored.escrow_id.is_none());
+    }
+    let mut announced = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.kind == "mission.cancelled" {
+            announced.push(event.payload);
+        }
+    }
+    assert_eq!(announced.len(), 1, "{announced:?}");
+    assert_eq!(announced[0]["cancel_reason"], json!("escrow_unconfirmed"));
+    assert!(calls.lock().await.is_empty(), "nothing was ever locked");
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report, crate::MissionEscrowSweepReport::default());
+}
+
+fn cancelled_events(
+    events: &mut tokio::sync::broadcast::Receiver<crate::StreamEvent>,
+) -> Vec<Value> {
+    let mut announced = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.kind == "mission.cancelled" {
+            announced.push(event.payload);
+        }
+    }
+    announced
+}
+
+async fn authed_post_status(
+    app: Router,
+    token: &str,
+    uri: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+#[tokio::test]
+async fn claiming_a_mission_whose_escrow_never_landed_cancels_it_as_unfunded() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    // The node recorded the escrow intent and died before the lock request went out; after a
+    // restart the mission is Open with an unconfirmed escrow.
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 0),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .record_bounty_escrow_intent(&mission_id, &mission_id)
+            .unwrap();
+    }
+    let mut events = state.stream_tx.subscribe();
+    let (status, body) = authed_post_status(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": "did:key:z6MkEagerWorker"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], json!("mission_unfunded"));
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Cancelled
+        );
+        assert!(stored.claimed_by.is_none());
+        // The ledger's 404 is not trusted yet: the escrow id stays as a pending refund.
+        assert_eq!(stored.escrow_id.as_deref(), Some(mission_id.as_str()));
+    }
+    let announced = cancelled_events(&mut events);
+    assert_eq!(announced.len(), 1, "{announced:?}");
+    assert_eq!(announced[0]["cancel_reason"], json!("escrow_unconfirmed"));
+    assert!(calls.lock().await.is_empty(), "nothing was ever locked");
+    // A repeated claim is simply refused; the cancellation is not announced twice.
+    let (status, _) = authed_post_status(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": "did:key:z6MkEagerWorker"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(cancelled_events(&mut events), Vec::<Value>::new());
+    // Once stale the sweep forgets the escrow that never existed.
+    let report = crate::reconcile_mission_escrows(&state, 0).await;
+    assert_eq!(report.refunds_settled, 1);
+    let board = state.mission_board.lock().await;
+    assert!(board.get(&mission_id).unwrap().escrow_id.is_none());
+}
+
+#[tokio::test]
+async fn claiming_a_mission_with_an_unconfirmed_but_held_escrow_confirms_it_first() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 30),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    // The lock landed but the node died before persisting the confirmation.
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .record_bounty_escrow_intent(&mission_id, &mission_id)
+            .unwrap();
+    }
+    let worker = "did:key:z6MkPatientWorker";
+    let (status, body) = authed_post_status(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert!(
+            stored.escrow_confirmed,
+            "confirmed against the ledger on claim"
+        );
+        assert_eq!(stored.claimed_by.as_deref(), Some(worker));
+    }
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(kinds, vec!["lock", "release"], "the worker is paid once");
+    let release = &calls.lock().await[1].1;
+    assert_eq!(release["payload"]["payee"], json!(worker));
+}
+
+#[tokio::test]
+async fn settling_a_completed_mission_whose_escrow_never_landed_is_refused_and_cancels_it() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/missions",
+        escrowed_mission_body(&public_id, 0),
+    )
+    .await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    let worker = "did:key:z6MkLateWorker";
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/claim"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    authed_post_json(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    // A completion synced from the network for a mission whose escrow never existed.
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .record_bounty_escrow_intent(&mission_id, &mission_id)
+            .unwrap();
+    }
+    let mut events = state.stream_tx.subscribe();
+    let (status, body) = authed_post_status(
+        app.clone(),
+        &token,
+        &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+        json!({"mission_id": mission_id, "agent_did": worker}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], json!("mission_unfunded"));
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Cancelled,
+            "not settled for free"
+        );
+        assert!(stored.settled_at.is_none());
+    }
+    assert_eq!(cancelled_events(&mut events).len(), 1);
+    assert!(calls.lock().await.is_empty(), "no release was attempted");
+}
+
+#[tokio::test]
+async fn expired_missions_are_cancelled_and_refunded_by_the_sweep() {
+    let calls: MockLedgerCalls = Arc::new(Mutex::new(Vec::new()));
+    let (app, state, token, public_id, _dir) =
+        ledger_backed_node(MockLedger::with_balance(calls.clone(), 150)).await;
+    let mut body = escrowed_mission_body(&public_id, 20);
+    body["expires_at"] = json!(chrono::Utc::now().timestamp() - 5);
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/wattetheria/missions")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "expiry in the past is rejected"
+    );
+
+    let mut body = escrowed_mission_body(&public_id, 20);
+    let expires_at = chrono::Utc::now().timestamp() + 3600;
+    body["expires_at"] = json!(expires_at);
+    let mission = authed_post_json(app.clone(), &token, "/v1/wattetheria/missions", body).await;
+    let mission_id = mission["mission_id"].as_str().unwrap().to_string();
+    assert_eq!(mission["expires_at"], json!(expires_at));
+    let report = crate::reconcile_mission_escrows(&state, 3600).await;
+    assert_eq!(report.expired, 0, "not due yet");
+
+    {
+        let mut board = state.mission_board.lock().await;
+        board
+            .set_expiry(&mission_id, Some(chrono::Utc::now().timestamp() - 1))
+            .unwrap();
+    }
+    let report = crate::reconcile_mission_escrows(&state, 3600).await;
+    assert_eq!(report.expired, 1);
+    assert_eq!(report.refunds_pending, 0);
+    {
+        let board = state.mission_board.lock().await;
+        let stored = board.get(&mission_id).unwrap();
+        assert_eq!(
+            stored.status,
+            wattetheria_kernel::civilization::missions::MissionStatus::Cancelled
+        );
+        assert!(stored.escrow_id.is_none(), "refund settled");
+    }
+    let kinds: Vec<String> = calls
+        .lock()
+        .await
+        .iter()
+        .map(|(kind, _)| kind.clone())
+        .collect();
+    assert_eq!(kinds, vec!["lock", "refund"]);
+    // The second sweep finds nothing to do.
+    let report = crate::reconcile_mission_escrows(&state, 3600).await;
+    assert_eq!(report, crate::MissionEscrowSweepReport::default());
 }

@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -8,11 +8,11 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
+use crate::ledger_client::{EscrowLabels, LedgerClient, LedgerError};
 use crate::routes::mcp::{
     fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
 };
 use crate::routes::message_validation::{validate_mission_inputs, validation_error_response};
-use crate::routes::reward_view::refresh_known_wallet_balances;
 use crate::routes::settlement_delegation::{
     normalize_publish_delegation, payload_with_settlement_delegation,
     settlement_delegation_from_payload,
@@ -442,18 +442,32 @@ async fn post_mission_lifecycle_topic_notice(
         .map(|_| ())
 }
 
-async fn agent_display_name_for_did(state: &ControlPlaneState, agent_did: &str) -> Option<String> {
+/// Display name of an agent this node knows. For the local agent the identity bound to its
+/// controller wins (the same one `get_agent_identity` reports); otherwise any active identity
+/// registered under that DID.
+pub(crate) async fn agent_display_name_for_did(
+    state: &ControlPlaneState,
+    agent_did: &str,
+) -> Option<String> {
     let agent_did = agent_did.trim();
     if agent_did.is_empty() {
         return None;
     }
-    state
-        .public_identity_registry
-        .lock()
-        .await
-        .list()
-        .into_iter()
-        .find(|identity| identity.active && identity.agent_did.as_deref() == Some(agent_did))
+    let bound_public_id = if agent_did == state.agent_did {
+        state
+            .controller_binding_registry
+            .lock()
+            .await
+            .active_for_controller(agent_did)
+            .map(|binding| binding.public_id)
+    } else {
+        None
+    };
+    let registry = state.public_identity_registry.lock().await;
+    bound_public_id
+        .and_then(|public_id| registry.get(&public_id))
+        .filter(|identity| identity.active)
+        .or_else(|| registry.active_for_agent_did(agent_did))
         .map(|identity| identity.display_name)
 }
 
@@ -1064,6 +1078,29 @@ fn insert_mission_settle_actor_projection_fallbacks(
         let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
         actor_body.claim_route.clone_from(&body.claim_route);
         insert_mission_actor_projection_fallback(object, "completer", agent_did, &actor_body);
+    }
+}
+
+/// Name the claimer goes by: a local identity's display name first, otherwise the name the
+/// claim carried in its agent card. Recorded on the mission so the bounty payout can name the
+/// executor in the ledger.
+async fn claimer_display_name(
+    state: &ControlPlaneState,
+    body: &MissionClaimBody,
+) -> Option<String> {
+    match agent_display_name_for_did(state, &body.agent_did).await {
+        Some(name) => Some(name),
+        None => mission_claim_actor_display_name(body),
+    }
+}
+
+/// Subject the ledger shows next to every movement of a mission's bounty.
+pub(crate) fn mission_bounty_subject(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        "Mission bounty".to_owned()
+    } else {
+        format!("Mission bounty: {title}")
     }
 }
 
@@ -1727,27 +1764,675 @@ async fn settle_mission_board(
     Ok(mission)
 }
 
-async fn fund_mission_treasury(
+/// How long a cancelled mission with an unconfirmed escrow waits before the sweep concludes
+/// that nothing was ever locked and stops tracking it.
+pub const ESCROW_STALE_AFTER_SECS: i64 = 60 * 60;
+/// How long after publication an escrow recorded before its lock request may stay unconfirmed
+/// before the sweep gives up on it: the lock request times out after seconds, so a few minutes
+/// is already generous.
+pub const ESCROW_UNCONFIRMED_GRACE_SECS: i64 = 5 * 60;
+
+/// Locks the mission bounty in the gateway ledger escrow, paid by this node's Agent, and records
+/// the escrow on the mission. A bounty needs a ledger: without a configured gateway the mission
+/// is cancelled and publishing fails. If the ledger definitely refuses (no Watt, bad request,
+/// unknown account) the mission is cancelled. If the outcome is uncertain (timeout, 5xx) the
+/// escrow is looked up: a lock that landed is kept; otherwise the mission is cancelled and keeps
+/// the escrow id as a pending refund that [`reconcile_mission_escrows`] settles later.
+pub(crate) async fn lock_mission_bounty(
     state: &ControlPlaneState,
     mission: &CivilMission,
-) -> Result<(), Response> {
-    if let Some(subnet_id) = mission.subnet_id.clone()
-        && let Some(reward) = mission.reward.as_ref()
-        && reward.treasury_share_watt > 0
+) -> Result<CivilMission, Response> {
+    let bounty = mission
+        .reward
+        .as_ref()
+        .map_or(0, |reward| reward.agent_watt);
+    if bounty <= 0 {
+        return Ok(mission.clone());
+    }
+    let mission_id = mission.mission_id.as_str();
+    let Some(ledger) = LedgerClient::from_state(state) else {
+        cancel_on_board(state, mission_id).await?;
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "a Watt bounty needs a gateway ledger and this node has none configured",
+                "code": "ledger_unavailable",
+            })),
+        )
+            .into_response());
+    };
+    let escrow_id = mission_id;
+    // Persist the escrow id before the lock request leaves: if the node dies while the request
+    // is in flight, the sweep finds the unconfirmed escrow and resolves it against the ledger.
+    record_mission_escrow_intent(state, mission_id, escrow_id).await?;
+    let payer_label = agent_display_name_for_did(state, &state.agent_did).await;
+    let subject = mission_bounty_subject(&mission.title);
+    let Err(error) = ledger
+        .lock_escrow(
+            state,
+            escrow_id,
+            bounty,
+            mission_id,
+            EscrowLabels {
+                payer_label: payer_label.as_deref(),
+                payee_label: None,
+                subject: Some(&subject),
+            },
+        )
+        .await
+    else {
+        return record_mission_escrow(state, mission_id, escrow_id).await;
+    };
+    if ledger_outcome_is_definitive(&error) {
+        cancel_on_board(state, mission_id).await?;
+        clear_mission_escrow(state, mission_id).await?;
+        return Err(ledger_error_response(&error));
+    }
+    // The request may have been committed even though the response never arrived.
+    match ledger.escrow(escrow_id).await {
+        Ok(Some(escrow)) if escrow_is_locked_by(&escrow, &state.identity.agent_did, bounty) => {
+            tracing::warn!(
+                mission_id,
+                error = %error,
+                "escrow lock response was lost but the ledger holds the escrow; keeping the mission"
+            );
+            return record_mission_escrow(state, mission_id, escrow_id).await;
+        }
+        _ => {}
+    }
+    // Cancel and keep the escrow id as a pending refund: a lock that lands after this point is
+    // refunded by the next reconciliation instead of being stranded in `system:escrow`.
+    cancel_on_board(state, mission_id).await?;
+    if let Err(reconcile_error) =
+        refund_pending_escrow(state, mission_id, ESCROW_STALE_AFTER_SECS).await
     {
-        let mut governance = state.governance_engine.lock().await;
-        governance
-            .fund_treasury(&subnet_id, reward.treasury_share_watt)
-            .map_err(|error| internal_error(&error))?;
+        tracing::warn!(
+            mission_id,
+            error = %response_summary(&reconcile_error),
+            "mission escrow left pending after a failed lock; the sweep will retry"
+        );
+    }
+    Err(ledger_error_response(&error))
+}
+
+/// Ledger answers that mean "no escrow exists": the money was never moved.
+fn ledger_outcome_is_definitive(error: &LedgerError) -> bool {
+    match error {
+        LedgerError::InsufficientBalance(_) | LedgerError::NotFound(_) => true,
+        LedgerError::Rejected(status, _) => status.is_client_error(),
+        LedgerError::Unavailable(_) => false,
+    }
+}
+
+fn escrow_is_locked_by(escrow: &Value, payer: &str, amount: i64) -> bool {
+    escrow.get("status").and_then(Value::as_str) == Some("locked")
+        && escrow.get("payer_account").and_then(Value::as_str) == Some(payer)
+        && escrow.get("amount").and_then(Value::as_i64) == Some(amount)
+}
+
+fn response_summary(response: &Response) -> String {
+    format!("status {}", response.status())
+}
+
+async fn cancel_on_board(state: &ControlPlaneState, mission_id: &str) -> Result<(), Response> {
+    let mut board = state.mission_board.lock().await;
+    if board.cancel(mission_id).is_ok() {
         state
             .local_db
-            .save_domain(
-                wattetheria_kernel::local_db::domain::GOVERNANCE,
-                &*governance,
-            )
+            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
             .map_err(|error| internal_error(&error))?;
     }
     Ok(())
+}
+
+async fn record_mission_escrow_intent(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    escrow_id: &str,
+) -> Result<CivilMission, Response> {
+    let mut board = state.mission_board.lock().await;
+    let mission = board
+        .record_bounty_escrow_intent(mission_id, escrow_id)
+        .map_err(|error| internal_error(&error))?;
+    state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        .map_err(|error| internal_error(&error))?;
+    Ok(mission)
+}
+
+async fn record_mission_escrow(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    escrow_id: &str,
+) -> Result<CivilMission, Response> {
+    let mut board = state.mission_board.lock().await;
+    let mission = board
+        .mark_bounty_escrowed(mission_id, escrow_id)
+        .map_err(|error| internal_error(&error))?;
+    state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        .map_err(|error| internal_error(&error))?;
+    Ok(mission)
+}
+
+async fn clear_mission_escrow(
+    state: &ControlPlaneState,
+    mission_id: &str,
+) -> Result<CivilMission, Response> {
+    let mut board = state.mission_board.lock().await;
+    let mission = board
+        .clear_bounty_escrow(mission_id)
+        .map_err(|error| internal_error(&error))?;
+    state
+        .local_db
+        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        .map_err(|error| internal_error(&error))?;
+    Ok(mission)
+}
+
+/// Releases the escrowed bounty to the executor before the board settles. Only a mission that
+/// recorded an escrow pays Watt; one without (pre-ledger, or no bounty) settles without pay. A
+/// recorded escrow the ledger cannot find is an inconsistency, not a legacy mission, and blocks
+/// settlement.
+async fn release_mission_bounty(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    fallback_executor: Option<&str>,
+) -> Result<(), Response> {
+    let (escrow_id, executor, executor_label) = {
+        let board = state.mission_board.lock().await;
+        let Some(mission) = board.get(mission_id) else {
+            return Ok(());
+        };
+        if mission.status != MissionStatus::Completed {
+            return Ok(());
+        }
+        let executor = mission
+            .completed_by
+            .clone()
+            .or(mission.claimed_by.clone())
+            .or_else(|| fallback_executor.map(str::to_owned))
+            .filter(|executor| !executor.trim().is_empty());
+        // The name recorded at claim time belongs to the claimer; only reuse it for them.
+        let executor_label = mission
+            .claimed_by_display_name
+            .clone()
+            .filter(|_| executor.is_some() && executor == mission.claimed_by);
+        (mission.escrow_id.clone(), executor, executor_label)
+    };
+    let Some(escrow_id) = escrow_id else {
+        return Ok(());
+    };
+    // An escrow whose lock was never confirmed (the node stopped mid-request) is checked
+    // against the ledger before any payout; one the ledger does not hold cancels the mission
+    // instead of settling it for free.
+    ensure_mission_escrow_confirmed(state, mission_id).await?;
+    let Some(ledger) = LedgerClient::from_state(state) else {
+        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
+            "mission {mission_id} has escrow {escrow_id} but no gateway is configured"
+        ))));
+    };
+    let outcome = if let Some(executor) = executor {
+        let executor_label = match executor_label {
+            Some(label) => Some(label),
+            None => agent_display_name_for_did(state, &executor).await,
+        };
+        ledger
+            .release_escrow(state, &escrow_id, &executor, executor_label.as_deref())
+            .await
+    } else {
+        // Completed, yet nobody is recorded as the executor: there is no one to pay, so the
+        // Watt goes back to the publisher rather than staying locked forever.
+        tracing::warn!(
+            mission_id,
+            "completed mission has no executor on record; refunding its bounty"
+        );
+        ledger.refund_escrow(state, &escrow_id).await
+    };
+    match outcome {
+        Ok(_) => Ok(()),
+        Err(LedgerError::NotFound(message)) => {
+            Err(escrow_missing_response(mission_id, &escrow_id, &message))
+        }
+        Err(error) => Err(ledger_error_response(&error)),
+    }
+}
+
+/// Makes sure the mission's bounty escrow, if one is recorded, is confirmed by the ledger before
+/// the mission moves on (claim, complete, settle). A confirmed or absent escrow passes at once.
+/// An unconfirmed one is looked up: held by the ledger → confirmed; not held → the mission is
+/// cancelled as unfunded and the caller gets `409 mission_unfunded`; ledger unreachable → 502.
+pub(crate) async fn ensure_mission_escrow_confirmed(
+    state: &ControlPlaneState,
+    mission_id: &str,
+) -> Result<(), Response> {
+    let mission = {
+        let board = state.mission_board.lock().await;
+        match board.get(mission_id) {
+            Some(mission)
+                if mission.has_unconfirmed_escrow()
+                    && mission.status != MissionStatus::Cancelled =>
+            {
+                mission
+            }
+            _ => return Ok(()),
+        }
+    };
+    if confirm_escrow_with_ledger(state, &mission).await? {
+        return Ok(());
+    }
+    cancel_unfunded_mission(state, mission_id, ESCROW_STALE_AFTER_SECS).await?;
+    Err((
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": format!(
+                "mission {mission_id} bounty was never escrowed in the ledger; the mission has been cancelled"
+            ),
+            "code": "mission_unfunded",
+        })),
+    )
+        .into_response())
+}
+
+/// Asks the ledger whether the mission's unconfirmed escrow is locked by this node for the
+/// bounty. `Ok(true)` after confirming it on the board; `Ok(false)` when the ledger does not hold
+/// it; `Err` when the ledger cannot answer (nothing is decided).
+async fn confirm_escrow_with_ledger(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+) -> Result<bool, Response> {
+    let mission_id = mission.mission_id.as_str();
+    let Some(escrow_id) = mission.escrow_id.as_deref() else {
+        return Ok(true);
+    };
+    let bounty = mission
+        .reward
+        .as_ref()
+        .map_or(0, |reward| reward.agent_watt);
+    let Some(ledger) = LedgerClient::from_state(state) else {
+        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
+            "mission {mission_id} has an unconfirmed escrow {escrow_id} but no gateway is configured"
+        ))));
+    };
+    match ledger.escrow(escrow_id).await {
+        Ok(Some(escrow)) if escrow_is_locked_by(&escrow, &state.identity.agent_did, bounty) => {
+            record_mission_escrow(state, mission_id, escrow_id).await?;
+            tracing::info!(
+                mission_id,
+                "escrow lock confirmed against the ledger after its outcome was lost"
+            );
+            Ok(true)
+        }
+        Ok(_) => Ok(false),
+        Err(error) => Err(ledger_error_response(&error)),
+    }
+}
+
+/// Cancels a mission whose escrow the ledger does not hold, announces the cancellation and
+/// tries to forget the escrow (the ledger's 404 is trusted once the mission is stale). Returns
+/// whether this call cancelled it.
+async fn cancel_unfunded_mission(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    stale_after_secs: i64,
+) -> Result<bool, Response> {
+    let cancelled = {
+        let mut board = state.mission_board.lock().await;
+        match board.get(mission_id) {
+            Some(mission) if mission.status == MissionStatus::Cancelled => None,
+            Some(_) => {
+                let cancelled = board
+                    .cancel_unfunded(mission_id)
+                    .map_err(|error| internal_error(&error))?;
+                state
+                    .local_db
+                    .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+                    .map_err(|error| internal_error(&error))?;
+                Some(cancelled)
+            }
+            None => return Ok(false),
+        }
+    };
+    let Some(cancelled) = cancelled else {
+        return Ok(false);
+    };
+    tracing::warn!(
+        mission_id,
+        escrow_id = cancelled.escrow_id.as_deref().unwrap_or_default(),
+        "escrow lock never reached the ledger; mission cancelled as unfunded"
+    );
+    announce_mission_cancelled(
+        state,
+        &cancelled,
+        Some("escrow_unconfirmed".to_owned()),
+        None,
+    )
+    .await;
+    if let Err(response) = refund_pending_escrow(state, mission_id, stale_after_secs).await {
+        tracing::debug!(
+            mission_id,
+            error = %response_summary(&response),
+            "unfunded mission keeps its escrow id as a pending refund until the sweep forgets it"
+        );
+    }
+    Ok(true)
+}
+
+fn escrow_missing_response(mission_id: &str, escrow_id: &str, message: &str) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({
+            "error": format!(
+                "escrow {escrow_id} recorded on mission {mission_id} is missing from the ledger: {message}"
+            ),
+            "code": "ledger_escrow_missing",
+        })),
+    )
+        .into_response()
+}
+
+/// Returns a cancelled mission's escrowed Watt to the publisher and forgets the escrow. An
+/// escrow the ledger never saw is forgotten once the mission is older than `stale_after_secs`
+/// (the lock request can no longer land); before that it stays pending and is retried.
+async fn refund_pending_escrow(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    stale_after_secs: i64,
+) -> Result<CivilMission, Response> {
+    let mission = {
+        let board = state.mission_board.lock().await;
+        board.get(mission_id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "mission not found"})),
+            )
+                .into_response()
+        })?
+    };
+    let Some(escrow_id) = mission.escrow_id.clone() else {
+        return Ok(mission);
+    };
+    let Some(ledger) = LedgerClient::from_state(state) else {
+        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
+            "mission {mission_id} has escrow {escrow_id} but no gateway is configured"
+        ))));
+    };
+    match ledger.refund_escrow(state, &escrow_id).await {
+        Ok(_) => clear_mission_escrow(state, mission_id).await,
+        Err(LedgerError::NotFound(message)) => {
+            let age = Utc::now().timestamp().saturating_sub(mission.updated_at);
+            if age >= stale_after_secs {
+                tracing::warn!(
+                    mission_id,
+                    escrow_id,
+                    "ledger holds no escrow for a cancelled mission; forgetting it: {message}"
+                );
+                clear_mission_escrow(state, mission_id).await
+            } else {
+                Err(escrow_missing_response(mission_id, &escrow_id, &message))
+            }
+        }
+        Err(error) => Err(ledger_error_response(&error)),
+    }
+}
+
+/// Cancels a mission that is not completed and refunds its bounty. The board is cancelled
+/// first, under its lock, so a `complete` racing with the refund is rejected instead of leaving
+/// a completed mission whose Watt went back to the publisher. The cancellation is announced
+/// (stream, signed event, audit) as soon as the board is cancelled, before the refund, so a
+/// refund that fails and is retried later never leaves the gateway unaware of the cancel.
+/// Returns the mission and whether this call performed the cancellation.
+async fn cancel_mission_and_refund(
+    state: &ControlPlaneState,
+    mission_id: &str,
+    stale_after_secs: i64,
+    reason: Option<String>,
+    actor: Option<String>,
+) -> Result<(CivilMission, bool), Response> {
+    let newly_cancelled = {
+        let mut board = state.mission_board.lock().await;
+        let Some(mission) = board.get(mission_id) else {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "mission not found"})),
+            )
+                .into_response());
+        };
+        match mission.status {
+            MissionStatus::Completed | MissionStatus::Settled => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(json!({"error": "mission can no longer be cancelled"})),
+                )
+                    .into_response());
+            }
+            MissionStatus::Cancelled => None,
+            MissionStatus::Open | MissionStatus::Claimed => {
+                let cancelled = board
+                    .cancel(mission_id)
+                    .map_err(|error| internal_error(&error))?;
+                state
+                    .local_db
+                    .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+                    .map_err(|error| internal_error(&error))?;
+                Some(cancelled)
+            }
+        }
+    };
+    if let Some(cancelled) = &newly_cancelled {
+        announce_mission_cancelled(state, cancelled, reason, actor).await;
+    }
+    let mission = refund_pending_escrow(state, mission_id, stale_after_secs).await?;
+    Ok((mission, newly_cancelled.is_some()))
+}
+
+/// Cancels an open or claimed mission and refunds its escrowed bounty to the publisher.
+/// Repeating the call is safe: a cancelled mission whose refund is still pending retries it.
+pub(crate) async fn mission_cancel_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let reason = body
+        .as_ref()
+        .and_then(|Json(body)| body.get("reason").and_then(Value::as_str))
+        .map(str::to_owned);
+    let (mission, _) = match cancel_mission_and_refund(
+        &state,
+        &mission_id,
+        ESCROW_STALE_AFTER_SECS,
+        reason,
+        Some(auth),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(response) => return response,
+    };
+    Json(mission).into_response()
+}
+
+/// Publishes a cancellation to the local stream, the signed event log and the audit log.
+pub(crate) async fn announce_mission_cancelled(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    reason: Option<String>,
+    actor: Option<String>,
+) {
+    let mut payload = mission_gateway_payload_with_current_contract(state, mission).await;
+    if let (Some(object), Some(reason)) = (payload.as_object_mut(), reason.as_deref()) {
+        object.insert("cancel_reason".to_string(), json!(reason));
+    }
+    let _ = state.stream_tx.send(StreamEvent {
+        kind: "mission.cancelled".to_string(),
+        timestamp: Utc::now().timestamp(),
+        payload: payload.clone(),
+    });
+    let _ = state.append_signed_event("MISSION_CANCELLED", payload.clone());
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: "mission.cancel".to_string(),
+        status: "ok".to_string(),
+        actor,
+        subject: Some(mission.mission_id.clone()),
+        capability: Some("mission.cancel".to_string()),
+        reason,
+        duration_ms: None,
+        details: Some(payload),
+    });
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MissionEscrowSweepReport {
+    /// Open or claimed missions past their expiry that this sweep cancelled.
+    pub expired: usize,
+    /// Cancelled missions whose escrow was refunded or forgotten in this sweep.
+    pub refunds_settled: usize,
+    /// Cancelled missions whose refund is still pending after this sweep.
+    pub refunds_pending: usize,
+    /// Escrows recorded before a lock whose outcome was never persisted and that the ledger
+    /// now confirms as locked.
+    pub escrows_confirmed: usize,
+    /// Such escrows the ledger never saw: the mission was cancelled as unfunded once stale.
+    pub escrows_abandoned: usize,
+}
+
+/// Periodic mission/ledger reconciliation: resolves escrows whose lock outcome was never
+/// persisted, expires overdue missions (cancel + refund) and retries refunds of cancelled
+/// missions that still hold an escrow. Escrows the ledger has no record of are forgotten once
+/// the mission is older than `stale_after_secs`.
+pub async fn reconcile_mission_escrows(
+    state: &ControlPlaneState,
+    stale_after_secs: i64,
+) -> MissionEscrowSweepReport {
+    let mut report = MissionEscrowSweepReport::default();
+    let now = Utc::now().timestamp();
+    let unconfirmed = {
+        let board = state.mission_board.lock().await;
+        board.unconfirmed_escrows()
+    };
+    for mission in unconfirmed {
+        resolve_unconfirmed_escrow(state, &mission, now, stale_after_secs, &mut report).await;
+    }
+    let (expired, pending): (Vec<CivilMission>, Vec<String>) = {
+        let board = state.mission_board.lock().await;
+        let expired = board.expired_missions(now);
+        let pending = board
+            .list(Some(&MissionStatus::Cancelled))
+            .into_iter()
+            .filter(|mission| mission.escrow_id.is_some())
+            .map(|mission| mission.mission_id)
+            .collect();
+        (expired, pending)
+    };
+    for mission in expired {
+        match cancel_mission_and_refund(
+            state,
+            &mission.mission_id,
+            stale_after_secs,
+            Some("expired".to_owned()),
+            None,
+        )
+        .await
+        {
+            Ok(_) => report.expired += 1,
+            // Completed (or gone) between the snapshot and the cancel: not expired after all.
+            Err(response)
+                if matches!(
+                    response.status(),
+                    StatusCode::CONFLICT | StatusCode::NOT_FOUND
+                ) => {}
+            Err(response) => {
+                // Cancelled on the board (so it stops being claimable) but the refund did not
+                // go through: it is now a pending refund and retried by the next sweep.
+                report.expired += 1;
+                report.refunds_pending += 1;
+                tracing::warn!(
+                    mission_id = %mission.mission_id,
+                    error = %response_summary(&response),
+                    "expired mission cancelled but its refund is pending"
+                );
+            }
+        }
+    }
+    for mission_id in pending {
+        match refund_pending_escrow(state, &mission_id, stale_after_secs).await {
+            Ok(mission) if mission.escrow_id.is_none() => report.refunds_settled += 1,
+            Ok(_) => report.refunds_pending += 1,
+            Err(response) => {
+                report.refunds_pending += 1;
+                tracing::warn!(
+                    mission_id,
+                    error = %response_summary(&response),
+                    "pending mission refund not settled yet"
+                );
+            }
+        }
+    }
+    report
+}
+
+/// Settles an escrow that was recorded before its lock request but whose outcome never reached
+/// the board (the node stopped mid-request). A lock the ledger holds is confirmed; one the ledger
+/// has no record of is left alone while the mission is younger than the grace period (the request
+/// can still land), then the mission is cancelled as unfunded. A ledger that cannot answer is
+/// retried by the next sweep.
+async fn resolve_unconfirmed_escrow(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    now: i64,
+    stale_after_secs: i64,
+    report: &mut MissionEscrowSweepReport,
+) {
+    let mission_id = mission.mission_id.as_str();
+    match confirm_escrow_with_ledger(state, mission).await {
+        Ok(true) => report.escrows_confirmed += 1,
+        Ok(false) => {
+            // Measured from publication: the lock is requested right after it, and a claim in
+            // the meantime must not restart the clock.
+            let grace = stale_after_secs.min(ESCROW_UNCONFIRMED_GRACE_SECS);
+            if now.saturating_sub(mission.created_at) < grace {
+                return;
+            }
+            match cancel_unfunded_mission(state, mission_id, stale_after_secs).await {
+                Ok(true) => report.escrows_abandoned += 1,
+                Ok(false) => {}
+                Err(response) => tracing::warn!(
+                    mission_id,
+                    error = %response_summary(&response),
+                    "unconfirmed escrow could not be resolved; retrying next sweep"
+                ),
+            }
+        }
+        Err(response) => tracing::warn!(
+            mission_id,
+            error = %response_summary(&response),
+            "unconfirmed escrow could not be checked; retrying next sweep"
+        ),
+    }
+}
+
+fn ledger_error_response(error: &LedgerError) -> Response {
+    let (status, code) = match error {
+        LedgerError::InsufficientBalance(_) => (StatusCode::PAYMENT_REQUIRED, "insufficient_watt"),
+        LedgerError::NotFound(_) => (StatusCode::NOT_FOUND, "ledger_not_found"),
+        LedgerError::Rejected(..) => (StatusCode::BAD_GATEWAY, "ledger_rejected"),
+        LedgerError::Unavailable(_) => (StatusCode::BAD_GATEWAY, "ledger_unavailable"),
+    };
+    (
+        status,
+        Json(json!({"error": error.to_string(), "code": code})),
+    )
+        .into_response()
 }
 
 fn replay_commit_response(
@@ -1860,34 +2545,25 @@ pub(crate) async fn mission_get(
     Json(mission).into_response()
 }
 
-pub(crate) async fn mission_publish(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Json(body): Json<MissionPublishBody>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    if agent_commit_context_from_headers(&headers).is_none()
-        && let Err(error) = validate_mission_inputs(&body.title, &body.description, &body.payload)
+/// Validates the expiry, publishes the mission on the local board and persists it. The Watt
+/// bounty is escrowed afterwards by [`lock_mission_bounty`].
+async fn publish_mission_on_board(
+    state: &ControlPlaneState,
+    body: MissionPublishBody,
+    settlement_delegation: Option<&Value>,
+) -> Result<CivilMission, Response> {
+    if let Some(expires_at) = body.expires_at
+        && expires_at <= Utc::now().timestamp()
     {
-        return validation_error_response(error);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "expires_at must be in the future"})),
+        )
+            .into_response());
     }
-    let settlement_delegation = match normalize_publish_delegation(body.settlement_delegation) {
-        Ok(delegation) => delegation,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": error.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    let mission_payload =
-        payload_with_settlement_delegation(body.payload, settlement_delegation.as_ref());
+    let mission_payload = payload_with_settlement_delegation(body.payload, settlement_delegation);
     let mut board = state.mission_board.lock().await;
-    let mission = board.publish_with_scope_and_geo(
+    let mut mission = board.publish_with_scope_and_geo(
         &body.title,
         &body.description,
         &body.publisher,
@@ -1902,16 +2578,53 @@ pub(crate) async fn mission_publish(
         mission_payload,
         Some(state.public_geo_payload()),
     );
-    if let Err(error) = state
+    if body.expires_at.is_some() {
+        mission = board
+            .set_expiry(&mission.mission_id, body.expires_at)
+            .map_err(|error| internal_error(&error))?;
+    }
+    state
         .local_db
         .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+        .map_err(|error| internal_error(&error))?;
+    Ok(mission)
+}
+
+pub(crate) async fn mission_publish(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(mut body): Json<MissionPublishBody>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    if agent_commit_context_from_headers(&headers).is_none()
+        && let Err(error) = validate_mission_inputs(&body.title, &body.description, &body.payload)
     {
-        return internal_error(&error);
+        return validation_error_response(error);
     }
-    drop(board);
-    if let Err(error) = refresh_known_wallet_balances(&state).await {
-        return internal_error(&error);
-    }
+    let settlement_delegation =
+        match normalize_publish_delegation(body.settlement_delegation.take()) {
+            Ok(delegation) => delegation,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": error.to_string()})),
+                )
+                    .into_response();
+            }
+        };
+    let request_json = json!({"title": body.title, "publisher": body.publisher});
+    let mission = match publish_mission_on_board(&state, body, settlement_delegation.as_ref()).await
+    {
+        Ok(mission) => mission,
+        Err(response) => return response,
+    };
+    let mission = match lock_mission_bounty(&state, &mission).await {
+        Ok(mission) => mission,
+        Err(response) => return response,
+    };
     let mut published_task_contract = None;
     if agent_commit_context_from_headers(&headers).is_none() {
         let contract = match publish_mission_task_to_swarm(&state, &mission).await {
@@ -1952,7 +2665,7 @@ pub(crate) async fn mission_publish(
             action_type: "missions.publish",
             target_id: Some(mission.mission_id.clone()),
             actor_agent_did: None,
-            request_json: &json!({"title": body.title, "publisher": body.publisher}),
+            request_json: &request_json,
             response_json: &payload,
         },
     ) {
@@ -2446,6 +3159,19 @@ fn record_mission_transition_events(
     });
 }
 
+fn apply_local_mission_transition(
+    board: &mut wattetheria_kernel::civilization::missions::MissionBoard,
+    action: &str,
+    body: &MissionClaimBody,
+    claimer_display_name: Option<&str>,
+) -> anyhow::Result<CivilMission> {
+    match action {
+        "claim" => board.claim_as(&body.mission_id, &body.agent_did, claimer_display_name),
+        "complete" => board.complete(&body.mission_id, &body.agent_did, body.result.clone()),
+        _ => unreachable!("unsupported mission transition"),
+    }
+}
+
 async fn transition_mission(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -2463,6 +3189,14 @@ async fn transition_mission(
     };
     let request_mission_id = body.mission_id.clone();
     let request_agent_did = body.agent_did.clone();
+    if let Err(response) = ensure_mission_escrow_confirmed(&state, &body.mission_id).await {
+        return response;
+    }
+    let claimer_display_name = if action == "claim" {
+        claimer_display_name(&state, &body).await
+    } else {
+        None
+    };
     let mut board = state.mission_board.lock().await;
     if board.get(&body.mission_id).is_none() {
         if action == "claim" {
@@ -2474,11 +3208,8 @@ async fn transition_mission(
             return complete_network_mission(state, headers, auth, body).await;
         }
     }
-    let mission = match action {
-        "claim" => board.claim(&body.mission_id, &body.agent_did),
-        "complete" => board.complete(&body.mission_id, &body.agent_did, body.result.clone()),
-        _ => unreachable!("unsupported mission transition"),
-    };
+    let mission =
+        apply_local_mission_transition(&mut board, action, &body, claimer_display_name.as_deref());
     let mission = match mission {
         Ok(mission) => mission,
         Err(error) => {
@@ -2496,9 +3227,6 @@ async fn transition_mission(
         return internal_error(&error);
     }
     drop(board);
-    if let Err(error) = refresh_known_wallet_balances(&state).await {
-        return internal_error(&error);
-    }
     if action == "claim"
         && agent_commit_context_from_headers(&headers).is_none()
         && let Err(error) =
@@ -2569,16 +3297,15 @@ pub(crate) async fn mission_settle(
         return response;
     }
 
+    if let Err(response) =
+        release_mission_bounty(&state, &body.mission_id, body.agent_did.as_deref()).await
+    {
+        return response;
+    }
     let mission = match settle_mission_board(&state, &body.mission_id).await {
         Ok(mission) => mission,
         Err(response) => return response,
     };
-    if let Err(response) = fund_mission_treasury(&state, &mission).await {
-        return response;
-    }
-    if let Err(error) = refresh_known_wallet_balances(&state).await {
-        return internal_error(&error);
-    }
 
     let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
     insert_mission_settle_actor_projection_fallbacks(&mut payload, &mission, &body);
@@ -2691,7 +3418,6 @@ mod tests {
                 agent_watt: 10,
                 reputation: 2,
                 capacity: 1,
-                treasury_share_watt: 3,
             },
             json!({"cargo": "water"}),
         )

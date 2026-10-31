@@ -472,10 +472,9 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 2,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"objective": "favorite local food"}
         }),

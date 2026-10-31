@@ -376,7 +376,6 @@ mod tests {
                 agent_watt: 0,
                 reputation: 0,
                 capacity: 0,
-                treasury_share_watt: 0,
             }),
             payload: serde_json::to_value(SystemPuzzleVerificationMissionPayload {
                 task_kind: SYSTEM_PUZZLE_VERIFICATION_TASK_KIND.to_string(),
@@ -393,10 +392,14 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             claimed_by: None,
+            claimed_by_display_name: None,
             completed_by: None,
             completion_result: None,
             settled_at: None,
             status: MissionStatus::Completed,
+            escrow_id: None,
+            escrow_confirmed: false,
+            expires_at: None,
         }
     }
 }

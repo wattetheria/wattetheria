@@ -2550,14 +2550,14 @@ fn load_agent_stats_from_mission_board(
         .into_iter()
         .filter(|mission| mission.completed_by.as_deref() == Some(agent_did))
     {
+        // Watt lives in the gateway ledger; only reputation and capacity are local.
         if let Some(reward) = mission.reward.as_ref() {
-            stats.watt += reward.agent_watt;
             stats.reputation += reward.reputation;
             stats.capacity += reward.capacity;
         }
     }
 
-    if stats.watt != 0 || stats.reputation != 0 || stats.capacity != 0 {
+    if stats.reputation != 0 || stats.capacity != 0 {
         stats.power = (1 + (stats.capacity / 10)).max(1);
     }
 
@@ -2591,7 +2591,6 @@ mod tests {
                 agent_watt: 15,
                 reputation: 4,
                 capacity: 11,
-                treasury_share_watt: 2,
             },
             json!({}),
         );
@@ -2603,7 +2602,7 @@ mod tests {
         board.persist(&mission_board_path).unwrap();
 
         let stats = load_agent_stats_from_mission_board(&mission_board_path, "agent-a").unwrap();
-        assert_eq!(stats.watt, 15);
+        assert_eq!(stats.watt, 0);
         assert_eq!(stats.reputation, 4);
         assert_eq!(stats.capacity, 11);
         assert_eq!(stats.power, 2);

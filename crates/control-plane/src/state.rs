@@ -715,6 +715,9 @@ pub struct MissionPublishBody {
     pub payload: Value,
     #[serde(default)]
     pub settlement_delegation: Option<Value>,
+    /// Unix seconds; after this an unfinished mission is cancelled and its bounty refunded.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

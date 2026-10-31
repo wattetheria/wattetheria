@@ -175,10 +175,9 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 2,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"objective": "verify accepted result identity"}
         }),
@@ -326,10 +325,9 @@ async fn agent_action_commit_settles_mission_completed_topic_without_candidate_f
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 2,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"objective": "ordinary mission"}
         }),

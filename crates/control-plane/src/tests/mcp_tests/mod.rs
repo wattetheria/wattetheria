@@ -130,3 +130,4 @@ mod receipts;
 mod schemas;
 mod servicenet;
 mod space_movement;
+mod wallet;

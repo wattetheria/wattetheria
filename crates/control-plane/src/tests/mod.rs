@@ -2099,7 +2099,6 @@ fn seed_active_payment_account(state: &ControlPlaneState) -> String {
 struct TradeMissionSpec<'a> {
     title: &'a str,
     description: &'a str,
-    reward_watt: u64,
     reward_reputation: i64,
     objective: &'a str,
     required_faction: Option<&'a str>,
@@ -2122,11 +2121,12 @@ async fn publish_trade_mission(app: Router, token: &str, spec: TradeMissionSpec<
             "zone_id": spec.zone_id,
             "required_role": "broker",
             "required_faction": spec.required_faction,
+            // Watt bounties need the gateway ledger (see the escrow tests in client_tests);
+            // these fixtures run without a gateway and reward reputation only.
             "reward": {
-                "agent_watt": spec.reward_watt,
+                "agent_watt": 0,
                 "reputation": spec.reward_reputation,
-                "capacity": 1,
-                "treasury_share_watt": 5
+                "capacity": 1
             },
             "payload": {"objective": spec.objective}
         }),
@@ -2141,7 +2141,6 @@ async fn settle_trade_mission_for_agent(app: Router, token: &str, agent_did: &st
         TradeMissionSpec {
             title: "Bootstrap exchange route",
             description: "Seed a frontier liquidity lane",
-            reward_watt: 40,
             reward_reputation: 4,
             objective: "seed-route",
             required_faction: Some("freeport"),
@@ -2182,7 +2181,6 @@ async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
         TradeMissionSpec {
             title: "Route liquidity relay",
             description: "Rebalance frontier markets",
-            reward_watt: 50,
             reward_reputation: 4,
             objective: "rebalance",
             required_faction: Some("freeport"),
@@ -2199,7 +2197,6 @@ async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
         TradeMissionSpec {
             title: "Deep watch exchange run",
             description: "Deliver market telemetry into deep space",
-            reward_watt: 45,
             reward_reputation: 5,
             objective: "deep-route",
             required_faction: None,
@@ -2216,7 +2213,6 @@ async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
         TradeMissionSpec {
             title: "Escort exchange convoy",
             description: "Protect the settlement convoy",
-            reward_watt: 30,
             reward_reputation: 3,
             objective: "escort",
             required_faction: None,
@@ -2233,7 +2229,6 @@ async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
         TradeMissionSpec {
             title: "Close market books",
             description: "Finalize settlement ledgers",
-            reward_watt: 20,
             reward_reputation: 2,
             objective: "settle",
             required_faction: None,

@@ -178,7 +178,7 @@ fn operator_templates(
             "Inspect and stabilize the relay path that anchors your home zone.",
             MissionDomain::Wealth,
             profile,
-            starter_reward(20, 2, 4),
+            starter_reward(2),
             anchor.clone(),
         ),
         template(
@@ -192,7 +192,7 @@ fn operator_templates(
             "Bring one home-zone infrastructure path back into dependable operating condition.",
             MissionDomain::Power,
             profile,
-            starter_reward(30, 3, 6),
+            starter_reward(3),
             anchor.clone(),
         ),
     ]
@@ -214,7 +214,7 @@ fn broker_templates(
             "Move liquidity across the first safe trade corridor and restore flow between genesis and frontier systems.",
             MissionDomain::Trade,
             profile,
-            starter_reward(25, 3, 5),
+            starter_reward(3),
             anchor.clone(),
         ),
         template(
@@ -228,7 +228,7 @@ fn broker_templates(
             "Resolve a supply imbalance for your home subnet and prove that you can keep a route alive.",
             MissionDomain::Wealth,
             profile,
-            starter_reward(35, 4, 7),
+            starter_reward(4),
             anchor.clone(),
         ),
     ]
@@ -250,7 +250,7 @@ fn enforcer_templates(
             "Reduce route risk around your home zone and establish a basic security presence.",
             MissionDomain::Security,
             profile,
-            starter_reward(25, 3, 5),
+            starter_reward(3),
             anchor.clone(),
         ),
         template(
@@ -264,7 +264,7 @@ fn enforcer_templates(
             "Protect a convoy moving into the frontier belt and demonstrate local authority.",
             MissionDomain::Power,
             profile,
-            starter_reward(35, 4, 7),
+            starter_reward(4),
             anchor.clone(),
         ),
     ]
@@ -286,7 +286,7 @@ fn artificer_templates(
             "Create a visible civic marker that makes your home zone legible to other participants.",
             MissionDomain::Culture,
             profile,
-            starter_reward(20, 3, 4),
+            starter_reward(3),
             anchor.clone(),
         ),
         template(
@@ -300,18 +300,19 @@ fn artificer_templates(
             "Improve local social gravity so your home subnet becomes easier to notice and harder to ignore.",
             MissionDomain::Trade,
             profile,
-            starter_reward(30, 4, 6),
+            starter_reward(4),
             anchor.clone(),
         ),
     ]
 }
 
-fn starter_reward(agent_watt: i64, reputation: i64, treasury_share_watt: i64) -> MissionReward {
+/// System-published missions carry no Watt: Watt only moves through the gateway ledger, and
+/// nobody funds an escrow for tutorial content. Reputation and capacity stay local.
+fn starter_reward(reputation: i64) -> MissionReward {
     MissionReward {
-        agent_watt,
+        agent_watt: 0,
         reputation,
         capacity: 1,
-        treasury_share_watt,
     }
 }
 

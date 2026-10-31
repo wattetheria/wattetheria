@@ -620,11 +620,50 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
             "payload",
             "Mission payload JSON. Up to 64 KiB when serialized as UTF-8. No language, script, or symbol restriction.",
         ),
+        integer_field(
+            "expires_at",
+            "Optional unix seconds. An open or claimed mission past this time is cancelled and its Watt bounty refunded to the publisher.",
+        ),
+        reward_field(),
     ]
+}
+
+/// The Watt bounty a publisher offers. Omitted means no bounty; `agent_watt` is locked from
+/// the publisher's ledger balance when the mission is published.
+fn reward_field() -> (&'static str, Value) {
+    (
+        "reward",
+        json!({
+            "type": "object",
+            "description": "Optional bounty for the executor. agent_watt is locked from your own Watt balance in the gateway ledger when the mission is published, paid to the executor on settlement, and refunded if the mission is cancelled or expires. Publishing fails with insufficient_watt when your balance is too low, and with ledger_unavailable when this node has no gateway.",
+            "properties": {
+                "agent_watt": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Watt paid to the executor; 0 means no Watt bounty."
+                },
+                "reputation": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Reputation granted to the executor on settlement. Defaults to 0."
+                },
+                "capacity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Capacity granted to the executor on settlement. Defaults to 0."
+                }
+            },
+            "required": ["agent_watt"],
+            "additionalProperties": false
+        }),
+    )
 }
 
 fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
     let mut fields = publish_mission_fields();
+    // A delegated mission is paid through the external settlement it is backed by; it never
+    // carries a Watt bounty, so the reward input is not offered (and is rejected if sent).
+    fields.retain(|(name, _)| *name != "reward");
     fields.push(value_field(
         "settlement_delegation",
         "External settlement delegation reference. Currently supports {enabled:true, layer:web2|web3, provider:servicenet-agent, provider_agent_id, provider_agent_name, asset, amount, provider_receipt:{status}} plus optional network, funding_proof, terms, and provider-specific receipt data.",
@@ -634,6 +673,8 @@ fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
 
 fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
     let mut fields = publish_mission_fields();
+    // Collective missions carry no Watt bounty; the Hive flow never reads a reward.
+    fields.retain(|(name, _)| *name != "reward");
     fields.extend([
         string_field(
             "hive_id",
@@ -838,6 +879,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             false,
         )),
         "get_agent_identity" | "list_nearby" => Some(empty_tool_schema(tool)),
+        "get_watt_balance" | "list_watt_ledger_entries" => wallet_schema(tool),
         "search_agents" => Some(agent_search_schema(tool)),
         "get_agent_card" => Some(agent_card_lookup_schema(tool)),
         "list_friend_requests" | "list_sent_friend_requests" => Some(tool_schema(
@@ -1244,6 +1286,28 @@ fn servicenet_address_schema(fields: &[(&str, Value)], required: &[&str]) -> Val
         "required": required,
         "additionalProperties": false
     })
+}
+
+fn wallet_schema(tool: &AgentTool) -> Option<Value> {
+    match tool.name {
+        "get_watt_balance" => Some(empty_tool_schema(tool)),
+        "list_watt_ledger_entries" => Some(tool_schema(
+            tool,
+            &[
+                integer_field(
+                    "limit",
+                    "Maximum number of ledger entries to return (1-200, default 50).",
+                ),
+                integer_field(
+                    "before_seq",
+                    "Cursor: only entries older than this ledger sequence number. Use the previous page's next_before_seq.",
+                ),
+            ],
+            &[],
+            false,
+        )),
+        _ => None,
+    }
 }
 
 fn empty_tool_schema(tool: &AgentTool) -> Value {

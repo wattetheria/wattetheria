@@ -211,7 +211,7 @@ async fn seed_gateway_remote_mission(
         "swarm_scope": {"kind": "group", "id": mission_id},
         "mission_feed_key": "wattetheria.missions",
         "mission_scope_hint": format!("group:{mission_id}"),
-        "reward": {"agent_watt": 10},
+        "reward": {"agent_watt": 0},
         "payload": {"work": "deliver"}
     });
     contract.output_schema = json!({
@@ -504,10 +504,9 @@ async fn settle_local_publisher_mission_publishes_lifecycle_notice() {
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 10,
+                "agent_watt": 0,
                 "reputation": 1,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"work": "inspect"}
         }),

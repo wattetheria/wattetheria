@@ -22,10 +22,9 @@ async fn mcp_complete_mission_publishes_ordinary_lifecycle_notice_without_candid
             "publisher_kind": "player",
             "domain": "trade",
             "reward": {
-                "agent_watt": 1,
+                "agent_watt": 0,
                 "reputation": 0,
-                "capacity": 0,
-                "treasury_share_watt": 0
+                "capacity": 0
             },
             "payload": {"objective": "ordinary-mcp-complete"}
         }),
@@ -151,6 +150,77 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
 }
 
 #[tokio::test]
+async fn mcp_publish_mission_with_a_watt_bounty_needs_a_gateway_ledger() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let response = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_mission",
+                "arguments": {
+                    "title": "Bounty without a ledger",
+                    "description": "This node has no gateway, so the bounty cannot be locked.",
+                    "domain": "trade",
+                    "payload": {"objective": "bounty"},
+                    "reward": {"agent_watt": 40}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    assert_eq!(response["result"]["_meta"]["httpStatus"], 503);
+    assert_eq!(
+        response["result"]["structuredContent"]["code"],
+        "ledger_unavailable"
+    );
+    {
+        let board = state.mission_board.lock().await;
+        assert!(
+            board
+                .list(Some(
+                    &wattetheria_kernel::civilization::missions::MissionStatus::Open
+                ))
+                .into_iter()
+                .all(|mission| mission.title != "Bounty without a ledger"),
+            "an unfunded bounty mission must not stay open"
+        );
+    }
+
+    // A reward with only agent_watt deserializes: reputation and capacity default to 0, and a
+    // zero bounty needs no ledger at all.
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "publish_mission",
+                "arguments": {
+                    "title": "Zero bounty",
+                    "description": "Reputation only.",
+                    "domain": "trade",
+                    "payload": {"objective": "free"},
+                    "reward": {"agent_watt": 0, "reputation": 3}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    assert_eq!(
+        response["result"]["structuredContent"]["reward"],
+        json!({"agent_watt": 0, "reputation": 3, "capacity": 0})
+    );
+}
+
+#[tokio::test]
 async fn mcp_publish_mission_limits_human_text_without_language_whitelists() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
     let rejected = mcp_request(
@@ -203,6 +273,90 @@ async fn mcp_publish_mission_limits_human_text_without_language_whitelists() {
     )
     .await;
     assert_eq!(accepted["result"]["isError"].as_bool(), Some(false));
+}
+
+#[tokio::test]
+async fn mcp_publish_tools_keep_watt_bounties_and_real_asset_delegation_apart() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let delegation = json!({
+        "enabled": true,
+        "layer": "web3",
+        "provider": "servicenet-agent",
+        "provider_agent_id": "escrow-agent-123",
+        "provider_agent_name": "Some Escrow Agent",
+        "asset": "USDC",
+        "amount": "25.00",
+        "provider_receipt": {"status": "funded"}
+    });
+    let cases = [
+        (
+            "publish_delegated_mission",
+            json!({
+                "title": "Delegated with Watt",
+                "description": "A real-asset mission must not also carry a Watt reward.",
+                "domain": "trade",
+                "payload": {"objective": "mixed"},
+                "settlement_delegation": delegation,
+                "reward": {"agent_watt": 10}
+            }),
+            "does not accept a Watt reward",
+        ),
+        (
+            "publish_delegated_mission",
+            json!({
+                "title": "Delegated without delegation",
+                "description": "Must not silently become a plain mission.",
+                "domain": "trade",
+                "payload": {"objective": "missing"}
+            }),
+            "requires settlement_delegation with enabled: true",
+        ),
+        (
+            "publish_delegated_mission",
+            json!({
+                "title": "Delegated but disabled",
+                "description": "enabled: false is not a delegation.",
+                "domain": "trade",
+                "payload": {"objective": "disabled"},
+                "settlement_delegation": {"enabled": false}
+            }),
+            "requires settlement_delegation with enabled: true",
+        ),
+        (
+            "publish_mission",
+            json!({
+                "title": "Watt tool with delegation",
+                "description": "The Watt tool must not take real-asset settlement.",
+                "domain": "trade",
+                "payload": {"objective": "wrong-tool"},
+                "settlement_delegation": delegation
+            }),
+            "does not accept settlement_delegation",
+        ),
+    ];
+    for (id, (tool, arguments, expected)) in cases.into_iter().enumerate() {
+        let response = mcp_request(
+            app.clone(),
+            &token,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments}
+            }),
+        )
+        .await;
+        assert_eq!(response["result"]["isError"], true, "{tool}: {response}");
+        assert_eq!(response["result"]["_meta"]["httpStatus"], 400, "{response}");
+        let error = response["result"]["structuredContent"]["error"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(error.contains(expected), "{tool}: {error}");
+    }
+    assert!(
+        state.mission_board.lock().await.list(None).is_empty(),
+        "no rejected call may leave a mission behind"
+    );
 }
 
 #[tokio::test]
@@ -503,7 +657,7 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
         Some("publisher-public")
     );
     assert_eq!(saved_claim.status.as_deref(), Some("published"));
-    assert_eq!(saved_claim.metadata.reward_watt, Some(10));
+    assert_eq!(saved_claim.metadata.reward_watt, Some(0));
 
     let second = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
     assert_eq!(second["result"]["isError"].as_bool(), Some(true));
@@ -594,7 +748,7 @@ async fn seed_mcp_gateway_remote_mission_with_status(
         "swarm_scope": {"kind": "group", "id": mission_id},
         "mission_feed_key": "wattetheria.missions",
         "mission_scope_hint": format!("group:{mission_id}"),
-        "reward": {"agent_watt": 10},
+        "reward": {"agent_watt": 0},
         "payload": {"work": "deliver"}
     });
     let gateway_task = json!({

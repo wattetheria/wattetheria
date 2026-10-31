@@ -58,8 +58,6 @@ pub mod domain {
     pub const ORACLE_REGISTRY: &str = "oracle_registry";
     pub const ONLINE_PROOF: &str = "online_proof";
     pub const POLICY: &str = "policy";
-    pub const ECONOMIC_POLICY: &str = "economic_policy";
-    pub const WATT_BALANCE_STATE: &str = "watt_balance_state";
     pub const CONTRIBUTION_EVENT_LOG: &str = "contribution_event_log";
     pub const COLLECTIVE_MISSION_RUNS: &str = "collective_mission_runs";
     pub const NETWORK_MISSION_CLAIMS: &str = "network_mission_claims";
@@ -90,8 +88,6 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::ORACLE_REGISTRY, "oracle_registry_state"),
     (domain::ONLINE_PROOF, "online_proof_state"),
     (domain::POLICY, "policy_state"),
-    (domain::ECONOMIC_POLICY, "economic_policy_state"),
-    (domain::WATT_BALANCE_STATE, "watt_balance_state"),
     (domain::CONTRIBUTION_EVENT_LOG, "contribution_event_log"),
     (domain::COLLECTIVE_MISSION_RUNS, "collective_mission_runs"),
     (domain::NETWORK_MISSION_CLAIMS, "network_mission_claims"),

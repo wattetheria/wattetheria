@@ -1527,7 +1527,6 @@ async fn servicenet_callback_decision_routes_into_mission_commit() {
                     agent_watt: 0,
                     reputation: 0,
                     capacity: 0,
-                    treasury_share_watt: 0,
                 },
                 Value::Null,
             )

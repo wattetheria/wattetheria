@@ -49,6 +49,8 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "send_agent_dm_message",
     "get_agent_identity",
     "update_agent_name",
+    "get_watt_balance",
+    "list_watt_ledger_entries",
     "list_servicenet_agents",
     "get_servicenet_agent",
     "send_service_agent_message",
@@ -332,11 +334,6 @@ async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavai
             .unwrap(),
         before
     );
-    let contribution_log: wattetheria_kernel::economy::ContributionEventLog = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::CONTRIBUTION_EVENT_LOG)
-        .unwrap();
-    assert!(contribution_log.events.is_empty());
     assert!(
         state
             .event_log
@@ -345,11 +342,6 @@ async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavai
             .iter()
             .all(|event| event.event_type != "CONTRIBUTION_REWARD_EVENT")
     );
-    let balances: wattetheria_kernel::economy::WalletBalanceState = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::WATT_BALANCE_STATE)
-        .unwrap();
-    assert!(balances.balances.is_empty());
     assert!(matches!(
         events.try_recv(),
         Err(broadcast::error::TryRecvError::Empty)

@@ -2587,6 +2587,9 @@ async fn tool_body_with_local_identity(
 }
 
 fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), String> {
+    if tool.name == "publish_mission" || tool.name == "publish_delegated_mission" {
+        enforce_mission_publish_reward_model(tool, body)?;
+    }
     if tool.name == "create_hive" {
         normalize_mcp_public_hive_request(body);
     }
@@ -2597,6 +2600,45 @@ fn normalize_mcp_tool_body(tool: &AgentTool, body: &mut Value) -> Result<(), Str
         normalize_mcp_payment_request_amount(body)?;
     }
     Ok(())
+}
+
+/// Keeps the two publish tools on their own reward model: `publish_mission` pays a Watt bounty
+/// escrowed in the gateway ledger, `publish_delegated_mission` pays through a real-asset
+/// settlement delegation. Neither accepts the other's funding input, and a delegated mission
+/// must actually carry an enabled delegation rather than fall back to a plain mission.
+fn enforce_mission_publish_reward_model(tool: &AgentTool, body: &Value) -> Result<(), String> {
+    let Some(object) = body.as_object() else {
+        return Ok(());
+    };
+    let has_delegation = object
+        .get("settlement_delegation")
+        .is_some_and(|value| !value.is_null());
+    let has_reward = object.get("reward").is_some_and(|value| !value.is_null());
+    match tool.name {
+        "publish_mission" if has_delegation => Err(
+            "publish_mission pays with a Watt bounty and does not accept settlement_delegation; use publish_delegated_mission for a mission backed by real-asset settlement"
+                .to_string(),
+        ),
+        "publish_delegated_mission" if has_reward => Err(
+            "publish_delegated_mission pays through its settlement_delegation and does not accept a Watt reward; use publish_mission for a Watt bounty"
+                .to_string(),
+        ),
+        "publish_delegated_mission" => {
+            let enabled = object
+                .get("settlement_delegation")
+                .filter(|value| value.is_object())
+                .and_then(|value| value.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if enabled {
+                Ok(())
+            } else {
+                Err("publish_delegated_mission requires settlement_delegation with enabled: true, backed by a real-asset escrow; use publish_mission for a mission without one"
+                    .to_string())
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 fn normalize_mcp_public_hive_request(body: &mut Value) {
@@ -2924,7 +2966,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 69] = [
+const AGENT_TOOLS: [AgentTool; 71] = [
     AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
     AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
     AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
@@ -2981,6 +3023,8 @@ const AGENT_TOOLS: [AgentTool; 69] = [
     AgentTool { name: "send_agent_dm_message", method: Method::POST, path: "/v1/wattetheria/social/agent-dm/messages", description: "Send a signed one-to-one direct message to an accepted agent friend.", availability: Availability::Always },
     AgentTool { name: "get_agent_identity", method: Method::GET, path: "/v1/civilization/public-identity", description: "Read this local agent's current public identity, display name, Agent DID, and controller binding without exposing private keys.", availability: Availability::Always },
     AgentTool { name: "update_agent_name", method: Method::PATCH, path: "/v1/civilization/public-identity", description: "Update this local agent's public display name.", availability: Availability::Always },
+    AgentTool { name: "get_watt_balance", method: Method::GET, path: "/v1/wattetheria/wallet", description: "Read this agent's own Watt wallet from the gateway ledger: spendable balance, Watt locked in mission bounty escrows, and the locked escrows themselves. Only your own account; other agents' balances are not readable.", availability: Availability::Always },
+    AgentTool { name: "list_watt_ledger_entries", method: Method::GET, path: "/v1/wattetheria/wallet/entries", description: "List this agent's own Watt ledger history, newest first. Each entry says whether Watt came in or went out, the counterparty's DID and display name (a bounty paid from escrow names the mission publisher), the subject such as the mission title, and the amount. A bounty you locked carries escrow_status (locked, released, refunded) plus escrow_payee_account and escrow_payee_label once paid, so you can see who received it. Page with limit and before_seq (use the previous page's next_before_seq).", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },

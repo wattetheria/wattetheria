@@ -15,7 +15,7 @@ use wattetheria_kernel::civilization::missions::{
     NetworkMissionClaimRegistry,
 };
 use wattetheria_kernel::economy::{
-    WalletBoundBalance, ranking_compute, ranking_prestige, ranking_score, ranking_score_tenths,
+    mission_standing, ranking_compute, ranking_prestige, ranking_score, ranking_score_tenths,
 };
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
@@ -26,6 +26,7 @@ use wattetheria_kernel::swarm_bridge::{
 use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
+use crate::ledger_client::{watt_balance, watt_balances};
 use crate::routes::board::build_public_board_messages_snapshot_payload;
 use crate::routes::civilization::build_agent_relationship_payload;
 use crate::routes::client_swarm::{
@@ -34,8 +35,8 @@ use crate::routes::client_swarm::{
 use crate::routes::identity::resolve_identity_context;
 use crate::routes::missions::mission_task_contract;
 use crate::routes::reward_view::{
-    active_wallet_payment_account_payload, wallet_bound_balance_for_identity,
-    wallet_payment_accounts_payload, wallet_payment_binding_payload,
+    active_wallet_payment_account_payload, wallet_payment_accounts_payload,
+    wallet_payment_binding_payload,
 };
 use crate::state::{
     ClientExportQuery, ClientIdentityQuery, ClientLeaderboardQuery, ClientListQuery,
@@ -382,8 +383,7 @@ async fn build_client_self_payload(
                 .and_then(|identity| identity.agent_did.clone())
         })
         .unwrap_or_else(|| state.agent_did.clone());
-    let balance =
-        wallet_bound_balance_for_identity(state, &controller_id, Some(&public_id)).await?;
+    let watt = watt_balance(state, &wallet_agent_did).await;
     let payment_account = active_wallet_payment_account_payload(state);
     let payment_accounts = wallet_payment_accounts_payload(state);
     let payment_account_binding = wallet_payment_binding_payload(state);
@@ -392,8 +392,9 @@ async fn build_client_self_payload(
         "id": public_id,
         "display_name": display_name,
         "agent_did": wallet_agent_did.clone(),
-        "watt_balance": balance.watt,
-        "reward_policy_version": balance.policy_version,
+        "watt_balance": watt.balance,
+        "watt_balance_available": watt.available,
+        "watt_ledger_account": wallet_agent_did.clone(),
         "wallet_bound_agent_did": wallet_agent_did,
         "active_payment_account": payment_account,
         "payment_accounts": payment_accounts,
@@ -1165,24 +1166,30 @@ async fn leaderboard_identities(
     identity_by_controller.into_iter().collect()
 }
 
+/// Watt comes from the gateway ledger in one batch; reputation and capacity from the local
+/// mission board.
 async fn leaderboard_agent_stats(
     state: &ControlPlaneState,
     identities: &[(String, PublicIdentity)],
 ) -> BTreeMap<String, AgentStats> {
-    let mut agent_stats_by_controller = BTreeMap::new();
-    for (controller_id, identity) in identities {
-        let balance =
-            wallet_bound_balance_for_identity(state, controller_id, Some(&identity.public_id))
-                .await
-                .unwrap_or(WalletBoundBalance {
-                    policy_version: 0,
-                    watt: 0,
-                    reputation: 0,
-                    capacity: 0,
-                });
-        agent_stats_by_controller.insert(controller_id.clone(), balance.stats());
-    }
-    agent_stats_by_controller
+    let account_ids: Vec<String> = identities
+        .iter()
+        .map(|(controller_id, _)| controller_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let balances = watt_balances(state, &account_ids).await;
+    let missions = state.mission_board.lock().await;
+    identities
+        .iter()
+        .map(|(controller_id, _)| {
+            let watt = balances.get(controller_id).copied().unwrap_or(0);
+            (
+                controller_id.clone(),
+                mission_standing(&missions, controller_id).stats_with_watt(watt),
+            )
+        })
+        .collect()
 }
 
 async fn build_client_leaderboard_payload(
@@ -1283,6 +1290,7 @@ fn leaderboard_payload(
                 "category": view.category.as_str(),
                 "category_score": score_for_category(&scores, view.category),
                 "watt_balance": agent_stats.watt,
+                "ledger_account": controller_id,
                 "compute": compute,
                 "compute_score": compute,
                 "tasks_completed": tasks_completed,

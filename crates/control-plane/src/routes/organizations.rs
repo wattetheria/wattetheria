@@ -511,6 +511,34 @@ pub(crate) async fn publish_organization_mission(
         }
         mission
     };
+    // The organization's treasury is a local game construct; the Watt bounty itself is escrowed
+    // in the gateway ledger from the publishing node's account like any other mission.
+    let mission = match crate::routes::missions::lock_mission_bounty(&state, &mission).await {
+        Ok(mission) => mission,
+        Err(response) => {
+            // The mission was cancelled; give the organization its local treasury commitment back.
+            let committed = body.treasury_commit_watt.unwrap_or(0);
+            if committed > 0 {
+                let mut organizations = state.organization_registry.lock().await;
+                if let Err(error) = organizations
+                    .fund_treasury(&body.organization_id, committed)
+                    .and_then(|_| {
+                        state.local_db.save_domain(
+                            wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                            &*organizations,
+                        )
+                    })
+                {
+                    tracing::error!(
+                        organization_id = %body.organization_id,
+                        committed,
+                        "could not restore the organization treasury after a refused bounty: {error:#}"
+                    );
+                }
+            }
+            return response;
+        }
+    };
 
     let event_payload = public_memory_payload(
         &actor_context,

@@ -1,88 +1,31 @@
-use crate::civilization::missions::{CivilMission, MissionBoard, MissionStatus};
+//! Local standing derived from the mission board.
+//!
+//! Watt is not computed here. The gateway ledger is the only writer of Watt balances; nodes
+//! read them over HTTP (`control-plane::ledger_client`). What a node still derives locally
+//! from its own mission history is reputation and capacity, which feed the ranking score
+//! together with the ledger balance.
+
+use crate::civilization::missions::{MissionBoard, MissionStatus};
 use crate::types::AgentStats;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::BTreeMap;
 
-pub const DEFAULT_ECONOMIC_POLICY_VERSION: u64 = 1;
 const DEFAULT_AGENT_COMPUTE: i64 = 1;
 const DEFAULT_AGENT_PRESTIGE: i64 = 0;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EconomicPolicy {
-    pub version: u64,
-    pub enabled: bool,
-    pub genesis_supply_watt: i64,
-    pub per_agent_daily_cap_watt: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WalletBoundBalance {
-    pub policy_version: u64,
-    pub watt: i64,
-    pub reputation: i64,
-    pub capacity: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WalletBalanceRecord {
-    pub controller_id: String,
-    pub public_id: Option<String>,
-    pub policy_version: u64,
-    pub watt_balance: i64,
-    pub reputation: i64,
-    pub capacity: i64,
-    pub updated_at: i64,
-}
-
+/// Reputation and capacity an Agent earned by settling missions on this node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WalletBalanceState {
-    pub balances: BTreeMap<String, WalletBalanceRecord>,
+pub struct MissionStanding {
+    pub reputation: i64,
+    pub capacity: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ContributionEvent {
-    pub event_id: String,
-    pub action_type: String,
-    pub source_id: String,
-    pub controller_id: String,
-    pub public_id: Option<String>,
-    pub agent_identity: Option<String>,
-    pub occurred_at: i64,
-    pub receipt: Value,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ContributionEventLog {
-    pub events: BTreeMap<String, ContributionEvent>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RewardDelta {
-    timestamp: i64,
-    source_id: String,
-    watt: i64,
-    reputation: i64,
-    capacity: i64,
-}
-
-impl Default for EconomicPolicy {
-    fn default() -> Self {
-        Self {
-            version: DEFAULT_ECONOMIC_POLICY_VERSION,
-            enabled: true,
-            genesis_supply_watt: 1_000_000_000,
-            per_agent_daily_cap_watt: 10_000,
-        }
-    }
-}
-
-impl WalletBoundBalance {
+impl MissionStanding {
+    /// Combines local standing with the Watt balance the ledger reports.
     #[must_use]
-    pub fn stats(&self) -> AgentStats {
+    pub fn stats_with_watt(&self, watt: i64) -> AgentStats {
         AgentStats {
             power: (DEFAULT_AGENT_COMPUTE + (self.capacity / 10)).max(DEFAULT_AGENT_COMPUTE),
-            watt: self.watt,
+            watt,
             reputation: self.reputation,
             capacity: self.capacity,
         }
@@ -120,145 +63,20 @@ fn score_from_tenths(score_tenths: i64) -> f64 {
         .expect("ranking score with one decimal is finite")
 }
 
-impl WalletBalanceState {
-    #[must_use]
-    pub fn get(
-        &self,
-        controller_id: &str,
-        public_id: Option<&str>,
-    ) -> Option<&WalletBalanceRecord> {
-        self.balances
-            .get(&wallet_balance_key(controller_id, public_id))
-    }
-
-    pub fn upsert(
-        &mut self,
-        controller_id: &str,
-        public_id: Option<&str>,
-        balance: &WalletBoundBalance,
-        updated_at: i64,
-    ) -> WalletBalanceRecord {
-        let record = WalletBalanceRecord {
-            controller_id: controller_id.to_string(),
-            public_id: public_id.map(str::to_string),
-            policy_version: balance.policy_version,
-            watt_balance: balance.watt,
-            reputation: balance.reputation,
-            capacity: balance.capacity,
-            updated_at,
-        };
-        self.balances
-            .insert(wallet_balance_key(controller_id, public_id), record.clone());
-        record
-    }
-}
-
-impl WalletBalanceRecord {
-    #[must_use]
-    pub fn balance(&self) -> WalletBoundBalance {
-        WalletBoundBalance {
-            policy_version: self.policy_version,
-            watt: self.watt_balance,
-            reputation: self.reputation,
-            capacity: self.capacity,
-        }
-    }
-}
-
-impl ContributionEventLog {
-    pub fn append(&mut self, event: ContributionEvent) -> bool {
-        if self.events.contains_key(&event.event_id) {
-            return false;
-        }
-        self.events.insert(event.event_id.clone(), event);
-        true
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &ContributionEvent> {
-        self.events.values()
-    }
-}
-
-fn wallet_balance_key(controller_id: &str, public_id: Option<&str>) -> String {
-    format!("{}::{}", controller_id, public_id.unwrap_or(""))
-}
-
+/// Sums the reputation and capacity of every settled mission `controller_id` executed.
 #[must_use]
-pub fn wallet_bound_balance_from_missions(
-    policy: &EconomicPolicy,
-    missions: &MissionBoard,
-    controller_id: &str,
-) -> WalletBoundBalance {
-    if !policy.enabled {
-        return WalletBoundBalance {
-            policy_version: policy.version,
-            watt: 0,
-            reputation: 0,
-            capacity: 0,
-        };
+pub fn mission_standing(missions: &MissionBoard, controller_id: &str) -> MissionStanding {
+    let mut standing = MissionStanding::default();
+    for mission in missions.list(Some(&MissionStatus::Settled)) {
+        if mission.completed_by.as_deref() != Some(controller_id) {
+            continue;
+        }
+        if let Some(reward) = mission.reward.as_ref() {
+            standing.reputation += reward.reputation;
+            standing.capacity += reward.capacity;
+        }
     }
-
-    let mut deltas = Vec::new();
-    for mission in missions.list(None) {
-        collect_mission_deltas(&mission, controller_id, &mut deltas);
-    }
-    deltas.sort_by(|left, right| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left.source_id.cmp(&right.source_id))
-    });
-
-    let mut watt_by_day = BTreeMap::<i64, i64>::new();
-    let mut balance = WalletBoundBalance {
-        policy_version: policy.version,
-        watt: 0,
-        reputation: 0,
-        capacity: 0,
-    };
-    for delta in deltas {
-        balance.watt += capped_watt_delta(policy, &mut watt_by_day, &delta);
-        balance.reputation += delta.reputation;
-        balance.capacity += delta.capacity;
-    }
-    balance
-}
-
-fn collect_mission_deltas(
-    mission: &CivilMission,
-    controller_id: &str,
-    deltas: &mut Vec<RewardDelta>,
-) {
-    if mission.status == MissionStatus::Settled
-        && mission.completed_by.as_deref() == Some(controller_id)
-        && let Some(reward) = mission.reward.as_ref()
-    {
-        deltas.push(RewardDelta {
-            timestamp: mission.settled_at.unwrap_or(mission.created_at),
-            source_id: format!("mission.settle.executor:{}", mission.mission_id),
-            watt: reward.agent_watt,
-            reputation: reward.reputation,
-            capacity: reward.capacity,
-        });
-    }
-}
-
-fn capped_watt_delta(
-    policy: &EconomicPolicy,
-    watt_by_day: &mut BTreeMap<i64, i64>,
-    delta: &RewardDelta,
-) -> i64 {
-    if delta.watt <= 0 {
-        return 0;
-    }
-    if policy.per_agent_daily_cap_watt <= 0 {
-        return delta.watt;
-    }
-    let day = delta.timestamp.div_euclid(86_400);
-    let used = watt_by_day.entry(day).or_insert(0);
-    let remaining = policy.per_agent_daily_cap_watt.saturating_sub(*used);
-    let applied = delta.watt.min(remaining);
-    *used += applied;
-    applied
+    standing
 }
 
 #[cfg(test)]
@@ -268,17 +86,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn default_policy_is_enabled_with_daily_cap() {
-        let policy = EconomicPolicy::default();
-
-        assert!(policy.enabled);
-        assert_eq!(policy.version, 1);
-        assert_eq!(policy.genesis_supply_watt, 1_000_000_000);
-        assert_eq!(policy.per_agent_daily_cap_watt, 10_000);
-    }
-
-    #[test]
-    fn mission_rewards_are_wallet_bound_and_deterministic() {
+    fn mission_standing_counts_only_settled_missions_of_the_executor() {
         let mut board = MissionBoard::default();
         let mission = board.publish(
             "Publish market task",
@@ -294,135 +102,50 @@ mod tests {
                 agent_watt: 40,
                 reputation: 4,
                 capacity: 1,
-                treasury_share_watt: 0,
             },
             json!({}),
         );
-
-        let published =
-            wallet_bound_balance_from_missions(&EconomicPolicy::default(), &board, "agent-a");
-        assert_eq!(published.watt, 0);
+        assert_eq!(
+            mission_standing(&board, "agent-a"),
+            MissionStanding::default()
+        );
 
         board.claim(&mission.mission_id, "agent-a").unwrap();
         board
             .complete(&mission.mission_id, "agent-a", None)
             .unwrap();
+        assert_eq!(
+            mission_standing(&board, "agent-a"),
+            MissionStanding::default()
+        );
+
         board.settle(&mission.mission_id).unwrap();
-
-        let settled =
-            wallet_bound_balance_from_missions(&EconomicPolicy::default(), &board, "agent-a");
-        assert_eq!(settled.watt, 40);
-        assert_eq!(settled.reputation, 4);
-        assert_eq!(settled.capacity, 1);
+        let standing = mission_standing(&board, "agent-a");
+        assert_eq!(
+            standing,
+            MissionStanding {
+                reputation: 4,
+                capacity: 1
+            }
+        );
+        assert_eq!(
+            mission_standing(&board, "agent-b"),
+            MissionStanding::default()
+        );
     }
 
     #[test]
-    fn disabled_policy_yields_no_balance() {
-        let mut board = MissionBoard::default();
-        let policy = EconomicPolicy {
-            enabled: false,
-            ..EconomicPolicy::default()
+    fn stats_take_watt_from_the_ledger_not_from_missions() {
+        let standing = MissionStanding {
+            reputation: 3,
+            capacity: 25,
         };
-        board.publish(
-            "No reward",
-            "Policy disabled.",
-            "agent-a",
-            MissionPublisherKind::Player,
-            MissionDomain::Trade,
-            None,
-            None,
-            None,
-            None,
-            MissionReward {
-                agent_watt: 40,
-                reputation: 4,
-                capacity: 1,
-                treasury_share_watt: 0,
-            },
-            json!({}),
-        );
-
-        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a");
-        assert_eq!(balance.watt, 0);
-        assert_eq!(balance.reputation, 0);
-        assert_eq!(balance.capacity, 0);
-    }
-
-    #[test]
-    fn per_agent_daily_cap_limits_watt_only() {
-        let mut board = MissionBoard::default();
-        let policy = EconomicPolicy {
-            per_agent_daily_cap_watt: 10,
-            ..EconomicPolicy::default()
-        };
-        let first = board.publish(
-            "Task one",
-            "One.",
-            "agent-a",
-            MissionPublisherKind::Player,
-            MissionDomain::Trade,
-            None,
-            None,
-            None,
-            None,
-            MissionReward {
-                agent_watt: 40,
-                reputation: 4,
-                capacity: 1,
-                treasury_share_watt: 0,
-            },
-            json!({}),
-        );
-        let second = board.publish(
-            "Task two",
-            "Two.",
-            "agent-a",
-            MissionPublisherKind::Player,
-            MissionDomain::Trade,
-            None,
-            None,
-            None,
-            None,
-            MissionReward {
-                agent_watt: 40,
-                reputation: 4,
-                capacity: 1,
-                treasury_share_watt: 0,
-            },
-            json!({}),
-        );
-        board.claim(&first.mission_id, "agent-a").unwrap();
-        board.complete(&first.mission_id, "agent-a", None).unwrap();
-        board.settle(&first.mission_id).unwrap();
-        board.claim(&second.mission_id, "agent-a").unwrap();
-        board.complete(&second.mission_id, "agent-a", None).unwrap();
-        board.settle(&second.mission_id).unwrap();
-
-        let balance = wallet_bound_balance_from_missions(&policy, &board, "agent-a");
-        assert_eq!(balance.watt, 10);
-        assert_eq!(balance.reputation, 8);
-        assert_eq!(balance.capacity, 2);
-    }
-
-    #[test]
-    fn wallet_balance_state_persists_fixed_balance_field() {
-        let mut state = WalletBalanceState::default();
-        let record = state.upsert(
-            "agent-a",
-            Some("captain-a"),
-            &WalletBoundBalance {
-                policy_version: 7,
-                watt: 42,
-                reputation: 3,
-                capacity: 2,
-            },
-            123,
-        );
-
-        assert_eq!(record.watt_balance, 42);
-        let stored = state.get("agent-a", Some("captain-a")).unwrap();
-        assert_eq!(stored.watt_balance, 42);
-        assert_eq!(stored.balance().watt, 42);
-        assert_eq!(stored.updated_at, 123);
+        let stats = standing.stats_with_watt(120);
+        assert_eq!(stats.watt, 120);
+        assert_eq!(stats.reputation, 3);
+        assert_eq!(stats.capacity, 25);
+        assert_eq!(stats.power, 3);
+        assert_eq!(ranking_score_tenths(&stats), 120 + 300);
+        assert!((ranking_score(&stats) - 42.0).abs() < f64::EPSILON);
     }
 }
