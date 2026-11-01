@@ -1,8 +1,9 @@
 //! Node-side client of the gateway Watt ledger.
 //!
 //! The gateway ledger is the only writer of Watt. A node never computes balances; it reads
-//! them here and asks the ledger to lock, release or refund mission bounties, signing each
-//! spend with its own `did:key` so the ledger can check the payer.
+//! them here and asks the ledger to send Watt to another account or to lock, release or
+//! refund mission bounties, signing each spend with its own `did:key` so the ledger can
+//! check the payer.
 
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, StatusCode};
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::warn;
+use wattetheria_kernel::identity::fingerprint_from_did_key;
 use wattetheria_kernel::network::agent_registration::load_active_membership_credential;
 
 use crate::state::ControlPlaneState;
@@ -64,6 +66,25 @@ impl WattBalance {
 pub struct EscrowLabels<'a> {
     pub payer_label: Option<&'a str>,
     pub payee_label: Option<&'a str>,
+    pub subject: Option<&'a str>,
+}
+
+/// Display-name snapshots sent with a transfer so the ledger can show who paid whom and why.
+/// The ledger-wide transfer id for one of this agent's transfers: the payer's DID
+/// fingerprint, then the caller's id. Entry ids are a global namespace on the ledger.
+fn scoped_transfer_id(
+    payer_did: &str,
+    transfer_id: &str,
+) -> std::result::Result<String, LedgerError> {
+    let fingerprint = fingerprint_from_did_key(payer_did)
+        .map_err(|error| LedgerError::Unavailable(error.context("payer DID has no fingerprint")))?;
+    Ok(format!("{fingerprint}:{transfer_id}"))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TransferLabels<'a> {
+    pub from_label: Option<&'a str>,
+    pub to_label: Option<&'a str>,
     pub subject: Option<&'a str>,
 }
 
@@ -246,6 +267,35 @@ impl LedgerClient {
             StatusCode::NOT_FOUND => Ok(None),
             status => Err(LedgerError::Rejected(status, error_message(&body))),
         }
+    }
+
+    /// Moves `amount` Watt from this agent's account to `to` in one ledger entry. Idempotent
+    /// on `transfer_id`, which the caller chooses: the ledger posts one entry per id and
+    /// returns the same entry on a retry. The ledger's key is global, so the id is scoped to
+    /// this agent (`<payer fingerprint>:<transfer_id>`) before it is sent; two agents may
+    /// both use `order-42` without colliding. The response carries the posted `entry`.
+    pub async fn transfer(
+        &self,
+        state: &ControlPlaneState,
+        transfer_id: &str,
+        to: &str,
+        amount: i64,
+        memo: Option<&str>,
+        labels: TransferLabels<'_>,
+    ) -> std::result::Result<Value, LedgerError> {
+        let payload = json!({
+            "transfer_id": scoped_transfer_id(&state.identity.agent_did, transfer_id)?,
+            "from": state.identity.agent_did,
+            "to": to,
+            "amount": amount,
+            "memo": memo,
+            "from_label": labels.from_label,
+            "to_label": labels.to_label,
+            "subject": labels.subject,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed(state, "/api/ledger/transfers", payload)
+            .await
     }
 
     pub async fn lock_escrow(

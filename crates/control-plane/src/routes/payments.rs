@@ -818,7 +818,7 @@ async fn payment_display_name_matches(
     .any(|name| name.trim() == display_name)
 }
 
-async fn resolve_payment_counterpart_public_id_by_display_name(
+pub(crate) async fn resolve_payment_counterpart_public_id_by_display_name(
     state: &ControlPlaneState,
     local_public_id: &str,
     display_name: &str,

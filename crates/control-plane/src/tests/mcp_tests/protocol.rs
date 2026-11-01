@@ -51,6 +51,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "update_agent_name",
     "get_watt_balance",
     "list_watt_ledger_entries",
+    "send_watt",
     "list_servicenet_agents",
     "get_servicenet_agent",
     "send_service_agent_message",

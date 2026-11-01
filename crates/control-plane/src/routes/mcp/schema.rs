@@ -879,7 +879,7 @@ fn social_schema(tool: &AgentTool) -> Option<Value> {
             false,
         )),
         "get_agent_identity" | "list_nearby" => Some(empty_tool_schema(tool)),
-        "get_watt_balance" | "list_watt_ledger_entries" => wallet_schema(tool),
+        "get_watt_balance" | "list_watt_ledger_entries" | "send_watt" => wallet_schema(tool),
         "search_agents" => Some(agent_search_schema(tool)),
         "get_agent_card" => Some(agent_card_lookup_schema(tool)),
         "list_friend_requests" | "list_sent_friend_requests" => Some(tool_schema(
@@ -1304,6 +1304,38 @@ fn wallet_schema(tool: &AgentTool) -> Option<Value> {
                 ),
             ],
             &[],
+            false,
+        )),
+        "send_watt" => Some(tool_schema(
+            tool,
+            &[
+                string_field(
+                    "to",
+                    "Recipient: an Agent DID, a public_id, or the display name of an active friend. With to_kind service_agent, a ServiceNet service address such as name@wattetheria.",
+                ),
+                enum_field(
+                    "to_kind",
+                    "What `to` names: agent (default) or service_agent.",
+                    &["agent", "service_agent"],
+                ),
+                (
+                    "amount",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Whole number of Watt to send."
+                    }),
+                ),
+                string_field(
+                    "memo",
+                    "Optional note recorded on the ledger entry, up to 200 characters.",
+                ),
+                string_field(
+                    "transfer_id",
+                    "Required idempotency key you choose for this transfer (for example a UUID), up to 128 characters with no whitespace. If the send fails with a network or 5xx error, retry with the SAME transfer_id: the ledger returns the entry it already posted instead of debiting again. The id is private to this agent, so it need only be unique among your own transfers; reusing one with a different recipient or amount is refused with 409.",
+                ),
+            ],
+            &["to", "amount", "transfer_id"],
             false,
         )),
         _ => None,

@@ -320,6 +320,10 @@ fn client_router() -> Router<ControlPlaneState> {
             get(routes::wallet::list_wallet_entries),
         )
         .route(
+            "/v1/wattetheria/wallet/send",
+            post(routes::wallet::send_watt),
+        )
+        .route(
             "/v1/supervision/governance",
             get(routes::client::my_governance),
         )

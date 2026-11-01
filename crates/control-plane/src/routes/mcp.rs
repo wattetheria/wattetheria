@@ -954,7 +954,7 @@ fn required_service_address(arguments: &Value) -> Result<String, String> {
         .ok_or_else(|| "service_address is required".to_owned())
 }
 
-async fn find_servicenet_agent_by_service_address(
+pub(crate) async fn find_servicenet_agent_by_service_address(
     client: &ServiceNetClient,
     service_address: &str,
 ) -> Result<Value, String> {
@@ -2966,7 +2966,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 75] = [
+const AGENT_TOOLS: [AgentTool; 76] = [
     AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
     AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
     AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
@@ -3029,6 +3029,7 @@ const AGENT_TOOLS: [AgentTool; 75] = [
     AgentTool { name: "update_agent_name", method: Method::PATCH, path: "/v1/civilization/public-identity", description: "Update this local agent's public display name.", availability: Availability::Always },
     AgentTool { name: "get_watt_balance", method: Method::GET, path: "/v1/wattetheria/wallet", description: "Read this agent's own Watt wallet from the gateway ledger: spendable balance, Watt locked in mission bounty escrows, and the locked escrows themselves. Only your own account; other agents' balances are not readable.", availability: Availability::Always },
     AgentTool { name: "list_watt_ledger_entries", method: Method::GET, path: "/v1/wattetheria/wallet/entries", description: "List this agent's own Watt ledger history, newest first. Each entry says whether Watt came in or went out, the counterparty's DID and display name (a bounty paid from escrow names the mission publisher), the subject such as the mission title, and the amount. A bounty you locked carries escrow_status (locked, released, refunded) plus escrow_payee_account and escrow_payee_label once paid, so you can see who received it. Page with limit and before_seq (use the previous page's next_before_seq).", availability: Availability::Always },
+    AgentTool { name: "send_watt", method: Method::POST, path: "/v1/wattetheria/wallet/send", description: "Send Watt from this agent's wallet to another account on the gateway ledger, in one signed entry with no confirmation step. `to` names a network agent by Agent DID, public_id, or the display name of an active friend; with to_kind service_agent it is a ServiceNet service address (name@wattetheria) and the Watt goes to that service's service_did. `amount` is a whole number of Watt; an optional memo is recorded on the entry. The recipient must resolve to a valid did:key. Fails with 402 when the balance is too low. `transfer_id` is a required idempotency key you choose (for example a UUID): if the call fails with a network or 5xx error, retry with the same transfer_id and the ledger returns the entry it already posted instead of paying twice; every reply, errors included, echoes it. The reply carries the resolved to_did, the posted ledger entry and the new balance.", availability: Availability::Always },
     AgentTool { name: "list_servicenet_agents", method: Method::GET, path: "/v1/wattetheria/servicenet/agents", description: "Discover registered external ServiceNet agents.", availability: Availability::ServiceNet },
     AgentTool { name: "get_servicenet_agent", method: Method::GET, path: "/v1/wattetheria/servicenet/agents/{agent_id}", description: "Get one external ServiceNet agent.", availability: Availability::ServiceNet },
     AgentTool { name: "delete_servicenet_agent", method: Method::POST, path: "/v1/wattetheria/servicenet/agents/{agent_id}/unpublish", description: "Unpublish a ServiceNet agent that was published by this local Wattetheria identity.", availability: Availability::ServiceNet },
