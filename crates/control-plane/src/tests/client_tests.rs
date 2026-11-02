@@ -292,22 +292,24 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(organizations_json[0]["treasury_watt"].as_i64(), Some(55));
     assert_eq!(organizations_json[0]["member_count"].as_u64(), Some(1));
 
-    let leaderboard_json = authed_get_json(
-        app.clone(),
-        &token,
-        "/v1/client/leaderboard?category=wealth",
-    )
-    .await;
+    let leaderboard_json = authed_get_json(app.clone(), &token, "/v1/client/leaderboard").await;
     assert_eq!(leaderboard_json.as_array().unwrap().len(), 1);
     assert_eq!(leaderboard_json[0]["rank"].as_u64(), Some(1));
     assert_eq!(
         leaderboard_json[0]["display_name"].as_str(),
         Some("Captain Aurora")
     );
-    assert_eq!(leaderboard_json[0]["compute_score"].as_i64(), Some(1));
-    assert_eq!(leaderboard_json[0]["prestige"].as_i64(), Some(0));
-    assert_eq!(leaderboard_json[0]["score"].as_f64(), Some(10.0));
-    assert_eq!(leaderboard_json[0]["score_tenths"].as_i64(), Some(100));
+    // The gateway ranks by its experience level; the node reports no score of its own.
+    for retired in [
+        "score",
+        "score_tenths",
+        "compute",
+        "compute_score",
+        "category",
+        "prestige",
+    ] {
+        assert!(leaderboard_json[0].get(retired).is_none(), "{retired}");
+    }
 
     let rpc_logs_json = authed_get_json(app, &token, "/v1/client/rpc-logs?limit=5").await;
     assert_ne!(

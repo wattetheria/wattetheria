@@ -19,15 +19,6 @@ pub enum GameStage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgressionTier {
-    Initiate,
-    Specialist,
-    Coordinator,
-    Sovereign,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GameObjective {
     pub key: String,
     pub title: String,
@@ -50,7 +41,6 @@ pub struct HomeAnchor {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GameStatus {
     pub stage: GameStage,
-    pub tier: ProgressionTier,
     pub headline: String,
     pub summary: String,
     pub total_influence: i64,
@@ -112,7 +102,6 @@ pub fn compute_status(
         home_anchor.is_some(),
         context.scores.total_influence,
     );
-    let tier = determine_tier(context.scores.total_influence);
 
     let objectives = objectives_for_stage(
         &stage,
@@ -152,7 +141,6 @@ pub fn compute_status(
 
     GameStatus {
         stage,
-        tier,
         headline,
         summary,
         total_influence: context.scores.total_influence,
@@ -229,15 +217,6 @@ fn determine_stage(
         GameStage::Foothold
     } else {
         GameStage::Survival
-    }
-}
-
-fn determine_tier(total_influence: i64) -> ProgressionTier {
-    match total_influence {
-        influence if influence >= 1000 => ProgressionTier::Sovereign,
-        influence if influence >= 500 => ProgressionTier::Coordinator,
-        influence if influence >= 200 => ProgressionTier::Specialist,
-        _ => ProgressionTier::Initiate,
     }
 }
 

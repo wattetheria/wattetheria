@@ -404,7 +404,6 @@ mod tests {
             }),
             &GameStatus {
                 stage: GameStage::Survival,
-                tier: super::super::progression::ProgressionTier::Initiate,
                 headline: String::new(),
                 summary: String::new(),
                 total_influence: 10,
@@ -492,7 +491,6 @@ mod tests {
     fn test_foothold_status() -> GameStatus {
         GameStatus {
             stage: GameStage::Foothold,
-            tier: super::super::progression::ProgressionTier::Specialist,
             headline: String::new(),
             summary: String::new(),
             total_influence: 240,

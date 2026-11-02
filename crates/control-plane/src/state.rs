@@ -670,7 +670,6 @@ pub struct ClientRpcLogsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ClientLeaderboardQuery {
-    pub category: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -684,7 +683,6 @@ pub struct ClientExportQuery {
     pub organization_limit: Option<usize>,
     pub rpc_log_limit: Option<usize>,
     pub leaderboard_limit: Option<usize>,
-    pub leaderboard_category: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

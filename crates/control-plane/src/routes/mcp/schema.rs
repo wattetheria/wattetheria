@@ -38,7 +38,6 @@ fn client_schema(tool: &AgentTool) -> Option<Value> {
                     "leaderboard_limit",
                     "Maximum number of leaderboard rows to include.",
                 ),
-                string_field("leaderboard_category", "Leaderboard category to include."),
             ],
             &[],
             false,

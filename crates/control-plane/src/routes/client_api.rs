@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use chrono::{TimeZone, Utc};
 use reqwest::Client;
@@ -9,14 +9,11 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::metrics::{CivilizationScores, compute_scores};
 use wattetheria_kernel::civilization::missions::{
     CivilMission, MissionDomain, MissionPublisherKind, MissionStatus, NetworkMissionClaimRecord,
     NetworkMissionClaimRegistry,
 };
-use wattetheria_kernel::economy::{
-    mission_standing, ranking_compute, ranking_prestige, ranking_score, ranking_score_tenths,
-};
+use wattetheria_kernel::economy::mission_standing;
 use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
@@ -978,14 +975,8 @@ pub(crate) async fn client_leaderboard(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let category = match LeaderboardCategory::parse(query.category.as_deref()) {
-        Ok(category) => category,
-        Err(error) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response();
-        }
-    };
     let limit = query.limit.unwrap_or(20).clamp(1, 200);
-    let payload = match build_client_leaderboard_payload(&state, category, limit).await {
+    let payload = match build_client_leaderboard_payload(&state, limit).await {
         Ok(payload) => payload,
         Err(error) => return internal_error(&error),
     };
@@ -1001,7 +992,7 @@ pub(crate) async fn client_leaderboard(
         capability: None,
         reason: None,
         duration_ms: None,
-        details: Some(json!({"category": category.as_str(), "count": payload.len()})),
+        details: Some(json!({"count": payload.len()})),
     });
 
     Json(Value::Array(payload)).into_response()
@@ -1013,13 +1004,6 @@ pub(crate) async fn client_export(
 ) -> Response {
     let signed_snapshot = match build_signed_public_client_snapshot(&state, &query).await {
         Ok(snapshot) => snapshot,
-        Err(error) if error.to_string().contains("unknown leaderboard category") => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": error.to_string() })),
-            )
-                .into_response();
-        }
         Err(error) => return internal_error(&error),
     };
     let snapshot = &signed_snapshot.payload;
@@ -1055,10 +1039,7 @@ pub async fn build_signed_public_client_snapshot(
         agent_did: query.agent_did.clone(),
         public_id: query.public_id.clone(),
     };
-    let leaderboard_category = LeaderboardCategory::parse(query.leaderboard_category.as_deref())
-        .map_err(anyhow::Error::msg)?;
-    let snapshot =
-        build_public_client_snapshot(state, query, &public_id_query, leaderboard_category).await?;
+    let snapshot = build_public_client_snapshot(state, query, &public_id_query).await?;
     let signature = state.sign_payload(&snapshot)?;
     Ok(SignedPublicClientSnapshot {
         payload: snapshot,
@@ -1192,40 +1173,26 @@ async fn leaderboard_agent_stats(
         .collect()
 }
 
+/// This node's Agents as leaderboard rows: identity, ledger Watt and missions completed here.
+/// The gateway ranks them by experience; the node's own order is by Watt.
 async fn build_client_leaderboard_payload(
     state: &ControlPlaneState,
-    category: LeaderboardCategory,
     limit: usize,
 ) -> anyhow::Result<Vec<Value>> {
     let binding_by_public_id = leaderboard_bindings(state).await;
     let identities = leaderboard_identities(state, &binding_by_public_id).await;
     let agent_stats_by_controller = leaderboard_agent_stats(state, &identities).await;
-    let missions = state.mission_board.lock().await;
-    let profiles = state.citizen_registry.lock().await;
-    let governance = state.governance_engine.lock().await;
-    let galaxy = state.galaxy_state.lock().await;
-    let settled = missions.list(Some(&MissionStatus::Settled));
-    let leaderboard_view = LeaderboardComputation {
-        settled: &settled,
-        missions: &missions,
-        profiles: &profiles,
-        governance: &governance,
-        galaxy: &galaxy,
-        category,
-    };
-    let mut payload =
-        leaderboard_payload(identities, &agent_stats_by_controller, &leaderboard_view);
+    let settled = state
+        .mission_board
+        .lock()
+        .await
+        .list(Some(&MissionStatus::Settled));
+    let mut payload = leaderboard_payload(identities, &agent_stats_by_controller, &settled);
     payload.sort_by(|left, right| {
-        right["score_tenths"]
+        right["watt_balance"]
             .as_i64()
             .unwrap_or_default()
-            .cmp(&left["score_tenths"].as_i64().unwrap_or_default())
-            .then_with(|| {
-                right["watt_balance"]
-                    .as_i64()
-                    .unwrap_or_default()
-                    .cmp(&left["watt_balance"].as_i64().unwrap_or_default())
-            })
+            .cmp(&left["watt_balance"].as_i64().unwrap_or_default())
             .then_with(|| {
                 left["agent_did"]
                     .as_str()
@@ -1240,19 +1207,10 @@ async fn build_client_leaderboard_payload(
     Ok(payload)
 }
 
-struct LeaderboardComputation<'a> {
-    settled: &'a [wattetheria_kernel::civilization::missions::CivilMission],
-    missions: &'a wattetheria_kernel::civilization::missions::MissionBoard,
-    profiles: &'a wattetheria_kernel::civilization::profiles::CitizenRegistry,
-    governance: &'a wattetheria_kernel::governance::GovernanceEngine,
-    galaxy: &'a wattetheria_kernel::civilization::galaxy::GalaxyState,
-    category: LeaderboardCategory,
-}
-
 fn leaderboard_payload(
     identities: Vec<(String, PublicIdentity)>,
     agent_stats_by_controller: &BTreeMap<String, AgentStats>,
-    view: &LeaderboardComputation<'_>,
+    settled: &[wattetheria_kernel::civilization::missions::CivilMission],
 ) -> Vec<Value> {
     identities
         .into_iter()
@@ -1263,39 +1221,18 @@ fn leaderboard_payload(
                 .get(&controller_id)
                 .cloned()
                 .unwrap_or_default();
-            let scores = compute_scores(
-                &controller_id,
-                &agent_stats,
-                view.missions,
-                view.profiles,
-                view.governance,
-                view.galaxy,
-            );
-            let tasks_completed = view
-                .settled
+            let tasks_completed = settled
                 .iter()
                 .filter(|mission| mission.completed_by.as_deref() == Some(controller_id.as_str()))
                 .count();
-            let compute = ranking_compute(&agent_stats);
-            let prestige = ranking_prestige(&agent_stats);
-            let score_tenths = ranking_score_tenths(&agent_stats);
             json!({
                 "agent_did": public_id,
                 "agent_identity": display_name,
                 "public_id": public_id,
                 "display_name": display_name,
-                "score": ranking_score(&agent_stats),
-                "score_tenths": score_tenths,
-                "score_formula": "watts*0.1+compute*10+prestige*100",
-                "category": view.category.as_str(),
-                "category_score": score_for_category(&scores, view.category),
                 "watt_balance": agent_stats.watt,
                 "ledger_account": controller_id,
-                "compute": compute,
-                "compute_score": compute,
                 "tasks_completed": tasks_completed,
-                "prestige": prestige,
-                "prestige_level": prestige,
                 "reputation": agent_stats.reputation,
             })
         })
@@ -1422,7 +1359,6 @@ async fn build_public_client_snapshot(
     state: &ControlPlaneState,
     query: &ClientExportQuery,
     identity_query: &ClientIdentityQuery,
-    leaderboard_category: LeaderboardCategory,
 ) -> anyhow::Result<PublicClientSnapshot> {
     let operator = build_client_self_payload(state, identity_query).await?;
     let (source_public_id, source_agent_identity) = source_identity_from_operator(&operator);
@@ -1518,7 +1454,6 @@ async fn build_public_client_snapshot(
         leaderboard: attach_source_identity_to_values(
             build_client_leaderboard_payload(
                 state,
-                leaderboard_category,
                 query.leaderboard_limit.unwrap_or(20).clamp(1, 200),
             )
             .await?,
@@ -1610,54 +1545,6 @@ fn rpc_log_message(row: &EventRecord) -> String {
     match subject {
         Some(subject) => format!("{base}: {subject}"),
         None => base,
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum LeaderboardCategory {
-    Wealth,
-    Power,
-    Security,
-    Trade,
-    Culture,
-    Contribution,
-}
-
-impl LeaderboardCategory {
-    fn parse(value: Option<&str>) -> Result<Self, &'static str> {
-        match value.unwrap_or("wealth") {
-            "wealth" => Ok(Self::Wealth),
-            "power" => Ok(Self::Power),
-            "security" => Ok(Self::Security),
-            "trade" => Ok(Self::Trade),
-            "culture" => Ok(Self::Culture),
-            "contribution" => Ok(Self::Contribution),
-            _ => Err(
-                "unsupported leaderboard category; expected wealth, power, security, trade, culture, or contribution",
-            ),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Wealth => "wealth",
-            Self::Power => "power",
-            Self::Security => "security",
-            Self::Trade => "trade",
-            Self::Culture => "culture",
-            Self::Contribution => "contribution",
-        }
-    }
-}
-
-fn score_for_category(scores: &CivilizationScores, category: LeaderboardCategory) -> i64 {
-    match category {
-        LeaderboardCategory::Wealth => scores.wealth,
-        LeaderboardCategory::Power => scores.power,
-        LeaderboardCategory::Security => scores.security,
-        LeaderboardCategory::Trade => scores.trade,
-        LeaderboardCategory::Culture => scores.culture,
-        LeaderboardCategory::Contribution => scores.total_influence,
     }
 }
 

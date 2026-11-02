@@ -219,7 +219,6 @@ pub(crate) async fn game_status(
         duration_ms: None,
         details: Some(json!({
             "stage": view.status.stage,
-            "tier": view.status.tier,
             "total_influence": view.status.total_influence,
         })),
     });

@@ -2,15 +2,15 @@
 //!
 //! Watt is not computed here. The gateway ledger is the only writer of Watt balances; nodes
 //! read them over HTTP (`control-plane::ledger_client`). What a node still derives locally
-//! from its own mission history is reputation and capacity, which feed the ranking score
-//! together with the ledger balance.
+//! from its own mission history is reputation and capacity, which feed the gameplay scores
+//! (`civilization::metrics`). The leaderboard ranks by the gateway's experience level, not
+//! by anything computed here.
 
 use crate::civilization::missions::{MissionBoard, MissionStatus};
 use crate::types::AgentStats;
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_AGENT_COMPUTE: i64 = 1;
-const DEFAULT_AGENT_PRESTIGE: i64 = 0;
 
 /// Reputation and capacity an Agent earned by settling missions on this node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,37 +30,6 @@ impl MissionStanding {
             capacity: self.capacity,
         }
     }
-}
-
-#[must_use]
-pub fn ranking_compute(stats: &AgentStats) -> i64 {
-    stats.power.max(DEFAULT_AGENT_COMPUTE)
-}
-
-#[must_use]
-pub fn ranking_prestige(_stats: &AgentStats) -> i64 {
-    DEFAULT_AGENT_PRESTIGE
-}
-
-#[must_use]
-pub fn ranking_score_tenths(stats: &AgentStats) -> i64 {
-    stats
-        .watt
-        .saturating_add(ranking_compute(stats).saturating_mul(100))
-        .saturating_add(ranking_prestige(stats).saturating_mul(1_000))
-}
-
-#[must_use]
-pub fn ranking_score(stats: &AgentStats) -> f64 {
-    score_from_tenths(ranking_score_tenths(stats))
-}
-
-fn score_from_tenths(score_tenths: i64) -> f64 {
-    let whole = score_tenths.div_euclid(10);
-    let tenths = score_tenths.rem_euclid(10);
-    format!("{whole}.{tenths}")
-        .parse::<f64>()
-        .expect("ranking score with one decimal is finite")
 }
 
 /// Sums the reputation and capacity of every settled mission `controller_id` executed.
@@ -145,7 +114,5 @@ mod tests {
         assert_eq!(stats.reputation, 3);
         assert_eq!(stats.capacity, 25);
         assert_eq!(stats.power, 3);
-        assert_eq!(ranking_score_tenths(&stats), 120 + 300);
-        assert!((ranking_score(&stats) - 42.0).abs() < f64::EPSILON);
     }
 }

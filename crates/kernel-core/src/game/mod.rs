@@ -18,7 +18,7 @@ pub use mission_pack::{
 };
 pub use progression::{
     GameComputation, GameObjective, GameStage, GameStatus, GovernanceGate, GovernanceJourney,
-    HomeAnchor, ProgressionTier, compute_governance_journey, compute_status,
+    HomeAnchor, compute_governance_journey, compute_status,
 };
 pub use qualification::{
     QualificationState, QualificationTrack, QualificationUnlock, compute_qualifications,
