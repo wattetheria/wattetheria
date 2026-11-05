@@ -49,7 +49,7 @@ pub(crate) fn parse_world_event(
     state: &ControlPlaneState,
     announcement: &EventAnnouncementPayload,
 ) -> Result<Option<WorldEvent>> {
-    let Some(catalog) = state.space_catalog.as_deref() else {
+    let Some(catalog) = state.space_catalog.get() else {
         return Ok(None);
     };
     let Some(package) = announcement

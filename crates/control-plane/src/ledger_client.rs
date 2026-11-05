@@ -418,15 +418,32 @@ impl LedgerClient {
             .is_some_and(|skins| skins.iter().any(|skin| skin["skin_id"] == skin_id)))
     }
 
-    async fn post_signed(
+    /// Reads a public gateway endpoint, keeping the gateway's status and body as they are.
+    pub async fn get_public(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<(StatusCode, Value)> {
+        let response = self
+            .client
+            .get(format!("{}{path}", self.base_url))
+            .query(query)
+            .send()
+            .await
+            .with_context(|| format!("query gateway {path}"))?;
+        let status = response.status();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    /// Signs `payload` with this agent's `did:key` and posts it, keeping the gateway's status
+    /// and body as they are, so a refusal's details reach the agent.
+    pub async fn post_signed_raw(
         &self,
         state: &ControlPlaneState,
         path: &str,
         payload: Value,
-    ) -> std::result::Result<Value, LedgerError> {
-        let signature = state
-            .sign_payload(&payload)
-            .map_err(LedgerError::Unavailable)?;
+    ) -> Result<(StatusCode, Value)> {
+        let signature = state.sign_payload(&payload)?;
         let response = self
             .client
             .post(format!("{}{path}", self.base_url))
@@ -437,9 +454,21 @@ impl LedgerClient {
             }))
             .send()
             .await
-            .map_err(|error| LedgerError::Unavailable(error.into()))?;
+            .with_context(|| format!("post to gateway {path}"))?;
         let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    async fn post_signed(
+        &self,
+        state: &ControlPlaneState,
+        path: &str,
+        payload: Value,
+    ) -> std::result::Result<Value, LedgerError> {
+        let (status, body) = self
+            .post_signed_raw(state, path, payload)
+            .await
+            .map_err(LedgerError::Unavailable)?;
         match status {
             status if status.is_success() => Ok(body),
             StatusCode::PAYMENT_REQUIRED => {

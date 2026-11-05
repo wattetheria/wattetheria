@@ -243,8 +243,8 @@ pub async fn push_signed_node_event(
     client: &Client,
     gateway_url: &str,
     event: &SignedGatewayNodeEvent,
-) -> Result<()> {
-    client
+) -> Result<Value> {
+    let response = client
         .post(normalized_gateway_event_ingest_url(gateway_url))
         .json(event)
         .send()
@@ -252,7 +252,28 @@ pub async fn push_signed_node_event(
         .context("push gateway node event")?
         .error_for_status()
         .context("gateway node event ingest returned error status")?;
-    Ok(())
+    // The receipt is informational (a Space push names the current map); an unreadable one
+    // does not fail a push the gateway accepted.
+    Ok(response.json().await.unwrap_or(Value::Null))
+}
+
+/// Reads the map version a push receipt names. The gateway adds `current_version` only to
+/// Space pushes, so a node that only reports its position still learns of a new map; a version
+/// other than the one this node holds starts one refresh. Old records are never refused.
+pub fn observe_push_receipt(
+    state: &ControlPlaneState,
+    event: &SignedGatewayNodeEvent,
+    receipt: &Value,
+) {
+    let Some(version) = receipt.get("current_version").and_then(Value::as_str) else {
+        return;
+    };
+    let payload = &event.payload.payload;
+    let space_id = payload
+        .pointer("/record/space_id")
+        .or_else(|| payload.pointer("/content/space_id"))
+        .and_then(Value::as_str);
+    crate::routes::space::map_source::observe_gateway_version(state, space_id, Some(version));
 }
 
 pub async fn push_signed_snapshot(

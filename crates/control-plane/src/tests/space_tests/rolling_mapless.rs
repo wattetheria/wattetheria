@@ -2,9 +2,16 @@ use super::namespace_portals::{configured_catalog, rehash_package};
 use super::*;
 use wattetheria_gateway_contract::SpacePresenceRecord;
 
+/// The highest gateway record decides. One for an unknown Space or with geometry that does not
+/// fit the current map hides the agent; one signed on another map version is read with the
+/// current map and stays visible.
 #[tokio::test]
-async fn gateway_highest_unknown_or_invalid_target_suppresses_old_source() {
-    for failure in ["unknown-space", "unknown-version", "invalid-geometry"] {
+async fn gateway_highest_invalid_target_suppresses_old_source_but_another_version_stays_visible() {
+    for (failure, visible) in [
+        ("unknown-space", false),
+        ("unknown-version", true),
+        ("invalid-geometry", false),
+    ] {
         let (_dir, _app, token, _policy, mut state) = build_test_app(100);
         let remote = Identity::new_random();
         let package = current_package(&state);
@@ -51,6 +58,7 @@ async fn gateway_highest_unknown_or_invalid_target_suppresses_old_source() {
             .sign(&canonical_bytes(&newer.record).unwrap())
             .unwrap();
         let payload = json!({"presences":[source,newer]});
+        let expected = newer.clone();
         let router = Router::new()
             .route(
                 "/api/spaces/presence",
@@ -77,20 +85,25 @@ async fn gateway_highest_unknown_or_invalid_target_suppresses_old_source() {
             ),
         )
         .await;
-        assert_eq!(result["error"], "agent presence not found", "{failure}");
         let place = authed_get_json(
             app(state),
             &token,
             "/v1/wattetheria/space/place?place_id=the-ville",
         )
         .await;
-        assert_eq!(place["presences"], json!([]), "{failure}");
+        if visible {
+            assert_eq!(result["presence"], json!(expected), "{failure}");
+            assert_eq!(place["presences"], json!([expected]), "{failure}");
+        } else {
+            assert_eq!(result["error"], "agent presence not found", "{failure}");
+            assert_eq!(place["presences"], json!([]), "{failure}");
+        }
         server.abort();
     }
 }
 
 #[tokio::test]
-async fn place_occupancy_uses_actual_tile_and_trusted_record_speed() {
+async fn place_occupancy_reads_an_old_record_with_the_current_map_speed() {
     let (_dir, _app, token, _policy, mut state) = build_test_app(100);
     let mut old = current_package(&state).clone();
     old.walk_speed = 0.001;
@@ -98,10 +111,10 @@ async fn place_occupancy_uses_actual_tile_and_trusted_record_speed() {
     let mut current = old.clone();
     current.walk_speed = 1000.0;
     rehash_package(&mut current);
-    state.space_catalog = Some(Arc::new(configured_catalog(
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
         &old.space_id,
-        &[old.clone(), current],
-    )));
+        &[old.clone(), current.clone()],
+    ))));
     let remote = Identity::new_random();
     let from = old
         .destination_tile(&remote.agent_did, "johnson-park")
@@ -157,14 +170,14 @@ async fn place_occupancy_uses_actual_tile_and_trusted_record_speed() {
         "/v1/wattetheria/space/place?place_id=johnson-park",
     )
     .await;
-    assert_eq!(current_place["presences"], json!([expected.clone()]));
+    assert_eq!(current_place["presences"], json!([]));
     let destination_place = authed_get_json(
         app(state.clone()),
         &token,
         "/v1/wattetheria/space/place?place_id=hobbs-cafe/cafe",
     )
     .await;
-    assert_eq!(destination_place["presences"], json!([]));
+    assert_eq!(destination_place["presences"], json!([expected.clone()]));
     let observed = authed_get_json(
         app(state.clone()),
         &token,
@@ -176,11 +189,10 @@ async fn place_occupancy_uses_actual_tile_and_trusted_record_speed() {
     .await;
     assert_eq!(
         observed["position"],
-        json!(
-            expected
-                .record
-                .position_at(old.walk_speed, observed["server_time_ms"].as_i64().unwrap())
-        )
+        json!(expected.record.position_at(
+            current.walk_speed,
+            observed["server_time_ms"].as_i64().unwrap()
+        ))
     );
     assert!(state.own_space_presence.lock().await.active_space.is_none());
     assert_eq!(
@@ -231,10 +243,10 @@ async fn rolling_upgrade_keeps_or_replans_and_stops_removed_targets() {
             _ => unreachable!(),
         }
         rehash_package(&mut current);
-        state.space_catalog = Some(Arc::new(configured_catalog(
+        state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
             &old.space_id,
             &[old.clone(), current.clone()],
-        )));
+        ))));
         let now = Utc::now().timestamp_millis();
         let mut original = super::map_upgrade::signed_spawn(&state, &identity, &old, 20);
         original.record.path.clone_from(&path);
@@ -257,7 +269,7 @@ async fn rolling_upgrade_keeps_or_replans_and_stops_removed_targets() {
         state.own_space_presence = Arc::new(Mutex::new(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap(),
@@ -267,15 +279,11 @@ async fn rolling_upgrade_keeps_or_replans_and_stops_removed_targets() {
         current.validate_record(&restored.record).unwrap();
         assert_eq!(restored.record.space_version, current.space_version);
         match mode {
-            "keep" => {
+            // A speed change alone does not replan: the walk is read with the current speed.
+            "keep" | "replan" => {
                 assert_eq!(restored.record.path, path);
                 assert_eq!(restored.record.depart_at, original.record.depart_at);
                 assert_eq!(restored.record.from_tile, from);
-            }
-            "replan" => {
-                assert_eq!(restored.record.from_tile, from);
-                assert_eq!(restored.record.depart_at, restored.record.updated_at);
-                assert_eq!(restored.record.destination_place_id, "hobbs-cafe/cafe");
             }
             "removed-target" => {
                 assert_eq!(restored.record.path, "");

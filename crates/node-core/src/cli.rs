@@ -39,7 +39,7 @@ pub struct Cli {
     #[arg(
         long,
         env = "WATTETHERIA_SPACE_CATALOG_PATH",
-        help = "Override the bundled Space catalog"
+        help = "Pin a local Space catalog instead of pulling the map from the gateway (debug)"
     )]
     pub space_catalog_path: Option<PathBuf>,
     #[arg(long, default_value_t = 45)]

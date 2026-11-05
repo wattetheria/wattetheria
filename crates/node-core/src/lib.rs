@@ -24,7 +24,7 @@ use wattetheria_control_plane::mcp_events::{EnvWebhookConfig, McpEvents};
 use wattetheria_control_plane::{
     ClientExportQuery, ControlPlaneState, DEFAULT_WATTSWARM_SYNC_GRPC_PORT, GatewayEventSequence,
     NodeGeoLocation, RateLimiter, ServiceNetProviderIdentity, StreamEvent, build_signed_node_event,
-    push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once,
+    observe_push_receipt, push_signed_node_event, push_signed_snapshot, run_autonomy_tick_once,
     run_registry_registration_once, serve_control_plane, spawn_reliability_maintenance_task,
     spawn_wattswarm_sync_bridge, sync_network_permission_checkpoint,
 };
@@ -78,7 +78,7 @@ struct CivilizationRuntimeState {
     relationship_registry: RelationshipRegistry,
     organization_registry: OrganizationRegistry,
     hive_registry: HiveRegistry,
-    space_catalog: Option<wattetheria_kernel::space::SpaceCatalog>,
+    space_maps: wattetheria_control_plane::SpaceMaps,
     own_space_presence: wattetheria_control_plane::OwnSpacePresence,
     payment_ledger: PaymentLedger,
     galaxy_state: GalaxyState,
@@ -408,7 +408,14 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         local_db::domain::MAILBOX,
         &cli.data_dir.join("mailbox/state.json"),
     )?;
-    let civilization_state = load_civilization_runtime_state(cli, &identity, &local_db)?;
+    let space_maps = wattetheria_control_plane::SpaceMaps::load(
+        &local_db,
+        &resolve_gateway_urls(cli),
+        cli.space_catalog_path.as_deref(),
+    )
+    .await?;
+    let civilization_state =
+        load_civilization_runtime_state(cli, &identity, &local_db, space_maps)?;
 
     info!(agent_did = %identity.agent_did, "kernel started");
 
@@ -500,7 +507,9 @@ async fn build_control_state(
         relationship_registry: Arc::new(Mutex::new(civilization_state.relationship_registry)),
         organization_registry: Arc::new(Mutex::new(civilization_state.organization_registry)),
         hive_registry: Arc::new(Mutex::new(civilization_state.hive_registry)),
-        space_catalog: civilization_state.space_catalog.map(Arc::new),
+        space_catalog: Arc::new(civilization_state.space_maps),
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(civilization_state.own_space_presence)),
         world_event_registry: Arc::new(Mutex::new(
             wattetheria_control_plane::WorldEventRegistry::default(),
@@ -565,20 +574,12 @@ fn brain_provider_label(config: &BrainProviderConfig) -> String {
     }
 }
 
-fn load_space_catalog(
-    path: Option<&Path>,
-) -> Result<Option<wattetheria_kernel::space::SpaceCatalog>> {
-    match path {
-        Some(path) => wattetheria_kernel::space::SpaceCatalog::load(path).map(Some),
-        None => wattetheria_kernel::space::SpaceCatalog::bundled(),
-    }
-}
-
 #[allow(clippy::too_many_lines)]
 fn load_civilization_runtime_state(
     cli: &Cli,
     identity: &IdentityCompatView,
     local_db: &LocalDb,
+    space_maps: wattetheria_control_plane::SpaceMaps,
 ) -> Result<CivilizationRuntimeState> {
     let mission_board: MissionBoard = local_db.load_or_migrate(
         local_db::domain::MISSION_BOARD,
@@ -605,35 +606,25 @@ fn load_civilization_runtime_state(
         &cli.data_dir.join("civilization/organizations.json"),
     )?;
     let hive_registry = load_or_migrate_hive_registry(local_db, cli)?;
-    let space_catalog = load_space_catalog(cli.space_catalog_path.as_deref())?;
-    let current_version = space_catalog
-        .as_ref()
-        .and_then(|catalog| {
-            catalog
-                .spaces
-                .iter()
-                .find(|entry| entry.space_id == catalog.default_space_id)
-                .map(|entry| entry.current_version.as_str())
-        })
-        .unwrap_or("none");
+    let space_catalog = space_maps.get();
     info!(
-        source = if cli.space_catalog_path.is_some() {
-            "specified_path"
-        } else {
-            "bundled"
-        },
+        source = space_maps.source(),
         catalog_path = ?cli.space_catalog_path,
         default_space_id = space_catalog
             .as_ref()
             .map_or("none", |catalog| catalog.default_space_id.as_str()),
-        current_version,
+        current_version = space_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.current_version(&catalog.default_space_id))
+            .unwrap_or("none"),
         "Space catalog state"
     );
     let own_space_presence = wattetheria_control_plane::OwnSpacePresence::load(
         local_db,
-        space_catalog.as_ref(),
+        space_catalog.as_deref(),
         &identity.agent_did,
     )?;
+    drop(space_catalog);
     let payment_ledger: PaymentLedger = local_db.load_or_migrate(
         local_db::domain::PAYMENT_LEDGER,
         &cli.data_dir.join("payments/ledger.json"),
@@ -694,7 +685,7 @@ fn load_civilization_runtime_state(
         relationship_registry,
         organization_registry,
         hive_registry,
-        space_catalog,
+        space_maps,
         own_space_presence,
         payment_ledger,
         galaxy_state,
@@ -1060,10 +1051,14 @@ fn spawn_gateway_dispatch_tasks(
                 Ok(event) => match build_signed_node_event(&event_state, &event) {
                     Ok(Some(signed_event)) => {
                         for gateway_url in &event_urls {
-                            if let Err(error) =
-                                push_signed_node_event(&client, gateway_url, &signed_event).await
+                            match push_signed_node_event(&client, gateway_url, &signed_event).await
                             {
-                                warn!(gateway_url, %error, kind = %event.kind, "gateway event push failed");
+                                Ok(receipt) => {
+                                    observe_push_receipt(&event_state, &signed_event, &receipt);
+                                }
+                                Err(error) => {
+                                    warn!(gateway_url, %error, kind = %event.kind, "gateway event push failed");
+                                }
                             }
                         }
                     }

@@ -70,7 +70,7 @@ async fn network_registration_approval_spawns_space_without_restart_and_does_not
             &test_network_id(&state),
             state
                 .space_catalog
-                .as_ref()
+                .get()
                 .unwrap()
                 .current("the-ville")
                 .unwrap()
@@ -112,7 +112,7 @@ async fn network_registration_approval_spawns_space_without_restart_and_does_not
             &test_network_id(&state),
             state
                 .space_catalog
-                .as_ref()
+                .get()
                 .unwrap()
                 .current("the-ville")
                 .unwrap(),
@@ -146,7 +146,7 @@ async fn network_registration_approval_spawns_space_without_restart_and_does_not
             &test_network_id(&state),
             state
                 .space_catalog
-                .as_ref()
+                .get()
                 .unwrap()
                 .current("the-ville")
                 .unwrap(),
@@ -160,7 +160,7 @@ async fn network_registration_approval_spawns_space_without_restart_and_does_not
     ));
     let persisted = crate::OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -170,7 +170,7 @@ async fn network_registration_approval_spawns_space_without_restart_and_does_not
             &test_network_id(&state),
             state
                 .space_catalog
-                .as_ref()
+                .get()
                 .unwrap()
                 .current("the-ville")
                 .unwrap()

@@ -1,3 +1,5 @@
+pub(crate) mod busy;
+pub(crate) mod map_source;
 pub(crate) mod presence;
 mod registry;
 pub(crate) mod snapshot;
@@ -21,7 +23,7 @@ use wattetheria_gateway_contract::SignedSpacePresence;
 use wattetheria_gateway_contract::space::{
     BUILTIN_SKIN_NAMES, SkinChoice, builtin_skin_label, parse_skin_label, validate_activity,
 };
-use wattetheria_kernel::space::{Place, PlaceKind, SpaceCatalog, SpacePackage};
+use wattetheria_kernel::space::{Place, PlaceKind, SpacePackage};
 use wattetheria_kernel::swarm_bridge::EventAnnouncementPayload;
 
 use crate::auth::{authorize, internal_error};
@@ -142,17 +144,9 @@ pub(crate) async fn get_place(
     let occupants = presences
         .into_iter()
         .filter(|presence| {
-            state
-                .space_catalog
-                .as_ref()
-                .and_then(|catalog| {
-                    catalog.version(&presence.record.space_id, &presence.record.space_version)
-                })
-                .is_some_and(|version| {
-                    place
-                        .tiles
-                        .contains(&presence.record.tile_at(version.walk_speed, now))
-                })
+            place
+                .tiles
+                .contains(&presence.record.tile_at(package.walk_speed, now))
         })
         .collect::<Vec<_>>();
     let events = match place_events(&state, &network, &package.space_id, &place.place_id).await {
@@ -225,14 +219,7 @@ pub(crate) async fn get_agent_presence(
             .into_response();
     };
     let now = chrono::Utc::now().timestamp_millis();
-    let version = state
-        .space_catalog
-        .as_ref()
-        .and_then(|catalog| {
-            catalog.version(&presence.record.space_id, &presence.record.space_version)
-        })
-        .expect("presence geometry was verified");
-    Json(json!({"space_id":package.space_id,"server_time_ms":now,"position":presence.record.position_at(version.walk_speed,now),"skin":presence.record.skin(),"presence":presence})).into_response()
+    Json(json!({"space_id":package.space_id,"server_time_ms":now,"position":presence.record.position_at(package.walk_speed,now),"skin":presence.record.skin(),"presence":presence})).into_response()
 }
 
 pub(crate) async fn enter_space(
@@ -278,6 +265,10 @@ pub(crate) async fn move_agent(
     if let Err(response) = authorize(&state, &headers).await {
         return response;
     }
+    let _walk = match state.busy.walk_turn(&state.local_db).await {
+        Ok(turn) => turn,
+        Err(response) => return response,
+    };
     let choices = usize::from(body.place_id.is_some())
         + usize::from(body.target_agent_id.is_some())
         + usize::from(body.tile.is_some());
@@ -325,7 +316,6 @@ pub(crate) async fn move_agent(
             let anchor = package.destination_tile(&state.agent_did, place_id)?;
             let tile = if let Some(records) = &occupancy {
                 MovementSelection {
-                    catalog: registry::catalog(&state)?,
                     package,
                     presences: records,
                     agent_did: &state.agent_did,
@@ -340,7 +330,6 @@ pub(crate) async fn move_agent(
         } else {
             let target_tile = target_tile.expect("target choice checked");
             let tile = MovementSelection {
-                catalog: registry::catalog(&state)?,
                 package,
                 presences: occupancy.as_deref().unwrap_or_default(),
                 agent_did: &state.agent_did,
@@ -382,12 +371,7 @@ async fn person_target(
         .iter()
         .find(|record| record.record.agent_did == target_id)
         .ok_or_else(|| bad_request("target agent presence not found"))?;
-    let version = state
-        .space_catalog
-        .as_ref()
-        .and_then(|catalog| catalog.version(&target.record.space_id, &target.record.space_version))
-        .expect("presence geometry was verified");
-    let tile = target.record.tile_at(version.walk_speed, now);
+    let tile = target.record.tile_at(package.walk_speed, now);
     if package.place_at_tile(tile).is_none() {
         return Err(bad_request("target agent is outside a known place"));
     }
@@ -420,6 +404,11 @@ async fn movement_occupancies(
         }
         .await;
         let Ok(payload) = payload else { continue };
+        map_source::observe_gateway_version(
+            state,
+            Some(space),
+            payload.get("current_version").and_then(Value::as_str),
+        );
         let Some(records) = payload.get("presences").and_then(Value::as_array) else {
             continue;
         };
@@ -454,7 +443,7 @@ async fn movement_occupancies(
             .filter(|signed| {
                 signed.record.entered
                     && catalog
-                        .version(space, &signed.record.space_version)
+                        .current(space)
                         .is_some_and(|package| registry::verify_presence(package, signed).is_ok())
             })
             .collect(),
@@ -462,7 +451,6 @@ async fn movement_occupancies(
 }
 
 struct MovementSelection<'a> {
-    catalog: &'a SpaceCatalog,
     package: &'a SpacePackage,
     presences: &'a [SignedSpacePresence],
     agent_did: &'a str,
@@ -563,17 +551,11 @@ impl MovementSelection<'_> {
         }
         let mut loads = BTreeMap::new();
         for signed in latest.into_values() {
-            let Some(version) = self
-                .catalog
-                .version(&signed.record.space_id, &signed.record.space_version)
-            else {
-                continue;
-            };
-            let current = signed.record.tile_at(version.walk_speed, self.now);
+            let current = signed.record.tile_at(self.package.walk_speed, self.now);
             if self.package.is_walkable(current) {
                 *loads.entry(current).or_insert(0) += 1;
             }
-            let destination = signed.record.tile_at(version.walk_speed, i64::MAX);
+            let destination = signed.record.tile_at(self.package.walk_speed, i64::MAX);
             if destination != current && self.package.is_walkable(destination) {
                 *loads.entry(destination).or_insert(0) += 1;
             }
@@ -813,10 +795,24 @@ pub(crate) async fn list_my_skins(
 
 /// The skin label the agent wears in its active Space, `None` when it has not entered one.
 async fn current_look(state: &ControlPlaneState) -> Option<String> {
+    current_presence(state)
+        .await
+        .map(|signed| signed.record.skin())
+}
+
+/// This agent's newest signed presence in the Space it is in; `None` before it enters one.
+pub(crate) async fn current_presence(state: &ControlPlaneState) -> Option<SignedSpacePresence> {
     let registry = state.own_space_presence.lock().await;
     let (network, space) = registry.active_space.as_ref()?;
-    let signed = registry.networks.get(network)?.get(space)?;
-    Some(signed.record.skin())
+    registry.networks.get(network)?.get(space).cloned()
+}
+
+/// The current package of a configured Space, if this node has one.
+pub(crate) fn configured_package(
+    state: &ControlPlaneState,
+    space_id: &str,
+) -> Option<SpacePackage> {
+    registry::catalog(state).ok()?.current(space_id).cloned()
 }
 
 /// The reply of every tool that re-signs this agent's presence: the signed record as pushed to
@@ -867,7 +863,7 @@ async fn network_presences(
     network: &str,
     space: &str,
 ) -> Result<Vec<SignedSpacePresence>> {
-    let catalog = registry::catalog(state)?;
+    let catalog = map_source::ensure_map(state).await?;
     let own = state.own_space_presence.lock().await;
     let own_active = catalog
         .current(space)
@@ -908,6 +904,11 @@ async fn network_presences(
         }
         .await;
         let Ok(payload) = result else { continue };
+        map_source::observe_gateway_version(
+            state,
+            Some(space),
+            payload.get("current_version").and_then(Value::as_str),
+        );
         let Some(records) = payload.get("presences").and_then(Value::as_array) else {
             continue;
         };
@@ -919,6 +920,13 @@ async fn network_presences(
                 || registry::verify_presence_signature(&signed).is_err()
             {
                 continue;
+            }
+            if signed.record.agent_did != state.agent_did {
+                map_source::observe_record_version(
+                    state,
+                    &signed.record.space_id,
+                    &signed.record.space_version,
+                );
             }
             let id = signed.record.agent_did.clone();
             // Network-wide ordering must precede geometry filtering, including unknown targets.
@@ -937,7 +945,7 @@ async fn network_presences(
                 && signed.record.entered
                 && (signed.record.agent_did != state.agent_did || own_active)
                 && catalog
-                    .version(space, &signed.record.space_version)
+                    .current(space)
                     .is_some_and(|package| registry::verify_presence(package, signed).is_ok())
         })
         .collect())
@@ -983,6 +991,11 @@ async fn place_events(
         }
         .await;
         let Ok(payload) = result else { continue };
+        map_source::observe_gateway_version(
+            state,
+            Some(space),
+            payload.get("current_version").and_then(Value::as_str),
+        );
         let Some(records) = payload.get("events").and_then(Value::as_array) else {
             continue;
         };

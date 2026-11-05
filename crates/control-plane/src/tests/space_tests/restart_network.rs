@@ -98,10 +98,10 @@ async fn reset_reconciliation_of_multiple_false_spaces_is_idempotent() {
         }
     }
     super::namespace_portals::rehash_package(&mut target);
-    state.space_catalog = Some(Arc::new(super::namespace_portals::configured_catalog(
+    state.space_catalog = pinned_maps(super::namespace_portals::configured_catalog(
         &source.space_id,
         &[source.clone(), target.clone()],
-    )));
+    ));
     let mut first = super::map_upgrade::signed_spawn(&state, &identity, &source, 5);
     let mut second = super::map_upgrade::signed_spawn(&state, &identity, &target, 6);
     for record in [&mut first, &mut second] {
@@ -290,7 +290,7 @@ async fn reset_without_catalog_tombstones_verified_local_record() {
         .local_db
         .save_domain("own_space_presence", &registry)
         .unwrap();
-    state.space_catalog = None;
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(&state.local_db, None, &state.agent_did).unwrap(),
     ));
@@ -354,7 +354,7 @@ async fn reset_raw_unknown_record_declares_inactive_without_spawning() {
         let (url, server) = super::sequence_recovery::floor_server(old.clone()).await;
         state.gateway_urls = vec![url];
         if !catalog_present {
-            state.space_catalog = None;
+            state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
         }
         assert_eq!(
             state
@@ -384,7 +384,7 @@ async fn reset_raw_unknown_record_declares_inactive_without_spawning() {
         assert_eq!(inactive.record.destination_place_id, "retired-place");
         let loaded = OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap();
@@ -430,7 +430,7 @@ async fn reset_without_catalog_empty_or_failed_gateway_does_not_create_presence(
         );
         let (url, server) = super::query_resilience::serve(router).await;
         state.gateway_urls = vec![url];
-        state.space_catalog = None;
+        state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
         let mut events = state.stream_tx.subscribe();
         crate::reset_space_presence(&state).await.unwrap();
         crate::reconcile_space_presence(&state).await.unwrap();
@@ -513,7 +513,7 @@ async fn restart_tombstones_local_removed_and_unknown_versions_atomically() {
         state.own_space_presence = Arc::new(Mutex::new(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap(),
@@ -569,7 +569,7 @@ async fn restart_tombstones_local_removed_and_unknown_versions_atomically() {
             );
             let loaded = OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap();
@@ -680,11 +680,11 @@ async fn runtime_network_change_does_not_activate_same_named_space_archive() {
         ))
     );
     assert_eq!(
-        registry.visible_get(&other_network, current_package(&state)),
+        registry.visible_get(&other_network, &current_package(&state)),
         None
     );
     assert_eq!(
-        registry.projection(&other_network, state.space_catalog.as_deref()),
+        registry.projection(&other_network, state.space_catalog.get().as_deref()),
         vec![]
     );
     assert_eq!(

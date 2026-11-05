@@ -20,9 +20,11 @@ pub(super) fn two_spaces(state: &mut ControlPlaneState) -> (SpacePackage, SpaceP
     .unwrap();
     super::namespace_portals::rehash_package(&mut source);
     super::namespace_portals::rehash_package(&mut target);
-    state.space_catalog = Some(Arc::new(super::namespace_portals::configured_catalog(
-        &source.space_id,
-        &[source.clone(), target.clone()],
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(
+        super::namespace_portals::configured_catalog(
+            &source.space_id,
+            &[source.clone(), target.clone()],
+        ),
     )));
     (source, target)
 }
@@ -48,7 +50,7 @@ pub(super) fn save_inactive_registry(
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -160,7 +162,7 @@ async fn removed_last_space_falls_back_to_default_spawn_without_allowing_other_s
         assert_eq!(events.try_recv().unwrap().payload, json!(entered));
         let persisted = OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap();
@@ -251,7 +253,7 @@ async fn portal_restart_returns_last_space_and_rejects_inactive_bypass() {
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -437,7 +439,10 @@ async fn reset_only_retires_global_latest_and_keeps_lower_signed_bytes_hidden() 
         }
         assert!(
             registry
-                .projection(&latest.record.network_id, state.space_catalog.as_deref())
+                .projection(
+                    &latest.record.network_id,
+                    state.space_catalog.get().as_deref()
+                )
                 .iter()
                 .all(|signed| !signed.record.entered)
         );
@@ -576,7 +581,7 @@ async fn checkpoint_bound_legacy_last_restores_geometry_but_unbound_is_only_floo
         state.own_space_presence = Arc::new(Mutex::new(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap(),
@@ -711,7 +716,10 @@ async fn reset_invalid_remote_latest_does_not_resign_a_lower_local_entry() {
             Some(&lower)
         );
         assert_eq!(
-            registry.projection(&lower.record.network_id, state.space_catalog.as_deref()),
+            registry.projection(
+                &lower.record.network_id,
+                state.space_catalog.get().as_deref()
+            ),
             []
         );
         assert!(registry.active_space.is_none());
@@ -793,7 +801,7 @@ async fn invalid_activity_raw_import_rejects_known_invalid_geometry_atomically()
     );
     let reloaded = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();

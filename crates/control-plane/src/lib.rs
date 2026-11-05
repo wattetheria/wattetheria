@@ -31,6 +31,7 @@ pub mod routes {
     pub(crate) mod core;
     pub(crate) mod credentials;
     pub(crate) mod diagnostics;
+    pub(crate) mod farm;
     pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod identity;
@@ -65,7 +66,8 @@ use std::net::SocketAddr;
 
 pub use autonomy::run_autonomy_tick_once;
 pub use gateway_dispatch::{
-    SignedGatewayNodeEvent, build_signed_node_event, push_signed_node_event, push_signed_snapshot,
+    SignedGatewayNodeEvent, build_signed_node_event, observe_push_receipt, push_signed_node_event,
+    push_signed_snapshot,
 };
 pub use reliability_maintenance::{
     RELIABILITY_MAINTENANCE_BATCH_LIMIT, RELIABILITY_MAINTENANCE_INTERVAL_SEC,
@@ -80,6 +82,7 @@ pub use routes::network::{
     RegistryRegistrationResult, apply_registry_registration_record, build_registration_request,
     run_registry_registration_once, sync_network_permission_checkpoint,
 };
+pub use routes::space::map_source::SpaceMaps;
 pub use routes::space::world::WorldEventRegistry;
 pub use routes::space::{
     OwnSpacePresence, emit_current_space_presence, initialize_space_presence,
@@ -322,6 +325,23 @@ fn client_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/wallet/send",
             post(routes::wallet::send_watt),
+        )
+        .route("/v1/wattetheria/games", get(routes::farm::list_games))
+        .route(
+            "/v1/wattetheria/games/{game_id}",
+            get(routes::farm::game_info),
+        )
+        .route(
+            "/v1/wattetheria/farm/status",
+            get(routes::farm::farm_status),
+        )
+        .route(
+            "/v1/wattetheria/farm/season",
+            get(routes::farm::farm_season),
+        )
+        .route(
+            "/v1/wattetheria/farm/actions/{action}",
+            post(routes::farm::farm_action),
         )
         .route(
             "/v1/supervision/governance",

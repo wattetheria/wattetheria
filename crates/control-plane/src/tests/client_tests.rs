@@ -1906,9 +1906,10 @@ async fn gateway_node_event_can_be_pushed_to_event_ingest() {
     });
 
     let client = reqwest::Client::new();
-    push_signed_node_event(&client, &format!("http://{addr}"), &signed)
+    let receipt = push_signed_node_event(&client, &format!("http://{addr}"), &signed)
         .await
         .unwrap();
+    assert_eq!(receipt, json!({"status":"ok"}));
 
     let received = received.lock().await;
     assert_eq!(received.len(), 1);

@@ -119,6 +119,7 @@ fn assert_public_geo_projection(value: &Value) {
 mod collective;
 mod direct_messages;
 mod discovery;
+mod farm;
 mod friend_requests;
 mod friendships;
 mod hives;

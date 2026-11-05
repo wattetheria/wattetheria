@@ -1,5 +1,6 @@
-use crate::{Cli, load_civilization_runtime_state, load_space_catalog};
+use crate::{Cli, load_civilization_runtime_state};
 use clap::Parser;
+use wattetheria_control_plane::SpaceMaps;
 use wattetheria_kernel::agent_identity::FileAgentIdentityStore;
 use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, PublicIdentityRegistry,
@@ -10,26 +11,8 @@ use wattetheria_kernel::local_db::{self, LocalDb};
 const MINIMAL_SPACE_VERSION: &str =
     "sha256:a0fa85f21777ea47e03236f57e3fed17f049b4977080be4a182d22abb0f46c1b";
 
-#[test]
-fn no_catalog_override_uses_the_bundled_catalog() {
-    let Some(catalog) = load_space_catalog(None).expect("load bundled Space catalog") else {
-        return;
-    };
-    let default = catalog
-        .spaces
-        .iter()
-        .find(|entry| entry.space_id == catalog.default_space_id)
-        .expect("default Space exists");
-
-    catalog
-        .current(&default.space_id)
-        .expect("default current package")
-        .validate()
-        .expect("default current package validates");
-}
-
-#[test]
-fn catalog_override_loads_the_specified_file() {
+#[tokio::test]
+async fn catalog_override_pins_the_specified_file_without_a_gateway() {
     let dir = tempfile::tempdir().expect("tempdir");
     let package = serde_json::json!({
         "space_id": "example-space",
@@ -73,9 +56,12 @@ fn catalog_override_loads_the_specified_file() {
     )
     .expect("write external catalog");
 
-    let catalog = load_space_catalog(Some(&catalog_path))
-        .expect("load external Space catalog")
-        .expect("external Space catalog exists");
+    let local_db = LocalDb::open(dir.path().join("local.db")).expect("open local db");
+    let maps = SpaceMaps::load(&local_db, &[], Some(&catalog_path))
+        .await
+        .expect("load external Space catalog");
+    assert_eq!(maps.source(), "catalog_path");
+    let catalog = maps.get().expect("external Space catalog exists");
     let current = catalog
         .spaces
         .iter()
@@ -138,9 +124,13 @@ fn restarted_runtime_import_replaces_the_persisted_local_identity() {
         dir.path().to_str().expect("UTF-8 data directory"),
     ])
     .expect("test CLI");
-    let runtime_state =
-        load_civilization_runtime_state(&cli, &active_runtime.compat_view(), &local_db)
-            .expect("load civilization state after Runtime replacement");
+    let runtime_state = load_civilization_runtime_state(
+        &cli,
+        &active_runtime.compat_view(),
+        &local_db,
+        SpaceMaps::pinned(None),
+    )
+    .expect("load civilization state after Runtime replacement");
 
     let identities = runtime_state.public_identity_registry.list();
     assert_eq!(identities.len(), 1);

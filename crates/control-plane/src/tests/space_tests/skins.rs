@@ -6,7 +6,7 @@ fn reopen(state: &mut ControlPlaneState, path: &std::path::Path) {
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -242,7 +242,7 @@ async fn concurrent_first_entries_share_one_persisted_skin() {
     assert_eq!(third.unwrap(), first);
     let saved = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();

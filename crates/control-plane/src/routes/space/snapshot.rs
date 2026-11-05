@@ -16,7 +16,7 @@ pub(crate) async fn export(state: &ControlPlaneState) -> Result<SpaceSnapshot> {
             .own_space_presence
             .lock()
             .await
-            .projection(&network, state.space_catalog.as_deref()),
+            .projection(&network, state.space_catalog.get().as_deref()),
         _ => Vec::new(),
     };
     Ok(SpaceSnapshot {

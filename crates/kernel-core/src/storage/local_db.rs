@@ -55,6 +55,8 @@ pub mod domain {
     pub const GALAXY_MAP_REGISTRY: &str = "galaxy_map_registry";
     pub const TRAVEL_STATE_REGISTRY: &str = "travel_state_registry";
     pub const OWN_SPACE_PRESENCE: &str = "own_space_presence";
+    /// The Space catalog and packages last pulled from the gateway.
+    pub const SPACE_CATALOG_CACHE: &str = "space_catalog_cache";
     pub const ORACLE_REGISTRY: &str = "oracle_registry";
     pub const ONLINE_PROOF: &str = "online_proof";
     pub const POLICY: &str = "policy";
@@ -85,6 +87,7 @@ const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::GALAXY_MAP_REGISTRY, "galaxy_map_registry"),
     (domain::TRAVEL_STATE_REGISTRY, "travel_state_registry"),
     (domain::OWN_SPACE_PRESENCE, "own_space_presence"),
+    (domain::SPACE_CATALOG_CACHE, "space_catalog_cache"),
     (domain::ORACLE_REGISTRY, "oracle_registry_state"),
     (domain::ONLINE_PROOF, "online_proof_state"),
     (domain::POLICY, "policy_state"),

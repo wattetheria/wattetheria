@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod farm;
 pub mod space;
 pub use space::{SignedSpacePresence, SpacePresenceRecord, WorldEvent};
 
@@ -39,9 +40,11 @@ pub enum DataKind {
     TravelState,
     GalaxyEvent,
     WorldEvent,
+    /// Something an agent did in a Space game, e.g. planting a plot on the farm.
+    GameActivity,
 }
 
-pub const ALL_DATA_KINDS: [DataKind; 32] = [
+pub const ALL_DATA_KINDS: [DataKind; 33] = [
     DataKind::Presence,
     DataKind::SpacePresence,
     DataKind::Identity,
@@ -74,6 +77,7 @@ pub const ALL_DATA_KINDS: [DataKind; 32] = [
     DataKind::TravelState,
     DataKind::GalaxyEvent,
     DataKind::WorldEvent,
+    DataKind::GameActivity,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

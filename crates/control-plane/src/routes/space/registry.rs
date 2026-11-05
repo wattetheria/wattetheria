@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use rand::Rng;
@@ -108,7 +109,8 @@ impl OwnSpacePresence {
                 );
                 verify_presence_signature(signed)?;
                 if let Some(package) = catalog
-                    .and_then(|catalog| catalog.version(space_id, &signed.record.space_version))
+                    .and_then(|catalog| catalog.current(space_id))
+                    .filter(|package| package.space_version == signed.record.space_version)
                 {
                     package.validate_record(&signed.record)?;
                 }
@@ -158,10 +160,7 @@ impl OwnSpacePresence {
                 !signed.record.entered
                     || (self.active_space_id(network_id) == Some(&signed.record.space_id)
                         && catalog
-                            .and_then(|catalog| {
-                                catalog
-                                    .version(&signed.record.space_id, &signed.record.space_version)
-                            })
+                            .and_then(|catalog| catalog.current(&signed.record.space_id))
                             .is_some_and(|package| verify_presence(package, signed).is_ok()))
             })
             .cloned()
@@ -214,21 +213,21 @@ pub(super) async fn current_network(state: &ControlPlaneState) -> Result<String>
     Ok(network)
 }
 
-pub(super) fn catalog(state: &ControlPlaneState) -> Result<&SpaceCatalog> {
-    let catalog = state
+pub(super) fn catalog(state: &ControlPlaneState) -> Result<Arc<SpaceCatalog>> {
+    state
         .space_catalog
-        .as_deref()
-        .context("Space is unavailable: configure --space-catalog-path")?;
-    Ok(catalog)
+        .get()
+        .context("Space is unavailable: no map from the gateway and none cached")
 }
 
 pub(super) async fn selected_package(
     state: &ControlPlaneState,
     requested: Option<&str>,
 ) -> Result<(String, SpacePackage)> {
+    super::map_source::ensure_map(state).await?;
     let network = current_network(state).await?;
-    let catalog = catalog(state)?;
     let registry = state.own_space_presence.lock().await;
+    let catalog = catalog(state)?;
     let space_id = requested
         .or(registry.active_space_id(&network))
         .unwrap_or(&catalog.default_space_id);
@@ -244,7 +243,7 @@ pub(super) async fn selected_package(
 pub(super) fn verify_presence(package: &SpacePackage, signed: &SignedSpacePresence) -> Result<()> {
     verify_presence_signature(signed)?;
     validate_activity(&signed.record.activity).map_err(anyhow::Error::msg)?;
-    package.validate_record(&signed.record)
+    package.validate_record_geometry(&signed.record)
 }
 
 pub(super) fn verify_presence_signature(signed: &SignedSpacePresence) -> Result<()> {
@@ -276,9 +275,10 @@ pub(super) async fn update_presence(
     state: &ControlPlaneState,
     update: impl FnOnce(Option<&SpacePresenceRecord>, &SpacePackage) -> Result<SpacePresenceRecord>,
 ) -> Result<SignedSpacePresence> {
+    super::map_source::ensure_map(state).await?;
     let network = require_active_network(state).await?;
-    let catalog = catalog(state)?;
     let mut registry = state.own_space_presence.lock().await;
+    let catalog = catalog(state)?;
     let space = registry
         .active_space_id(&network)
         .context("agent has not entered the space; call enter_space first")?;
@@ -338,7 +338,7 @@ fn persist_records(
         state.signer.agent_did() == state.agent_did,
         "active signer is not the local agent"
     );
-    let catalog = state.space_catalog.as_deref();
+    let catalog = state.space_catalog.get();
     let mut candidate = registry.clone();
     let mut signed_records = Vec::new();
     for mut record in records {
@@ -347,8 +347,10 @@ fn persist_records(
             "presence is not the local agent"
         );
         network.clone_into(&mut record.network_id);
-        if let Some(package) =
-            catalog.and_then(|catalog| catalog.version(&record.space_id, &record.space_version))
+        if let Some(package) = catalog
+            .as_deref()
+            .and_then(|catalog| catalog.current(&record.space_id))
+            .filter(|package| package.space_version == record.space_version)
         {
             package.validate_record(&record)?;
         } else {
@@ -414,7 +416,7 @@ pub async fn emit_current_space_presence(state: &ControlPlaneState) -> Result<()
         .own_space_presence
         .lock()
         .await
-        .projection(&network, state.space_catalog.as_deref());
+        .projection(&network, state.space_catalog.get().as_deref());
     for signed in records {
         emit_presence(state, &signed)?;
     }
@@ -434,9 +436,10 @@ pub(super) async fn enter_configured_space(
     requested: Option<&str>,
     portal_id: Option<&str>,
 ) -> Result<SignedSpacePresence> {
+    super::map_source::ensure_map(state).await?;
     let network = require_active_network(state).await?;
-    let catalog = catalog(state)?;
     let mut registry = state.own_space_presence.lock().await;
+    let catalog = catalog(state)?;
     let recovery = recover_gateway_sequence(state, &network).await?;
     ensure!(
         registry.sequence_floor(&network) > 0
@@ -521,7 +524,7 @@ pub(super) async fn enter_configured_space(
         let saved = history
             .filter(|signed| !reset_to_default && signed.record.space_id == target.space_id)
             .max_by_key(|signed| signed.record.seq);
-        restore_record(state, catalog, target, saved, now)?
+        restore_record(state, target, saved, now)?
     };
     record.entered = true;
     record.seq = seq;
@@ -614,9 +617,11 @@ fn spawn_record(
     })
 }
 
+/// Restores the saved walk on the current map. The record may have been signed on an earlier
+/// map version; it is read with the current map, so only a walk that no longer fits moves the
+/// agent: to where the walk ends if that tile is still walkable, else to spawn.
 fn restore_record(
     state: &ControlPlaneState,
-    catalog: &SpaceCatalog,
     package: &SpacePackage,
     saved: Option<&SignedSpacePresence>,
     now: i64,
@@ -624,22 +629,16 @@ fn restore_record(
     let Some(saved) = saved else {
         return spawn_record(state, package, &package.spawn_place_id, now);
     };
-    let Some(old) = catalog.version(&saved.record.space_id, &saved.record.space_version) else {
-        return spawn_record(state, package, &package.spawn_place_id, now);
-    };
-    old.validate_record(&saved.record)?;
     let mut record = saved.record.clone();
     record.space_version.clone_from(&package.space_version);
     record.updated_at = now;
     if validate_activity(&record.activity).is_err() {
         record.activity.clear();
     }
-    if old.walk_speed.to_bits() == package.walk_speed.to_bits()
-        && package.validate_record(&record).is_ok()
-    {
+    if package.validate_record(&record).is_ok() {
         return Ok(record);
     }
-    let tile = saved.record.tile_at(old.walk_speed, now);
+    let tile = saved.record.tile_at(package.walk_speed, now);
     if !package.is_walkable(tile) {
         return spawn_record(state, package, &package.spawn_place_id, now);
     }
@@ -671,7 +670,7 @@ pub async fn reconcile_space_presence(state: &ControlPlaneState) -> Result<()> {
     if state.own_space_presence.lock().await.active_space.is_none() {
         return reset_space_presence(state).await;
     }
-    if state.space_catalog.is_none() {
+    if state.space_catalog.get().is_none() {
         return Ok(());
     }
     let network = current_network(state).await?;
@@ -686,9 +685,9 @@ pub async fn reconcile_space_presence(state: &ControlPlaneState) -> Result<()> {
     {
         return Ok(());
     }
-    let catalog = catalog(state)?;
     let recovered = recover_gateway_sequence(state, &network).await?.records;
     let mut registry = state.own_space_presence.lock().await;
+    let catalog = catalog(state)?;
     let Some(package) = registry
         .active_space_id(&network)
         .and_then(|space| catalog.current(space))
@@ -704,6 +703,53 @@ pub async fn reconcile_space_presence(state: &ControlPlaneState) -> Result<()> {
     };
     let signed = persist_recovered_sequence(state, &mut registry, &network, existing, &recovered)?;
     drop(registry);
+    emit_presence(state, &signed)
+}
+
+/// Puts a newly pulled map in place. Under the presence lock, so no walk is signed across the
+/// change; then this agent's own record in its active Space is read with the new map, as
+/// `restore_record` does on entry, and re-signed at the new version. The agent stays where its
+/// walk stands unless that tile is gone from the map.
+pub(super) async fn adopt_map(state: &ControlPlaneState, catalog: Arc<SpaceCatalog>) -> Result<()> {
+    let network = current_network(state).await.ok();
+    let mut registry = state.own_space_presence.lock().await;
+    state.space_catalog.swap(Arc::clone(&catalog));
+    let Some(network) = network else {
+        return Ok(());
+    };
+    let Some(space) = registry.active_space_id(&network).map(str::to_owned) else {
+        return Ok(());
+    };
+    let Some(package) = catalog.current(&space) else {
+        tracing::warn!(
+            space,
+            "the new map drops the active Space; the agent stays until it leaves"
+        );
+        return Ok(());
+    };
+    let Some(saved) = registry
+        .stored(&network, &space)
+        .filter(|signed| {
+            signed.record.entered && signed.record.space_version != package.space_version
+        })
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut record = restore_record(state, package, Some(&saved), now)?;
+    // A tile the new map closes respawns the agent; its look is not the map's to reset.
+    record.avatar_id = saved.record.avatar_id;
+    record.skin_id.clone_from(&saved.record.skin_id);
+    record.entered = true;
+    record.seq = next_sequence(&registry, &network, &[])?;
+    let signed = persist_presence(state, &mut registry, &network, record)?;
+    drop(registry);
+    tracing::info!(
+        space,
+        version = package.space_version,
+        "own presence re-signed on the new map"
+    );
     emit_presence(state, &signed)
 }
 
@@ -741,9 +787,13 @@ pub async fn reset_space_presence(state: &ControlPlaneState) -> Result<()> {
                     }))
         });
     if let Some(signed) = recovered_latest {
-        if let Some(package) = state.space_catalog.as_deref().and_then(|catalog| {
-            catalog.version(&signed.record.space_id, &signed.record.space_version)
-        }) {
+        if let Some(package) = state
+            .space_catalog
+            .get()
+            .as_deref()
+            .and_then(|catalog| catalog.current(&signed.record.space_id))
+            .filter(|package| package.space_version == signed.record.space_version)
+        {
             package.validate_record(&signed.record)?;
         }
         candidates.insert(signed.record.space_id.clone(), signed.clone());

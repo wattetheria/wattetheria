@@ -32,7 +32,7 @@ async fn space_inactive_reconciliation_recovers_remote_only_saved_position_witho
         .own_space_presence
         .lock()
         .await
-        .get(&test_network_id(&state), current_package(&state))
+        .get(&test_network_id(&state), &current_package(&state))
         .cloned()
         .unwrap();
     let mut expected = saved.record.clone();
@@ -90,7 +90,7 @@ async fn space_inactive_reconciliation_retries_unreachable_gateway_without_impli
     reconcile_space_presence(&state).await.unwrap();
     let registry = state.own_space_presence.lock().await;
     let inactive = registry
-        .get(&test_network_id(&state), current_package(&state))
+        .get(&test_network_id(&state), &current_package(&state))
         .unwrap();
     assert!(registry.active_space.is_none());
     assert!(!inactive.record.entered);
@@ -265,14 +265,14 @@ async fn space_recovery_one_confirmed_gateway_is_enough_with_other_failures() {
         assert_eq!(events.recv().await.unwrap().payload, entered["presence"]);
         let persisted = OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap();
         assert_eq!(
             json!(
                 persisted
-                    .get(&test_network_id(&state), current_package(&state))
+                    .get(&test_network_id(&state), &current_package(&state))
                     .unwrap()
             ),
             entered["presence"]
@@ -305,9 +305,12 @@ async fn space_recovery_saved_local_floor_allows_offline_restart_and_explicit_re
                 .unwrap();
         }
         let reopened = Arc::new(LocalDb::open(&path).unwrap());
-        let loaded =
-            OwnSpacePresence::load(&reopened, state.space_catalog.as_deref(), &state.agent_did)
-                .unwrap();
+        let loaded = OwnSpacePresence::load(
+            &reopened,
+            state.space_catalog.get().as_deref(),
+            &state.agent_did,
+        )
+        .unwrap();
         state.local_db = reopened;
         state.own_space_presence = Arc::new(Mutex::new(loaded));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -361,11 +364,11 @@ async fn space_recovery_saved_local_floor_allows_offline_restart_and_explicit_re
         assert_eq!(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did
             )
             .unwrap()
-            .get(&test_network_id(&state), current_package(&state)),
+            .get(&test_network_id(&state), &current_package(&state)),
             Some(&entered)
         );
     }
@@ -393,7 +396,7 @@ pub(super) fn store_legacy_activity(
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -451,7 +454,7 @@ async fn space_legacy_activity_load_is_read_only_and_authorized_repair_preserves
         state.local_db = Arc::new(LocalDb::open(&path).unwrap());
         let loaded = OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap();
@@ -462,11 +465,14 @@ async fn space_legacy_activity_load_is_read_only_and_authorized_repair_preserves
         assert_eq!(registry_bytes(&path), bytes);
         assert!(
             loaded
-                .get(&test_network_id(&state), current_package(&state))
+                .get(&test_network_id(&state), &current_package(&state))
                 .is_none()
         );
         assert_eq!(
-            loaded.projection(&test_network_id(&state), state.space_catalog.as_deref()),
+            loaded.projection(
+                &test_network_id(&state),
+                state.space_catalog.get().as_deref()
+            ),
             vec![]
         );
         let mut events = state.stream_tx.subscribe();
@@ -501,10 +507,12 @@ async fn space_legacy_activity_load_is_read_only_and_authorized_repair_preserves
         );
         let restarted = ControlPlaneState {
             local_db: Arc::new(LocalDb::open(&path).unwrap()),
+            busy: Arc::default(),
+            farm_catalog: Arc::default(),
             own_space_presence: Arc::new(Mutex::new(
                 OwnSpacePresence::load(
                     &state.local_db,
-                    state.space_catalog.as_deref(),
+                    state.space_catalog.get().as_deref(),
                     &state.agent_did,
                 )
                 .unwrap(),
@@ -543,16 +551,19 @@ async fn space_valid_legacy_activity_and_signed_bytes_are_not_rewritten() {
     state.local_db = Arc::new(LocalDb::open(&path).unwrap());
     let loaded = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     assert_eq!(
-        loaded.get(&test_network_id(&state), current_package(&state)),
+        loaded.get(&test_network_id(&state), &current_package(&state)),
         Some(&original)
     );
     assert_eq!(
-        loaded.projection(&test_network_id(&state), state.space_catalog.as_deref()),
+        loaded.projection(
+            &test_network_id(&state),
+            state.space_catalog.get().as_deref()
+        ),
         vec![]
     );
     assert_eq!(registry_bytes(&path), bytes);
@@ -602,7 +613,7 @@ async fn space_legacy_activity_failed_sqlite_repair_preserves_original_bytes_and
         assert_eq!(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did
             )
             .unwrap()
@@ -691,12 +702,12 @@ async fn space_missing_local_registry_recovers_signed_high_floor_without_old_geo
     );
     let reopened = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     assert_eq!(
-        reopened.get(&test_network_id(&state), current_package(&state)),
+        reopened.get(&test_network_id(&state), &current_package(&state)),
         Some(&spawn)
     );
     assert_eq!(initialize_space_presence(&state).await.unwrap(), spawn);
@@ -730,7 +741,7 @@ async fn space_recovery_raises_sequence_only_and_equal_floor_does_not_emit() {
         .own_space_presence
         .lock()
         .await
-        .get(&test_network_id(&state), current_package(&state))
+        .get(&test_network_id(&state), &current_package(&state))
         .cloned()
         .unwrap();
     let mut expected = moved.record.clone();
@@ -791,11 +802,11 @@ async fn space_equal_sequence_conflicts_across_gateways_recover_once_under_concu
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap()
-        .get(&test_network_id(&state), current_package(&state)),
+        .get(&test_network_id(&state), &current_package(&state)),
         Some(&recovered)
     );
     for server in servers {
@@ -849,7 +860,7 @@ async fn space_recovery_local_old_map_sequence_remains_the_larger_floor() {
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -945,17 +956,17 @@ async fn space_recovery_concurrent_first_join_and_move_recheck_current_record() 
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state)),
+            .get(&test_network_id(&state), &current_package(&state)),
         Some(&moved)
     );
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap()
-        .get(&test_network_id(&state), current_package(&state)),
+        .get(&test_network_id(&state), &current_package(&state)),
         Some(&moved)
     );
     server.abort();
@@ -979,7 +990,7 @@ async fn space_recovery_overflow_never_persists_or_emits() {
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state))
+            .get(&test_network_id(&state), &current_package(&state))
             .is_none()
     );
     assert!(
@@ -1009,17 +1020,17 @@ async fn space_recovery_overflow_never_persists_or_emits() {
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state)),
+            .get(&test_network_id(&state), &current_package(&state)),
         Some(&original)
     );
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap()
-        .get(&test_network_id(&state), current_package(&state)),
+        .get(&test_network_id(&state), &current_package(&state)),
         Some(&original)
     );
     assert!(matches!(
@@ -1046,7 +1057,7 @@ async fn space_recovery_does_not_update_presence_without_active_permission() {
             .own_space_presence
             .lock()
             .await
-            .get(&original.record.network_id, current_package(&state)),
+            .get(&original.record.network_id, &current_package(&state)),
         Some(&original)
     );
     assert!(matches!(
@@ -1130,7 +1141,7 @@ async fn space_recovery_real_sqlite_write_failure_retains_existing_record_and_no
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state)),
+            .get(&test_network_id(&state), &current_package(&state)),
         Some(&original)
     );
     assert!(matches!(
@@ -1140,11 +1151,11 @@ async fn space_recovery_real_sqlite_write_failure_retains_existing_record_and_no
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap()
-        .get(&test_network_id(&state), current_package(&state)),
+        .get(&test_network_id(&state), &current_package(&state)),
         Some(&original)
     );
     server.abort();

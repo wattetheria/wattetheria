@@ -13,7 +13,7 @@ impl SwarmBridge for UnavailableNetworkBridge {
 #[tokio::test]
 async fn leave_without_entry_needs_neither_catalog_nor_network_and_writes_nothing() {
     let (dir, _app, token, _policy, mut state) = build_test_app(100);
-    state.space_catalog = None;
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     state.swarm_bridge = Arc::new(UnavailableNetworkBridge);
     state.local_db = Arc::new(LocalDb::open(dir.path().join("no-network.db")).unwrap());
     assert!(state.swarm_bridge.current_network_id().await.is_err());
@@ -93,7 +93,7 @@ async fn leave_signs_one_inactive_record_and_repeat_is_a_strict_noop() {
     assert!(state.own_space_presence.lock().await.active_space.is_none());
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -284,7 +284,7 @@ async fn concurrent_leave_persists_and_emits_only_one_inactive_record() {
     assert!(state.own_space_presence.lock().await.active_space.is_none());
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();

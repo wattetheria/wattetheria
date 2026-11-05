@@ -48,7 +48,7 @@ pub(super) fn configured_catalog(default: &str, packages: &[SpacePackage]) -> Sp
 #[tokio::test]
 async fn absent_catalog_keeps_nonspace_routes_available() {
     let (_dir, _app, token, _policy, mut state) = build_test_app(100);
-    state.space_catalog = None;
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     let mut events = state.stream_tx.subscribe();
     crate::reset_space_presence(&state).await.unwrap();
     crate::reconcile_space_presence(&state).await.unwrap();
@@ -159,7 +159,7 @@ async fn network_namespace_preserves_same_space_and_removed_space_sequence_floor
         .unwrap();
     let loaded = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -167,6 +167,8 @@ async fn network_namespace_preserves_same_space_and_removed_space_sequence_floor
     assert_eq!(loaded.sequence_floor("another-network"), 1000);
     assert!(loaded.active_space.is_none());
     let state = ControlPlaneState {
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(loaded)),
         ..state
     };
@@ -188,7 +190,7 @@ async fn network_namespace_preserves_same_space_and_removed_space_sequence_floor
     ));
     let reopened = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -235,10 +237,10 @@ async fn portal_transition_is_atomic_and_uses_network_sequence_floor() {
         source.portals = serde_json::from_value(json!([{"portal_id":"next","source_place_id":source.spawn_place_id,"target_space_id":target.space_id,"target_place_id":target.spawn_place_id}])).unwrap();
         rehash_package(&mut source);
         rehash_package(&mut target);
-        state.space_catalog = Some(Arc::new(configured_catalog(
+        state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
             &source.space_id,
             &[source.clone(), target.clone()],
-        )));
+        ))));
         let initial = initialize_space_presence(&state).await.unwrap();
         let before = state
             .local_db
@@ -307,7 +309,7 @@ async fn portal_transition_is_atomic_and_uses_network_sequence_floor() {
             assert_eq!(result["presence"], json!(arrived));
             let saved = OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap();
@@ -345,10 +347,10 @@ async fn portal_requires_actual_arrival_and_same_space_entry_is_idempotent() {
     source.portals = serde_json::from_value(json!([{"portal_id":"park","source_place_id":"hobbs-cafe/cafe","target_space_id":target.space_id,"target_place_id":target.spawn_place_id}])).unwrap();
     rehash_package(&mut source);
     rehash_package(&mut target);
-    state.space_catalog = Some(Arc::new(configured_catalog(
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
         &source.space_id,
         &[source.clone(), target.clone()],
-    )));
+    ))));
     let initial = initialize_space_presence(&state).await.unwrap();
     let mut events = state.stream_tx.subscribe();
     for body in [
@@ -453,7 +455,8 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
     )
     .unwrap();
     let unbound =
-        OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+        OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
+            .unwrap();
     assert_eq!(unbound.stored("", &legacy.record.space_id), Some(&legacy));
     assert_eq!(
         unbound.stored(&test_network_id(&state), &legacy.record.space_id),
@@ -484,7 +487,7 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
         .unwrap();
     let bound = OwnSpacePresence::load(
         &initially_verified,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -503,7 +506,8 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
     db.upsert_network_permission_checkpoint(&checkpoint)
         .unwrap();
     let still_unbound =
-        OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+        OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
+            .unwrap();
     assert_eq!(
         canonical_bytes(still_unbound.stored("", &legacy.record.space_id).unwrap()).unwrap(),
         signed_bytes
@@ -513,13 +517,15 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
         None
     );
     assert!(still_unbound.active_space.is_none());
-    OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+    OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did).unwrap();
     assert_eq!(
         db.load_domain::<Value>("own_space_presence").unwrap(),
         before
     );
     let state = ControlPlaneState {
         local_db: Arc::new(db),
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(still_unbound)),
         ..state
     };
@@ -538,7 +544,7 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
     assert!(verify_payload(&entered.record, &entered.signature, &entered.public_key).unwrap());
     let reloaded = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -549,7 +555,7 @@ async fn legacy_network_binding_requires_verified_checkpoint_and_preserves_signe
 }
 
 #[tokio::test]
-async fn trusted_old_speed_projects_position_and_replans_legal_current_destination() {
+async fn old_record_whose_walk_fits_the_current_map_continues_as_signed() {
     let (_dir, _app, _token, _policy, mut state) = build_test_app(100);
     let mut old = current_package(&state).clone();
     old.walk_speed = 1.0;
@@ -557,10 +563,10 @@ async fn trusted_old_speed_projects_position_and_replans_legal_current_destinati
     let mut current = old.clone();
     current.walk_speed = 4.0;
     rehash_package(&mut current);
-    state.space_catalog = Some(Arc::new(configured_catalog(
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
         &old.space_id,
         &[old.clone(), current.clone()],
-    )));
+    ))));
     let now = Utc::now().timestamp_millis();
     let from = old
         .destination_tile(&state.agent_did, &old.spawn_place_id)
@@ -605,20 +611,18 @@ async fn trusted_old_speed_projects_position_and_replans_legal_current_destinati
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
     ));
     let entered = initialize_space_presence(&state).await.unwrap();
     assert_eq!(entered.record.seq, 31);
-    assert_eq!(
-        entered.record.from_tile,
-        saved
-            .record
-            .tile_at(old.walk_speed, entered.record.updated_at)
-    );
-    assert_eq!(entered.record.depart_at, entered.record.updated_at);
+    // The walk still fits the current map, so it continues as signed and is read with the
+    // current speed from now on; only the map version is restamped.
+    assert_eq!(entered.record.from_tile, saved.record.from_tile);
+    assert_eq!(entered.record.path, saved.record.path);
+    assert_eq!(entered.record.depart_at, saved.record.depart_at);
     assert_eq!(entered.record.space_version, current.space_version);
     assert_eq!(
         entered.record.destination_place_id,

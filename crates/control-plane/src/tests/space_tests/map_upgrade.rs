@@ -61,8 +61,12 @@ async fn own_presence_upgrade_rejects_foreign_identity_keys_and_signatures_witho
             let path = dir.path().join("own-presence-invalid-upgrade.db");
             let state = disk_state(state, &path);
             let local = initialize_space_presence(&state).await.unwrap();
-            let foreign =
-                signed_spawn(&state, &Identity::new_random(), current_package(&state), 14);
+            let foreign = signed_spawn(
+                &state,
+                &Identity::new_random(),
+                &current_package(&state),
+                14,
+            );
             let mut archive = local.clone();
             archive.record.space_id = "zz-archive".to_owned();
             archive.record.space_version = "obsolete-map".to_owned();
@@ -116,7 +120,7 @@ async fn own_presence_upgrade_rejects_foreign_identity_keys_and_signatures_witho
             } else {
                 &state.agent_did
             };
-            let error = OwnSpacePresence::load(&db, state.space_catalog.as_deref(), did)
+            let error = OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), did)
                 .unwrap_err()
                 .to_string();
             let expected = match failure {
@@ -161,7 +165,7 @@ async fn own_presence_upgrade_sqlite_write_failure_preserves_complete_legacy_pay
     conn.execute_batch("CREATE TRIGGER reject_presence_upgrade BEFORE UPDATE ON own_space_presence BEGIN SELECT RAISE(ABORT,'presence upgrade rejected'); END;").unwrap();
     let db = LocalDb::open(&path).unwrap();
     assert!(
-        OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did)
+        OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
             .unwrap_err()
             .to_string()
             .contains("upsert domain table")
@@ -174,14 +178,16 @@ async fn own_presence_upgrade_sqlite_write_failure_preserves_complete_legacy_pay
     conn.execute_batch("DROP TRIGGER reject_presence_upgrade;")
         .unwrap();
     let loaded =
-        OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+        OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
+            .unwrap();
     assert_eq!(
-        loaded.get(&test_network_id(&state), current_package(&state)),
+        loaded.get(&test_network_id(&state), &current_package(&state)),
         Some(&signed)
     );
     let converted = read_row();
     let reloaded =
-        OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+        OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
+            .unwrap();
     assert_eq!(reloaded.networks, loaded.networks);
     assert_eq!(read_row(), converted);
 }
@@ -238,7 +244,8 @@ pub(super) fn upgraded_package(
 }
 
 #[tokio::test]
-async fn space_map_upgrade_loads_signed_old_record_and_respawns_with_monotonic_sequence() {
+async fn space_map_upgrade_loads_signed_old_record_and_continues_the_walk_with_monotonic_sequence()
+{
     let (dir, _app, token, _policy, state) = build_test_app(100);
     let path = dir.path().join("space-map-version-upgrade.db");
     let state = disk_state(state, &path);
@@ -257,7 +264,7 @@ async fn space_map_upgrade_loads_signed_old_record_and_respawns_with_monotonic_s
             .unwrap()
     );
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     assert_ne!(package.space_version, old.record.space_version);
@@ -270,7 +277,7 @@ async fn space_map_upgrade_loads_signed_old_record_and_respawns_with_monotonic_s
     .expect("map upgrade must not abort node startup");
     let state = ControlPlaneState {
         local_db: reopened,
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -280,11 +287,13 @@ async fn space_map_upgrade_loads_signed_old_record_and_respawns_with_monotonic_s
         spawned.record.space_version,
         current_package(&state).space_version
     );
-    assert_eq!(
-        spawned.record.destination_place_id,
-        current_package(&state).spawn_place_id
-    );
-    assert_eq!(spawned.record.path, "");
+    // Only the tile the walk started on was blocked: the agent continues towards the cafe
+    // from where it stands on the new map instead of going back to spawn.
+    assert_eq!(spawned.record.destination_place_id, "hobbs-cafe/cafe");
+    assert_ne!(spawned.record.from_tile, old.record.from_tile);
+    current_package(&state)
+        .validate_record(&spawned.record)
+        .unwrap();
     assert!(
         wattetheria_kernel::signing::verify_payload(
             &spawned.record,
@@ -299,7 +308,7 @@ async fn space_map_upgrade_loads_signed_old_record_and_respawns_with_monotonic_s
         own_space_presence: Arc::new(Mutex::new(
             OwnSpacePresence::load(
                 &state.local_db,
-                state.space_catalog.as_deref(),
+                state.space_catalog.get().as_deref(),
                 &state.agent_did,
             )
             .unwrap(),
@@ -346,7 +355,7 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
         .unwrap()
         .unwrap();
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     let registry = OwnSpacePresence::load(
@@ -356,7 +365,7 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
     )
     .unwrap();
     let state = ControlPlaneState {
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         own_space_presence: Arc::new(Mutex::new(registry)),
         swarm_bridge: Arc::new(MapUpgradeRegistrationBridge {
             anchor: serde_json::from_str(stored.trust_anchor_json.as_ref().unwrap()).unwrap(),
@@ -375,7 +384,7 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state))
+            .get(&test_network_id(&state), &current_package(&state))
             .is_none()
     );
     assert!(matches!(
@@ -387,7 +396,7 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
         .own_space_presence
         .lock()
         .await
-        .get(&test_network_id(&state), current_package(&state))
+        .get(&test_network_id(&state), &current_package(&state))
         .cloned()
         .unwrap();
     assert_eq!(respawned.record.seq, old.record.seq + 1);
@@ -400,9 +409,12 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
         serde_json::to_value(&respawned).unwrap()
     );
     let reopened = Arc::new(LocalDb::open(&path).unwrap());
-    let registry =
-        OwnSpacePresence::load(&reopened, state.space_catalog.as_deref(), &state.agent_did)
-            .unwrap();
+    let registry = OwnSpacePresence::load(
+        &reopened,
+        state.space_catalog.get().as_deref(),
+        &state.agent_did,
+    )
+    .unwrap();
     let restarted = ControlPlaneState {
         local_db: reopened,
         own_space_presence: Arc::new(Mutex::new(registry)),
@@ -424,7 +436,7 @@ async fn space_map_upgrade_approved_registration_and_reopened_reapproval_preserv
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&restarted), current_package(&restarted)),
+            .get(&test_network_id(&restarted), &current_package(&restarted)),
         Some(&respawned)
     );
     assert!(matches!(
@@ -472,7 +484,7 @@ async fn space_map_upgrade_pending_record_stays_private_and_preserves_own_archiv
     let state = disk_state(state, &dir.path().join("space-map-upgrade-pending.db"));
     let old = initialize_space_presence(&state).await.unwrap();
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     let mut archive = old.clone();
@@ -512,7 +524,7 @@ async fn space_map_upgrade_pending_record_stays_private_and_preserves_own_archiv
         archive
     );
     let state = ControlPlaneState {
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -570,7 +582,7 @@ async fn space_map_upgrade_pending_record_stays_private_and_preserves_own_archiv
     );
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -579,7 +591,7 @@ async fn space_map_upgrade_pending_record_stays_private_and_preserves_own_archiv
         archive
     );
     assert_eq!(
-        persisted.get(&test_network_id(&state), current_package(&state)),
+        persisted.get(&test_network_id(&state), &current_package(&state)),
         Some(&entered)
     );
     assert_eq!(
@@ -596,7 +608,7 @@ async fn space_map_upgrade_sequence_overflow_keeps_old_record_and_emits_nothing(
     old.record.seq = u64::MAX;
     old.signature = state.sign_payload(&old.record).unwrap();
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     let mut registry = state.own_space_presence.lock().await.clone();
@@ -616,7 +628,7 @@ async fn space_map_upgrade_sequence_overflow_keeps_old_record_and_emits_nothing(
     )
     .unwrap();
     let state = ControlPlaneState {
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -655,7 +667,7 @@ async fn space_map_upgrade_real_sqlite_respawn_failure_keeps_original_signature_
     let state = disk_state(state, &path);
     let old = initialize_space_presence(&state).await.unwrap();
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     let registry = OwnSpacePresence::load(
@@ -665,7 +677,7 @@ async fn space_map_upgrade_real_sqlite_respawn_failure_keeps_original_signature_
     )
     .unwrap();
     let state = ControlPlaneState {
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -707,7 +719,7 @@ async fn space_map_upgrade_rejects_invalid_old_signatures_and_current_geometry_o
         &dir.path().join("space-map-upgrade-invalid-record.db"),
     );
     let old = initialize_space_presence(&state).await.unwrap();
-    let package = upgraded_package(current_package(&state), old.record.from_tile);
+    let package = upgraded_package(&current_package(&state), old.record.from_tile);
     let mut registry = state.own_space_presence.lock().await.clone();
     let mut tampered = old.clone();
     tampered.record.activity = "tampered".to_owned();
@@ -773,9 +785,9 @@ async fn space_map_upgrade_rejects_invalid_old_signatures_and_current_geometry_o
 async fn space_map_upgrade_gateway_read_filters_verified_old_records_but_rejects_old_tampering() {
     let (_dir, _app, token, _policy, state) = build_test_app(100);
     let identity = Identity::new_random();
-    let old = signed_spawn(&state, &identity, current_package(&state), 9);
+    let old = signed_spawn(&state, &identity, &current_package(&state), 9);
     let package = Arc::new(upgraded_package(
-        current_package(&state),
+        &current_package(&state),
         old.record.from_tile,
     ));
     let current = signed_spawn(&state, &identity, &package, 10);
@@ -799,7 +811,7 @@ async fn space_map_upgrade_gateway_read_filters_verified_old_records_but_rejects
         axum::serve(listener, router).await.unwrap();
     });
     let state = ControlPlaneState {
-        space_catalog: Some(Arc::new(test_space_catalog(&package))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(&package)))),
         gateway_urls: vec![format!("http://{address}")],
         ..state
     };

@@ -51,7 +51,7 @@ async fn invalid_activity_fixture(
         .unwrap();
     }
     if !catalog_present {
-        state.space_catalog = None;
+        state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     }
     (dir, state, original, public_id)
 }
@@ -166,7 +166,10 @@ async fn invalid_legacy_activity_background_never_rewrites_or_projects() {
                 Some(&original)
             );
             assert_eq!(
-                registry.projection(&original.record.network_id, state.space_catalog.as_deref()),
+                registry.projection(
+                    &original.record.network_id,
+                    state.space_catalog.get().as_deref()
+                ),
                 Vec::<SignedSpacePresence>::new()
             );
             assert!(registry.active_space.is_none());
@@ -224,9 +227,11 @@ async fn reset_only_retires_old_geometry_before_explicit_current_map_entry() {
     let old = super::map_upgrade::signed_spawn(&state, &identity, &old_package, 10);
     let current = super::map_upgrade::upgraded_package(&old_package, old.record.from_tile);
     assert!(!current.is_walkable(old.record.from_tile));
-    state.space_catalog = Some(Arc::new(super::namespace_portals::configured_catalog(
-        &old_package.space_id,
-        &[old_package.clone(), current.clone()],
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(
+        super::namespace_portals::configured_catalog(
+            &old_package.space_id,
+            &[old_package.clone(), current.clone()],
+        ),
     )));
     let registry = OwnSpacePresence {
         networks: BTreeMap::from([(
@@ -242,7 +247,7 @@ async fn reset_only_retires_old_geometry_before_explicit_current_map_entry() {
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -260,7 +265,7 @@ async fn reset_only_retires_old_geometry_before_explicit_current_map_entry() {
     assert!(verify_payload(&inactive.record, &inactive.signature, &inactive.public_key).unwrap());
     let reopened = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -276,7 +281,13 @@ async fn reset_only_retires_old_geometry_before_explicit_current_map_entry() {
     assert_eq!(entered.record.path, "");
     assert_eq!(entered.record.destination_place_id, current.spawn_place_id);
     current.validate_record(&entered.record).unwrap();
+    // A record on the current map version is checked against it when loaded; one from an
+    // earlier version is only read on entry, with the current map.
     let mut invalid = old.clone();
+    invalid
+        .record
+        .space_version
+        .clone_from(&current.space_version);
     invalid.record.from_tile = [u32::MAX, u32::MAX];
     invalid.signature = state.sign_payload(&invalid.record).unwrap();
     let mut registry = state.own_space_presence.lock().await.clone();
@@ -292,7 +303,7 @@ async fn reset_only_retires_old_geometry_before_explicit_current_map_entry() {
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap_err()

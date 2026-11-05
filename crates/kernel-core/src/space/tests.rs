@@ -3,8 +3,10 @@ use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 
 fn test_package() -> SpacePackage {
-    let package: SpacePackage =
-        serde_json::from_str(include_str!("fixtures/the-ville.json")).unwrap();
+    let package: SpacePackage = serde_json::from_str(include_str!(
+        "../../../../../watt-gateway/crates/gateway-space/src/map/the-ville/space-package.json"
+    ))
+    .unwrap();
     package.validate().unwrap();
     package
 }
@@ -135,7 +137,7 @@ fn structural_presence_validation_preserves_legacy_activity_and_geometry_checks(
 fn generated_package_loads_with_original_tiles_and_version() {
     let package = test_package();
     assert_eq!(package.size, [140, 100]);
-    assert_eq!(package.places.len(), 305);
+    assert_eq!(package.places.len(), 309);
     assert_eq!(package.service_bindings, []);
     assert_eq!(package.spawn_place_id, "johnson-park");
     assert_eq!(package.tile_size, 32);
@@ -143,7 +145,7 @@ fn generated_package_loads_with_original_tiles_and_version() {
     assert_eq!(package.movement_search_radius, Some(2));
     assert_eq!(
         package.space_version,
-        "sha256:9fbcfdf85be3ae410be47a3f8349df50e58c15c75ef593bbb716fbe809347ab5"
+        "sha256:10f3fa82ff2f7771811ee152a132f2aac34b27bbac381622b0dda7df35609cdd"
     );
     assert_eq!(
         package
@@ -152,13 +154,13 @@ fn generated_package_loads_with_original_tiles_and_version() {
             .flatten()
             .filter(|cell| **cell == 1)
             .count(),
-        11_936
+        11_629
     );
     for (kind, expected) in [
         (PlaceKind::World, 1),
-        (PlaceKind::Sector, 19),
-        (PlaceKind::Arena, 63),
-        (PlaceKind::GameObject, 222),
+        (PlaceKind::Sector, 20),
+        (PlaceKind::Arena, 65),
+        (PlaceKind::GameObject, 223),
     ] {
         assert_eq!(
             package
@@ -176,7 +178,7 @@ fn generated_package_loads_with_original_tiles_and_version() {
 }
 
 #[test]
-fn original_grid_keeps_all_seventeen_components_and_park_candidates() {
+fn grid_keeps_seventeen_components_and_park_candidates() {
     let package = test_package();
     let mut seen = vec![false; 14_000];
     let mut sizes = Vec::new();
@@ -206,10 +208,10 @@ fn original_grid_keeps_all_seventeen_components_and_park_candidates() {
     }
     assert_eq!(
         sizes,
-        [7519, 4158, 1, 1, 3, 6, 6, 4, 76, 70, 64, 1, 12, 6, 3, 3, 3]
+        [6476, 4894, 1, 1, 3, 6, 6, 4, 76, 70, 64, 1, 12, 6, 3, 3, 3]
     );
     let reachable = package.spawn_reachable().unwrap();
-    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 4158);
+    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 4894);
     let did = agent_did();
     let spawn = package.destination_tile(&did, "johnson-park").unwrap();
     for place in &package.places {
@@ -519,4 +521,32 @@ fn world_event_requires_known_space_place_and_valid_time_interval() {
     let mut invalid = event;
     invalid.event_id.clear();
     assert!(package.validate_world_event(&invalid).is_err());
+}
+
+/// The farm field was cut into the forest band and opened to the town through the cactus
+/// garden: the plots and the sign in front of them must be reachable from spawn, and so must
+/// the buyback shop, or no agent could ever play.
+#[test]
+fn the_farm_field_its_sign_and_the_buyback_shop_are_reachable_from_spawn() {
+    let package = test_package();
+    let reachable = package.spawn_reachable().unwrap();
+    for place_id in [
+        "public-field/farmland",
+        "public-field/field-entrance/farm-sign",
+    ] {
+        let place = package.place(place_id).unwrap();
+        assert!(
+            place
+                .tiles
+                .iter()
+                .all(|tile| reachable[package.index(*tile)]),
+            "{place_id}"
+        );
+    }
+    let shop = package.place("the-willows-market-and-pharmacy").unwrap();
+    assert!(
+        shop.tiles
+            .iter()
+            .any(|tile| reachable[package.index(*tile)])
+    );
 }

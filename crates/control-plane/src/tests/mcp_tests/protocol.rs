@@ -74,6 +74,15 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "upload_agent_skin",
     "list_skins",
     "list_my_skins",
+    "list_games",
+    "game_info",
+    "farm_status",
+    "farm_season",
+    "farm_claim_plots",
+    "farm_plant",
+    "farm_water",
+    "farm_harvest",
+    "farm_sell",
 ];
 
 #[tokio::test]
@@ -224,7 +233,7 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
             }
             "list_places" => {
                 let places = result["places"].as_array().unwrap();
-                assert_eq!(places.len(), 19);
+                assert_eq!(places.len(), 20);
                 assert!(
                     places
                         .iter()
@@ -317,7 +326,7 @@ async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavai
         )
         .unwrap()
     );
-    state.space_catalog = None;
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     state.swarm_bridge = Arc::new(wattetheria_kernel::swarm_bridge::HybridSwarmBridge::new(
         dir.path().join("offline-mission-board.json"),
         None,

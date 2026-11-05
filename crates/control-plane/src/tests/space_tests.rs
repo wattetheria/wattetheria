@@ -4,6 +4,7 @@ use wattetheria_gateway_contract::SignedSpacePresence;
 use wattetheria_kernel::local_db::LocalDb;
 
 mod background_boundaries;
+mod gateway_map;
 mod leave;
 mod map_upgrade;
 mod namespace_portals;
@@ -16,13 +17,14 @@ mod sequence_recovery;
 mod skins;
 mod target_movement;
 
-fn current_package(state: &ControlPlaneState) -> &wattetheria_kernel::space::SpacePackage {
+fn current_package(state: &ControlPlaneState) -> wattetheria_kernel::space::SpacePackage {
     state
         .space_catalog
-        .as_deref()
+        .get()
         .unwrap()
         .current("the-ville")
         .unwrap()
+        .clone()
 }
 
 #[tokio::test]
@@ -203,7 +205,7 @@ async fn space_concurrent_fresh_explicit_entry_persists_and_emits_exactly_once()
     ));
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
@@ -211,7 +213,7 @@ async fn space_concurrent_fresh_explicit_entry_persists_and_emits_exactly_once()
     assert_eq!(
         json!(
             persisted
-                .get(&test_network_id(&state), current_package(&state))
+                .get(&test_network_id(&state), &current_package(&state))
                 .unwrap()
         ),
         first["presence"]
@@ -226,11 +228,13 @@ async fn space_restart_inactive_and_entry_sqlite_failures_preserve_record_and_ru
     let saved = initialize_space_presence(&state).await.unwrap();
     let registry = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     let state = ControlPlaneState {
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -246,12 +250,12 @@ async fn space_restart_inactive_and_entry_sqlite_failures_preserve_record_and_ru
     let registry = state.own_space_presence.lock().await;
     assert!(registry.active_space.is_none());
     assert_eq!(
-        registry.get(&test_network_id(&state), current_package(&state)),
+        registry.get(&test_network_id(&state), &current_package(&state)),
         Some(&saved)
     );
     assert!(
         registry
-            .visible_get(&test_network_id(&state), current_package(&state))
+            .visible_get(&test_network_id(&state), &current_package(&state))
             .is_none()
     );
     drop(registry);
@@ -364,10 +368,11 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
             0
         );
         let presence =
-            OwnSpacePresence::load(&db, state.space_catalog.as_deref(), &state.agent_did).unwrap();
+            OwnSpacePresence::load(&db, state.space_catalog.get().as_deref(), &state.agent_did)
+                .unwrap();
         assert!(presence.active_space.is_none());
         assert_eq!(
-            presence.get(&test_network_id(&state), current_package(&state)),
+            presence.get(&test_network_id(&state), &current_package(&state)),
             Some(&signed)
         );
         assert_eq!(
@@ -375,7 +380,7 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
             archive
         );
         assert_eq!(
-            presence.visible_get(&test_network_id(&state), current_package(&state)),
+            presence.visible_get(&test_network_id(&state), &current_package(&state)),
             None
         );
         let upgraded = read_row("own_space_presence");
@@ -387,7 +392,7 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
         assert_eq!(
             signed.record.updated_at,
             presence
-                .get(&test_network_id(&state), current_package(&state))
+                .get(&test_network_id(&state), &current_package(&state))
                 .unwrap()
                 .record
                 .updated_at
@@ -397,9 +402,12 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
             Some(json!({"retained":true}))
         );
         let reopened = LocalDb::open(&path).unwrap();
-        let reloaded =
-            OwnSpacePresence::load(&reopened, state.space_catalog.as_deref(), &state.agent_did)
-                .unwrap();
+        let reloaded = OwnSpacePresence::load(
+            &reopened,
+            state.space_catalog.get().as_deref(),
+            &state.agent_did,
+        )
+        .unwrap();
         assert_eq!(reloaded.networks, presence.networks);
         assert_eq!(read_row("own_space_presence"), upgraded);
         assert!(matches!(
@@ -408,6 +416,8 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
         ));
         let state = ControlPlaneState {
             local_db: db,
+            busy: Arc::default(),
+            farm_catalog: Arc::default(),
             own_space_presence: Arc::new(Mutex::new(presence)),
             ..state
         };
@@ -433,7 +443,7 @@ async fn space_v10_table_migration_restores_real_signed_record_without_rewriting
         ));
         let persisted = OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap();
@@ -599,21 +609,26 @@ async fn space_spawn_move_activity_and_restart_preserve_signed_latest_and_existi
     assert_eq!(latest.record.activity, "reading");
     assert_eq!(latest.record.path, "");
     let reopened = Arc::new(LocalDb::open(&path).unwrap());
-    let registry =
-        OwnSpacePresence::load(&reopened, state.space_catalog.as_deref(), &state.agent_did)
-            .unwrap();
+    let registry = OwnSpacePresence::load(
+        &reopened,
+        state.space_catalog.get().as_deref(),
+        &state.agent_did,
+    )
+    .unwrap();
     assert!(registry.active_space.is_none());
     assert!(
         registry
-            .visible_get(&test_network_id(&state), current_package(&state))
+            .visible_get(&test_network_id(&state), &current_package(&state))
             .is_none()
     );
     assert_eq!(
-        registry.get(&test_network_id(&state), current_package(&state)),
+        registry.get(&test_network_id(&state), &current_package(&state)),
         Some(&latest)
     );
     let restarted = ControlPlaneState {
         local_db: reopened,
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(registry)),
         ..state
     };
@@ -837,12 +852,12 @@ async fn space_concurrent_initialization_and_mutation_do_not_reset_existing_pres
     assert!(latest.record.activity.starts_with("activity-"));
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     assert_eq!(
-        persisted.get(&test_network_id(&state), current_package(&state)),
+        persisted.get(&test_network_id(&state), &current_package(&state)),
         Some(&latest)
     );
 }
@@ -900,12 +915,12 @@ async fn space_concurrent_first_join_and_movement_preserve_monotonic_persisted_p
     assert_eq!(latest.record.activity, "coffee");
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     assert_eq!(
-        persisted.get(&test_network_id(&state), current_package(&state)),
+        persisted.get(&test_network_id(&state), &current_package(&state)),
         Some(&latest)
     );
 }
@@ -939,12 +954,12 @@ async fn space_real_sqlite_write_failure_does_not_replace_state_or_emit() {
     ));
     let persisted = OwnSpacePresence::load(
         &state.local_db,
-        state.space_catalog.as_deref(),
+        state.space_catalog.get().as_deref(),
         &state.agent_did,
     )
     .unwrap();
     assert_eq!(
-        persisted.get(&test_network_id(&state), current_package(&state)),
+        persisted.get(&test_network_id(&state), &current_package(&state)),
         Some(&before)
     );
 }
@@ -968,7 +983,7 @@ async fn space_rejects_unregistered_agent_and_invalid_movement_or_object_without
             .own_space_presence
             .lock()
             .await
-            .get(&test_network_id(&state), current_package(&state)),
+            .get(&test_network_id(&state), &current_package(&state)),
         None
     );
     let before = initialize_space_presence(&state).await.unwrap();
@@ -1005,7 +1020,7 @@ async fn space_rejects_unregistered_agent_and_invalid_movement_or_object_without
         "/v1/wattetheria/space/places?kind=sector",
     )
     .await;
-    assert_eq!(places["places"].as_array().unwrap().len(), 19);
+    assert_eq!(places["places"].as_array().unwrap().len(), 20);
     assert!(
         places["places"]
             .as_array()

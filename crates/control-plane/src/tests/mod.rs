@@ -118,7 +118,7 @@ fn build_test_app_with_bridge(
 
 fn test_space_package() -> wattetheria_kernel::space::SpacePackage {
     let package: wattetheria_kernel::space::SpacePackage = serde_json::from_str(include_str!(
-        "../../../kernel-core/src/space/fixtures/the-ville.json"
+        "../../../../../watt-gateway/crates/gateway-space/src/map/the-ville/space-package.json"
     ))
     .unwrap();
     package.validate().unwrap();
@@ -152,6 +152,11 @@ fn test_space_catalog(
             "versions": [{"space_version":package.space_version,"package_path":"package.json","assets_path":"assets"}]}]
     })).unwrap()).unwrap();
     wattetheria_kernel::space::SpaceCatalog::load(&catalog_path).unwrap()
+}
+
+/// A test map the gateway never replaces.
+fn pinned_maps(catalog: wattetheria_kernel::space::SpaceCatalog) -> Arc<crate::SpaceMaps> {
+    Arc::new(crate::SpaceMaps::pinned(Some(catalog)))
 }
 
 #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
@@ -418,7 +423,11 @@ fn build_test_state_with_bridge(
         relationship_registry,
         organization_registry,
         hive_registry,
-        space_catalog: Some(Arc::new(test_space_catalog(&test_space_package()))),
+        space_catalog: Arc::new(crate::SpaceMaps::pinned(Some(test_space_catalog(
+            &test_space_package(),
+        )))),
+        busy: Arc::default(),
+        farm_catalog: Arc::default(),
         own_space_presence: Arc::new(Mutex::new(crate::OwnSpacePresence::default())),
         world_event_registry: Arc::new(Mutex::new(crate::WorldEventRegistry::default())),
         payment_ledger,

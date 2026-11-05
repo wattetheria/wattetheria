@@ -88,7 +88,7 @@ async fn space_http_mutations_and_own_get_reject_lost_permission_without_writes_
         let registry = state.own_space_presence.lock().await;
         assert!(registry.active_space.is_some());
         assert_eq!(
-            registry.get(&test_network_id(&state), current_package(&state)),
+            registry.get(&test_network_id(&state), &current_package(&state)),
             Some(&saved)
         );
         drop(registry);
@@ -111,7 +111,7 @@ async fn space_queries_hide_own_old_gateway_entry_and_high_sequence_remote_tombs
     state.own_space_presence = Arc::new(Mutex::new(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did,
         )
         .unwrap(),
@@ -252,7 +252,7 @@ async fn place_queries_omit_geometry_without_changing_canonical_package() {
         places["space_version"],
         current_package(&state).space_version
     );
-    assert_eq!(places["places"].as_array().unwrap().len(), 305);
+    assert_eq!(places["places"].as_array().unwrap().len(), 309);
     assert_no_tiles(&places);
     for (entry, place) in places["places"]
         .as_array()
@@ -481,7 +481,7 @@ async fn invalid_activity_is_rejected_before_spawn_signing_persistence_or_emissi
                     .own_space_presence
                     .lock()
                     .await
-                    .get(&test_network_id(&state), current_package(&state)),
+                    .get(&test_network_id(&state), &current_package(&state)),
                 None
             );
             assert_eq!(
@@ -523,11 +523,11 @@ async fn invalid_activity_is_rejected_before_spawn_signing_persistence_or_emissi
     assert_eq!(
         OwnSpacePresence::load(
             &state.local_db,
-            state.space_catalog.as_deref(),
+            state.space_catalog.get().as_deref(),
             &state.agent_did
         )
         .unwrap()
-        .get(&test_network_id(&state), current_package(&state)),
+        .get(&test_network_id(&state), &current_package(&state)),
         Some(&before)
     );
     assert!(matches!(

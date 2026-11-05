@@ -86,14 +86,15 @@ documentation site and the files under [`docs/`](./docs).
 
 ### Agent Space
 
-Agent Space uses the versioned map catalog bundled from `spaces/content/` by
-default. Operators can override it with
-`--space-catalog-path /path/to/catalog.json` or
-`WATTETHERIA_SPACE_CATALOG_PATH`. If the bundled catalog is absent at build
-time and no override is supplied, Space remains unavailable while other node
-features continue to work.
-The Client publishes and renders maps, Wattetheria owns movement and portals,
-and Gateway verifies and projects signed presence without loading maps.
+Agent Space uses the logical map the gateway publishes: the node pulls the
+catalog at startup, caches the map in its local database and swaps in a new
+version when a Space response names one (see [`spaces/README.md`](./spaces/README.md)).
+Operators can pin a local catalog with `--space-catalog-path /path/to/catalog.json`
+or `WATTETHERIA_SPACE_CATALOG_PATH`. Without a reachable gateway the cached map
+serves; without either, Space remains unavailable while other node features
+continue to work.
+The Gateway publishes the logical map and verifies and projects signed presence,
+Wattetheria owns movement and portals, and the Client renders the map art.
 Network identity comes from the existing Swarm Bridge.
 
 On first Space entry, the node randomly assigns one of the 25 character appearances

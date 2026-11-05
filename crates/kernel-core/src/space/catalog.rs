@@ -6,8 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use super::SpacePackage;
 
-include!(concat!(env!("OUT_DIR"), "/bundled_spaces.rs"));
-
 fn is_relative_catalog_path(path: &Path) -> bool {
     path.components()
         .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
@@ -46,25 +44,10 @@ impl SpaceCatalog {
         })
     }
 
-    pub fn bundled() -> Result<Option<Self>> {
-        let Some(catalog) = BUNDLED_CATALOG else {
-            return Ok(None);
-        };
-        Self::from_sources(catalog.as_bytes(), |package_path| {
-            let package = BUNDLED_PACKAGES
-                .iter()
-                .find_map(|(bundled_path, package)| {
-                    (Path::new(bundled_path) == package_path).then_some(*package)
-                })
-                .with_context(|| {
-                    format!("missing bundled Space package {}", package_path.display())
-                })?;
-            Ok(package.as_bytes().to_vec())
-        })
-        .map(Some)
-    }
-
-    fn from_sources(
+    /// Builds a catalog from its JSON and a reader for the packages it names (a directory, the
+    /// gateway's published files, or a cache of them). Every package is decoded, validated and
+    /// matched against the catalog entry that names it.
+    pub fn from_sources(
         catalog_bytes: &[u8],
         read_package: impl Fn(&Path) -> Result<Vec<u8>>,
     ) -> Result<Self> {
@@ -137,6 +120,15 @@ impl SpaceCatalog {
         Ok(catalog)
     }
 
+    /// The version `space_id` is currently published at, when the catalog knows the Space.
+    #[must_use]
+    pub fn current_version(&self, space_id: &str) -> Option<&str> {
+        self.spaces
+            .iter()
+            .find(|entry| entry.space_id == space_id)
+            .map(|entry| entry.current_version.as_str())
+    }
+
     #[must_use]
     pub fn current(&self, space_id: &str) -> Option<&SpacePackage> {
         let entry = self
@@ -147,7 +139,7 @@ impl SpaceCatalog {
     }
 
     #[must_use]
-    pub fn version(&self, space_id: &str, version: &str) -> Option<&SpacePackage> {
+    fn version(&self, space_id: &str, version: &str) -> Option<&SpacePackage> {
         self.packages.get(space_id)?.get(version)
     }
 }
@@ -157,68 +149,92 @@ mod tests {
     use super::SpaceCatalog;
     use serde_json::json;
 
-    #[test]
-    fn bundled_catalog_has_a_valid_default_and_current_package() {
-        let Some(catalog) = SpaceCatalog::bundled().unwrap() else {
-            return;
-        };
-        let default = catalog
-            .spaces
-            .iter()
-            .find(|entry| entry.space_id == catalog.default_space_id)
-            .expect("default Space exists in catalog");
-        let package = catalog
-            .current(&catalog.default_space_id)
-            .expect("default current package");
-
-        assert!(
-            default
-                .versions
-                .iter()
-                .any(|version| version.space_version == default.current_version)
-        );
-        package.validate().expect("current package validates");
-    }
+    const FIXTURE_PACKAGE: &str = include_str!(
+        "../../../../../watt-gateway/crates/gateway-space/src/map/the-ville/space-package.json"
+    );
 
     #[test]
-    fn bundled_catalog_keeps_the_immutable_previous_package_trusted() {
-        let Some(catalog) = SpaceCatalog::bundled().unwrap() else {
-            return;
-        };
-        let previous_version =
-            "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f";
-        let current = catalog.current("the-ville").unwrap();
-        let previous = catalog.version("the-ville", previous_version).unwrap();
-
-        assert!(current.movement_search_radius.is_some());
-        assert_eq!(previous.space_version, previous_version);
-        assert_eq!(previous.movement_search_radius, None);
-        previous.validate().unwrap();
-    }
-
-    #[test]
-    fn catalog_rejects_a_package_without_search_radius_as_current() {
-        let previous_version =
-            "sha256:696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f";
+    fn catalog_from_sources_exposes_the_current_package_and_version() {
+        let package: serde_json::Value = serde_json::from_str(FIXTURE_PACKAGE).unwrap();
+        let version = package["space_version"].as_str().unwrap();
         let catalog_bytes = serde_json::to_vec(&json!({
             "default_space_id": "the-ville",
             "spaces": [{
                 "space_id": "the-ville",
-                "current_version": previous_version,
+                "current_version": version,
                 "versions": [{
-                    "space_version": previous_version,
-                    "package_path": "previous.json",
+                    "space_version": version,
+                    "package_path": "the-ville/space-package.json",
+                    "assets_path": "the-ville/"
+                }]
+            }]
+        }))
+        .unwrap();
+        let catalog = SpaceCatalog::from_sources(&catalog_bytes, |path| {
+            assert_eq!(path, std::path::Path::new("the-ville/space-package.json"));
+            Ok(FIXTURE_PACKAGE.as_bytes().to_vec())
+        })
+        .unwrap();
+        assert_eq!(catalog.current_version("the-ville"), Some(version));
+        assert_eq!(catalog.current_version("elsewhere"), None);
+        let current = catalog.current(&catalog.default_space_id).unwrap();
+        assert_eq!(current.space_version, version);
+        current.validate().unwrap();
+    }
+
+    #[test]
+    fn catalog_rejects_a_package_whose_version_differs_from_the_entry() {
+        let package: serde_json::Value = serde_json::from_str(FIXTURE_PACKAGE).unwrap();
+        let catalog_bytes = serde_json::to_vec(&json!({
+            "default_space_id": "the-ville",
+            "spaces": [{
+                "space_id": "the-ville",
+                "current_version": "sha256:other",
+                "versions": [{
+                    "space_version": "sha256:other",
+                    "package_path": "p.json",
+                    "assets_path": "a/"
+                }]
+            }]
+        }))
+        .unwrap();
+        let error = SpaceCatalog::from_sources(&catalog_bytes, |_| {
+            Ok(serde_json::to_vec(&package).unwrap())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("identity mismatch"), "{error}");
+    }
+
+    #[test]
+    fn catalog_rejects_a_package_without_search_radius_as_current() {
+        use sha2::Digest as _;
+        let mut package: serde_json::Value = serde_json::from_str(FIXTURE_PACKAGE).unwrap();
+        let fields = package.as_object_mut().unwrap();
+        fields.remove("movement_search_radius");
+        fields.remove("space_version");
+        let version = format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(serde_jcs::to_vec(&package).unwrap()))
+        );
+        package["space_version"] = json!(version);
+        let catalog_bytes = serde_json::to_vec(&json!({
+            "default_space_id": "the-ville",
+            "spaces": [{
+                "space_id": "the-ville",
+                "current_version": version,
+                "versions": [{
+                    "space_version": version,
+                    "package_path": "package.json",
                     "assets_path": "assets"
                 }]
             }]
         }))
         .unwrap();
-        let previous = include_bytes!(
-            "../../../../spaces/content/the-ville/space-package-696ae86ecc072c2362d3f2adf94c1aa8639dcc2bb43e06382c624e871c0a592f.json"
-        );
 
-        let error =
-            SpaceCatalog::from_sources(&catalog_bytes, |_| Ok(previous.to_vec())).unwrap_err();
+        let error = SpaceCatalog::from_sources(&catalog_bytes, |_| {
+            Ok(serde_json::to_vec(&package).unwrap())
+        })
+        .unwrap_err();
 
         assert!(error.to_string().contains("movement_search_radius"));
     }

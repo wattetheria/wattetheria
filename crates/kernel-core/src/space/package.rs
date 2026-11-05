@@ -162,6 +162,14 @@ impl SpacePackage {
             record.space_version == self.space_version,
             "space version mismatch"
         );
+        self.validate_record_geometry(record)
+    }
+
+    /// Checks a record against this map's geometry whichever map version signed it: a record
+    /// from an earlier map is read with the current one, and only a walk that no longer fits
+    /// is rejected.
+    pub fn validate_record_geometry(&self, record: &SpacePresenceRecord) -> Result<()> {
+        ensure!(record.space_id == self.space_id, "space ID mismatch");
         ensure!(!record.agent_did.trim().is_empty(), "agent DID is required");
         ensure!(record.seq > 0, "presence sequence must be positive");
         ensure!(

@@ -214,10 +214,10 @@ async fn app_with_package(
     package: &SpacePackage,
 ) -> (tempfile::TempDir, String, ControlPlaneState) {
     let (dir, _app, token, _policy, mut state) = build_test_app(100);
-    state.space_catalog = Some(Arc::new(configured_catalog(
+    state.space_catalog = Arc::new(crate::SpaceMaps::pinned(Some(configured_catalog(
         "the-ville",
         std::slice::from_ref(package),
-    )));
+    ))));
     initialize_space_presence(&state).await.unwrap();
     (dir, token, state)
 }

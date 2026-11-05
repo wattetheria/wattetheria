@@ -60,6 +60,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
+          repository: wattetheria/watt-gateway
+          path: deps/watt-gateway
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
           repository: wattetheria/watt-did
           path: deps/watt-did
           token: ${{ secrets.CROSS_REPO_TOKEN }}
@@ -83,6 +88,7 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-credential" "$GITHUB_WORKSPACE/../watt-credential"
           ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-gateway" "$GITHUB_WORKSPACE/../watt-gateway"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -95,6 +101,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
+          repository: wattetheria/watt-gateway
+          path: deps/watt-gateway
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
           repository: wattetheria/watt-did
           path: deps/watt-did
           token: ${{ secrets.CROSS_REPO_TOKEN }}
@@ -118,6 +129,7 @@ jobs:
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-wallet" "$GITHUB_WORKSPACE/../watt-wallet"
           ln -sfn "$GITHUB_WORKSPACE/deps/watt-credential" "$GITHUB_WORKSPACE/../watt-credential"
           ln -sfn "$GITHUB_WORKSPACE/deps/wattswarm" "$GITHUB_WORKSPACE/../wattswarm"
+          ln -sfn "$GITHUB_WORKSPACE/deps/watt-gateway" "$GITHUB_WORKSPACE/../watt-gateway"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace

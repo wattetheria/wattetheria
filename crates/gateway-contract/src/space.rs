@@ -301,9 +301,10 @@ mod tests {
 
     #[test]
     fn shared_movement_vectors_match_position_and_tile() {
-        let vectors: MovementVectors =
-            serde_json::from_str(include_str!("space_movement_vectors.json"))
-                .expect("complete movement vector schema");
+        let vectors: MovementVectors = serde_json::from_str(include_str!(
+            "../tests/fixtures/space_movement_vectors.json"
+        ))
+        .expect("complete movement vector schema");
         assert_eq!(vectors.schema_version, 1);
         let mut ids = std::collections::BTreeSet::new();
         for case in vectors.cases {

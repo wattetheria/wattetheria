@@ -138,8 +138,16 @@ pub struct ControlPlaneState {
     pub relationship_registry: Arc<Mutex<RelationshipRegistry>>,
     pub organization_registry: Arc<Mutex<OrganizationRegistry>>,
     pub hive_registry: Arc<Mutex<HiveRegistry>>,
-    pub space_catalog: Option<Arc<wattetheria_kernel::space::SpaceCatalog>>,
+    /// The logical map this node walks, pulled from the gateway and cached; `None` inside while
+    /// the Space is unavailable.
+    pub space_catalog: Arc<crate::SpaceMaps>,
     pub own_space_presence: Arc<Mutex<crate::OwnSpacePresence>>,
+    /// Until when this agent is held where it stands by a game command; such commands and
+    /// `move_agent` take turns through it.
+    pub busy: Arc<crate::routes::space::busy::Busy>,
+    /// The farm's entry in the gateway's game catalog: where the field is and how long an
+    /// action holds an agent; read again every few minutes.
+    pub farm_catalog: Arc<crate::routes::farm::FarmCatalogCache>,
     pub world_event_registry: Arc<Mutex<crate::WorldEventRegistry>>,
     pub payment_ledger: Arc<Mutex<PaymentLedger>>,
     pub galaxy_state: Arc<Mutex<GalaxyState>>,
