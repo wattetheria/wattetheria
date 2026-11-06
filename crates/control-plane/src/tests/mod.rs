@@ -330,7 +330,8 @@ fn build_test_state_with_bridge(
         .unwrap();
     let governance_engine = Arc::new(Mutex::new(governance));
 
-    let audit_log = AuditLog::new(dir.path().join("audit/control_plane.jsonl")).unwrap();
+    let audit_log =
+        AuditLog::new(dir.path().join("audit/control_plane.jsonl"), "test-token").unwrap();
     let mailbox = Arc::new(Mutex::new(CrossSubnetMailbox::default()));
     let mission_board = Arc::new(Mutex::new(MissionBoard::default()));
     let mut public_identity_registry = PublicIdentityRegistry::default();
@@ -2608,6 +2609,7 @@ mod board_tests;
 mod civilization_tests;
 mod client_tests;
 mod credential_tests;
+mod daily_report_tests;
 mod diagnostics_tests;
 mod galaxy_tests;
 mod identity_tests;

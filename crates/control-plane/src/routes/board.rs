@@ -260,6 +260,55 @@ fn service_name_is_valid(service_name: &str) -> bool {
         && !service_name.ends_with('-')
 }
 
+/// Messages a page of a channel read asks the swarm for.
+const CHANNEL_PAGE: usize = 200;
+
+/// Every public channel's messages made in `[from_ms, to_ms)`, newest first, as
+/// `(category, messages)` in the board's channel order.
+pub(crate) async fn channel_messages_between(
+    state: &ControlPlaneState,
+    from_ms: u64,
+    to_ms: u64,
+) -> anyhow::Result<Vec<(&'static str, Vec<Value>)>> {
+    let network_id = resolve_network_id(state, None).await?;
+    let mut channels = Vec::new();
+    for channel in &BOARD_CHANNELS {
+        let scope_hint = format!("group:{}", channel.group);
+        let mut found = Vec::new();
+        let mut before: Option<(u64, String)> = None;
+        loop {
+            let page = state
+                .swarm_bridge
+                .list_topic_messages(
+                    Some(&network_id),
+                    channel.feed_key,
+                    &scope_hint,
+                    CHANNEL_PAGE,
+                    before.as_ref().map(|(created_at, _)| *created_at),
+                    before.as_ref().map(|(_, message_id)| message_id.clone()),
+                )
+                .await?;
+            let Some(oldest) = page.last() else {
+                break;
+            };
+            let done = page.len() < CHANNEL_PAGE || oldest.created_at < from_ms;
+            before = Some((oldest.created_at, oldest.message_id.clone()));
+            found.extend(
+                page.into_iter()
+                    .filter(|message| (from_ms..to_ms).contains(&message.created_at)),
+            );
+            if done {
+                break;
+            }
+        }
+        channels.push((
+            channel.category,
+            board_topic_message_views(state, &found, Some(channel.category)).await,
+        ));
+    }
+    Ok(channels)
+}
+
 pub(crate) fn services_board_route() -> (&'static str, &'static str) {
     (SERVICES_BOARD_FEED_KEY, SERVICES_BOARD_SCOPE_HINT)
 }

@@ -179,6 +179,17 @@ pub struct AgentActionCommitLogEntry {
     pub created_at: String,
 }
 
+/// One thing the node's agent did through its MCP tools, kept for its daily report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentActivity {
+    /// The MCP tool the agent called, such as `post_hive_message`.
+    pub kind: String,
+    /// What it acted on: a Hive, mission, payment, request or the other agent.
+    pub subject: Option<String>,
+    pub detail: serde_json::Value,
+    pub created_at_ms: i64,
+}
+
 pub struct LocalDb {
     conn: Mutex<Connection>,
 }
@@ -295,6 +306,19 @@ impl LocalDb {
                 ON agent_action_commit_log(event_id, decision_id, action_type);",
         )
         .context("create agent_action_commit_log table")?;
+
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                subject TEXT,
+                detail_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_activity_created_at
+                ON agent_activity(created_at_ms);",
+        )
+        .context("create agent_activity table")?;
 
         network_registration_storage::migrate(&tx)?;
 
@@ -542,6 +566,64 @@ impl LocalDb {
             Err(QueryReturnedNoRows) => Ok(None),
             Err(error) => Err(error).context("query agent action commit log by event action"),
         }
+    }
+
+    pub fn append_agent_activity(&self, activity: &AgentActivity) -> Result<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO agent_activity (kind, subject, detail_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    activity.kind,
+                    activity.subject,
+                    activity.detail.to_string(),
+                    activity.created_at_ms
+                ],
+            )
+            .context("insert agent activity")?;
+        Ok(())
+    }
+
+    /// The agent's activity made in `[from_ms, to_ms)`, oldest first.
+    pub fn agent_activity_between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<AgentActivity>> {
+        let conn = self.conn();
+        let mut statement = conn
+            .prepare(
+                "SELECT kind, subject, detail_json, created_at_ms FROM agent_activity
+                 WHERE created_at_ms >= ?1 AND created_at_ms < ?2
+                 ORDER BY created_at_ms, id",
+            )
+            .context("prepare agent activity query")?;
+        let rows = statement
+            .query_map(params![from_ms, to_ms], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .context("query agent activity")?;
+        rows.map(|row| {
+            let (kind, subject, detail, created_at_ms) = row.context("read agent activity")?;
+            Ok(AgentActivity {
+                kind,
+                subject,
+                detail: serde_json::from_str(&detail).context("parse agent activity detail")?,
+                created_at_ms,
+            })
+        })
+        .collect()
+    }
+
+    /// Drops the activity made before `before_ms`; returns how many rows went.
+    pub fn prune_agent_activity_before(&self, before_ms: i64) -> Result<usize> {
+        self.conn()
+            .execute(
+                "DELETE FROM agent_activity WHERE created_at_ms < ?1",
+                params![before_ms],
+            )
+            .context("prune agent activity")
     }
 
     pub fn append_agent_action_commit(&self, entry: &AgentActionCommitLogEntry) -> Result<()> {
@@ -1176,6 +1258,42 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn agent_activity_is_read_by_time_and_pruned() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = LocalDb::open(dir.path().join("test.db")).unwrap();
+        for (kind, created_at_ms) in [
+            ("post_hive_message", 1_000),
+            ("publish_board_message", 2_000),
+        ] {
+            db.append_agent_activity(&AgentActivity {
+                kind: kind.to_owned(),
+                subject: Some("hive-1".to_owned()),
+                detail: serde_json::json!({"content": "hello"}),
+                created_at_ms,
+            })
+            .unwrap();
+        }
+
+        let day = db.agent_activity_between(1_000, 2_000).unwrap();
+        assert_eq!(day.len(), 1);
+        assert_eq!(day[0].kind, "post_hive_message");
+        assert_eq!(day[0].subject.as_deref(), Some("hive-1"));
+        assert_eq!(day[0].detail["content"], "hello");
+
+        assert_eq!(db.prune_agent_activity_before(2_000).unwrap(), 1);
+        let left = db.agent_activity_between(0, i64::MAX).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].kind, "publish_board_message");
+
+        drop(db);
+        let reopened = LocalDb::open(dir.path().join("test.db")).unwrap();
+        assert_eq!(
+            reopened.agent_activity_between(0, i64::MAX).unwrap().len(),
+            1
+        );
     }
 
     #[test]

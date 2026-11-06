@@ -329,8 +329,11 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
     let signer: Arc<dyn PayloadSigner> = Arc::new(runtime_identity.clone());
     let identity = runtime_identity.compat_view();
     let event_log = EventLog::new(events_path)?;
-    let audit_log = AuditLog::new(cli.data_dir.join("audit/control_plane.jsonl"))?;
     let control_token = load_or_create_control_token(cli.data_dir.join("control.token"))?;
+    let audit_log = AuditLog::new(
+        cli.data_dir.join("audit/control_plane.jsonl"),
+        &control_token,
+    )?;
     let mcp_events = match McpEvents::open(
         local_db_path,
         cli.data_dir.join("mcp_events.key"),

@@ -15,6 +15,7 @@ pub(crate) enum EventKind {
     TaskSettledReceived,
     TopicMessageRequiresReply,
     WorldEvent,
+    DailyReport,
 }
 
 impl EventKind {
@@ -31,6 +32,7 @@ impl EventKind {
             "task_settled_received" => Some(Self::TaskSettledReceived),
             "topic_message_requires_reply" => Some(Self::TopicMessageRequiresReply),
             "world_event" => Some(Self::WorldEvent),
+            "daily_report" => Some(Self::DailyReport),
             _ => None,
         }
     }
@@ -50,6 +52,7 @@ impl EventKind {
             Self::TaskSettledReceived => "wattetheria.agent.task_settled_received",
             Self::TopicMessageRequiresReply => "wattetheria.agent.topic_message_requires_reply",
             Self::WorldEvent => "wattetheria.world.event",
+            Self::DailyReport => "wattetheria.agent.daily_report",
         }
     }
 
@@ -100,6 +103,12 @@ impl EventKind {
                 ("contentSummary", "string"),
             ],
             Self::WorldEvent => &[("announcement", "object")],
+            Self::DailyReport => &[
+                ("day", "string"),
+                ("timezone", "string"),
+                ("space", "object"),
+                ("agent", "object"),
+            ],
         }
     }
 
@@ -261,6 +270,15 @@ fn project_event_fields(
                 serde_json::to_value(announcement).ok()?,
             );
         }
+        EventKind::DailyReport => {
+            insert_payload_str(data, "day", payload, &["/day"]);
+            insert_payload_str(data, "timezone", payload, &["/timezone"]);
+            for key in ["space", "agent"] {
+                if let Some(part) = payload.get(key).filter(|part| part.is_object()) {
+                    data.insert(key.to_owned(), part.clone());
+                }
+            }
+        }
     }
 
     full_content
@@ -406,6 +424,10 @@ mod tests {
                 EventKind::TopicMessageRequiresReply,
                 json!({"message_id": "msg-1", "network_id": "network-1", "feed_key": "wattswarm.dm"}),
             ),
+            (
+                EventKind::DailyReport,
+                json!({"day": "2030-01-08", "timezone": "Australia/Sydney", "space": {"new_agents": 2}, "agent": {"watt": {"net": 5}}}),
+            ),
         ];
 
         for (kind, mut payload) in samples {
@@ -431,6 +453,7 @@ mod tests {
                 EventKind::TaskSettledReceived => ("settlement_status", json!("settled")),
                 EventKind::TopicMessageRequiresReply => ("message_id", json!("msg-1")),
                 EventKind::WorldEvent => ("announcement", event.payload.clone()),
+                EventKind::DailyReport => ("day", json!("2030-01-08")),
             };
             assert_eq!(projected.data[field], expected);
             let fields = projected.data.as_object().expect("object data");
@@ -442,6 +465,7 @@ mod tests {
                     "string" => value.is_string(),
                     "boolean" => value.is_boolean(),
                     "integer" => value.is_u64(),
+                    "object" => value.is_object(),
                     _ => false,
                 });
             }

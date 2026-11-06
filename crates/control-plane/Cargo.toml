@@ -19,6 +19,7 @@ async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 hex.workspace = true
 futures-util.workspace = true
 k256 = { version = "0.13", features = ["ecdsa"] }

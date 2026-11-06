@@ -83,6 +83,8 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "farm_water",
     "farm_harvest",
     "farm_sell",
+    "set_owner_timezone",
+    "set_daily_report_enabled",
 ];
 
 #[tokio::test]

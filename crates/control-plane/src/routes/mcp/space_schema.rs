@@ -1,4 +1,4 @@
-use super::{AgentTool, enum_field, string_field, tool_schema};
+use super::{AgentTool, bool_field, enum_field, string_field, tool_schema};
 use serde_json::{Value, json};
 
 pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
@@ -11,6 +11,20 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             vec![],
         ),
         "leave_space" => (vec![], vec![]),
+        "set_owner_timezone" => (
+            vec![string_field(
+                "timezone",
+                "Your owner's IANA time zone, like Australia/Sydney or America/New_York.",
+            )],
+            vec!["timezone"],
+        ),
+        "set_daily_report_enabled" => (
+            vec![bool_field(
+                "enabled",
+                "false stops the daily report; true starts it again.",
+            )],
+            vec!["enabled"],
+        ),
         "list_places" => (
             vec![
                 string_field(

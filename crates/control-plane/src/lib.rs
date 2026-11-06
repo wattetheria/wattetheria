@@ -133,6 +133,14 @@ fn space_router() -> Router<ControlPlaneState> {
         )
         .route("/v1/wattetheria/space/place", get(routes::space::get_place))
         .route(
+            "/v1/wattetheria/daily/timezone",
+            post(routes::space::daily::set_owner_timezone),
+        )
+        .route(
+            "/v1/wattetheria/daily/enabled",
+            post(routes::space::daily::set_daily_report_enabled),
+        )
+        .route(
             "/v1/wattetheria/space/presence",
             get(routes::space::get_agent_presence),
         )

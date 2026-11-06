@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -24,13 +25,27 @@ pub struct AuditEntry {
     pub details: Option<Value>,
 }
 
+/// Writes the trail. Handlers record the caller's control token as `actor`; the log keeps only
+/// the token's digest and writes `control:` plus its first 16 hex digits in its place, so the
+/// file never holds a credential.
 #[derive(Debug, Clone)]
 pub struct AuditLog {
     path: PathBuf,
+    control_token_digest: [u8; 32],
+    control_actor: String,
+}
+
+/// How the log names the control token: its SHA-256, cut to 16 hex digits.
+#[must_use]
+pub fn control_actor(control_token: &str) -> String {
+    format!(
+        "control:{}",
+        &hex::encode(Sha256::digest(control_token.as_bytes()))[..16]
+    )
 }
 
 impl AuditLog {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn new(path: impl AsRef<Path>, control_token: &str) -> Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
             fs::create_dir_all(parent).context("create audit directory")?;
         }
@@ -39,6 +54,8 @@ impl AuditLog {
         }
         Ok(Self {
             path: path.as_ref().to_path_buf(),
+            control_token_digest: Sha256::digest(control_token.as_bytes()).into(),
+            control_actor: control_actor(control_token),
         })
     }
 
@@ -48,6 +65,11 @@ impl AuditLog {
         }
         if entry.timestamp == 0 {
             entry.timestamp = Utc::now().timestamp();
+        }
+        if entry.actor.as_ref().is_some_and(|actor| {
+            Sha256::digest(actor.as_bytes()).as_slice() == self.control_token_digest
+        }) {
+            entry.actor = Some(self.control_actor.clone());
         }
 
         let mut file = OpenOptions::new()
@@ -84,7 +106,7 @@ mod tests {
     #[test]
     fn audit_log_roundtrip() {
         let dir = tempdir().unwrap();
-        let log = AuditLog::new(dir.path().join("audit.jsonl")).unwrap();
+        let log = AuditLog::new(dir.path().join("audit.jsonl"), "control-token").unwrap();
 
         log.append(AuditEntry {
             id: String::new(),
@@ -104,5 +126,46 @@ mod tests {
         let rows = log.list_recent(10).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].action, "state.query");
+    }
+
+    #[test]
+    fn the_control_token_is_written_as_its_fingerprint() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let log = AuditLog::new(&path, "control-token").unwrap();
+        for actor in ["control-token", "did:key:z6Mkexample"] {
+            log.append(AuditEntry {
+                id: String::new(),
+                timestamp: 0,
+                category: "hive".to_string(),
+                action: "hive.create".to_string(),
+                status: "ok".to_string(),
+                actor: Some(actor.to_string()),
+                subject: None,
+                capability: None,
+                reason: None,
+                duration_ms: None,
+                details: None,
+            })
+            .unwrap();
+        }
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("control-token"));
+        let mut actors: Vec<_> = log
+            .list_recent(10)
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| entry.actor)
+            .collect();
+        actors.sort();
+        assert_eq!(
+            actors,
+            [
+                control_actor("control-token"),
+                "did:key:z6Mkexample".to_string()
+            ]
+        );
+        assert_eq!(control_actor("control-token").len(), "control:".len() + 16);
     }
 }

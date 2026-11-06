@@ -1,4 +1,5 @@
 pub(crate) mod busy;
+pub(crate) mod daily;
 pub(crate) mod map_source;
 pub(crate) mod presence;
 mod registry;

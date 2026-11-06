@@ -302,13 +302,12 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             "lat",
             "lng",
             "coordinate_source",
+            "scope_hint",
         ],
     );
-    assert_eq!(
-        create_hive["inputSchema"]["properties"]["scope_hint"]["description"].as_str(),
-        Some(
-            "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`."
-        )
+    assert_schema_requires(
+        create_hive,
+        &["feed_key", "display_name", "projection_kind"],
     );
     let list_private_hives = find_tool(tools, "list_private_hives");
     assert_schema_requires(list_private_hives, &[]);

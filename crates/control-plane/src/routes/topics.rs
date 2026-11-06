@@ -123,7 +123,7 @@ fn private_hive_invite_json_error(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-fn is_private_hive_profile(hive: &HiveProfile) -> bool {
+pub(crate) fn is_private_hive_profile(hive: &HiveProfile) -> bool {
     hive.feed_key != "wattswarm.dm" && hive.scope_hint.starts_with("group:dm-")
 }
 
@@ -477,6 +477,13 @@ pub(crate) async fn create_hive(
         Err(error) => return internal_error(&error),
     };
     let hive_id = format!("{}@{}@{}", network_id, body.feed_key, body.scope_hint);
+    if state.hive_registry.lock().await.get(&hive_id).is_some() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "hive already exists", "hive_id": hive_id})),
+        )
+            .into_response();
+    }
     let route = HiveEnvelopeRoute {
         hive_id: &hive_id,
         network_id: &network_id,

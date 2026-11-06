@@ -268,35 +268,75 @@ async fn mcp_create_private_hive_rejects_non_private_scope_hint() {
 }
 
 #[tokio::test]
-async fn mcp_create_hive_rejects_invalid_scope_hint_with_actionable_error() {
+async fn mcp_create_hive_gives_each_hive_its_own_id_even_with_the_same_name() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
-
-    let response = mcp_request(
-        app,
-        &token,
+    let create = |id: u64| {
         json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": id,
             "method": "tools/call",
             "params": {
                 "name": "create_hive",
                 "arguments": {
                     "feed_key": "wattetheria.hives",
-                    "scope_hint": "topic:bad-hive",
-                    "display_name": "Bad Hive Scope",
+                    "scope_hint": "group:crew-seven",
+                    "display_name": "Crew Seven",
                     "projection_kind": "chat_room"
                 }
             }
-        }),
-    )
-    .await;
+        })
+    };
 
-    assert_eq!(response["result"]["isError"].as_bool(), Some(true));
-    assert_eq!(
-        response["result"]["_meta"]["httpStatus"].as_u64(),
-        Some(400)
-    );
-    let content = &response["result"]["structuredContent"];
+    let first = mcp_request(app.clone(), &token, create(1)).await;
+    let second = mcp_request(app, &token, create(2)).await;
+
+    assert_eq!(first["result"]["isError"].as_bool(), Some(false));
+    assert_eq!(second["result"]["isError"].as_bool(), Some(false));
+    let first_hive = &first["result"]["structuredContent"]["hive"];
+    let second_hive = &second["result"]["structuredContent"]["hive"];
+    // The node picks the scope, so the agent's own scope_hint is not used.
+    for hive in [first_hive, second_hive] {
+        let scope = hive["scope_hint"].as_str().unwrap();
+        assert!(scope.starts_with("group:"));
+        assert_ne!(scope, "group:crew-seven");
+        assert_eq!(hive["display_name"].as_str(), Some("Crew Seven"));
+    }
+    assert_ne!(first_hive["hive_id"], second_hive["hive_id"]);
+}
+
+#[tokio::test]
+async fn create_hive_route_refuses_an_existing_hive_id() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let body = json!({
+        "feed_key": "wattetheria.hives",
+        "scope_hint": "group:crew-seven",
+        "display_name": "Crew Seven",
+        "projection_kind": "chat_room"
+    });
+
+    let created =
+        authed_post_json(app.clone(), &token, "/v1/wattetheria/hives", body.clone()).await;
+    assert_eq!(created["hive"]["display_name"].as_str(), Some("Crew Seven"));
+    let again = authed_post(app.clone(), &token, "/v1/wattetheria/hives", body.clone()).await;
+    assert_eq!(again, StatusCode::CONFLICT);
+    let refused = authed_post_json(app, &token, "/v1/wattetheria/hives", body).await;
+    assert_eq!(refused["error"].as_str(), Some("hive already exists"));
+    assert_eq!(refused["hive_id"], created["hive"]["hive_id"]);
+}
+
+#[tokio::test]
+async fn create_hive_route_rejects_invalid_scope_hint_with_actionable_error() {
+    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let body = json!({
+        "feed_key": "wattetheria.hives",
+        "scope_hint": "topic:bad-hive",
+        "display_name": "Bad Hive Scope",
+        "projection_kind": "chat_room"
+    });
+
+    let status = authed_post(app.clone(), &token, "/v1/wattetheria/hives", body.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let content = authed_post_json(app, &token, "/v1/wattetheria/hives", body).await;
     assert_eq!(content["field"].as_str(), Some("scope_hint"));
     assert_eq!(content["received"].as_str(), Some("topic:bad-hive"));
     assert_eq!(
@@ -305,21 +345,16 @@ async fn mcp_create_hive_rejects_invalid_scope_hint_with_actionable_error() {
             "invalid scope_hint: expected global, region:<id>, node:<id>, local:<id>, or group:<id>; for Hives use group:<id>"
         )
     );
-    assert!(
-        response["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("group:<id>")
-    );
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mcp_post_hive_message_requires_local_subscription() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
-    let (_dir, app, token, _policy, _state) =
+    let (_dir, app, token, _policy, state) =
         build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
 
     let blocked = mcp_request(
@@ -362,7 +397,6 @@ async fn mcp_post_hive_message_requires_local_subscription() {
                 "name": "create_hive",
                 "arguments": {
                     "feed_key": "crew.chat",
-                    "scope_hint": "group:crew-7",
                     "display_name": "Crew Seven",
                     "projection_kind": "chat_room",
                     "network_id": "mainnet:test"
@@ -372,6 +406,11 @@ async fn mcp_post_hive_message_requires_local_subscription() {
     )
     .await;
     assert_eq!(create_response["result"]["isError"].as_bool(), Some(false));
+    let hive_id = create_response["result"]["structuredContent"]["hive"]["hive_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(hive_id.starts_with("mainnet:test@crew.chat@group:"));
 
     let posted = mcp_request(
         app.clone(),
@@ -383,7 +422,7 @@ async fn mcp_post_hive_message_requires_local_subscription() {
             "params": {
                 "name": "post_hive_message",
                 "arguments": {
-                    "hive_id": "mainnet:test@crew.chat@group:crew-7",
+                    "hive_id": hive_id,
                     "content": {"text": "中文 English العربية 日本語 🙂 allowed"}
                 }
             }
@@ -402,7 +441,7 @@ async fn mcp_post_hive_message_requires_local_subscription() {
             "params": {
                 "name": "post_hive_message",
                 "arguments": {
-                    "hive_id": "mainnet:test@crew.chat@group:crew-7",
+                    "hive_id": hive_id,
                     "content": {"text": "x".repeat(4097)}
                 }
             }
@@ -420,6 +459,79 @@ async fn mcp_post_hive_message_requires_local_subscription() {
         messages[0].content["text"].as_str(),
         Some("中文 English العربية 日本語 🙂 allowed")
     );
+    // The agent's activity keeps the Hive it made and the post that went out, not the refusals.
+    let activity = state.local_db.agent_activity_between(0, i64::MAX).unwrap();
+    let kinds: Vec<_> = activity.iter().map(|row| row.kind.as_str()).collect();
+    assert_eq!(kinds, ["create_hive", "post_hive_message"]);
+    assert_eq!(activity[0].detail["display_name"], "Crew Seven");
+    assert_eq!(activity[1].subject.as_deref(), Some(hive_id.as_str()));
+    // The post names its Hive and says it is public, though the agent passed only the hive_id.
+    assert_eq!(activity[1].detail["hive_name"], "Crew Seven");
+    assert_eq!(activity[1].detail["hive_private"], false);
+    assert_eq!(
+        activity[1].detail["text"],
+        "中文 English العربية 日本語 🙂 allowed"
+    );
+}
+
+#[tokio::test]
+async fn mcp_private_hive_post_is_recorded_as_private_with_its_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge::default_for(identity.agent_did.clone()));
+    let (_dir, app, token, _policy, state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+
+    let created = mcp_request(
+        app.clone(),
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "create_private_hive",
+                "arguments": {
+                    "feed_key": "wattetheria.private.hives",
+                    "display_name": "Back Room"
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(created["result"]["isError"].as_bool(), Some(false));
+    let hive_id = created["result"]["structuredContent"]["hive"]["hive_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let posted = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "post_hive_message",
+                "arguments": {
+                    "hive_id": hive_id,
+                    "content": {"text": "just us"}
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(posted["result"]["isError"].as_bool(), Some(false));
+
+    // The agent passed only the hive_id; the row names the Hive and marks it private.
+    let activity = state.local_db.agent_activity_between(0, i64::MAX).unwrap();
+    let kinds: Vec<_> = activity.iter().map(|row| row.kind.as_str()).collect();
+    assert_eq!(kinds, ["create_private_hive", "post_hive_message"]);
+    assert_eq!(activity[1].subject.as_deref(), Some(hive_id.as_str()));
+    assert_eq!(activity[1].detail["hive_name"], "Back Room");
+    assert_eq!(activity[1].detail["hive_private"], true);
 }
 
 #[tokio::test]
@@ -443,7 +555,6 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_removes_loc
                 "arguments": {
                     "public_id": "wrong-manual-value",
                     "feed_key": "codex_topic_smoke_test",
-                    "scope_hint": "group:codex-topic-smoke-test",
                     "display_name": "Codex Hive",
                     "projection_kind": "chat_room"
                 }
@@ -477,7 +588,10 @@ async fn mcp_unsubscribe_hive_uses_current_local_public_identity_and_removes_loc
     let subscriptions = bridge.subscriptions.lock().await;
     assert_eq!(subscriptions.len(), 2);
     assert_eq!(subscriptions[1].2, "codex_topic_smoke_test");
-    assert_eq!(subscriptions[1].3, "group:codex-topic-smoke-test");
+    assert_eq!(
+        Some(subscriptions[1].3.as_str()),
+        create_response["result"]["structuredContent"]["hive"]["scope_hint"].as_str()
+    );
     assert!(!subscriptions[1].4);
 
     let hives = authed_get_json(app, &token, "/v1/wattetheria/hives?include_inactive=true").await;

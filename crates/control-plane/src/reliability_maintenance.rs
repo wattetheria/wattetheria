@@ -108,6 +108,7 @@ pub async fn run_reliability_maintenance_tick_once(
     let remaining = limit.saturating_sub(processed);
     processed +=
         publish_finalized_collective_mission_results(state, &state.auth_token, remaining).await?;
+    processed += crate::routes::space::daily::send_due_report(state).await;
     Ok(processed)
 }
 

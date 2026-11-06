@@ -2085,7 +2085,7 @@ fn friend_request_resolution_or_review(
     Some(resolution)
 }
 
-async fn process_agent_event_decision(
+pub(crate) async fn process_agent_event_decision(
     state: &ControlPlaneState,
     mut event: AgentEventEnvelope,
     verified_context: Option<&VerifiedAgentContext>,

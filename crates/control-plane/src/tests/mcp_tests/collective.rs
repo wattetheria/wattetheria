@@ -9,7 +9,6 @@ fn create_collective_hive_request() -> Value {
             "name": "create_hive",
             "arguments": {
                 "feed_key": "mcp-collective-feed",
-                "scope_hint": "group:mcp-collective-feed",
                 "display_name": "MCP Collective Hive",
                 "projection_kind": "chat_room",
                 "include_public_geo": false
@@ -492,16 +491,17 @@ async fn reliability_maintenance_starts_due_collective_mission_with_joined_parti
         "finalized Hive card must not publish raw run result"
     );
 
+    // The node picked the Hive's scope when it was created.
+    let scope_hint = state
+        .hive_registry
+        .lock()
+        .await
+        .get(&hive_id)
+        .expect("collective Hive")
+        .scope_hint;
     let messages = state
         .swarm_bridge
-        .list_topic_messages(
-            None,
-            "mcp-collective-feed",
-            "group:mcp-collective-feed",
-            10,
-            None,
-            None,
-        )
+        .list_topic_messages(None, "mcp-collective-feed", &scope_hint, 10, None, None)
         .await
         .expect("collective Hive messages");
     assert_eq!(messages.len(), 3);
@@ -516,14 +516,7 @@ async fn reliability_maintenance_starts_due_collective_mission_with_joined_parti
     assert_eq!(processed_again, 0);
     let messages_after_dedupe = state
         .swarm_bridge
-        .list_topic_messages(
-            None,
-            "mcp-collective-feed",
-            "group:mcp-collective-feed",
-            10,
-            None,
-            None,
-        )
+        .list_topic_messages(None, "mcp-collective-feed", &scope_hint, 10, None, None)
         .await
         .expect("collective Hive messages after dedupe");
     assert_eq!(messages_after_dedupe.len(), 3);

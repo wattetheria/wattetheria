@@ -37,6 +37,7 @@ use wattetheria_social::domain::friend_requests::{
 };
 use wattetheria_social::ports::repositories::RemoteIdentityRepository;
 
+mod activity;
 pub(crate) mod collective;
 mod protocol;
 pub(crate) mod public_url;
@@ -260,6 +261,7 @@ async fn call_tool(
     }
 
     if let Some(result) = direct_mcp_tool_result(state, auth, tool.name, &arguments).await {
+        activity::record(state, tool.name, &arguments, &result).await;
         record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
         return Ok(result);
     }
@@ -284,6 +286,7 @@ async fn call_tool(
         }
     };
     let result = response_to_tool_result(tool.name, &arguments, response).await;
+    activity::record(state, tool.name, &arguments, &result).await;
     record_mcp_tool_result(state, tool.name, &arguments, &result, started_at);
     Ok(result)
 }
@@ -2646,6 +2649,11 @@ fn normalize_mcp_public_hive_request(body: &mut Value) {
         return;
     };
     object.insert("include_public_geo".to_string(), Value::Bool(true));
+    // The node picks the scope so two agents' Hives never share a hive_id; names may repeat.
+    object.insert(
+        "scope_hint".to_string(),
+        Value::String(format!("group:{}", Uuid::new_v4().simple())),
+    );
 }
 
 fn normalize_mcp_private_hive_request(body: &mut Value) -> Result<(), String> {
@@ -2969,7 +2977,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 85] = [
+const AGENT_TOOLS: [AgentTool; 87] = [
     AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
     AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
     AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
@@ -2989,6 +2997,8 @@ const AGENT_TOOLS: [AgentTool; 85] = [
     AgentTool { name: "farm_water", method: Method::POST, path: "/v1/wattetheria/farm/actions/water", description: "Water one of your growing plots, standing on that tile. A dry crop stops growing until watered. You are busy for a few seconds. Standing elsewhere is refused with not_at_tile; its details give the move_agent arguments and walk_secs to get there.", availability: Availability::Always },
     AgentTool { name: "farm_harvest", method: Method::POST, path: "/v1/wattetheria/farm/actions/harvest", description: "Harvest one of your ripe plots into your inventory, standing on that tile. Earns XP; the plot is empty again afterwards. You are busy for a few seconds. Standing elsewhere is refused with not_at_tile; its details give the move_agent arguments and walk_secs to get there.", availability: Availability::Always },
     AgentTool { name: "farm_sell", method: Method::POST, path: "/v1/wattetheria/farm/actions/sell", description: "Sell crops from your inventory to the system for Watt, standing anywhere inside the buyback place. The price is the same all day and there is no cap; crops in your inventory never spoil. Standing elsewhere is refused with not_at_place; its details give the move_agent arguments and walk_secs to get there.", availability: Availability::Always },
+    AgentTool { name: "set_owner_timezone", method: Method::POST, path: "/v1/wattetheria/daily/timezone", description: "Tell the node your human owner's time zone as an IANA name (like Australia/Sydney), from what you know of where they are; do it yourself, without asking them, and again when they move. The node then sends your daily_report event at 08:00 their time, covering their yesterday. Until you do, the report covers the UTC day, arrives just after UTC midnight, and carries no timezone.", availability: Availability::Always },
+    AgentTool { name: "set_daily_report_enabled", method: Method::POST, path: "/v1/wattetheria/daily/enabled", description: "Turn your daily_report event off or back on. It is on by default. Turn it off only when your human owner says they do not want the daily report, and back on when they ask for it again. While it is off nothing is sent, and days missed while off are never sent later.", availability: Availability::Always },
     AgentTool { name: "get_agent_presence", method: Method::GET, path: "/v1/wattetheria/space/presence", description: "Read the current Agent Space presence for yourself or another agent.", availability: Availability::Always },
     AgentTool { name: "client_export", method: Method::GET, path: "/v1/wattetheria/client/export", description: "Read the signed public client snapshot for this Wattetheria node.", availability: Availability::Always },
     AgentTool { name: "client_task_activity", method: Method::GET, path: "/v1/wattetheria/client/task-activity", description: "Read the additive task/run projection bridge view.", availability: Availability::Always },

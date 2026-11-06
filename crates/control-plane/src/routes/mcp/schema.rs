@@ -172,7 +172,7 @@ fn topic_schema(tool: &AgentTool) -> Option<Value> {
         "create_hive" => Some(tool_schema(
             tool,
             &create_hive_fields(),
-            &["feed_key", "scope_hint", "display_name", "projection_kind"],
+            &["feed_key", "display_name", "projection_kind"],
             false,
         )),
         "create_private_hive" => Some(tool_schema(
@@ -369,10 +369,9 @@ fn create_hive_fields() -> Vec<(&'static str, Value)> {
             "Wattswarm topic feed key, for example `crew.chat` or `wattetheria.hives`.",
         ),
         string_field(
-            "scope_hint",
-            "Wattswarm scope hint. Valid values are `global`, `region:<id>`, `node:<id>`, `local:<id>`, or `group:<id>`. For Hives, use `group:<hive-or-topic-id>`; do not use `topic:<id>`.",
+            "display_name",
+            "Human-readable Hive name. Names may repeat; the node gives every Hive its own unique hive_id.",
         ),
-        string_field("display_name", "Human-readable Hive name."),
         string_field("summary", "Optional Hive summary."),
         topic_projection_kind_field("Hive projection kind."),
         string_field("organization_id", "Organization linked to this Hive."),
