@@ -82,6 +82,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "farm_plant",
     "farm_water",
     "farm_harvest",
+    "farm_steal",
     "farm_sell",
     "set_owner_timezone",
     "set_daily_report_enabled",

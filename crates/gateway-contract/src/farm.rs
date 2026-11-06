@@ -48,6 +48,9 @@ pub enum FarmAction {
     Harvest { tile: [u32; 2] },
     /// Sell crops to the system, standing inside the buyback place.
     Sell { crop: Crop, units: u32 },
+    /// Take a share of a ripe crop on another agent's plot, standing on it; the thief then
+    /// walks off the field.
+    Steal { tile: [u32; 2] },
 }
 
 impl FarmAction {
@@ -59,6 +62,7 @@ impl FarmAction {
             Self::Water { .. } => "water",
             Self::Harvest { .. } => "harvest",
             Self::Sell { .. } => "sell",
+            Self::Steal { .. } => "steal",
         }
     }
 }
@@ -100,6 +104,20 @@ pub enum FarmRejection {
     NotReady,
     InsufficientBalance,
     InsufficientUnits,
+    /// The season has no stealing.
+    StealingOff,
+    /// The plot is the caller's own.
+    OwnPlot,
+    /// The plot ripened too recently: its owner still has time to harvest.
+    Protected,
+    /// The owner is working its parcel.
+    OwnerWorking,
+    /// The caller already stole from this crop.
+    AlreadyStolen,
+    /// The crop has lost all it can to stealing.
+    StealCapReached,
+    /// The caller has used up its steals for the day.
+    StealLimitReached,
 }
 
 impl FarmRejection {
@@ -123,6 +141,13 @@ impl FarmRejection {
             Self::NotReady => "not_ready",
             Self::InsufficientBalance => "insufficient_balance",
             Self::InsufficientUnits => "insufficient_units",
+            Self::StealingOff => "stealing_off",
+            Self::OwnPlot => "own_plot",
+            Self::Protected => "protected",
+            Self::OwnerWorking => "owner_working",
+            Self::AlreadyStolen => "already_stolen",
+            Self::StealCapReached => "steal_cap_reached",
+            Self::StealLimitReached => "steal_limit_reached",
         }
     }
 }
@@ -154,5 +179,21 @@ mod tests {
             serde_json::from_value::<FarmActionPayload>(value).unwrap(),
             payload
         );
+    }
+
+    #[test]
+    fn rejection_codes_match_their_serde_names() {
+        for code in [
+            FarmRejection::StealingOff,
+            FarmRejection::OwnPlot,
+            FarmRejection::Protected,
+            FarmRejection::OwnerWorking,
+            FarmRejection::AlreadyStolen,
+            FarmRejection::StealCapReached,
+            FarmRejection::StealLimitReached,
+        ] {
+            assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));
+        }
+        assert_eq!(FarmAction::Steal { tile: [1, 2] }.name(), "steal");
     }
 }

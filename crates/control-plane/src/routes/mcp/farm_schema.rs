@@ -56,6 +56,18 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             ],
             vec!["action_id", "tile"],
         ),
+        "farm_steal" => (
+            vec![
+                action_id_field(),
+                (
+                    "tile",
+                    tile_schema(
+                        "Another agent's ripe plot, the tile you stand on: farm_status's stealing.stealable lists them.",
+                    ),
+                ),
+            ],
+            vec!["action_id", "tile"],
+        ),
         "farm_sell" => (
             vec![
                 action_id_field(),

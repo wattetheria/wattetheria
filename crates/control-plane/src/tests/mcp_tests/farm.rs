@@ -106,6 +106,15 @@ async fn spawn_mock_gateway() -> (String, MockFarm) {
                                         "details": {"place_id": "the-willows-market-and-pharmacy"}})),
                         ));
                     }
+                    if payload["action"] == "steal" {
+                        let busy_until = (chrono::Utc::now() + chrono::Duration::seconds(20))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                        return Ok((
+                            axum::http::StatusCode::OK,
+                            Json(json!({"ok": true, "action": "steal", "units": 1,
+                                        "busy_until": busy_until, "escape_tile": [61, 90]})),
+                        ));
+                    }
                     if payload["action"] == "water" {
                         return Ok((
                             axum::http::StatusCode::CONFLICT,
@@ -213,6 +222,7 @@ async fn mcp_lists_the_farm_tools_with_precise_schemas() {
     assert_eq!(plant["inputSchema"]["additionalProperties"], false);
     assert_schema_requires(find_tool(tools, "farm_water"), &["action_id", "tile"]);
     assert_schema_requires(find_tool(tools, "farm_harvest"), &["action_id", "tile"]);
+    assert_schema_requires(find_tool(tools, "farm_steal"), &["action_id", "tile"]);
     assert_schema_requires(
         find_tool(tools, "farm_sell"),
         &["action_id", "crop", "units"],
@@ -505,5 +515,52 @@ async fn a_lost_reply_holds_the_agent_as_long_as_the_gateway_says() {
     assert!(
         walk["details"]["remaining_secs"].as_i64().unwrap() > 15,
         "held for the gateway's 20 s, not the node's assumed 6: {walk}"
+    );
+}
+
+#[tokio::test]
+async fn after_a_steal_the_node_walks_the_thief_off_the_field_once_the_steal_is_done() {
+    let (gateway_url, mock) = spawn_mock_gateway().await;
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let app = app(with_gateway(state, gateway_url));
+    let entered = call(app.clone(), &token, "enter_space", json!({})).await;
+    assert_eq!(entered["result"]["isError"], false, "{entered}");
+    let before = content(&call(app.clone(), &token, "get_agent_presence", json!({})).await);
+    let standing = before["presence"]["record"]["from_tile"].clone();
+
+    let stolen = call(
+        app.clone(),
+        &token,
+        "farm_steal",
+        json!({"action_id": "st1", "tile": [60, 90]}),
+    )
+    .await;
+    assert_eq!(stolen["result"]["isError"], false, "{stolen}");
+    let stolen = content(&stolen);
+    let sent = mock.actions.lock().await.last().cloned().unwrap();
+    assert_eq!(sent["payload"]["action"], "steal");
+    assert_eq!(sent["payload"]["tile"], json!([60, 90]));
+
+    // The walk leaves when the steal is done, from where the thief stands, to the escape tile.
+    let busy_until = chrono::DateTime::parse_from_rfc3339(stolen["busy_until"].as_str().unwrap())
+        .unwrap()
+        .timestamp_millis();
+    let after = content(&call(app.clone(), &token, "get_agent_presence", json!({})).await);
+    let record = &after["presence"]["record"];
+    assert_eq!(record["depart_at"], busy_until, "{after}");
+    assert_eq!(record["from_tile"], standing, "{after}");
+    assert!(record["seq"].as_u64() > before["presence"]["record"]["seq"].as_u64());
+    let arrives =
+        chrono::DateTime::parse_from_rfc3339(stolen["sneaks_off_until"].as_str().unwrap())
+            .unwrap()
+            .timestamp_millis();
+    assert!(arrives >= busy_until, "{stolen}");
+
+    // Held until it is off the field.
+    let walk = content(&call(app, &token, "move_agent", json!({"tile": [60, 91]})).await);
+    assert_eq!(walk["error"], "busy", "{walk}");
+    assert!(
+        walk["details"]["remaining_secs"].as_i64().unwrap() >= 19,
+        "held through the steal and the walk: {walk}"
     );
 }

@@ -358,6 +358,37 @@ pub(crate) async fn move_agent(
     }
 }
 
+/// Signs a walk from where the agent stands to `to`, leaving at `depart_at` (epoch ms, which
+/// may be later than now: until then the agent stays put). Returns when it arrives.
+pub(crate) async fn walk_later(
+    state: &ControlPlaneState,
+    to: [u32; 2],
+    depart_at: i64,
+) -> Result<i64> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let depart_at = depart_at.max(now);
+    let mut arrives_at = depart_at;
+    registry::update_presence(state, |previous, package| {
+        let mut record = previous.context("agent has not joined the space")?.clone();
+        record.from_tile = record.tile_at(package.walk_speed, now);
+        let place = package
+            .place_at_tile(to)
+            .context("destination tile has no place")?;
+        record.path = package.path(record.from_tile, to)?;
+        record.depart_at = depart_at;
+        record.updated_at = now;
+        record.destination_place_id.clone_from(&place.place_id);
+        record.activity.clear();
+        record.object_place_id = None;
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let walk_ms = (record.path.len() as f64 / package.walk_speed * 1000.0).ceil() as i64;
+        arrives_at = depart_at + walk_ms;
+        Ok(record)
+    })
+    .await?;
+    Ok(arrives_at)
+}
+
 async fn person_target(
     state: &ControlPlaneState,
     network: &str,

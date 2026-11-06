@@ -18,7 +18,7 @@ use wattetheria_gateway_contract::farm::{FarmAction, FarmActionPayload, GAME_ID}
 use crate::auth::authorize;
 use crate::ledger_client::LedgerClient;
 use crate::routes::missions::agent_display_name_for_did;
-use crate::routes::space::{configured_package, current_presence};
+use crate::routes::space::{configured_package, current_presence, walk_later};
 use crate::state::ControlPlaneState;
 
 const MAX_ACTION_ID_CHARS: usize = 128;
@@ -29,10 +29,10 @@ const DEFAULT_ACTION_SECS: i64 = 6;
 /// How long a read of the gateway's game catalog is trusted before it is read again, so a
 /// running node follows the gateway when the field moves or actions get longer.
 const CATALOG_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-const FARM_ACTIONS: [&str; 5] = ["claim_plots", "plant", "water", "harvest", "sell"];
+const FARM_ACTIONS: [&str; 6] = ["claim_plots", "plant", "water", "harvest", "sell", "steal"];
 
 /// The farm tools in the order an agent uses them, returned with the manual.
-const FARM_TOOLS: [(&str, &str); 8] = [
+const FARM_TOOLS: [(&str, &str); 9] = [
     (
         "farm_status",
         "Your plots, inventory, balance and the next step to take.",
@@ -55,6 +55,10 @@ const FARM_TOOLS: [(&str, &str); 8] = [
         "Standing inside the buyback place, sell crops to the system.",
     ),
     (
+        "farm_steal",
+        "Standing on another agent's ripe plot, take a share; then you sneak off the field.",
+    ),
+    (
         "move_agent",
         "Walk to a tile (a parcel, a plot) or a place (the buyback). Refused while busy.",
     ),
@@ -71,6 +75,9 @@ pub struct FarmCatalog {
     pub space_id: String,
     pub field_place_id: String,
     pub action_secs: i64,
+    /// How long a steal holds the thief before it sneaks off; `None` when the season has no
+    /// stealing.
+    pub steal_action_secs: Option<i64>,
 }
 
 /// The last read of the catalog and when it was made.
@@ -120,6 +127,7 @@ async fn read_catalog(gateway: &LedgerClient) -> anyhow::Result<FarmCatalog> {
         action_secs: farm["action_secs"]
             .as_i64()
             .context("the catalog's farm entry has no action_secs")?,
+        steal_action_secs: farm["steal_action_secs"].as_i64(),
     })
 }
 
@@ -271,7 +279,8 @@ pub async fn farm_action(
             &stale_client_message(catalog),
         );
     }
-    let action_secs = catalog.map_or(DEFAULT_ACTION_SECS, |catalog| catalog.action_secs);
+    let stealing = matches!(action, FarmAction::Steal { .. });
+    let action_secs = hold_secs(catalog.as_ref(), stealing);
     let busy = &state.busy;
     let _turn = busy.turn.lock().await;
     let held_until = busy.until_ms(&state.local_db);
@@ -284,7 +293,10 @@ pub async fn farm_action(
     };
     let timed = matches!(
         action,
-        FarmAction::Plant { .. } | FarmAction::Water { .. } | FarmAction::Harvest { .. }
+        FarmAction::Plant { .. }
+            | FarmAction::Water { .. }
+            | FarmAction::Harvest { .. }
+            | FarmAction::Steal { .. }
     );
     let payload = FarmActionPayload {
         action_id: action_id.clone(),
@@ -322,18 +334,65 @@ pub async fn farm_action(
         .or_else(|| moment_ms(&reply["details"]["busy_until"]))
         .unwrap_or(0);
     busy.set(&state.local_db, held_until.max(until));
+    if stealing
+        && status.is_success()
+        && let Some(arrives_at) = sneak_off(&state, &reply).await
+    {
+        // Held until the thief is off the field, so it cannot walk anywhere else first.
+        busy.set(&state.local_db, held_until.max(until).max(arrives_at));
+        reply["sneaks_off_until"] = json!(rfc3339_ms(arrives_at));
+    }
+    add_walk_hint(&state, &presence, &mut reply);
+    reply["action_id"] = json!(action_id);
+    (status, Json(reply)).into_response()
+}
+
+/// How long a command holds the agent when the gateway's reply does not say.
+fn hold_secs(catalog: Option<&FarmCatalog>, stealing: bool) -> i64 {
+    catalog.map_or(DEFAULT_ACTION_SECS, |catalog| {
+        if stealing {
+            catalog.steal_action_secs.unwrap_or(catalog.action_secs)
+        } else {
+            catalog.action_secs
+        }
+    })
+}
+
+/// A refusal for standing in the wrong spot also says how to walk there.
+fn add_walk_hint(state: &ControlPlaneState, presence: &SignedSpacePresence, reply: &mut Value) {
     if matches!(
         reply["error"].as_str(),
         Some("not_at_tile" | "not_at_place")
-    ) && let Some(walk) = walk(&state, Some(&presence), &reply["details"])
+    ) && let Some(walk) = walk(state, Some(presence), &reply["details"])
     {
         let details = &mut reply["details"];
         details["to_tile"] = json!(walk.to);
         details["walk_secs"] = json!(walk.secs);
         details["move_agent"] = walk.move_agent;
     }
-    reply["action_id"] = json!(action_id);
-    (status, Json(reply)).into_response()
+}
+
+/// After a steal the thief walks off the field to the gateway's `escape_tile`, leaving when the
+/// steal is done. Its own node signs that walk; the gateway only picked the tile. A replayed
+/// steal whose action is long done does not walk again. Returns when the thief arrives.
+async fn sneak_off(state: &ControlPlaneState, reply: &Value) -> Option<i64> {
+    let leave_at = moment_ms(&reply["busy_until"])?;
+    if leave_at <= chrono::Utc::now().timestamp_millis() {
+        return None;
+    }
+    let to: [u32; 2] = serde_json::from_value(reply["escape_tile"].clone()).ok()?;
+    match walk_later(state, to, leave_at).await {
+        Ok(arrives_at) => Some(arrives_at),
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "could not sign the walk off the field");
+            None
+        }
+    }
+}
+
+fn rfc3339_ms(at_ms: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp_millis(at_ms)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 /// Whether a reply leaves the command's outcome unknown: a success the node cannot read, or any
