@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   publish:
-    name: Publish coordinated GHCR images and stack release
+    name: Publish coordinated GHCR images
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -39,10 +39,6 @@ jobs:
             echo "CROSS_REPO_TOKEN is required for cross-repo checkout, GHCR push, and private dependency fetches" >&2
             exit 1
           fi
-          command -v gh >/dev/null 2>&1 || {
-            echo "gh CLI is required to create or update the GitHub release" >&2
-            exit 1
-          }
 
       - name: Checkout Wattetheria
         uses: actions/checkout@v4
@@ -153,46 +149,3 @@ jobs:
               -t "${image}:latest" \
               "${image}:${RELEASE}"
           done
-
-      - name: Generate stack release manifest and notes
-        run: node wattetheria/scripts/generate-stack-release.js
-
-      - name: Create or update GitHub release
-        run: |
-          set -euo pipefail
-
-          release_title="Wattetheria Stack ${RELEASE}"
-          release_tag="v${RELEASE}"
-          release_notes="wattetheria/dist/stack-release/release-notes.md"
-          release_manifest="wattetheria/dist/stack-release/release-manifest.${RELEASE}.json"
-          release_target="$(git -C wattetheria rev-parse HEAD)"
-          release_args=(
-            --repo wattetheria/wattetheria
-            --title "${release_title}"
-            --notes-file "${release_notes}"
-          )
-
-          if [[ "${release_tag}" =~ -(alpha|beta|rc) ]]; then
-            release_args+=(--prerelease)
-          else
-            release_args+=(--latest)
-          fi
-
-          if gh release view "${release_tag}" --repo wattetheria/wattetheria >/dev/null 2>&1; then
-            gh release edit "${release_tag}" \
-              --target "${release_target}" \
-              "${release_args[@]}"
-          else
-            gh release create "${release_tag}" \
-              --repo wattetheria/wattetheria \
-              --target "${release_target}" \
-              "${release_args[@]}"
-          fi
-
-          gh release upload "${release_tag}" \
-            --repo wattetheria/wattetheria \
-            --clobber \
-            "${release_manifest}" \
-            wattetheria/docker-compose.release.yml \
-            wattetheria/.env.release \
-            wattetheria/scripts/deploy-release.ps1
