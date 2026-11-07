@@ -68,7 +68,8 @@ if [ "$release_store_count" -ne 2 ] || [ "$full_store_count" -ne 2 ]; then
 fi
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
+  WATTETHERIA_COMPOSE_ENV_FILE="$ENV_FILE" \
+    docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config >/dev/null
 fi
 
 echo "release deployment artifacts verified"

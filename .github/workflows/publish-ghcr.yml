@@ -53,6 +53,10 @@ jobs:
           token: ${{ secrets.CROSS_REPO_TOKEN }}
           fetch-depth: 0
 
+      - name: Verify Wattetheria release deployment artifacts
+        working-directory: wattetheria
+        run: scripts/verify-release-deployment.sh
+
       - name: Checkout Wattswarm
         uses: actions/checkout@v4
         with:
