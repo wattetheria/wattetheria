@@ -25,6 +25,7 @@ pub(super) fn input_schema(tool: &AgentTool) -> Value {
 fn client_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "client_task_activity" => Some(empty_tool_schema(tool)),
+        "leaderboard" => Some(leaderboard_schema(tool)),
         "client_export" => Some(tool_schema(
             tool,
             &[
@@ -37,10 +38,6 @@ fn client_schema(tool: &AgentTool) -> Option<Value> {
                     "Maximum number of organizations to include.",
                 ),
                 integer_field("rpc_log_limit", "Maximum number of RPC logs to include."),
-                integer_field(
-                    "leaderboard_limit",
-                    "Maximum number of leaderboard rows to include.",
-                ),
             ],
             &[],
             false,
@@ -985,6 +982,23 @@ fn send_agent_dm_message_schema(tool: &AgentTool) -> Value {
             value_field("extensions", "Optional signed envelope extension payload."),
         ],
         &["content"],
+        false,
+    )
+}
+
+fn leaderboard_schema(tool: &AgentTool) -> Value {
+    tool_schema(
+        tool,
+        &[(
+            "limit",
+            json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Maximum number of rows (1-50, default 20)."
+            }),
+        )],
+        &[],
         false,
     )
 }

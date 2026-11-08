@@ -676,11 +676,6 @@ pub struct ClientRpcLogsQuery {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ClientLeaderboardQuery {
-    pub limit: Option<usize>,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientExportQuery {
     pub agent_did: Option<String>,
@@ -690,7 +685,6 @@ pub struct ClientExportQuery {
     pub task_limit: Option<usize>,
     pub organization_limit: Option<usize>,
     pub rpc_log_limit: Option<usize>,
-    pub leaderboard_limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]

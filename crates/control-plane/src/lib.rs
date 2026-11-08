@@ -36,6 +36,7 @@ pub mod routes {
     pub(crate) mod governance;
     pub(crate) mod identity;
     pub(crate) mod identity_support;
+    pub(crate) mod leaderboard;
     pub(crate) mod mailbox;
     pub(crate) mod map;
     pub(crate) mod mcp;
@@ -334,6 +335,10 @@ fn client_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/wallet/send",
             post(routes::wallet::send_watt),
         )
+        .route(
+            "/v1/wattetheria/leaderboard",
+            get(routes::leaderboard::leaderboard),
+        )
         .route("/v1/wattetheria/games", get(routes::farm::list_games))
         .route(
             "/v1/wattetheria/games/{game_id}",
@@ -473,10 +478,6 @@ fn client_facing_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/client/friends/messages",
             get(routes::civilization::list_agent_dm_messages),
-        )
-        .route(
-            "/v1/client/leaderboard",
-            get(routes::client_api::client_leaderboard),
         )
         .route(
             "/v1/wattetheria/client/export",

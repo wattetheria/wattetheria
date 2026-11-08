@@ -166,7 +166,7 @@ async fn mcp_create_hive_uses_current_local_public_identity() {
     let export_json = public_get_json(
         app,
         &format!(
-            "/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=1&task_limit=1&organization_limit=1&rpc_log_limit=1&leaderboard_limit=1"
+            "/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=1&task_limit=1&organization_limit=1&rpc_log_limit=1"
         ),
     )
     .await;

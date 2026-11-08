@@ -13,17 +13,15 @@ use wattetheria_kernel::civilization::missions::{
     CivilMission, MissionDomain, MissionPublisherKind, MissionStatus, NetworkMissionClaimRecord,
     NetworkMissionClaimRegistry,
 };
-use wattetheria_kernel::economy::mission_standing;
-use wattetheria_kernel::identities::{ControllerBinding, PublicIdentity};
+use wattetheria_kernel::identities::PublicIdentity;
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::swarm_bridge::{
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmPeerView,
 };
-use wattetheria_kernel::types::AgentStats;
 
 use crate::auth::{authorize, internal_error};
-use crate::ledger_client::{watt_balance, watt_balances};
+use crate::ledger_client::watt_balance;
 use crate::routes::board::build_public_board_messages_snapshot_payload;
 use crate::routes::civilization::build_agent_relationship_payload;
 use crate::routes::client_swarm::{
@@ -36,8 +34,7 @@ use crate::routes::reward_view::{
     wallet_payment_binding_payload,
 };
 use crate::state::{
-    ClientExportQuery, ClientIdentityQuery, ClientLeaderboardQuery, ClientListQuery,
-    ClientRpcLogsQuery, ControlPlaneState,
+    ClientExportQuery, ClientIdentityQuery, ClientListQuery, ClientRpcLogsQuery, ControlPlaneState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +69,8 @@ pub struct PublicClientSnapshot {
     pub swarm_task_activity: Value,
     pub tasks: Vec<Value>,
     pub organizations: Vec<Value>,
+    /// Always empty: the gateway ranks Agents from its own records. The field stays because
+    /// gateways parse it as required and verify the signature over the re-serialized payload.
     pub leaderboard: Vec<Value>,
 }
 
@@ -966,38 +965,6 @@ pub(crate) async fn client_organizations(
     Json(Value::Array(payload)).into_response()
 }
 
-pub(crate) async fn client_leaderboard(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Query(query): Query<ClientLeaderboardQuery>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let limit = query.limit.unwrap_or(20).clamp(1, 200);
-    let payload = match build_client_leaderboard_payload(&state, limit).await {
-        Ok(payload) => payload,
-        Err(error) => return internal_error(&error),
-    };
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "client".to_string(),
-        action: "client.leaderboard.query".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: None,
-        capability: None,
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({"count": payload.len()})),
-    });
-
-    Json(Value::Array(payload)).into_response()
-}
-
 pub(crate) async fn client_export(
     State(state): State<ControlPlaneState>,
     Query(query): Query<ClientExportQuery>,
@@ -1024,7 +991,6 @@ pub(crate) async fn client_export(
             "swarm_task_count": snapshot.swarm_task_activity["tasks"].as_array().map_or(0, Vec::len),
             "swarm_run_count": snapshot.swarm_task_activity["runs"].as_array().map_or(0, Vec::len),
             "organization_count": snapshot.organizations.len(),
-            "leaderboard_count": snapshot.leaderboard.len(),
             "public_blocks_count": snapshot.public_blocks.len(),
         })),
     });
@@ -1071,172 +1037,6 @@ fn normalized_gateway_ingest_url(gateway_url: &str) -> String {
     } else {
         format!("{trimmed}/api/ingest/snapshot")
     }
-}
-
-fn controller_id_for_identity(
-    identity: &PublicIdentity,
-    binding: Option<&ControllerBinding>,
-) -> String {
-    binding
-        .and_then(|binding| binding.controller_node_id.clone())
-        .or_else(|| identity.agent_did.clone())
-        .unwrap_or_else(|| identity.public_id.clone())
-}
-
-fn is_default_controller_identity(identity: &PublicIdentity, controller_id: &str) -> bool {
-    identity.agent_did.as_deref() == Some(controller_id)
-        && (identity.public_id == controller_id || identity.public_id.starts_with("agent-"))
-}
-
-fn should_keep_leaderboard_identity(
-    existing: &PublicIdentity,
-    candidate: &PublicIdentity,
-    controller_id: &str,
-) -> bool {
-    let existing_is_default = is_default_controller_identity(existing, controller_id);
-    let candidate_is_default = is_default_controller_identity(candidate, controller_id);
-    if existing_is_default != candidate_is_default {
-        return !existing_is_default;
-    }
-    if existing.updated_at != candidate.updated_at {
-        return existing.updated_at > candidate.updated_at;
-    }
-    existing.public_id <= candidate.public_id
-}
-
-async fn leaderboard_bindings(state: &ControlPlaneState) -> BTreeMap<String, ControllerBinding> {
-    state
-        .controller_binding_registry
-        .lock()
-        .await
-        .list()
-        .into_iter()
-        .map(|binding| (binding.public_id.clone(), binding))
-        .collect()
-}
-
-async fn leaderboard_identities(
-    state: &ControlPlaneState,
-    binding_by_public_id: &BTreeMap<String, ControllerBinding>,
-) -> Vec<(String, PublicIdentity)> {
-    let public_identities = state.public_identity_registry.lock().await.list();
-    let identities = if public_identities.is_empty() {
-        vec![PublicIdentity {
-            public_id: state.agent_did.clone(),
-            display_name: state.agent_did.clone(),
-            agent_did: Some(state.agent_did.clone()),
-            active: true,
-            created_at: state.started_at,
-            updated_at: state.started_at,
-        }]
-    } else {
-        public_identities
-    };
-    let mut identity_by_controller: BTreeMap<String, PublicIdentity> = BTreeMap::new();
-    for identity in identities {
-        let controller_id =
-            controller_id_for_identity(&identity, binding_by_public_id.get(&identity.public_id));
-        match identity_by_controller.get(&controller_id) {
-            Some(existing)
-                if should_keep_leaderboard_identity(existing, &identity, &controller_id) => {}
-            _ => {
-                identity_by_controller.insert(controller_id, identity);
-            }
-        }
-    }
-    identity_by_controller.into_iter().collect()
-}
-
-/// Watt comes from the gateway ledger in one batch; reputation and capacity from the local
-/// mission board.
-async fn leaderboard_agent_stats(
-    state: &ControlPlaneState,
-    identities: &[(String, PublicIdentity)],
-) -> BTreeMap<String, AgentStats> {
-    let account_ids: Vec<String> = identities
-        .iter()
-        .map(|(controller_id, _)| controller_id.clone())
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let balances = watt_balances(state, &account_ids).await;
-    let missions = state.mission_board.lock().await;
-    identities
-        .iter()
-        .map(|(controller_id, _)| {
-            let watt = balances.get(controller_id).copied().unwrap_or(0);
-            (
-                controller_id.clone(),
-                mission_standing(&missions, controller_id).stats_with_watt(watt),
-            )
-        })
-        .collect()
-}
-
-/// This node's Agents as leaderboard rows: identity, ledger Watt and missions completed here.
-/// The gateway ranks them by experience; the node's own order is by Watt.
-async fn build_client_leaderboard_payload(
-    state: &ControlPlaneState,
-    limit: usize,
-) -> anyhow::Result<Vec<Value>> {
-    let binding_by_public_id = leaderboard_bindings(state).await;
-    let identities = leaderboard_identities(state, &binding_by_public_id).await;
-    let agent_stats_by_controller = leaderboard_agent_stats(state, &identities).await;
-    let settled = state
-        .mission_board
-        .lock()
-        .await
-        .list(Some(&MissionStatus::Settled));
-    let mut payload = leaderboard_payload(identities, &agent_stats_by_controller, &settled);
-    payload.sort_by(|left, right| {
-        right["watt_balance"]
-            .as_i64()
-            .unwrap_or_default()
-            .cmp(&left["watt_balance"].as_i64().unwrap_or_default())
-            .then_with(|| {
-                left["agent_did"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .cmp(right["agent_did"].as_str().unwrap_or_default())
-            })
-    });
-    for (index, entry) in payload.iter_mut().take(limit).enumerate() {
-        entry["rank"] = json!(index + 1);
-    }
-    payload.truncate(limit);
-    Ok(payload)
-}
-
-fn leaderboard_payload(
-    identities: Vec<(String, PublicIdentity)>,
-    agent_stats_by_controller: &BTreeMap<String, AgentStats>,
-    settled: &[wattetheria_kernel::civilization::missions::CivilMission],
-) -> Vec<Value> {
-    identities
-        .into_iter()
-        .map(|(controller_id, identity)| {
-            let public_id = identity.public_id.clone();
-            let display_name = identity.display_name.clone();
-            let agent_stats = agent_stats_by_controller
-                .get(&controller_id)
-                .cloned()
-                .unwrap_or_default();
-            let tasks_completed = settled
-                .iter()
-                .filter(|mission| mission.completed_by.as_deref() == Some(controller_id.as_str()))
-                .count();
-            json!({
-                "agent_did": public_id,
-                "agent_identity": display_name,
-                "public_id": public_id,
-                "display_name": display_name,
-                "watt_balance": agent_stats.watt,
-                "ledger_account": controller_id,
-                "tasks_completed": tasks_completed,
-                "reputation": agent_stats.reputation,
-            })
-        })
-        .collect()
 }
 
 fn source_identity_from_operator(operator: &Value) -> (Option<String>, Option<String>) {
@@ -1451,15 +1251,7 @@ async fn build_public_client_snapshot(
             source_public_id_ref,
             source_agent_identity_ref,
         ),
-        leaderboard: attach_source_identity_to_values(
-            build_client_leaderboard_payload(
-                state,
-                query.leaderboard_limit.unwrap_or(20).clamp(1, 200),
-            )
-            .await?,
-            source_public_id_ref,
-            source_agent_identity_ref,
-        ),
+        leaderboard: Vec::new(),
     })
 }
 

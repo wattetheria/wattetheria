@@ -292,25 +292,6 @@ async fn client_api_routes_align_with_client_dtos() {
     assert_eq!(organizations_json[0]["treasury_watt"].as_i64(), Some(55));
     assert_eq!(organizations_json[0]["member_count"].as_u64(), Some(1));
 
-    let leaderboard_json = authed_get_json(app.clone(), &token, "/v1/client/leaderboard").await;
-    assert_eq!(leaderboard_json.as_array().unwrap().len(), 1);
-    assert_eq!(leaderboard_json[0]["rank"].as_u64(), Some(1));
-    assert_eq!(
-        leaderboard_json[0]["display_name"].as_str(),
-        Some("Captain Aurora")
-    );
-    // The gateway ranks by its experience level; the node reports no score of its own.
-    for retired in [
-        "score",
-        "score_tenths",
-        "compute",
-        "compute_score",
-        "category",
-        "prestige",
-    ] {
-        assert!(leaderboard_json[0].get(retired).is_none(), "{retired}");
-    }
-
     let rpc_logs_json = authed_get_json(app, &token, "/v1/client/rpc-logs?limit=5").await;
     assert_ne!(
         rpc_logs_json.as_array().unwrap().as_slice(),
@@ -1252,9 +1233,11 @@ async fn client_export_excludes_local_friends_and_dm() {
 
     let export_json = public_get_json(
             app,
-            &format!("/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=10&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
+            &format!("/v1/wattetheria/client/export?public_id={local_public_id}&peer_limit=10&task_limit=10&organization_limit=10&rpc_log_limit=5"),
         )
         .await;
+    // The gateway ranks Agents itself; the node keeps the field but sends no rows.
+    assert_eq!(export_json["payload"]["leaderboard"], json!([]));
     assert!(export_json["payload"]["friend_relationships"].is_null());
     assert!(export_json["payload"]["pending_friend_requests"].is_null());
     assert_eq!(
@@ -1382,7 +1365,7 @@ async fn client_export_is_public_and_signed() {
 
     let export_json = public_get_json(
             app,
-            &format!("/v1/wattetheria/client/export?public_id={captain}&node_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5&leaderboard_limit=5"),
+            &format!("/v1/wattetheria/client/export?public_id={captain}&node_limit=1&task_limit=10&organization_limit=10&rpc_log_limit=5"),
         )
         .await;
     assert_eq!(
@@ -1819,7 +1802,6 @@ async fn client_snapshot_can_be_pushed_to_gateway_ingest() {
             task_limit: Some(5),
             organization_limit: Some(5),
             rpc_log_limit: Some(5),
-            leaderboard_limit: Some(5),
             ..ClientExportQuery::default()
         },
     )

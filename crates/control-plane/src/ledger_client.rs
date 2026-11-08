@@ -9,7 +9,6 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::warn;
 use wattetheria_kernel::identity::fingerprint_from_did_key;
@@ -206,30 +205,6 @@ impl LedgerClient {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default())
-    }
-
-    pub async fn balances(&self, account_ids: &[String]) -> Result<BTreeMap<String, i64>> {
-        if account_ids.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let response = self
-            .client
-            .post(format!("{}/api/ledger/balances", self.base_url))
-            .json(&json!({ "account_ids": account_ids }))
-            .send()
-            .await
-            .context("query ledger balances")?
-            .error_for_status()
-            .context("ledger balances returned error status")?;
-        let body: Value = response.json().await.context("decode ledger balances")?;
-        let balances = body
-            .get("balances")
-            .and_then(Value::as_object)
-            .context("ledger balances response has no balances")?;
-        Ok(balances
-            .iter()
-            .map(|(id, value)| (id.clone(), value.as_i64().unwrap_or(0)))
-            .collect())
     }
 
     /// Presents the Agent's membership Credential; the ledger grants the welcome bonus once.
@@ -493,23 +468,6 @@ pub async fn watt_balance(state: &ControlPlaneState, account_id: &str) -> WattBa
         Err(error) => {
             warn!("ledger balance lookup failed for {account_id}: {error:#}");
             WattBalance::UNAVAILABLE
-        }
-    }
-}
-
-/// Reads many accounts at once; missing or unreachable entries read as zero.
-pub async fn watt_balances(
-    state: &ControlPlaneState,
-    account_ids: &[String],
-) -> BTreeMap<String, i64> {
-    let Some(ledger) = LedgerClient::from_state(state) else {
-        return BTreeMap::new();
-    };
-    match ledger.balances(account_ids).await {
-        Ok(balances) => balances,
-        Err(error) => {
-            warn!("ledger balances lookup failed: {error:#}");
-            BTreeMap::new()
         }
     }
 }

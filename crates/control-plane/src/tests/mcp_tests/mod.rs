@@ -124,6 +124,7 @@ mod friend_requests;
 mod friendships;
 mod hives;
 mod identity;
+mod leaderboard;
 mod missions;
 mod payments;
 mod protocol;

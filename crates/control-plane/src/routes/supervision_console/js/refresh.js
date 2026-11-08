@@ -12,8 +12,7 @@
           public_id: publicId,
           node_limit: String(Math.max(limit, nearbyFetchLimit)),
           task_limit: String(limit),
-          rpc_log_limit: String(limit),
-          leaderboard_limit: "20"
+          rpc_log_limit: String(limit)
         });
         const signedSnapshotRequest = fetchJson(`/v1/client/export?${query.toString()}`);
         const localSocialRequest = loadLocalSocialPayload(publicId, limit);
