@@ -12,15 +12,14 @@ permissions:
   contents: write
   packages: write
 
+env:
+  RELEASE: ${{ inputs.release }}
+
 jobs:
-  publish:
-    name: Publish coordinated GHCR images
+  validate:
+    name: Validate release inputs and deployment artifacts
     runs-on: ubuntu-latest
-    timeout-minutes: 180
-    env:
-      RELEASE: ${{ inputs.release }}
-      GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+    timeout-minutes: 15
 
     steps:
       - name: Validate release inputs
@@ -52,6 +51,37 @@ jobs:
       - name: Verify Wattetheria release deployment artifacts
         working-directory: wattetheria
         run: scripts/verify-release-deployment.sh
+
+  build:
+    name: Build ${{ matrix.arch }} images
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      GITHUB_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+      GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+      PLATFORMS: ${{ matrix.platform }}
+      PUSH_BY_DIGEST: "1"
+
+    steps:
+      - name: Checkout Wattetheria
+        uses: actions/checkout@v4
+        with:
+          repository: wattetheria/wattetheria
+          ref: main
+          path: wattetheria
+          token: ${{ secrets.CROSS_REPO_TOKEN }}
+          fetch-depth: 0
 
       - name: Checkout Wattswarm
         uses: actions/checkout@v4
@@ -128,13 +158,92 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.CROSS_REPO_TOKEN }}
 
-      - name: Publish Wattswarm images
+      - name: Prepare digest directory
+        run: mkdir -p "${RUNNER_TEMP}/digests"
+
+      - name: Publish Wattswarm ${{ matrix.arch }} image
         working-directory: wattswarm
+        env:
+          METADATA_FILE: ${{ runner.temp }}/digests/wattswarm.json
         run: scripts/publish-ghcr.sh
 
-      - name: Publish Wattetheria image
+      - name: Publish Wattetheria ${{ matrix.arch }} image
         working-directory: wattetheria
+        env:
+          METADATA_FILE: ${{ runner.temp }}/digests/wattetheria.json
         run: scripts/publish-ghcr.sh
+
+      - name: Upload image digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish multi-arch image tags
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.CROSS_REPO_TOKEN }}
+
+      - name: Create release image tags
+        run: |
+          set -euo pipefail
+
+          digest_of() {
+            local arch="$1"
+            local project="$2"
+            local digest
+            digest="$(jq -r '."containerimage.digest" // empty' "digests/digests-${arch}/${project}.json")"
+            if [ -z "${digest}" ]; then
+              echo "missing ${arch} digest for ${project}" >&2
+              exit 1
+            fi
+            printf '%s' "${digest}"
+          }
+
+          # Resolve every digest before moving any tag, so a missing one changes nothing.
+          wattswarm_amd64="$(digest_of amd64 wattswarm)"
+          wattswarm_arm64="$(digest_of arm64 wattswarm)"
+          wattetheria_amd64="$(digest_of amd64 wattetheria)"
+          wattetheria_arm64="$(digest_of arm64 wattetheria)"
+
+          publish_release_tag() {
+            local image="$1"
+            local amd64_digest="$2"
+            local arm64_digest="$3"
+            docker buildx imagetools create \
+              -t "${image}:${RELEASE}" \
+              "${image}@${amd64_digest}" \
+              "${image}@${arm64_digest}"
+          }
+
+          for image in \
+            ghcr.io/wattetheria/wattswarm-kernel \
+            ghcr.io/wattetheria/wattswarm-runtime \
+            ghcr.io/wattetheria/wattswarm-worker
+          do
+            publish_release_tag "${image}" "${wattswarm_amd64}" "${wattswarm_arm64}"
+          done
+          publish_release_tag ghcr.io/wattetheria/wattetheria-kernel "${wattetheria_amd64}" "${wattetheria_arm64}"
 
       - name: Update latest image tags
         run: |
