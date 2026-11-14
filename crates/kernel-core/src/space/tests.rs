@@ -136,8 +136,8 @@ fn structural_presence_validation_preserves_legacy_activity_and_geometry_checks(
 #[test]
 fn generated_package_loads_with_original_tiles_and_version() {
     let package = test_package();
-    assert_eq!(package.size, [140, 100]);
-    assert_eq!(package.places.len(), 309);
+    assert_eq!(package.size, [194, 100]);
+    assert_eq!(package.places.len(), 319);
     assert_eq!(package.service_bindings, []);
     assert_eq!(package.spawn_place_id, "johnson-park");
     assert_eq!(package.tile_size, 32);
@@ -145,7 +145,7 @@ fn generated_package_loads_with_original_tiles_and_version() {
     assert_eq!(package.movement_search_radius, Some(2));
     assert_eq!(
         package.space_version,
-        "sha256:10f3fa82ff2f7771811ee152a132f2aac34b27bbac381622b0dda7df35609cdd"
+        "sha256:7f11028ef07c178ab093e0f50a05f4698522656d23db4ab5498dce11e1e4c682"
     );
     assert_eq!(
         package
@@ -154,12 +154,12 @@ fn generated_package_loads_with_original_tiles_and_version() {
             .flatten()
             .filter(|cell| **cell == 1)
             .count(),
-        11_629
+        12_555
     );
     for (kind, expected) in [
         (PlaceKind::World, 1),
-        (PlaceKind::Sector, 20),
-        (PlaceKind::Arena, 65),
+        (PlaceKind::Sector, 21),
+        (PlaceKind::Arena, 74),
         (PlaceKind::GameObject, 223),
     ] {
         assert_eq!(
@@ -178,9 +178,9 @@ fn generated_package_loads_with_original_tiles_and_version() {
 }
 
 #[test]
-fn grid_keeps_seventeen_components_and_park_candidates() {
+fn grid_keeps_twenty_components_and_park_candidates() {
     let package = test_package();
-    let mut seen = vec![false; 14_000];
+    let mut seen = vec![false; 19_400];
     let mut sizes = Vec::new();
     for y in 0..package.size[1] {
         for x in 0..package.size[0] {
@@ -208,10 +208,12 @@ fn grid_keeps_seventeen_components_and_park_candidates() {
     }
     assert_eq!(
         sizes,
-        [6476, 4894, 1, 1, 3, 6, 6, 4, 76, 70, 64, 1, 12, 6, 3, 3, 3]
+        [
+            4935, 6101, 1, 1, 3, 6, 6, 4, 76, 70, 64, 13, 1, 12, 6, 2, 1245, 3, 3, 3
+        ]
     );
     let reachable = package.spawn_reachable().unwrap();
-    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 4894);
+    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 6101);
     let did = agent_did();
     let spawn = package.destination_tile(&did, "johnson-park").unwrap();
     for place in &package.places {
@@ -270,7 +272,7 @@ fn routing_follows_shortest_cardinal_path_and_rejects_invalid_endpoints() {
     assert_eq!(package.path([1, 1], [2, 0]).unwrap(), "UR");
     assert_eq!(package.path([79, 12], [81, 12]).unwrap(), "URRD");
     assert_eq!(package.path([1, 1], [1, 1]).unwrap(), "");
-    assert!(package.path([140, 1], [1, 1]).is_err());
+    assert!(package.path([194, 1], [1, 1]).is_err());
     assert!(package.path([1, 1], [1, 100]).is_err());
     assert!(package.path([80, 12], [1, 1]).is_err());
     assert!(package.path([1, 1], [80, 12]).is_err());
@@ -301,7 +303,7 @@ fn package_validation_rejects_content_version_and_grid_hierarchy_errors() {
     changed.walkable_grid.pop();
     assert!(changed.validate().unwrap_err().to_string().contains("grid"));
     let mut changed = package.clone();
-    changed.places[0].tiles.push([140, 0]);
+    changed.places[0].tiles.push([194, 0]);
     assert!(
         changed
             .validate()

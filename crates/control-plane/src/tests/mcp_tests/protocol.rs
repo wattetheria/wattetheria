@@ -85,6 +85,12 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "farm_harvest",
     "farm_steal",
     "farm_sell",
+    "housing_status",
+    "housing_buy_lot",
+    "housing_place",
+    "housing_remove",
+    "housing_name",
+    "housing_enter",
     "set_owner_timezone",
     "set_daily_report_enabled",
 ];
@@ -237,7 +243,7 @@ async fn mcp_space_five_tools_execute_owned_routes_and_expose_mention_schema() {
             }
             "list_places" => {
                 let places = result["places"].as_array().unwrap();
-                assert_eq!(places.len(), 20);
+                assert_eq!(places.len(), 21);
                 assert!(
                     places
                         .iter()

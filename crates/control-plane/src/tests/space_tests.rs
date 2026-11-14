@@ -1020,7 +1020,7 @@ async fn space_rejects_unregistered_agent_and_invalid_movement_or_object_without
         "/v1/wattetheria/space/places?kind=sector",
     )
     .await;
-    assert_eq!(places["places"].as_array().unwrap().len(), 20);
+    assert_eq!(places["places"].as_array().unwrap().len(), 21);
     assert!(
         places["places"]
             .as_array()

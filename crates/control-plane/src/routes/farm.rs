@@ -177,6 +177,13 @@ pub async fn game_info(
             body["availability"]["reason"] = json!("stale_client");
             body["availability"]["message"] = json!(stale_client_message(&catalog));
         }
+    } else if status.is_success() && game_id == crate::routes::housing::GAME_ID {
+        body["tools"] = crate::routes::housing::tools();
+        if !crate::routes::housing::map_ready(&state, &body) {
+            body["availability"]["reason"] = json!("stale_client");
+            body["availability"]["message"] =
+                json!(crate::routes::housing::stale_client_message(&body));
+        }
     }
     (status, Json(body)).into_response()
 }
@@ -322,7 +329,7 @@ pub async fn farm_action(
         Ok((status, reply)) if !outcome_unknown(status, &reply) => (status, reply),
         lost => {
             if timed {
-                let until = busy_after_lost_reply(&state, &gateway, action_secs).await;
+                let until = busy_after_lost_reply(&state, &gateway, "farm", action_secs).await;
                 busy.set(&state.local_db, held_until.max(until));
             }
             return outcome_unknown_refusal(&lost, &action_id);
@@ -390,7 +397,7 @@ async fn sneak_off(state: &ControlPlaneState, reply: &Value) -> Option<i64> {
     }
 }
 
-fn rfc3339_ms(at_ms: i64) -> Option<String> {
+pub(crate) fn rfc3339_ms(at_ms: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(at_ms)
         .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
@@ -399,7 +406,7 @@ fn rfc3339_ms(at_ms: i64) -> Option<String> {
 /// server error. A proxy's 502, 503 or 504 says nothing about the gateway, and even the gateway's
 /// own 500 may come after its database committed (the commit's answer can be lost). Only the
 /// gateway's refusals (4xx: wrong spot, no Watt, busy) are certain.
-fn outcome_unknown(status: StatusCode, reply: &Value) -> bool {
+pub(crate) fn outcome_unknown(status: StatusCode, reply: &Value) -> bool {
     if status.is_success() {
         return !reply.is_object();
     }
@@ -408,7 +415,7 @@ fn outcome_unknown(status: StatusCode, reply: &Value) -> bool {
 
 /// The gateway may or may not have done the command, so the agent retries with the same
 /// `action_id`, which returns the real answer. The caller keeps the agent held meanwhile.
-fn outcome_unknown_refusal(
+pub(crate) fn outcome_unknown_refusal(
     lost: &anyhow::Result<(StatusCode, Value)>,
     action_id: &str,
 ) -> Response {
@@ -429,14 +436,15 @@ fn outcome_unknown_refusal(
 /// Until when the agent is held after a timed command whose answer was lost: what the gateway
 /// says when asked now, and never less than one action from now, since the gateway may have
 /// started the command at any moment before the node gave up waiting.
-async fn busy_after_lost_reply(
+pub(crate) async fn busy_after_lost_reply(
     state: &ControlPlaneState,
     gateway: &LedgerClient,
+    game: &str,
     action_secs: i64,
 ) -> i64 {
     let floor = chrono::Utc::now().timestamp_millis() + action_secs * 1000;
     let told = gateway
-        .get_public(&format!("/api/farm/agents/{}", state.agent_did), &[])
+        .get_public(&format!("/api/{game}/agents/{}", state.agent_did), &[])
         .await
         .ok()
         .filter(|(status, _)| status.is_success())
@@ -445,7 +453,7 @@ async fn busy_after_lost_reply(
 }
 
 /// A moment the gateway sends as an RFC 3339 string, in epoch milliseconds.
-fn moment_ms(value: &Value) -> Option<i64> {
+pub(crate) fn moment_ms(value: &Value) -> Option<i64> {
     let at = chrono::DateTime::parse_from_rfc3339(value.as_str()?).ok()?;
     Some(at.timestamp_millis())
 }
@@ -465,16 +473,16 @@ fn stale_client_message(catalog: &FarmCatalog) -> String {
 }
 
 /// A walk from where the agent stands to the tile or place a step or a refusal names.
-struct Walk {
-    to: [u32; 2],
-    secs: f64,
+pub(crate) struct Walk {
+    pub(crate) to: [u32; 2],
+    pub(crate) secs: f64,
     /// The `move_agent` arguments that make it.
-    move_agent: Value,
+    pub(crate) move_agent: Value,
 }
 
 /// The walk to `goal`'s `tile`, else to its place (`move_to_place` in a next step, `place_id`
 /// in a refusal).
-fn walk(
+pub(crate) fn walk(
     state: &ControlPlaneState,
     presence: Option<&SignedSpacePresence>,
     goal: &Value,
@@ -506,7 +514,7 @@ fn walk(
     })
 }
 
-fn action_id(body: &Value) -> Result<String, &'static str> {
+pub(crate) fn action_id(body: &Value) -> Result<String, &'static str> {
     let action_id = body["action_id"]
         .as_str()
         .ok_or("action_id is required: a key you choose, reused when retrying")?;
@@ -519,18 +527,18 @@ fn action_id(body: &Value) -> Result<String, &'static str> {
     Ok(action_id.to_owned())
 }
 
-fn relay(reply: anyhow::Result<(StatusCode, Value)>) -> Response {
+pub(crate) fn relay(reply: anyhow::Result<(StatusCode, Value)>) -> Response {
     match reply {
         Ok((status, body)) => (status, Json(body)).into_response(),
         Err(error) => gateway_error(&error),
     }
 }
 
-fn refusal(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn refusal(status: StatusCode, code: &str, message: &str) -> Response {
     (status, Json(json!({"error": code, "message": message}))).into_response()
 }
 
-fn gateway_unavailable() -> Response {
+pub(crate) fn gateway_unavailable() -> Response {
     refusal(
         StatusCode::SERVICE_UNAVAILABLE,
         "gateway_unavailable",
@@ -538,7 +546,7 @@ fn gateway_unavailable() -> Response {
     )
 }
 
-fn gateway_error(error: &anyhow::Error) -> Response {
+pub(crate) fn gateway_error(error: &anyhow::Error) -> Response {
     refusal(
         StatusCode::BAD_GATEWAY,
         "gateway_unreachable",

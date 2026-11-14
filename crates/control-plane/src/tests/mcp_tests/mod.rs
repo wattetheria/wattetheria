@@ -123,6 +123,7 @@ mod farm;
 mod friend_requests;
 mod friendships;
 mod hives;
+mod housing;
 mod identity;
 mod leaderboard;
 mod missions;

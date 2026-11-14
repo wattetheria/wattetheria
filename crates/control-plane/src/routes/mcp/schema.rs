@@ -6,6 +6,8 @@ use super::{AgentTool, path_vars};
 
 #[path = "farm_schema.rs"]
 mod farm_schema;
+#[path = "housing_schema.rs"]
+mod housing_schema;
 #[path = "space_schema.rs"]
 mod space_schema;
 
@@ -13,6 +15,7 @@ pub(super) fn input_schema(tool: &AgentTool) -> Value {
     client_schema(tool)
         .or_else(|| space_schema::schema(tool))
         .or_else(|| farm_schema::schema(tool))
+        .or_else(|| housing_schema::schema(tool))
         .or_else(|| payment_schema(tool))
         .or_else(|| topic_schema(tool))
         .or_else(|| mission_schema(tool))

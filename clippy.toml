@@ -1,0 +1,2 @@
+# The release image is built with Rust 1.93 (see Dockerfile), so Clippy must not suggest newer APIs.
+msrv = "1.93.0"

@@ -252,7 +252,7 @@ async fn place_queries_omit_geometry_without_changing_canonical_package() {
         places["space_version"],
         current_package(&state).space_version
     );
-    assert_eq!(places["places"].as_array().unwrap().len(), 309);
+    assert_eq!(places["places"].as_array().unwrap().len(), 319);
     assert_no_tiles(&places);
     for (entry, place) in places["places"]
         .as_array()

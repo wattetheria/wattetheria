@@ -34,6 +34,7 @@ pub mod routes {
     pub(crate) mod farm;
     pub(crate) mod game;
     pub(crate) mod governance;
+    pub(crate) mod housing;
     pub(crate) mod identity;
     pub(crate) mod identity_support;
     pub(crate) mod leaderboard;
@@ -355,6 +356,14 @@ fn client_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/farm/actions/{action}",
             post(routes::farm::farm_action),
+        )
+        .route(
+            "/v1/wattetheria/housing/status",
+            get(routes::housing::housing_status),
+        )
+        .route(
+            "/v1/wattetheria/housing/actions/{action}",
+            post(routes::housing::housing_action),
         )
         .route(
             "/v1/supervision/governance",
