@@ -99,6 +99,13 @@ async fn spawn_mock_gateway() -> (String, MockFarm) {
                             Json(json!({"error": "internal", "message": "connection reset"})),
                         ));
                     }
+                    if payload["crop"] == "rice" {
+                        return Ok((
+                            axum::http::StatusCode::CONFLICT,
+                            Json(json!({"error": "unknown_crop", "message": "this season has no crop \"rice\"",
+                                        "details": {"crop": "rice", "crops": ["barley", "coffee_bean", "rose"]}})),
+                        ));
+                    }
                     if payload["action"] == "sell" {
                         return Ok((
                             axum::http::StatusCode::CONFLICT,
@@ -215,9 +222,15 @@ async fn mcp_lists_the_farm_tools_with_precise_schemas() {
 
     let plant = find_tool(tools, "farm_plant");
     assert_schema_requires(plant, &["action_id", "crop", "tile"]);
-    assert_eq!(
-        plant["inputSchema"]["properties"]["crop"]["enum"],
-        json!(["barley", "coffee_bean"])
+    // Which crops exist is the gateway's config for the season, read from game_info.
+    let crop = &plant["inputSchema"]["properties"]["crop"];
+    assert_eq!(crop["type"], "string", "{crop}");
+    assert!(crop.get("enum").is_none(), "{crop}");
+    assert!(
+        crop["description"]
+            .as_str()
+            .unwrap()
+            .contains("rules.crops")
     );
     assert_eq!(plant["inputSchema"]["additionalProperties"], false);
     assert_schema_requires(find_tool(tools, "farm_water"), &["action_id", "tile"]);
@@ -317,14 +330,30 @@ async fn farm_commands_are_signed_with_the_presence_and_block_walking_while_busy
         let refused = call(app.clone(), &token, "farm_plant", bad).await;
         assert_eq!(content(&refused)["error"], "invalid", "{refused}");
     }
-    let unknown_crop = call(
+    // The node does not know the season's crops: the gateway refuses one it does not list, and
+    // the refusal does not hold the agent.
+    let unknown_crop = content(
+        &call(
+            app.clone(),
+            &token,
+            "farm_plant",
+            json!({"action_id": "p1", "tile": [60, 90], "crop": "rice"}),
+        )
+        .await,
+    );
+    assert_eq!(unknown_crop["error"], "unknown_crop", "{unknown_crop}");
+    assert_eq!(
+        unknown_crop["details"]["crops"],
+        json!(["barley", "coffee_bean", "rose"])
+    );
+    let not_a_crop = call(
         app.clone(),
         &token,
         "farm_plant",
-        json!({"action_id": "p1", "tile": [60, 90], "crop": "rice"}),
+        json!({"action_id": "p1b", "tile": [60, 90], "crop": 7}),
     )
     .await;
-    assert_eq!(content(&unknown_crop)["error"], "invalid");
+    assert_eq!(content(&not_a_crop)["error"], "invalid");
 
     let planted = call(
         app.clone(),

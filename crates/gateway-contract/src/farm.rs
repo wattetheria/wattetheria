@@ -9,27 +9,21 @@ pub const GAME_ID: &str = "farm";
 /// `event_kind` prefix of the farm's `game_activity` UI events, as in `farm.planted`.
 pub const EVENT_KIND_PREFIX: &str = "farm.";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Crop {
-    Barley,
-    CoffeeBean,
-}
+/// A crop's id, such as `barley`. The crops that exist are the ones the season's farm config
+/// lists on the gateway; no code names them.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Crop(String);
 
 impl Crop {
-    pub const ALL: [Self; 2] = [Self::Barley, Self::CoffeeBean];
-
     #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Barley => "barley",
-            Self::CoffeeBean => "coffee_bean",
-        }
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
     }
 
     #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|crop| crop.as_str() == value)
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -104,6 +98,10 @@ pub enum FarmRejection {
     NotReady,
     InsufficientBalance,
     InsufficientUnits,
+    /// The season has no such crop.
+    UnknownCrop,
+    /// The caller's Space level is below what the crop needs.
+    LevelTooLow,
     /// The season has no stealing.
     StealingOff,
     /// The plot is the caller's own.
@@ -141,6 +139,8 @@ impl FarmRejection {
             Self::NotReady => "not_ready",
             Self::InsufficientBalance => "insufficient_balance",
             Self::InsufficientUnits => "insufficient_units",
+            Self::UnknownCrop => "unknown_crop",
+            Self::LevelTooLow => "level_too_low",
             Self::StealingOff => "stealing_off",
             Self::OwnPlot => "own_plot",
             Self::Protected => "protected",
@@ -164,7 +164,7 @@ mod tests {
             agent_did: "did:key:z".to_owned(),
             action: FarmAction::Plant {
                 tile: [60, 90],
-                crop: Crop::CoffeeBean,
+                crop: Crop::new("coffee_bean"),
             },
             presence: None,
             agent_label: None,
@@ -184,6 +184,8 @@ mod tests {
     #[test]
     fn rejection_codes_match_their_serde_names() {
         for code in [
+            FarmRejection::UnknownCrop,
+            FarmRejection::LevelTooLow,
             FarmRejection::StealingOff,
             FarmRejection::OwnPlot,
             FarmRejection::Protected,

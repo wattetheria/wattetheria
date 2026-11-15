@@ -1,9 +1,7 @@
-use super::{AgentTool, enum_field, string_field, tool_schema};
+use super::{AgentTool, string_field, tool_schema};
 use serde_json::{Value, json};
-use wattetheria_gateway_contract::farm::Crop;
 
 pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
-    let crops: Vec<&str> = Crop::ALL.iter().map(|crop| crop.as_str()).collect();
     let (fields, required) = match tool.name {
         "list_games" | "farm_status" => (vec![], vec![]),
         "game_info" => (
@@ -45,7 +43,10 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                     "tile",
                     tile_schema("Your empty plot, the tile you stand on."),
                 ),
-                enum_field("crop", "Crop to plant.", &crops),
+                string_field(
+                    "crop",
+                    "Crop to plant: a crop id from game_info's rules.crops, which lists this season's crops with their prices and the Space level (min_level) each needs.",
+                ),
             ],
             vec!["action_id", "tile", "crop"],
         ),
@@ -71,7 +72,10 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
         "farm_sell" => (
             vec![
                 action_id_field(),
-                enum_field("crop", "Crop to sell from your inventory.", &crops),
+                string_field(
+                    "crop",
+                    "Crop to sell from your inventory: its crop id, as farm_status's inventory names it.",
+                ),
                 (
                     "units",
                     json!({
