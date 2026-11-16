@@ -32,7 +32,7 @@ fn signed_announcement_ending_at(
         network_id: network_id.to_owned(),
         authority_node_id: hex::encode(STANDARD.decode(&identity.public_key).unwrap()),
         issued_at: Utc::now().timestamp_millis().try_into().unwrap(),
-        content: json!({"event_id":id,"space_id":"the-ville","title":"Park gathering","description":"Meet at the park","place_id":"johnson-park","starts_at":now-120_000,"ends_at":ends_at}),
+        content: json!({"event_id":id,"space_id":"the-ville","title":"Park gathering","description":"Meet at the park","translations":{"zh":{"title":"公园聚会","description":"在公园见"},"fr":{"title":"Au parc","description":"Rendez-vous au parc"}},"place_id":"johnson-park","starts_at":now-120_000,"ends_at":ends_at}),
         authority_signature: String::new(),
     };
     announcement.authority_signature = hex::encode(
@@ -187,8 +187,15 @@ async fn world_event_two_real_callbacks_deliver_same_authority_announcement_to_m
         axum::serve(listener, receiver_router).await.unwrap();
     });
     let receiver_url = format!("http://{address}/wake");
-    for _ in 0..2 {
+    // One agent has not said its owner's language; the other's owner reads Chinese.
+    for language in [None, Some("zh-CN")] {
         let (_dir, state, events) = callback_state(&projection_url, &receiver_url).await;
+        if let Some(language) = language {
+            state
+                .local_db
+                .save_domain("owner_language", &language)
+                .unwrap();
+        }
         let mut stream = state.stream_tx.subscribe();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -223,10 +230,17 @@ async fn world_event_two_real_callbacks_deliver_same_authority_announcement_to_m
             .unwrap();
         let notification: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(notification["name"], "wattetheria.world.event");
-        assert_eq!(
-            notification["data"]["announcement"],
-            serde_json::to_value(&announcement).unwrap()
-        );
+        // The agent is told the notice in its owner's language when the notice carries it,
+        // as published otherwise, and never with the other languages; the gateway below
+        // still gets the announcement exactly as it was signed.
+        let mut told = serde_json::to_value(&announcement).unwrap();
+        let content = told["content"].as_object_mut().unwrap();
+        assert!(content.remove("translations").is_some());
+        if language.is_some() {
+            content.insert("title".to_owned(), json!("公园聚会"));
+            content.insert("description".to_owned(), json!("在公园见"));
+        }
+        assert_eq!(notification["data"]["announcement"], told);
         assert!(!events.delivery_tick(Some("env_webhook")).await.unwrap());
         let event = stream.recv().await.unwrap();
         let gateway = crate::build_signed_node_event(&state, &event)
@@ -668,4 +682,48 @@ async fn world_events_active_read_prunes_expiry_without_mutating_signed_history(
     );
     assert_eq!(fixture.calls[1]["after_sequence"], "1");
     server.abort();
+}
+
+#[tokio::test]
+async fn the_agent_sets_its_owners_language_as_a_language_code() {
+    let (_dir, _router, token, _policy, state) = build_test_app(100);
+    for language in ["zh", "pt-BR", " ja "] {
+        let saved = authed_post_json(
+            app(state.clone()),
+            &token,
+            "/v1/wattetheria/owner/language",
+            json!({"language": language}),
+        )
+        .await;
+        assert_eq!(saved, json!({"language": language.trim()}));
+        assert_eq!(
+            state
+                .local_db
+                .load_domain::<String>("owner_language")
+                .unwrap()
+                .as_deref(),
+            Some(language.trim())
+        );
+    }
+    for language in ["", "Chinese", "ZH", "z", "zh_CN", "zh-", "中文"] {
+        assert_eq!(
+            authed_post(
+                app(state.clone()),
+                &token,
+                "/v1/wattetheria/owner/language",
+                json!({"language": language}),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "{language}"
+        );
+    }
+    assert_eq!(
+        state
+            .local_db
+            .load_domain::<String>("owner_language")
+            .unwrap()
+            .as_deref(),
+        Some("ja")
+    );
 }

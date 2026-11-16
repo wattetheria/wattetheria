@@ -1,15 +1,90 @@
 use anyhow::{Context, Result, ensure};
+use axum::Json;
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use wattetheria_gateway_contract::WorldEvent;
 use wattetheria_kernel::identity::verify_with_public_key;
 use wattetheria_kernel::signing::canonical_bytes;
 use wattetheria_kernel::swarm_bridge::{EventAnnouncementPayload, SwarmGlobalMessageView};
 
+use crate::auth::{authorize, internal_error};
 use crate::routes::agent_events::AgentEventEnvelope;
 use crate::state::{ControlPlaneState, StreamEvent};
+
+/// The owner's language, as the agent last reported it.
+const LANGUAGE_DOMAIN: &str = "owner_language";
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OwnerLanguageBody {
+    language: String,
+}
+
+/// `POST /v1/wattetheria/owner/language`: the owner's language, so a notice that comes in
+/// several languages is told to the agent in that one.
+pub(crate) async fn set_owner_language(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Json(body): Json<OwnerLanguageBody>,
+) -> Response {
+    if let Err(response) = authorize(&state, &headers).await {
+        return response;
+    }
+    let language = body.language.trim();
+    if !is_language_code(language) {
+        return super::bad_request("language must be a language code, like en, zh or pt-BR");
+    }
+    if let Err(error) = state.local_db.save_domain(LANGUAGE_DOMAIN, &language) {
+        return internal_error(&error);
+    }
+    Json(json!({"language": language})).into_response()
+}
+
+/// A language code: a lowercase language of two or three letters, then any subtags.
+fn is_language_code(code: &str) -> bool {
+    let mut parts = code.split('-');
+    parts.next().is_some_and(|language| {
+        (2..=3).contains(&language.len()) && language.chars().all(|c| c.is_ascii_lowercase())
+    }) && parts.all(|subtag| {
+        (1..=8).contains(&subtag.len()) && subtag.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// The notice as the agent is told it: worded in `language` when the notice carries that
+/// translation (the language itself, else the language without its subtags), otherwise as
+/// published; never with the other languages.
+fn in_language(mut announcement: Value, language: Option<&str>) -> Value {
+    let Some(content) = announcement
+        .get_mut("content")
+        .and_then(Value::as_object_mut)
+    else {
+        return announcement;
+    };
+    let translations = content.remove("translations");
+    let wording = language.and_then(|language| {
+        let translations = translations.as_ref()?;
+        translations
+            .get(language)
+            .or_else(|| translations.get(language.split('-').next()?))
+    });
+    if let Some(wording) = wording
+        && wording["title"]
+            .as_str()
+            .is_some_and(|title| !title.trim().is_empty())
+    {
+        for key in ["title", "description"] {
+            if wording[key].is_string() {
+                content.insert(key.to_owned(), wording[key].clone());
+            }
+        }
+    }
+    announcement
+}
 
 #[derive(Default)]
 pub struct WorldEventRegistry {
@@ -184,7 +259,8 @@ pub(crate) async fn receive_world_announcement(
     event.dedupe_key = Some(world.event_id);
     event.allowed_actions = vec!["ignore".to_owned()];
     event.requires_commit = false;
-    event.payload = serde_json::to_value(&received)?;
+    let language = state.local_db.load_domain::<String>(LANGUAGE_DOMAIN)?;
+    event.payload = in_language(serde_json::to_value(&received)?, language.as_deref());
     let _ = state.stream_tx.send(StreamEvent {
         kind: "world.event.received".to_owned(),
         timestamp: i64::try_from(received.issued_at / 1_000)?,

@@ -143,6 +143,10 @@ fn space_router() -> Router<ControlPlaneState> {
             post(routes::space::daily::set_daily_report_enabled),
         )
         .route(
+            "/v1/wattetheria/owner/language",
+            post(routes::space::world::set_owner_language),
+        )
+        .route(
             "/v1/wattetheria/space/presence",
             get(routes::space::get_agent_presence),
         )

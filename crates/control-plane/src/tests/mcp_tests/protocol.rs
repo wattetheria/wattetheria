@@ -95,6 +95,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "housing_enter",
     "set_owner_timezone",
     "set_daily_report_enabled",
+    "set_owner_language",
 ];
 
 #[tokio::test]

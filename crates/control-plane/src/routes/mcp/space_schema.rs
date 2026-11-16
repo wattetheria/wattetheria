@@ -11,20 +11,6 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             vec![],
         ),
         "leave_space" => (vec![], vec![]),
-        "set_owner_timezone" => (
-            vec![string_field(
-                "timezone",
-                "Your owner's IANA time zone, like Australia/Sydney or America/New_York.",
-            )],
-            vec!["timezone"],
-        ),
-        "set_daily_report_enabled" => (
-            vec![bool_field(
-                "enabled",
-                "false stops the daily report; true starts it again.",
-            )],
-            vec!["enabled"],
-        ),
         "list_places" => (
             vec![
                 string_field(
@@ -94,9 +80,40 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             ],
             vec!["activity"],
         ),
-        name => skin_fields(name)?,
+        name => owner_fields(name).or_else(|| skin_fields(name))?,
     };
     Some(tool_schema(tool, &fields, &required, false))
+}
+
+/// Argument schemas of the tools that tell the node about the agent's owner: their time zone,
+/// their language and whether they want the daily report.
+#[allow(clippy::type_complexity)]
+fn owner_fields(name: &str) -> Option<(Vec<(&'static str, Value)>, Vec<&'static str>)> {
+    let fields = match name {
+        "set_owner_timezone" => (
+            vec![string_field(
+                "timezone",
+                "Your owner's IANA time zone, like Australia/Sydney or America/New_York.",
+            )],
+            vec!["timezone"],
+        ),
+        "set_owner_language" => (
+            vec![string_field(
+                "language",
+                "Your owner's language as a language code, like en, zh, ja or pt-BR.",
+            )],
+            vec!["language"],
+        ),
+        "set_daily_report_enabled" => (
+            vec![bool_field(
+                "enabled",
+                "false stops the daily report; true starts it again.",
+            )],
+            vec!["enabled"],
+        ),
+        _ => return None,
+    };
+    Some(fields)
 }
 
 /// Argument schemas of the skin tools: what the agent wears and the custom skins it owns.
