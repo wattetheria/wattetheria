@@ -1,12 +1,13 @@
-//! The Agent leaderboard, read from the gateway, which ranks Agents from its own records. Agents
-//! reach it through the `leaderboard` MCP tool.
+//! The Agent leaderboards, read from the gateway, which ranks Agents from its own records: the
+//! Space board by experience, and the farm board by what each Agent earned this farm season.
+//! Agents reach them through the `leaderboard` MCP tool.
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::auth::authorize;
 use crate::ledger_client::LedgerClient;
@@ -19,9 +20,12 @@ const MAX_LIMIT: usize = 50;
 pub struct LeaderboardQuery {
     #[serde(default)]
     limit: Option<usize>,
+    /// `space` (the default) or `farm`.
+    #[serde(default)]
+    board: Option<String>,
 }
 
-/// `GET /v1/wattetheria/leaderboard?limit=`: the top rows, as the gateway ranks them.
+/// `GET /v1/wattetheria/leaderboard?board=&limit=`: the top rows, as the gateway ranks them.
 pub async fn leaderboard(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -40,20 +44,50 @@ pub async fn leaderboard(
         )
             .into_response();
     };
+    let (board, path) = match query.board.as_deref() {
+        None | Some("space") => ("space", "/api/leaderboard"),
+        Some("farm") => ("farm", "/api/farm/leaderboard"),
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "unknown_board",
+                    "message": format!("there is no `{other}` board; use `space` or `farm`"),
+                })),
+            )
+                .into_response();
+        }
+    };
     let limit = query
         .limit
         .unwrap_or(DEFAULT_LIMIT)
         .clamp(1, MAX_LIMIT)
         .to_string();
-    match gateway
-        .get_public("/api/leaderboard", &[("limit", &limit)])
-        .await
-    {
+    match gateway.get_public(path, &[("limit", &limit)]).await {
+        Ok((status, body)) if status.is_success() => {
+            // The Space board is a bare list; the farm board already is an object.
+            let mut body = match body {
+                Value::Array(items) => json!({"items": items}),
+                other => other,
+            };
+            body["you"] = own_row(&state, &gateway, board).await;
+            (status, Json(body)).into_response()
+        }
         Ok((status, body)) => (status, Json(body)).into_response(),
         Err(error) => (
             StatusCode::BAD_GATEWAY,
             Json(json!({"error": "gateway_unreachable", "message": format!("{error:#}")})),
         )
             .into_response(),
+    }
+}
+
+/// This Agent's own row on `board`, however far down it is; `null` when it is not on the board
+/// or the gateway does not say.
+async fn own_row(state: &ControlPlaneState, gateway: &LedgerClient, board: &str) -> Value {
+    let path = format!("/api/agents/{}/rank", state.agent_did);
+    match gateway.get_public(&path, &[]).await {
+        Ok((status, body)) if status.is_success() => body[board].clone(),
+        _ => Value::Null,
     }
 }

@@ -4,7 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// A gateway answering `/api/leaderboard` with `reply`, recording each `limit` it was asked for.
+/// A gateway answering `/api/leaderboard` with `reply`, recording each `limit` it was asked for,
+/// `/api/farm/leaderboard` with a farm board for season 7, and any Agent's own standing with
+/// rank 61 on the Space board and none on the farm board.
 async fn spawn_gateway(
     status: StatusCode,
     reply: Value,
@@ -24,11 +26,31 @@ async fn spawn_gateway(
                 },
             ),
         )
+        .route(
+            "/api/agents/{agent_did}/rank",
+            axum::routing::get(|| async { Json(json!({"space": own_row(), "farm": null})) }),
+        )
+        .route(
+            "/api/farm/leaderboard",
+            axum::routing::get(|| async { Json(farm_board()) }),
+        )
         .with_state(limits.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     (url, limits)
+}
+
+fn farm_board() -> Value {
+    json!({"season_no": 7, "ends_at": "2026-11-23T00:00:00Z", "rows": [
+        {"rank": 1, "agent_did": "did:key:top", "display_name": "Top", "watt": 40, "harvests": 3,
+         "farmer_rank": 2, "level": 3, "titles": []},
+    ]})
+}
+
+fn own_row() -> Value {
+    json!({"rank": 61, "agent_did": "did:key:me", "display_name": "Me", "xp": 10, "level": 1,
+        "level_progress_pct": 10, "watt_balance": 0, "tasks_completed": 0, "titles": []})
 }
 
 async fn call_leaderboard(state: ControlPlaneState, token: &str, arguments: Value) -> Value {
@@ -43,7 +65,7 @@ async fn call_leaderboard(state: ControlPlaneState, token: &str, arguments: Valu
 }
 
 #[tokio::test]
-async fn leaderboard_tool_is_read_only_and_takes_only_a_limit() {
+async fn leaderboard_tool_is_read_only_and_takes_a_board_and_a_limit() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
     let response = mcp_request(
         app,
@@ -61,7 +83,11 @@ async fn leaderboard_tool_is_read_only_and_takes_only_a_limit() {
     assert_eq!(tool["_meta"]["wattetheria"]["readOnly"], true);
     let schema = &tool["inputSchema"];
     assert_eq!(schema["additionalProperties"], false);
-    assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
+    assert_eq!(
+        schema["properties"]["board"]["enum"],
+        json!(["space", "farm"])
+    );
     assert_eq!(schema["properties"]["limit"]["minimum"], 1);
     assert_eq!(schema["properties"]["limit"]["maximum"], 50);
     assert_schema_requires(tool, &[]);
@@ -85,6 +111,20 @@ async fn leaderboard_tool_relays_the_gateways_rows() {
     let result = call_leaderboard(state.clone(), &token, json!({"limit": 2})).await;
     assert_eq!(result["isError"], false, "{result}");
     assert_eq!(result["structuredContent"]["items"], rows);
+    // Its own row comes along though it is far below the rows asked for.
+    assert_eq!(result["structuredContent"]["you"], own_row());
+
+    // The space board is also the one named outright; the farm board is the gateway's own.
+    let space =
+        call_leaderboard(state.clone(), &token, json!({"board": "space", "limit": 2})).await;
+    assert_eq!(space["structuredContent"]["items"], rows);
+    let farm = call_leaderboard(state.clone(), &token, json!({"board": "farm"})).await;
+    assert_eq!(farm["isError"], false, "{farm}");
+    let mut expected = farm_board();
+    expected["you"] = Value::Null;
+    assert_eq!(farm["structuredContent"], expected);
+    let unknown = call_leaderboard(state.clone(), &token, json!({"board": "dice"})).await;
+    assert_eq!(unknown["isError"], true, "{unknown}");
 
     // No limit takes the default; one out of range is brought back in.
     call_leaderboard(state.clone(), &token, json!({})).await;
@@ -92,6 +132,7 @@ async fn leaderboard_tool_relays_the_gateways_rows() {
     assert_eq!(
         *limits.lock().await,
         [
+            Some("2".to_string()),
             Some("2".to_string()),
             Some("20".to_string()),
             Some("50".to_string())

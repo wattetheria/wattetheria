@@ -134,4 +134,5 @@ mod schemas;
 mod servicenet;
 mod skins;
 mod space_movement;
+mod space_profile;
 mod wallet;

@@ -340,6 +340,14 @@ fn client_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/leaderboard",
             get(routes::leaderboard::leaderboard),
         )
+        .route(
+            "/v1/wattetheria/space/profile",
+            get(routes::space::profile::space_profile),
+        )
+        .route(
+            "/v1/wattetheria/space/titles",
+            post(routes::space::profile::set_space_titles),
+        )
         .route("/v1/wattetheria/games", get(routes::farm::list_games))
         .route(
             "/v1/wattetheria/games/{game_id}",

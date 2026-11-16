@@ -390,3 +390,37 @@ async fn the_daily_report_carries_the_agents_own_activity_and_the_boards_day() {
     gateway.abort();
     webhook.abort();
 }
+
+#[tokio::test]
+async fn the_daily_report_stays_due_while_the_agents_brain_cannot_decide() {
+    let mock = MockDaily::default();
+    let (gateway_url, gateway) = spawn_mock_gateway(mock.clone()).await;
+    let (_dir, _router, _token, _policy, mut state) = build_test_app(100);
+    state.gateway_urls = vec![gateway_url];
+    // The agent's brain is reached over HTTP and nothing listens there: every decision fails.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    state.brain_engine = Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+        &BrainProviderConfig::OpenaiCompatible {
+            base_url: format!("http://{address}/v1"),
+            model: "test-brain".into(),
+            api_key_env: None,
+            runtime_adapter: None,
+        },
+    )));
+
+    assert_eq!(send_due_report(&state).await, 0);
+    // The day was not counted as sent: the next tick reads the gateway and tries again.
+    let reads = mock.reads.load(Ordering::SeqCst);
+    assert_eq!(send_due_report(&state).await, 0);
+    assert!(mock.reads.load(Ordering::SeqCst) > reads);
+
+    // Once the brain answers, the same day goes out.
+    state.brain_engine = Arc::new(tokio::sync::RwLock::new(BrainEngine::from_config(
+        &BrainProviderConfig::Rules,
+    )));
+    assert_eq!(send_due_report(&state).await, 1);
+    assert_eq!(send_due_report(&state).await, 0);
+    gateway.abort();
+}

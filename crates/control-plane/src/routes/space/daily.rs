@@ -10,7 +10,9 @@
 
 use crate::auth::{authorize, internal_error};
 use crate::ledger_client::LedgerClient;
-use crate::routes::agent_events::{AgentEventEnvelope, process_agent_event_decision};
+use crate::routes::agent_events::{
+    AgentEventCallbackResponse, AgentEventEnvelope, process_agent_event_decision,
+};
 use crate::state::ControlPlaneState;
 use anyhow::Context as _;
 use axum::Json;
@@ -161,8 +163,15 @@ pub(crate) async fn send_due_report(state: &ControlPlaneState) -> usize {
         created_at,
     };
     let response = process_agent_event_decision(state, event, None, created_at).await;
-    if !response.status().is_success() {
-        tracing::debug!(%day, status = %response.status(), "daily report not delivered");
+    // A failed decision still answers 200, with `ok: false` in the body: the day stays due.
+    let status = response.status();
+    let accepted = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice::<AgentEventCallbackResponse>(&body).ok())
+        .is_some_and(|answer| answer.ok);
+    if !status.is_success() || !accepted {
+        tracing::debug!(%day, %status, accepted, "daily report not delivered");
         return 0;
     }
     if let Err(error) = state.local_db.save_domain(DOMAIN, &day) {

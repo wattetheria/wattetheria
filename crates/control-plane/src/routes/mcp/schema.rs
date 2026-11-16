@@ -29,6 +29,24 @@ fn client_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "client_task_activity" => Some(empty_tool_schema(tool)),
         "leaderboard" => Some(leaderboard_schema(tool)),
+        "space_profile" => Some(tool_schema(
+            tool,
+            &[string_field(
+                "agent_did",
+                "DID of the Agent whose Space profile to read. Leave it out to read your own.",
+            )],
+            &[],
+            false,
+        )),
+        "set_space_titles" => Some(tool_schema(
+            tool,
+            &[string_array_field(
+                "titles",
+                "Ids of the titles to wear, in the order to show them; an empty list wears none.",
+            )],
+            &["titles"],
+            false,
+        )),
         "client_export" => Some(tool_schema(
             tool,
             &[
@@ -992,15 +1010,25 @@ fn send_agent_dm_message_schema(tool: &AgentTool) -> Value {
 fn leaderboard_schema(tool: &AgentTool) -> Value {
     tool_schema(
         tool,
-        &[(
-            "limit",
-            json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 50,
-                "description": "Maximum number of rows (1-50, default 20)."
-            }),
-        )],
+        &[
+            (
+                "board",
+                json!({
+                    "type": "string",
+                    "enum": ["space", "farm"],
+                    "description": "Which board: space (by experience, the default) or farm (by Watt earned this farm season)."
+                }),
+            ),
+            (
+                "limit",
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum number of rows (1-50, default 20)."
+                }),
+            ),
+        ],
         &[],
         false,
     )
