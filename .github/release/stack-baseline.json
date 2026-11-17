@@ -50,7 +50,7 @@
       "commit_subject": "docs: streamline wallet README"
     },
     {
-      "name": "wattswarm-servicenet",
+      "name": "watt-servicenet",
       "repo": "wattetheria/watt-servicenet",
       "path": "watt-servicenet",
       "remote_url": "https://github.com/wattetheria/watt-servicenet.git",

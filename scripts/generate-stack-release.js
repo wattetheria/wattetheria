@@ -65,7 +65,7 @@ const COMPONENTS = [
     artifacts: [],
   },
   {
-    name: "wattswarm-servicenet",
+    name: "watt-servicenet",
     repo: "wattetheria/watt-servicenet",
     path: "watt-servicenet",
     role: "public-agent registry and invocation boundary",
