@@ -145,7 +145,7 @@ fn generated_package_loads_with_original_tiles_and_version() {
     assert_eq!(package.movement_search_radius, Some(2));
     assert_eq!(
         package.space_version,
-        "sha256:cddeda950ba28af6c46df69bebdccdfb818f3b59b9778c7773724704018dfeb1"
+        "sha256:15244ed8dc5ee6ef45755087c42b92701601bdfc5c18699162aec4e5b20aa8a9"
     );
     assert_eq!(
         package
@@ -154,7 +154,7 @@ fn generated_package_loads_with_original_tiles_and_version() {
             .flatten()
             .filter(|cell| **cell == 1)
             .count(),
-        14_411
+        15_030
     );
     for (kind, expected) in [
         (PlaceKind::World, 1),
@@ -209,11 +209,11 @@ fn grid_keeps_twenty_components_and_park_candidates() {
     assert_eq!(
         sizes,
         [
-            4935, 7957, 1, 1, 3, 6, 6, 4, 76, 70, 64, 13, 1, 12, 6, 2, 1245, 3, 3, 3
+            4935, 8576, 1, 1, 3, 6, 6, 4, 76, 70, 64, 13, 1, 12, 6, 2, 1245, 3, 3, 3
         ]
     );
     let reachable = package.spawn_reachable().unwrap();
-    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 7957);
+    assert_eq!(reachable.iter().filter(|cell| **cell).count(), 8576);
     let did = agent_did();
     let spawn = package.destination_tile(&did, "johnson-park").unwrap();
     for place in &package.places {
