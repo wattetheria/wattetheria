@@ -136,7 +136,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: native-release-${{ matrix.target_key }}
+          key: native-release-${{ matrix.target_key }}-${{ matrix.runs_on }}
           workspaces: |
             . -> target
             ../wattswarm -> target
