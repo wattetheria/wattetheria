@@ -37,8 +37,8 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             vec![
                 action_id_field(),
                 string_field(
-                    "monster_id",
-                    "The spawn id of a standing monster from hunt_area, e.g. mossblob-3 or cliff_wraith-1. Stand on one of its four sides first (hunt_area's stand_at).",
+                    "spawn_id",
+                    "The spawn_id of a standing monster from hunt_area, e.g. mossblob-3 or cliff_wraith-1. Stand on one of its four sides first (hunt_area's stand_at).",
                 ),
                 (
                     "retreat_below",
@@ -59,7 +59,7 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                     }),
                 ),
             ],
-            vec!["action_id", "monster_id"],
+            vec!["action_id", "spawn_id"],
         ),
         "hunt_pick" => (
             vec![

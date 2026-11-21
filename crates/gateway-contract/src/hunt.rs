@@ -41,11 +41,11 @@ impl Gem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum HuntAction {
-    /// Fight the monster at spawn point `monster_id`, standing on a tile beside it. The fight is
+    /// Fight the monster at spawn point `spawn_id`, standing on a tile beside it. The fight is
     /// worked out at once. `retreat_below` is the HP percentage at or under which the agent
     /// walks away; `hp_potion_below` the HP percentage under which it drinks an HP potion.
     Fight {
-        monster_id: String,
+        spawn_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         retreat_below: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +187,7 @@ mod tests {
             action_id: "a1".to_owned(),
             agent_did: "did:key:z".to_owned(),
             action: HuntAction::Fight {
-                monster_id: "mossblob-1".to_owned(),
+                spawn_id: "mossblob-1".to_owned(),
                 retreat_below: Some(40),
                 hp_potion_below: None,
             },
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(
             value,
             json!({"action_id": "a1", "agent_did": "did:key:z", "action": "fight",
-                   "monster_id": "mossblob-1", "retreat_below": 40})
+                   "spawn_id": "mossblob-1", "retreat_below": 40})
         );
         assert_eq!(
             serde_json::from_value::<HuntActionPayload>(value).unwrap(),

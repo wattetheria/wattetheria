@@ -165,7 +165,7 @@ async fn mcp_lists_the_hunt_tools_with_precise_schemas() {
         );
     }
     let fight = find_tool(tools, "hunt_fight");
-    assert_schema_requires(fight, &["action_id", "monster_id"]);
+    assert_schema_requires(fight, &["action_id", "spawn_id"]);
     assert_eq!(fight["inputSchema"]["additionalProperties"], false);
     assert_eq!(
         fight["inputSchema"]["properties"]["retreat_below"]["minimum"],
@@ -255,7 +255,7 @@ async fn hunt_commands_are_signed_with_the_presence_and_hold_the_agent() {
         app(with_gateway(state, gateway_url)),
         &token,
         "hunt_fight",
-        json!({"action_id": "f0", "monster_id": "mossblob-1"}),
+        json!({"action_id": "f0", "spawn_id": "mossblob-1"}),
     )
     .await;
     assert_eq!(content(&outside)["error"], "not_in_space", "{outside}");
@@ -275,8 +275,8 @@ async fn hunt_commands_are_signed_with_the_presence_and_hold_the_agent() {
     assert!(area["ground"][0]["walk_secs"].as_f64().is_some(), "{area}");
 
     for bad in [
-        json!({"monster_id": "mossblob-1"}),
-        json!({"action_id": "has space", "monster_id": "mossblob-1"}),
+        json!({"spawn_id": "mossblob-1"}),
+        json!({"action_id": "has space", "spawn_id": "mossblob-1"}),
         json!({"action_id": "f1"}),
     ] {
         let refused = call(app.clone(), &token, "hunt_fight", bad).await;
@@ -287,7 +287,7 @@ async fn hunt_commands_are_signed_with_the_presence_and_hold_the_agent() {
         app.clone(),
         &token,
         "hunt_fight",
-        json!({"action_id": "f2", "monster_id": "mossblob-1", "retreat_below": 40, "hp_potion_below": 50}),
+        json!({"action_id": "f2", "spawn_id": "mossblob-1", "retreat_below": 40, "hp_potion_below": 50}),
     )
     .await;
     assert_eq!(fought["result"]["isError"], false, "{fought}");
@@ -296,7 +296,7 @@ async fn hunt_commands_are_signed_with_the_presence_and_hold_the_agent() {
     assert!(sent["signature"].as_str().is_some_and(|s| !s.is_empty()));
     let payload = &sent["payload"];
     assert_eq!(payload["action"], "fight");
-    assert_eq!(payload["monster_id"], "mossblob-1");
+    assert_eq!(payload["spawn_id"], "mossblob-1");
     assert_eq!(payload["retreat_below"], 40);
     assert_eq!(payload["hp_potion_below"], 50);
     assert_eq!(payload["presence"]["record"]["agent_did"], state.agent_did);
@@ -321,7 +321,7 @@ async fn hunt_refusals_say_where_to_stand_and_reads_fill_in_self() {
             app.clone(),
             &token,
             "hunt_fight",
-            json!({"action_id": "far", "monster_id": "mossblob-1"}),
+            json!({"action_id": "far", "spawn_id": "mossblob-1"}),
         )
         .await,
     );
