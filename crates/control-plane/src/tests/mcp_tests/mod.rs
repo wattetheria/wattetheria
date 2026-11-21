@@ -124,6 +124,7 @@ mod friend_requests;
 mod friendships;
 mod hives;
 mod housing;
+mod hunt;
 mod identity;
 mod leaderboard;
 mod missions;

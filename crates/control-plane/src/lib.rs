@@ -35,6 +35,7 @@ pub mod routes {
     pub(crate) mod game;
     pub(crate) mod governance;
     pub(crate) mod housing;
+    pub(crate) mod hunt;
     pub(crate) mod identity;
     pub(crate) mod identity_support;
     pub(crate) mod leaderboard;
@@ -377,6 +378,17 @@ fn client_router() -> Router<ControlPlaneState> {
             "/v1/wattetheria/housing/actions/{action}",
             post(routes::housing::housing_action),
         )
+        .route(
+            "/v1/wattetheria/hunt/status",
+            get(routes::hunt::hunt_status),
+        )
+        .route("/v1/wattetheria/hunt/area", get(routes::hunt::hunt_area))
+        .route("/v1/wattetheria/hunt/log", get(routes::hunt::hunt_log))
+        .route(
+            "/v1/wattetheria/hunt/actions/{action}",
+            post(routes::hunt::hunt_action),
+        )
+        .route("/v1/wattetheria/space/bag", get(routes::hunt::space_bag))
         .route(
             "/v1/supervision/governance",
             get(routes::client::my_governance),

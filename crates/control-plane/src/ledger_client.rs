@@ -216,8 +216,7 @@ impl LedgerClient {
             .send()
             .await
             .context("claim ledger welcome bonus")?;
-        let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let (status, body) = read_reply(response, "/api/ledger/welcome").await?;
         if !status.is_success() {
             return Err(anyhow!(
                 "ledger welcome claim rejected ({status}): {}",
@@ -235,8 +234,9 @@ impl LedgerClient {
             .send()
             .await
             .map_err(|error| LedgerError::Unavailable(error.into()))?;
-        let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let (status, body) = read_reply(response, "/api/ledger/escrows")
+            .await
+            .map_err(LedgerError::Unavailable)?;
         match status {
             status if status.is_success() => Ok(Some(body)),
             StatusCode::NOT_FOUND => Ok(None),
@@ -406,8 +406,7 @@ impl LedgerClient {
             .send()
             .await
             .with_context(|| format!("query gateway {path}"))?;
-        let status = response.status();
-        Ok((status, response.json().await.unwrap_or(Value::Null)))
+        read_reply(response, path).await
     }
 
     /// Signs `payload` with this agent's `did:key` and posts it, keeping the gateway's status
@@ -430,8 +429,7 @@ impl LedgerClient {
             .send()
             .await
             .with_context(|| format!("post to gateway {path}"))?;
-        let status = response.status();
-        Ok((status, response.json().await.unwrap_or(Value::Null)))
+        read_reply(response, path).await
     }
 
     async fn post_signed(
@@ -496,6 +494,50 @@ fn ledger_base_url(gateway_url: &str) -> String {
     base.to_string()
 }
 
+/// Reads the gateway's reply in full, keeping its status. A reply that breaks off, or that is
+/// not JSON, is never handed on as an empty answer: an agent reading `farm_status` must be able
+/// to tell "the read failed" from "there is nothing".
+async fn read_reply(response: reqwest::Response, path: &str) -> Result<(StatusCode, Value)> {
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("read the gateway's reply to {path} ({status})"))?;
+    Ok((status, reply_body(status, &bytes, path)?))
+}
+
+/// The body of a gateway reply. Empty is `null`, except on a success that should carry data
+/// (any 2xx but 204), where it is an error. A body that is not JSON is an error on a success;
+/// on a refusal or failure (often a proxy's error page) the status stays and the text becomes
+/// the message.
+fn reply_body(status: StatusCode, bytes: &[u8], path: &str) -> Result<Value> {
+    const MESSAGE_CHARS: usize = 200;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        if status.is_success() && status != StatusCode::NO_CONTENT {
+            return Err(anyhow!(
+                "the gateway sent an empty reply to {path} ({status})"
+            ));
+        }
+        return Ok(Value::Null);
+    }
+    match serde_json::from_slice(bytes) {
+        Ok(body) => Ok(body),
+        Err(error) if status.is_success() => Err(anyhow!(
+            "the gateway's reply to {path} ({status}) was not JSON: {error}"
+        )),
+        Err(_) => {
+            let text: String = String::from_utf8_lossy(bytes)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(MESSAGE_CHARS)
+                .collect();
+            Ok(json!({"error": "gateway_error", "message": text}))
+        }
+    }
+}
+
 fn error_message(body: &Value) -> String {
     body.get("error")
         .and_then(Value::as_str)
@@ -504,7 +546,48 @@ fn error_message(body: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ledger_base_url;
+    use super::{ledger_base_url, reply_body};
+    use reqwest::StatusCode;
+    use serde_json::json;
+
+    #[test]
+    fn a_broken_gateway_reply_is_an_error_not_an_empty_answer() {
+        let path = "/api/farm/agents/did:key:a";
+        // A good reply passes as it is, a refusal keeps its body.
+        assert_eq!(
+            reply_body(StatusCode::OK, br#"{"plots":[]}"#, path).unwrap(),
+            json!({"plots": []})
+        );
+        assert_eq!(
+            reply_body(StatusCode::CONFLICT, br#"{"error":"busy"}"#, path).unwrap(),
+            json!({"error": "busy"})
+        );
+        // A success that is empty or cut off is an error, so it cannot read as "no plots".
+        assert!(reply_body(StatusCode::OK, b"", path).is_err());
+        assert!(reply_body(StatusCode::OK, b"  \n", path).is_err());
+        assert!(reply_body(StatusCode::OK, br#"{"plots":[{"plot_id""#, path).is_err());
+        // Nothing to say is fine where nothing is expected.
+        assert_eq!(
+            reply_body(StatusCode::NO_CONTENT, b"", path).unwrap(),
+            json!(null)
+        );
+        assert_eq!(
+            reply_body(StatusCode::NOT_FOUND, b"", path).unwrap(),
+            json!(null)
+        );
+        // A proxy's error page keeps its status and becomes a short message.
+        let page = reply_body(
+            StatusCode::BAD_GATEWAY,
+            b"<html>\n<body>  502 Bad Gateway </body></html>",
+            path,
+        )
+        .unwrap();
+        assert_eq!(page["error"], "gateway_error");
+        assert_eq!(
+            page["message"],
+            "<html> <body> 502 Bad Gateway </body></html>"
+        );
+    }
 
     #[test]
     fn ledger_base_url_strips_ingest_paths_and_trailing_slashes() {

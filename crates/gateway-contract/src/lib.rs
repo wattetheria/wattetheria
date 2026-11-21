@@ -3,6 +3,7 @@ use serde_json::Value;
 
 pub mod farm;
 pub mod housing;
+pub mod hunt;
 pub mod space;
 pub use space::{SignedSpacePresence, SpacePresenceRecord, WorldEvent};
 

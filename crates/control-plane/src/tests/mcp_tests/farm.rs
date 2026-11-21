@@ -246,6 +246,34 @@ async fn mcp_lists_the_farm_tools_with_precise_schemas() {
 }
 
 #[tokio::test]
+async fn a_farm_status_the_gateway_cut_off_is_an_error_not_an_empty_farm() {
+    // The gateway answers 200 but the body breaks off: before, the node read that as an empty
+    // object and an agent saw a farm with nothing on it.
+    let router = axum::Router::new().route(
+        "/api/farm/agents/{did}",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                r#"{"agent_did":"did:key:a","plots":[{"plot_id""#,
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let (_dir, _app, token, _policy, state) = build_test_app(100);
+    let app = app(with_gateway(state, gateway_url));
+
+    let status = call(app, &token, "farm_status", json!({})).await;
+    assert_eq!(status["result"]["isError"], true, "{status}");
+    let body = content(&status);
+    assert_eq!(body["error"], "gateway_unreachable", "{body}");
+    assert!(body.get("map_ready").is_none(), "{body}");
+}
+
+#[tokio::test]
 async fn farm_season_relays_a_finished_seasons_revealed_rules() {
     let (gateway_url, _mock) = spawn_mock_gateway().await;
     let (_dir, _app, token, _policy, state) = build_test_app(100);

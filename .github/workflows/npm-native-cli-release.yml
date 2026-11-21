@@ -46,13 +46,13 @@ jobs:
             binary: target/release/wattetheria-client-cli
             exe: ""
           - target_key: linux-arm64
-            runs_on: ubuntu-24.04-arm
+            runs_on: ubuntu-22.04-arm
             platform: linux
             arch: arm64
             binary: target/release/wattetheria-client-cli
             exe: ""
           - target_key: linux-x64
-            runs_on: ubuntu-latest
+            runs_on: ubuntu-22.04
             platform: linux
             arch: x64
             binary: target/release/wattetheria-client-cli

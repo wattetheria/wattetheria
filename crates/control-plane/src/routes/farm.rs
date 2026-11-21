@@ -184,6 +184,8 @@ pub async fn game_info(
             body["availability"]["message"] =
                 json!(crate::routes::housing::stale_client_message(&body));
         }
+    } else if status.is_success() && game_id == crate::routes::hunt::GAME_ID {
+        body["tools"] = crate::routes::hunt::tools();
     }
     (status, Json(body)).into_response()
 }

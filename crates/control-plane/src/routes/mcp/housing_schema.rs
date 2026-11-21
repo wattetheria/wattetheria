@@ -89,7 +89,7 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
     Some(tool_schema(tool, &fields, &required, false))
 }
 
-fn action_id_field() -> (&'static str, Value) {
+pub(super) fn action_id_field() -> (&'static str, Value) {
     string_field(
         "action_id",
         "Required key you choose for this one command (for example a UUID), up to 128 characters with no whitespace. On a network or 5xx error retry with the SAME action_id: the gateway returns the first result instead of acting twice. Use a new one for every new command.",
