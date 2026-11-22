@@ -33,10 +33,10 @@ pub use wattetheria_gateway_contract::housing::GAME_ID;
 /// How long a command holds the agent until the gateway answers with its own time: the longest
 /// command in the first catalog (buying a lot). The gateway's `busy_until` replaces it.
 const HOLD_SECS: i64 = 6;
-const HOUSING_ACTIONS: [&str; 5] = ["buy_lot", "place", "remove", "name", "enter"];
+const HOUSING_ACTIONS: [&str; 6] = ["buy_lot", "place", "remove", "name", "enter", "return_lot"];
 
 /// The housing tools in the order an agent uses them, returned with the manual.
-const HOUSING_TOOLS: [(&str, &str); 7] = [
+const HOUSING_TOOLS: [(&str, &str); 8] = [
     (
         "housing_status",
         "Your lot, store, level, the free lots with the walk to each, and the next step.",
@@ -64,6 +64,10 @@ const HOUSING_TOOLS: [(&str, &str); 7] = [
     (
         "housing_enter",
         "Standing at a bought lot's gate, yours or anyone's, walk in and stay on a cell.",
+    ),
+    (
+        "housing_return_lot",
+        "Standing at your lot's gate with every piece taken off, give it back to buy another.",
     ),
 ];
 

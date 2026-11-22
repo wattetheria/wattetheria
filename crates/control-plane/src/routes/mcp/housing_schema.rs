@@ -84,6 +84,20 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             ],
             vec!["action_id", "lot"],
         ),
+        "housing_return_lot" => (
+            vec![
+                action_id_field(),
+                (
+                    "lot",
+                    json!({
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Number of your own lot, emptied: nothing may stand on it. You must stand on its gate."
+                    }),
+                ),
+            ],
+            vec!["action_id", "lot"],
+        ),
         _ => return None,
     };
     Some(tool_schema(tool, &fields, &required, false))

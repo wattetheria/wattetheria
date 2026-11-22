@@ -93,6 +93,7 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "housing_remove",
     "housing_name",
     "housing_enter",
+    "housing_return_lot",
     "hunt_status",
     "hunt_area",
     "hunt_fight",

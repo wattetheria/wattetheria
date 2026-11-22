@@ -97,6 +97,10 @@ pub enum HousingAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cell: Option<[u32; 2]>,
     },
+    /// Give the caller's lot back to the system, standing at its gate. Nothing stands on it any
+    /// more: the owner takes every piece off first. No Watt comes back; the lot is free again
+    /// and the caller may buy another.
+    ReturnLot { lot: u32 },
 }
 
 impl HousingAction {
@@ -108,6 +112,7 @@ impl HousingAction {
             Self::Remove { .. } => "remove",
             Self::Name { .. } => "name",
             Self::Enter { .. } => "enter",
+            Self::ReturnLot { .. } => "return_lot",
         }
     }
 }
@@ -165,6 +170,8 @@ pub enum HousingRejection {
     Unreachable,
     /// Nothing stands at the cell.
     Empty,
+    /// Pieces still stand on the lot the caller wants to give back.
+    LotNotEmpty,
     InsufficientBalance,
 }
 
@@ -190,6 +197,7 @@ impl HousingRejection {
             Self::NeedsWall => "needs_wall",
             Self::Unreachable => "unreachable",
             Self::Empty => "empty",
+            Self::LotNotEmpty => "lot_not_empty",
             Self::InsufficientBalance => "insufficient_balance",
         }
     }
@@ -288,6 +296,7 @@ mod tests {
                 "name",
             ),
             (HousingAction::Enter { lot: 7, cell: None }, "enter"),
+            (HousingAction::ReturnLot { lot: 7 }, "return_lot"),
         ] {
             assert_eq!(action.name(), name);
             assert_eq!(
@@ -306,6 +315,7 @@ mod tests {
             HousingRejection::UnknownFacing,
             HousingRejection::Unreachable,
             HousingRejection::Empty,
+            HousingRejection::LotNotEmpty,
             HousingRejection::InsufficientBalance,
         ] {
             assert_eq!(serde_json::to_value(code).unwrap(), json!(code.as_str()));

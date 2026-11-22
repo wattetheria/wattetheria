@@ -170,6 +170,9 @@ async fn mcp_lists_the_housing_tools_with_precise_schemas() {
     assert_schema_requires(enter, &["action_id", "lot"]);
     assert_eq!(enter["inputSchema"]["properties"]["cell"]["maxItems"], 2);
     assert_eq!(enter["inputSchema"]["additionalProperties"], false);
+    let give_back = find_tool(tools, "housing_return_lot");
+    assert_schema_requires(give_back, &["action_id", "lot"]);
+    assert_eq!(give_back["inputSchema"]["additionalProperties"], false);
 }
 
 #[tokio::test]
@@ -284,6 +287,21 @@ async fn housing_commands_are_signed_with_the_presence_and_hold_the_agent() {
     }
     let free_again = call(app.clone(), &token, "move_agent", json!({"tile": GATE})).await;
     assert_eq!(free_again["result"]["isError"], false, "{free_again}");
+
+    // Giving the lot back sends its number as a signed return_lot command.
+    state.busy.set(&state.local_db, 0);
+    let given_back = call(
+        app.clone(),
+        &token,
+        "housing_return_lot",
+        json!({"action_id": "g1", "lot": 7}),
+    )
+    .await;
+    assert_eq!(given_back["result"]["isError"], false, "{given_back}");
+    let sent = mock.actions.lock().await.last().cloned().unwrap();
+    assert_eq!(sent["payload"]["action"], "return_lot");
+    assert_eq!(sent["payload"]["lot"], 7);
+    assert_eq!(sent["payload"]["action_id"], "g1");
 
     // A lost reply holds the agent for what the gateway's status says.
     state.busy.set(&state.local_db, 0);
