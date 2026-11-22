@@ -115,6 +115,8 @@ pub enum HuntRejection {
     NotBeside,
     /// The caller's Space level is below what the monster's zone needs.
     LevelTooLow,
+    /// The caller has fought as many fights as it may today.
+    NoStamina,
     /// Another agent is fighting this monster.
     Fighting,
     /// The monster is not back yet.
@@ -155,6 +157,7 @@ impl HuntRejection {
             Self::Unknown => "unknown",
             Self::NotBeside => "not_beside",
             Self::LevelTooLow => "level_too_low",
+            Self::NoStamina => "no_stamina",
             Self::Fighting => "fighting",
             Self::Respawning => "respawning",
             Self::AlreadyDefeated => "already_defeated",
@@ -236,6 +239,7 @@ mod tests {
         }
         for code in [
             HuntRejection::NotBeside,
+            HuntRejection::NoStamina,
             HuntRejection::AlreadyDefeated,
             HuntRejection::TooSoon,
         ] {

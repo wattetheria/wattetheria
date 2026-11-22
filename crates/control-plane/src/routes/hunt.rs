@@ -46,7 +46,7 @@ const HUNT_ACTIONS: [&str; 8] = [
 const HUNT_TOOLS: [(&str, &str); 13] = [
     (
         "hunt_status",
-        "Your HP, swords, hunt bag, today's take, hunter rank and streak, with the manual.",
+        "Your HP, stamina, swords, hunt bag, today's take, hunter rank and streak, with the manual.",
     ),
     (
         "hunt_area",
@@ -75,7 +75,7 @@ const HUNT_TOOLS: [(&str, &str); 13] = [
     ),
     (
         "smithy_enhance",
-        "At the smithy, enhance the sword in use by one level with a gem.",
+        "At the smithy, enhance the sword in use by one level with a gem and Watt.",
     ),
     (
         "hunt_equip",
