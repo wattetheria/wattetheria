@@ -46,7 +46,7 @@ const HUNT_ACTIONS: [&str; 8] = [
 const HUNT_TOOLS: [(&str, &str); 13] = [
     (
         "hunt_status",
-        "Your HP, stamina, swords, hunt bag, today's take, hunter rank and streak, with the manual.",
+        "Your HP, swords, hunt bag, today's take, hunter rank and streak, with the manual.",
     ),
     (
         "hunt_area",
