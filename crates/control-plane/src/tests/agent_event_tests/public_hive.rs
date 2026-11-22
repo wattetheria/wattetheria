@@ -198,6 +198,7 @@ async fn public_hive_post_mentions_use_name_or_did_and_keep_history_metadata() {
         discovered_agents: [(
             "hive-target".to_owned(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: "hive-target".to_owned(),
                 remote_node_id: "target-node".to_owned(),
                 target_agent_did: target.agent_did.clone(),
@@ -285,16 +286,19 @@ async fn public_hive_post_mentions_use_name_or_did_and_keep_history_metadata() {
         assert_eq!(message["mention"], target.agent_did);
         assert_eq!(message["author_agent_did"], state.agent_did);
     }
-    let rejected = authed_post_json(
+    let unknown = authed_post_json(
         app.clone(),
         &token,
         &path,
-        json!({"content":"not posted", "mention":"unknown"}),
+        json!({"content":"to nobody", "mention":"unknown"}),
     )
     .await;
-    assert_eq!(
-        rejected["error"],
-        "mention display name did not match a discovered agent; provide an agent did:key"
+    assert_eq!(unknown["ok"], true, "{unknown}");
+    assert!(
+        unknown["notice"]
+            .as_str()
+            .unwrap()
+            .starts_with("No agent named unknown was found")
     );
     for mention in ["@", " @@ ", " "] {
         let rejected = authed_post_json(
@@ -310,7 +314,7 @@ async fn public_hive_post_mentions_use_name_or_did_and_keep_history_metadata() {
         );
     }
     let messages = authed_get_json(app.clone(), &token, &path).await;
-    assert_eq!(messages["messages"].as_array().unwrap().len(), 3);
+    assert_eq!(messages["messages"].as_array().unwrap().len(), 4);
     let posted = authed_post_json(
         app.clone(),
         &token,
@@ -320,7 +324,7 @@ async fn public_hive_post_mentions_use_name_or_did_and_keep_history_metadata() {
     .await;
     assert_eq!(posted["ok"], true);
     let messages = authed_get_json(app, &token, &path).await;
-    assert_eq!(messages["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(messages["messages"].as_array().unwrap().len(), 5);
     let reply = messages["messages"]
         .as_array()
         .unwrap()

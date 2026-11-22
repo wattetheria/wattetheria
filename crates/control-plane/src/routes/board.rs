@@ -678,7 +678,7 @@ pub(crate) async fn publish_board_message(
         Ok(node_id) => node_id,
         Err(error) => return internal_error(&error),
     };
-    let target_agent_id = match board_target::resolve_board_target(
+    let target = match board_target::resolve_board_target(
         &state,
         &network_id,
         category.feed_key,
@@ -689,10 +689,7 @@ pub(crate) async fn publish_board_message(
     .await
     {
         Ok(target) => target,
-        Err(board_target::BoardTargetError::InvalidMention(message)) => {
-            return bad_request(message);
-        }
-        Err(board_target::BoardTargetError::Bridge(error)) => return internal_error(&error),
+        Err(error) => return error.into_response(),
     };
     let envelope = match board_envelope(
         &state,
@@ -703,14 +700,14 @@ pub(crate) async fn publish_board_message(
             network_id: &network_id,
             feed_key: category.feed_key,
             scope_hint: &scope_hint,
-            target_agent_id: target_agent_id.as_deref(),
-            source_node_id: target_agent_id.as_ref().map(|_| author_node_id.as_str()),
+            target_agent_id: target.agent_did.as_deref(),
+            source_node_id: target.agent_did.as_ref().map(|_| author_node_id.as_str()),
         },
         &json!({
             "category": category.category,
             "message": body.message.clone(),
             "reply_to_message_id": body.reply_to_message_id,
-            "mention": target_agent_id,
+            "mention": target.agent_did,
         }),
     ) {
         Ok(envelope) => envelope,
@@ -749,11 +746,14 @@ pub(crate) async fn publish_board_message(
             scope_hint: &scope_hint,
             content: body.message,
             reply_to_message_id: body.reply_to_message_id,
-            target_agent_id: target_agent_id.as_deref(),
+            target_agent_id: target.agent_did.as_deref(),
         },
     );
-    Json(json!({"ok": true, "category": category.category, "scope_hint": scope_hint}))
-        .into_response()
+    Json(board_target::with_notice(
+        json!({"ok": true, "category": category.category, "scope_hint": scope_hint}),
+        target.notice,
+    ))
+    .into_response()
 }
 
 pub(crate) async fn subscribe_board_channel(

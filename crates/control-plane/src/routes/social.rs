@@ -3612,7 +3612,7 @@ async fn resolve_agent_relationship_counterpart_by_display_name(
 ) -> Result<SocialCounterpartTarget, String> {
     let discovered = state
         .swarm_bridge
-        .search_agent_display_name(display_name)
+        .search_agent_display_name(display_name, None)
         .await
         .map_err(|error| format!("agent discovery by display_name failed: {error}"))?;
     match discovered.as_slice() {

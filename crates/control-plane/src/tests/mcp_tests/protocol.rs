@@ -150,6 +150,7 @@ async fn mcp_board_mentions_resolve_display_name_and_preserve_did_fallback() {
         discovered_agents: [(
             public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: public_id.clone(),
                 remote_node_id: "transport-rx-node".to_owned(),
                 target_agent_did: target.agent_did.clone(),

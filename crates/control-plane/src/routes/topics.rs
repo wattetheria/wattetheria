@@ -1060,9 +1060,9 @@ async fn post_hive_message_for_route(
     {
         return response;
     }
-    let envelope =
+    let (envelope, notice) =
         match post_hive_message_to_swarm(&state, &context, &hive, &network_id, &body).await {
-            Ok(envelope) => envelope,
+            Ok(posted) => posted,
             Err(response) => return response,
         };
     record_hive_message_post_success(
@@ -1076,7 +1076,11 @@ async fn post_hive_message_for_route(
         &envelope,
     );
 
-    Json(json!({"ok": true})).into_response()
+    Json(crate::routes::board::board_target::with_notice(
+        json!({"ok": true}),
+        notice,
+    ))
+    .into_response()
 }
 
 async fn resolve_hive_id_for_route(
@@ -1197,19 +1201,19 @@ async fn post_hive_message_to_swarm(
     hive: &HiveProfile,
     network_id: &str,
     body: &HiveMessageBody,
-) -> Result<SwarmAgentEnvelope, Response> {
+) -> Result<(SwarmAgentEnvelope, Option<String>), Response> {
     let route = HiveEnvelopeRoute {
         hive_id: &hive.topic_id,
         network_id,
         feed_key: &hive.feed_key,
         scope_hint: &hive.scope_hint,
     };
-    let agent_envelope = if body.mention.is_some()
+    let (agent_envelope, notice) = if body.mention.is_some()
         && public_hive::is_public_route(&hive.feed_key, &hive.scope_hint)
     {
         public_hive::mentioned_message_envelope(state, context, hive, network_id, body).await?
     } else {
-        hive_agent_envelope(
+        let envelope = hive_agent_envelope(
             state,
             context,
             "hive.message.post",
@@ -1226,7 +1230,8 @@ async fn post_hive_message_to_swarm(
             ),
         )
         .await
-        .map_err(|error| internal_error(&error))?
+        .map_err(|error| internal_error(&error))?;
+        (envelope, None)
     };
     state
         .swarm_bridge
@@ -1240,7 +1245,7 @@ async fn post_hive_message_to_swarm(
         )
         .await
         .map_err(|error| internal_error(&error))
-        .map(|_| agent_envelope)
+        .map(|_| (agent_envelope, notice))
 }
 
 async fn require_active_hive_subscription(

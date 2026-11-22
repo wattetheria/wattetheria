@@ -99,6 +99,10 @@ pub struct SwarmDiscoveredAgent {
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_agent_card: Option<SwarmSourceAgentCard>,
+    /// The node's registry status (`active`, `stale` once it stopped announcing, …); `None`
+    /// when the record did not come from the registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -523,6 +527,7 @@ pub trait SwarmBridge: Send + Sync {
     async fn search_agent_display_name(
         &self,
         _display_name: &str,
+        _status: Option<&str>,
     ) -> Result<Vec<SwarmDiscoveredAgent>> {
         Err(anyhow!("wattswarm agent discovery is not configured"))
     }
@@ -895,9 +900,10 @@ impl SwarmBridge for HybridSwarmBridge {
     async fn search_agent_display_name(
         &self,
         display_name: &str,
+        status: Option<&str>,
     ) -> Result<Vec<SwarmDiscoveredAgent>> {
         self.topic_api()?
-            .search_agent_display_name(display_name)
+            .search_agent_display_name(display_name, status)
             .await
     }
 
@@ -1425,33 +1431,46 @@ impl HttpWattswarmApi {
             return Err(anyhow!("public_id is required"));
         }
         let agents = self
-            .search_discovered_agents(Some(&public_id), None, Some(1))
+            .search_discovered_agents(Some(&public_id), None, Some("active"), Some(1))
             .await?;
         Ok(agents.into_iter().next())
     }
 
+    /// Names are unique in the registry, so by default every status is searched: an Agent whose
+    /// node is offline (`stale`) is still found. Online Agents come first.
     async fn search_agent_display_name(
         &self,
         display_name: &str,
+        status: Option<&str>,
     ) -> Result<Vec<SwarmDiscoveredAgent>> {
         let display_name = normalize_agent_lookup_key(display_name);
         if display_name.is_empty() {
             return Err(anyhow!("display_name is required"));
         }
-        self.search_discovered_agents(None, Some(&display_name), Some(10))
-            .await
+        let status = status.map(str::trim).filter(|status| !status.is_empty());
+        let mut agents = self
+            .search_discovered_agents(None, Some(&display_name), status, Some(10))
+            .await?;
+        agents.sort_by_key(|agent| {
+            agent
+                .status
+                .as_deref()
+                .is_some_and(|status| status != "active")
+        });
+        Ok(agents)
     }
 
     async fn search_discovered_agents(
         &self,
         public_id: Option<&str>,
         display_name: Option<&str>,
+        status: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<SwarmDiscoveredAgent>> {
         let network_id = self.current_network_id().await?;
         let limit = limit.unwrap_or(DEFAULT_AGENT_DISCOVERY_LIMIT);
         let mut records = self
-            .fetch_agent_discovery_records(&network_id, public_id, display_name, limit)
+            .fetch_agent_discovery_records(&network_id, public_id, display_name, status, limit)
             .await
             .unwrap_or_default();
         if records.is_empty() {
@@ -1460,6 +1479,7 @@ impl HttpWattswarmApi {
                     &network_id,
                     public_id,
                     display_name,
+                    status,
                     limit,
                 )
                 .await
@@ -1479,6 +1499,7 @@ impl HttpWattswarmApi {
         network_id: &str,
         public_id: Option<&str>,
         display_name: Option<&str>,
+        status: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
         let mut registry_records = Vec::new();
@@ -1493,7 +1514,7 @@ impl HttpWattswarmApi {
                 .get(format!("{registry_base_url}/nodes"))
                 .query(&RegistryNodesQuery {
                     network_id: network_id.to_owned(),
-                    status: "active".to_owned(),
+                    status: status.map(ToOwned::to_owned),
                     public_id: public_id.map(ToOwned::to_owned),
                     display_name: display_name.map(ToOwned::to_owned),
                     limit,
@@ -1537,6 +1558,7 @@ impl HttpWattswarmApi {
         network_id: &str,
         public_id: Option<&str>,
         display_name: Option<&str>,
+        status: Option<&str>,
         limit: usize,
     ) -> Result<Vec<Value>> {
         let (latitude, longitude) = self.startup_geo().await.unwrap_or((0.0, 0.0));
@@ -1550,7 +1572,7 @@ impl HttpWattswarmApi {
                     .get(format!("{registry_base_url}/nodes"))
                     .query(&RegistryNodesQuery {
                         network_id: network_id.to_owned(),
-                        status: "active".to_owned(),
+                        status: status.map(ToOwned::to_owned),
                         public_id: public_id.map(ToOwned::to_owned),
                         display_name: display_name.map(ToOwned::to_owned),
                         limit: limit.max(DEFAULT_AGENT_DISCOVERY_LIMIT),
@@ -2291,7 +2313,9 @@ struct NearbyDiscoveryResponse {
 #[derive(Debug, Serialize)]
 struct RegistryNodesQuery {
     network_id: String,
-    status: String,
+    /// Left out to list nodes of every status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     public_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2318,6 +2342,10 @@ struct StartupConfigPayload {
 }
 
 fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> {
+    let status = record
+        .get("status")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     let record = discovery_record_payload(record);
     let body = record.get("body")?;
     let remote_node_id = body
@@ -2348,6 +2376,7 @@ fn discovered_agent_from_record(record: &Value) -> Option<SwarmDiscoveredAgent> 
         target_agent_did,
         display_name,
         source_agent_card: signed_source_agent_card,
+        status,
     })
 }
 
@@ -2609,7 +2638,17 @@ mod tests {
     }
 
     fn registry_node_record(index: usize, public_id: &str, name: &str) -> Value {
+        registry_node_record_with_status(index, public_id, name, "active")
+    }
+
+    fn registry_node_record_with_status(
+        index: usize,
+        public_id: &str,
+        name: &str,
+        status: &str,
+    ) -> Value {
         json!({
+            "status": status,
             "record": {
                 "body": {
                     "node_id": format!("node-{index}"),
@@ -2663,15 +2702,25 @@ mod tests {
                             })
                             .collect::<Vec<_>>();
                         records.push(registry_node_record(99, "agent-target", "Target Broker"));
+                        records.push(registry_node_record_with_status(
+                            98,
+                            "agent-away",
+                            "Away Broker",
+                            "stale",
+                        ));
                         let records = records
                             .into_iter()
                             .filter(|record| {
                                 let card = &record["record"]["body"]["source_agent_card"]["card"];
-                                query.get("public_id").is_none_or(|public_id| {
-                                    card["metadata"]["public_id"] == public_id.as_str()
-                                }) && query.get("display_name").is_none_or(|name| {
-                                    card["name"].as_str().unwrap().eq_ignore_ascii_case(name)
-                                })
+                                query
+                                    .get("status")
+                                    .is_none_or(|status| record["status"] == status.as_str())
+                                    && query.get("public_id").is_none_or(|public_id| {
+                                        card["metadata"]["public_id"] == public_id.as_str()
+                                    })
+                                    && query.get("display_name").is_none_or(|name| {
+                                        card["name"].as_str().unwrap().eq_ignore_ascii_case(name)
+                                    })
                             })
                             .take(50)
                             .collect::<Vec<_>>();
@@ -2709,7 +2758,7 @@ mod tests {
         let api = HttpWattswarmApi::new(&base_url);
 
         let agents = api
-            .search_agent_display_name("Target Broker")
+            .search_agent_display_name("Target Broker", None)
             .await
             .unwrap();
 
@@ -2720,9 +2769,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["agent-target"]
         );
+        assert_eq!(agents[0].status.as_deref(), Some("active"));
         assert_eq!(
             registry_queries.lock().unwrap().first().map(String::as_str),
-            Some("display_name,limit,network_id,status")
+            Some("display_name,limit,network_id")
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_display_name_search_finds_agents_whose_node_is_offline() {
+        let (base_url, registry_queries) = spawn_registry_discovery_fixture().await;
+        let api = HttpWattswarmApi::new(&base_url);
+
+        let agents = api
+            .search_agent_display_name("Away Broker", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            agents
+                .iter()
+                .map(|agent| (agent.public_id.as_str(), agent.status.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![("agent-away", Some("stale"))]
+        );
+
+        let online_only = api
+            .search_agent_display_name("Away Broker", Some("active"))
+            .await
+            .unwrap();
+        assert_eq!(
+            online_only
+                .iter()
+                .map(|agent| agent.public_id.as_str())
+                .collect::<Vec<_>>(),
+            Vec::<&str>::new()
+        );
+        assert!(
+            registry_queries
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|keys| keys == "display_name,limit,network_id,status")
         );
     }
 

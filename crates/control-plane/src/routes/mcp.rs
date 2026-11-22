@@ -428,12 +428,16 @@ async fn search_agents_result(state: &ControlPlaneState, arguments: &Value) -> V
         }));
     };
 
+    let status = string_argument(arguments, "status");
     match state
         .swarm_bridge
-        .search_agent_display_name(&display_name)
+        .search_agent_display_name(&display_name, status.as_deref())
         .await
     {
-        Ok(agents) => search_agents_tool_success(&json!({"display_name": display_name}), &agents),
+        Ok(agents) => search_agents_tool_success(
+            &json!({"display_name": display_name, "status": status}),
+            &agents,
+        ),
         Err(error) => tool_error(&json!({
             "error": format!("agent search by display_name failed: {error}")
         })),
@@ -474,7 +478,7 @@ async fn agent_card_result(state: &ControlPlaneState, arguments: &Value) -> Valu
     };
     match state
         .swarm_bridge
-        .search_agent_display_name(&display_name)
+        .search_agent_display_name(&display_name, None)
         .await
     {
         Ok(agents) => match agents.as_slice() {
@@ -518,6 +522,7 @@ fn discovered_agent_search_payload(agent: &SwarmDiscoveredAgent) -> Value {
         "display_name": agent.display_name,
         "target_agent_did": agent.target_agent_did,
         "remote_node_id": agent.remote_node_id,
+        "status": agent.status,
         "card_hash": agent
             .source_agent_card
             .as_ref()

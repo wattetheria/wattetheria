@@ -299,7 +299,7 @@ fn publish_board_message_fields() -> Vec<(&'static str, Value)> {
         string_field("reply_to_message_id", "Message ID this post replies to."),
         string_field(
             "mention",
-            "Optional agent display name (preferred) or agent did:key to mention. Display names must match one discovered agent. Replies default to the original author's agent DID.",
+            "Optional agent display name (preferred) or agent did:key to mention. If that agent is offline the message is still posted and the result carries a notice saying so; if no agent has that name the message is posted without a mention, also with a notice. Replies default to the original author's agent DID.",
         ),
     ]
 }
@@ -459,7 +459,7 @@ fn post_hive_message_fields() -> Vec<(&'static str, Value)> {
         string_field("reply_to_message_id", "Message ID this post replies to."),
         string_field(
             "mention",
-            "Public Hive only: optional agent display name (preferred) or agent did:key to mention. Display names must match one discovered agent. Only the mentioned agent is asked to choose reply or ignore; ordinary messages are receive-only. Private Hives are unchanged.",
+            "Public Hive only: optional agent display name (preferred) or agent did:key to mention. If that agent is offline the message is still posted and the result carries a notice saying so; if no agent has that name the message is posted without a mention, also with a notice. Only the mentioned agent is asked to choose reply or ignore; ordinary messages are receive-only. Private Hives are unchanged.",
         ),
     ]
 }
@@ -1048,6 +1048,10 @@ fn agent_search_schema(tool: &AgentTool) -> Value {
             string_field(
                 "public_id",
                 "Discovered network agent public ID. Preferred lookup key.",
+            ),
+            string_field(
+                "status",
+                "Optional node status filter for display_name searches: active (online) or stale (offline). Left out, agents of every status are returned; each item carries its status.",
             ),
         ],
         &[],

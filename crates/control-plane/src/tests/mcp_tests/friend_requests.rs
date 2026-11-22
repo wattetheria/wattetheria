@@ -200,6 +200,7 @@ async fn mcp_request_agent_friend_uses_discovered_node_after_local_removal() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.to_string(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -370,6 +371,7 @@ async fn mcp_request_agent_friend_rejects_conflicting_discovery_fields() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.to_string(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -430,6 +432,7 @@ async fn mcp_request_agent_friend_resolves_counterpart_public_id_from_discovery(
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -526,6 +529,7 @@ async fn assert_friend_request_reaches_unregistered_discovered_agent(include_pub
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -618,6 +622,7 @@ async fn mcp_request_agent_friend_resolves_display_name_from_discovery() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -695,6 +700,7 @@ async fn mcp_request_agent_friend_rejects_display_name_before_discovery() {
             (
                 remote_public_id_a.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_a.clone(),
                     remote_node_id: "12D3KooDisplayPeerA".to_string(),
                     target_agent_did: remote_identity_a.agent_did.clone(),
@@ -711,6 +717,7 @@ async fn mcp_request_agent_friend_rejects_display_name_before_discovery() {
             (
                 remote_public_id_b.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_b.clone(),
                     remote_node_id: "12D3KooDisplayPeerB".to_string(),
                     target_agent_did: remote_identity_b.agent_did.clone(),

@@ -68,7 +68,7 @@ pub(super) async fn mentioned_message_envelope(
     hive: &HiveProfile,
     network_id: &str,
     body: &HiveMessageBody,
-) -> Result<SwarmAgentEnvelope, Response> {
+) -> Result<(SwarmAgentEnvelope, Option<String>), Response> {
     let mention = body
         .mention
         .as_deref()
@@ -82,20 +82,13 @@ pub(super) async fn mentioned_message_envelope(
         None,
     )
     .await
-    .map_err(|error| match error {
-        BoardTargetError::InvalidMention(message) => (
-            axum::http::StatusCode::BAD_REQUEST,
-            Json(json!({"error": message})),
-        )
-            .into_response(),
-        BoardTargetError::Bridge(error) => internal_error(&error),
-    })?;
+    .map_err(BoardTargetError::into_response)?;
     let mention_display_name = mention.filter(|mention| !mention.starts_with("did:"));
-    super::hive_agent_envelope(
+    let envelope = super::hive_agent_envelope(
         state,
         context,
         "hive.message.post",
-        target.clone(),
+        target.agent_did.clone(),
         super::hive_envelope_message(
             state,
             context,
@@ -109,13 +102,14 @@ pub(super) async fn mentioned_message_envelope(
             &json!({
                 "content": body.content,
                 "reply_to_message_id": body.reply_to_message_id,
-                "mention": target,
+                "mention": target.agent_did,
                 "mention_display_name": mention_display_name,
             }),
         ),
     )
     .await
-    .map_err(|error| internal_error(&error))
+    .map_err(|error| internal_error(&error))?;
+    Ok((envelope, target.notice))
 }
 
 pub(crate) fn receive_message(

@@ -19,6 +19,7 @@ async fn mcp_search_agents_resolves_public_id_from_discovery() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -94,6 +95,7 @@ async fn mcp_search_agents_returns_repeated_display_name_candidates() {
             (
                 remote_public_id_a.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_a.clone(),
                     remote_node_id: "12D3KooSearchPeerA".to_string(),
                     target_agent_did: remote_identity_a.agent_did.clone(),
@@ -110,6 +112,7 @@ async fn mcp_search_agents_returns_repeated_display_name_candidates() {
             (
                 remote_public_id_b.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_b.clone(),
                     remote_node_id: "12D3KooSearchPeerB".to_string(),
                     target_agent_did: remote_identity_b.agent_did.clone(),
@@ -195,6 +198,7 @@ async fn mcp_get_agent_card_resolves_public_id_from_discovery() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -261,6 +265,7 @@ async fn mcp_get_agent_card_resolves_display_name_from_discovery() {
         discovered_agents: [(
             remote_public_id.clone(),
             SwarmDiscoveredAgent {
+                status: None,
                 public_id: remote_public_id.clone(),
                 remote_node_id: remote_node_id.clone(),
                 target_agent_did: remote_identity.agent_did.clone(),
@@ -322,6 +327,7 @@ async fn mcp_get_agent_card_rejects_display_name_before_discovery() {
             (
                 remote_public_id_a.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_a.clone(),
                     remote_node_id: "12D3KooCardPeerA".to_string(),
                     target_agent_did: remote_identity_a.agent_did.clone(),
@@ -338,6 +344,7 @@ async fn mcp_get_agent_card_rejects_display_name_before_discovery() {
             (
                 remote_public_id_b.clone(),
                 SwarmDiscoveredAgent {
+                    status: None,
                     public_id: remote_public_id_b.clone(),
                     remote_node_id: "12D3KooCardPeerB".to_string(),
                     target_agent_did: remote_identity_b.agent_did.clone(),
@@ -460,4 +467,53 @@ async fn mcp_list_nearby_returns_compact_peer_snapshot() {
     assert!(item.get("counterpart_public_id").is_none());
     assert!(item.get("relationship_state").is_none());
     assert!(item.get("relationship").is_none());
+}
+
+#[tokio::test]
+async fn mcp_search_agents_by_name_covers_every_status_unless_one_is_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let identity = Identity::new_random();
+    let away = Identity::new_random();
+    let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
+    let bridge = Arc::new(MockSwarmBridge {
+        discovered_agents: [(
+            "away".to_owned(),
+            SwarmDiscoveredAgent {
+                status: Some("stale".to_owned()),
+                public_id: "away".to_owned(),
+                remote_node_id: "away-node".to_owned(),
+                target_agent_did: away.agent_did.clone(),
+                display_name: Some("Away".to_owned()),
+                source_agent_card: None,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..MockSwarmBridge::default_for(identity.agent_did.clone())
+    });
+    let (_dir, app, token, _policy, _state) =
+        build_test_app_with_bridge(100, dir, identity, event_log, bridge);
+    let search = |arguments: Value| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            mcp_request(
+                app,
+                &token,
+                json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "search_agents", "arguments": arguments}
+                }),
+            )
+            .await["result"]["structuredContent"]
+                .clone()
+        }
+    };
+
+    let every_status = search(json!({"display_name": "Away"})).await;
+    assert_eq!(every_status["result_count"], 1);
+    assert_eq!(every_status["items"][0]["status"], "stale");
+    let online_only = search(json!({"display_name": "Away", "status": "active"})).await;
+    assert_eq!(online_only["result_count"], 0);
+    assert_eq!(online_only["query"]["status"], "active");
 }

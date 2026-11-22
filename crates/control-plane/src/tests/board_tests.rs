@@ -199,13 +199,7 @@ async fn board_public_projection_retains_signed_mention_and_real_agent_author() 
     let bridge = Arc::new(MockSwarmBridge {
         discovered_agents: [(
             public_id.clone(),
-            SwarmDiscoveredAgent {
-                public_id,
-                remote_node_id: "transport-target-node".to_owned(),
-                target_agent_did: target.agent_did.clone(),
-                display_name: Some("RX".to_owned()),
-                source_agent_card: None,
-            },
+            board_mock_agent(&public_id, "RX", &target.agent_did, "active"),
         )]
         .into_iter()
         .collect(),
@@ -375,7 +369,7 @@ async fn board_mentions_and_replies_target_signed_agent_not_node_or_other_channe
             ),
         ]
     );
-    let invalid = authed_post_json(
+    let unknown = authed_post_json(
         app,
         &token,
         "/v1/wattetheria/board/messages",
@@ -384,37 +378,47 @@ async fn board_mentions_and_replies_target_signed_agent_not_node_or_other_channe
         }),
     )
     .await;
-    assert_eq!(
-        invalid["error"],
-        "mention display name did not match a discovered agent; provide an agent did:key"
+    assert_eq!(unknown["ok"], true, "{unknown}");
+    assert!(
+        unknown["notice"]
+            .as_str()
+            .unwrap()
+            .starts_with("No agent named transport-peer-not-agent-did was found")
     );
-    assert_eq!(bridge.messages.lock().await.len(), 5);
+    assert_eq!(bridge.messages.lock().await.len(), 6);
+}
+
+fn board_mock_agent(public_id: &str, name: &str, did: &str, status: &str) -> SwarmDiscoveredAgent {
+    SwarmDiscoveredAgent {
+        status: Some(status.to_owned()),
+        public_id: public_id.to_owned(),
+        remote_node_id: format!("transport-{public_id}"),
+        target_agent_did: did.to_owned(),
+        display_name: Some(name.to_owned()),
+        source_agent_card: None,
+    }
 }
 
 #[tokio::test]
-async fn board_rejects_unresolved_or_ambiguous_mention_names_without_posting() {
+async fn board_mention_names_never_block_posting() {
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let first = Identity::new_random();
     let second = Identity::new_random();
+    let away = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
     let bridge = Arc::new(MockSwarmBridge {
         discovered_agents: [
-            ("first", "Echo", first.agent_did.as_str()),
-            ("second", "Echo", second.agent_did.as_str()),
-            ("broken", "Broken", "transport-not-agent-did"),
+            ("first", "Echo", first.agent_did.as_str(), "active"),
+            ("second", "Echo", second.agent_did.as_str(), "active"),
+            ("broken", "Broken", "transport-not-agent-did", "active"),
+            ("away", "Away", away.agent_did.as_str(), "stale"),
         ]
         .into_iter()
-        .map(|(public_id, name, did)| {
+        .map(|(public_id, name, did, status)| {
             (
                 public_id.to_owned(),
-                SwarmDiscoveredAgent {
-                    public_id: public_id.to_owned(),
-                    remote_node_id: format!("transport-{public_id}"),
-                    target_agent_did: did.to_owned(),
-                    display_name: Some(name.to_owned()),
-                    source_agent_card: None,
-                },
+                board_mock_agent(public_id, name, did, status),
             )
         })
         .collect(),
@@ -422,19 +426,77 @@ async fn board_rejects_unresolved_or_ambiguous_mention_names_without_posting() {
     });
     let (_dir, app, token, _policy, _state) =
         build_test_app_with_bridge(100, dir, identity, event_log, bridge.clone());
+    // A name that finds nobody, or only a record without a valid agent DID, still posts.
+    for mention in ["Missing", "Broken"] {
+        let posted = authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/wattetheria/board/messages",
+            json!({"category":"general", "message":"to nobody", "mention":mention}),
+        )
+        .await;
+        assert_eq!(posted["ok"], true, "{posted}");
+        assert_eq!(
+            posted["notice"],
+            format!(
+                "No agent named {mention} was found, so nobody was notified; the message was posted. Check the name if it may be mistyped."
+            )
+        );
+    }
+    let posted = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/board/messages",
+        json!({"category":"general", "message":"to echo", "mention":"Echo"}),
+    )
+    .await;
+    assert_eq!(posted["ok"], true, "{posted}");
+    assert!(posted.get("notice").is_none(), "{posted}");
+    let posted = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/wattetheria/board/messages",
+        json!({"category":"general", "message":"to away", "mention":"Away"}),
+    )
+    .await;
+    assert_eq!(
+        posted["notice"],
+        "Away is offline now; the message was posted and Away gets it when back online."
+    );
+    {
+        let messages = bridge.messages.lock().await;
+        assert_eq!(messages.len(), 4);
+        let away_message = messages.last().unwrap();
+        assert_eq!(
+            away_message
+                .agent_envelope
+                .as_ref()
+                .unwrap()
+                .target_agent_id
+                .as_deref(),
+            Some(away.agent_did.as_str())
+        );
+        assert!(
+            messages[0]
+                .agent_envelope
+                .as_ref()
+                .unwrap()
+                .target_agent_id
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn board_rejects_empty_or_invalid_did_mentions_without_posting() {
+    let (_dir, _router, token, _policy, state) = build_test_app(100);
+    let bridge = Arc::new(MockSwarmBridge::default_for(state.agent_did.clone()));
+    let state = ControlPlaneState {
+        swarm_bridge: bridge.clone(),
+        ..state
+    };
+    let app = app(state);
     for (mention, expected) in [
-        (
-            "Missing",
-            "mention display name did not match a discovered agent; provide an agent did:key",
-        ),
-        (
-            "Echo",
-            "mention display name matched multiple agents; provide an agent did:key",
-        ),
-        (
-            "Broken",
-            "mention display name resolved to an invalid agent DID; provide an agent did:key",
-        ),
         (" ", "mention must be a display name or agent did:key"),
         (
             "did:key:invalid",

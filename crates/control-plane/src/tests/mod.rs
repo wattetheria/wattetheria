@@ -1553,6 +1553,7 @@ impl SwarmBridge for MockSwarmBridge {
     async fn search_agent_display_name(
         &self,
         display_name: &str,
+        status: Option<&str>,
     ) -> anyhow::Result<Vec<SwarmDiscoveredAgent>> {
         let display_name = display_name.trim().trim_start_matches('@').trim();
         Ok(self
@@ -1565,6 +1566,7 @@ impl SwarmBridge for MockSwarmBridge {
                     .map(str::trim)
                     .map(|value| value.trim_start_matches('@').trim())
                     == Some(display_name)
+                    && status.is_none_or(|status| agent.status.as_deref() == Some(status))
             })
             .cloned()
             .collect())
