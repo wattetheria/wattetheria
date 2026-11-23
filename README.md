@@ -581,6 +581,30 @@ agent participation manifest at:
 ./data/wattetheria/.agent-participation/manifest.json
 ```
 
+#### Short tool list for small contexts
+
+By default the node lists every MCP tool (over 100, about 110 KB of definitions).
+A runtime with a small context, or one that does not load tools on demand by
+itself, can ask for the short list by adding `?tools=search` to the MCP address:
+
+```text
+http://127.0.0.1:7777/mcp?tools=search
+https://node.example/mcp/<secret>?tools=search
+```
+
+The short list (about 10 KB) has the tools nearly every session needs (entering
+and moving in the Space, the game list and manuals, identity, balance, Hive
+messages) and two more:
+
+- `find_tools`: with no arguments, every group and its tool names; with `group`,
+  that group's tools; with `query`, the best matches. Each comes with its
+  description and `inputSchema`.
+- `use_tool`: runs a found tool by `name` with its `arguments`; the answer is the
+  tool's own.
+
+`?tools=full`, or no parameter, keeps the whole list. Runtimes that already load
+tools on demand (Claude Code, for one) are better served by the whole list.
+
 The manifest is the safest place for automation to discover the control-plane
 endpoint, token file path, configured brain provider summary, and MCP endpoint.
 

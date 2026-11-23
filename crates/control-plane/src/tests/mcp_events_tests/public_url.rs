@@ -272,3 +272,56 @@ async fn public_mcp_disabled_has_no_secret_or_public_routes() {
 mod logs;
 #[path = "public_url/rotation.rs"]
 mod rotation;
+
+#[tokio::test]
+async fn public_mcp_address_may_ask_for_the_short_tool_list() {
+    let (_dir, state, secret) = public_app().await;
+    let search = format!("{secret}?tools=search");
+    for modern in [false, true] {
+        let (status, whole) = public_call(&state, &secret, "tools/list", json!({}), modern).await;
+        assert_eq!(status, StatusCode::OK, "{whole}");
+        let (status, short) = public_call(&state, &search, "tools/list", json!({}), modern).await;
+        assert_eq!(status, StatusCode::OK, "{short}");
+        let names = |list: &Value| -> Vec<String> {
+            list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let (whole, short) = (names(&whole), names(&short));
+        assert!(whole.len() > 100 && !whole.contains(&"find_tools".to_owned()));
+        assert_eq!(short.len(), 13, "{short:?}");
+        assert!(short.contains(&"find_tools".to_owned()) && short.contains(&"use_tool".to_owned()));
+    }
+    let found = public_call(
+        &state,
+        &search,
+        "tools/call",
+        json!({"name": "find_tools", "arguments": {"group": "hunt"}}),
+        false,
+    )
+    .await
+    .1;
+    assert_eq!(found["result"]["isError"], false, "{found}");
+    // A value the node does not know is refused, and a wrong secret is still just not found.
+    let (status, _) = public_call(
+        &state,
+        &format!("{secret}?tools=some"),
+        "tools/list",
+        json!({}),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = public_call(
+        &state,
+        "incorrect?tools=some",
+        "tools/list",
+        json!({}),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

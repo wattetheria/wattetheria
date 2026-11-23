@@ -44,9 +44,9 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                     "retreat_below",
                     json!({
                         "type": "integer",
-                        "minimum": 10,
-                        "maximum": 90,
-                        "description": "Optional. Walk away when a hit leaves your HP at or under this percent of max HP. Default 30. Lower lets you fight on longer but leaves you with less HP to wait back."
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Optional. Walk away when a hit leaves your HP at or under this percent of max HP. The manual's retreat_below gives the default and the lowest and highest value taken."
                     }),
                 ),
                 (
@@ -55,7 +55,7 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 100,
-                        "description": "Optional. Drink an HP potion from your bag (small first) when a hit leaves your HP under this percent; drinking takes your next round. Left out, you drink none."
+                        "description": "Optional. Drink an HP potion from your bag when a hit leaves your HP under this percent. Left out, you drink none. How drinking works: the manual's potions."
                     }),
                 ),
             ],

@@ -68,6 +68,14 @@ async fn public_mcp(State(state): State<ControlPlaneState>, mut request: Request
         }
         rotation.borrow_and_update();
     }
+    // The address may ask for the short tool list (`?tools=search`); read it before the address
+    // is masked.
+    let mode = match super::ToolMode::from_query(request.uri().query()) {
+        Ok(mode) => mode,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+        }
+    };
     *request.uri_mut() = Uri::from_static("/mcp/***");
     request
         .extensions_mut()
@@ -84,7 +92,7 @@ async fn public_mcp(State(state): State<ControlPlaneState>, mut request: Request
             Ok(payload) => payload,
             Err(error) => return error.into_response(),
         };
-        super::mcp(State(state.clone()), headers, payload).await
+        super::serve(state.clone(), headers, payload.0, mode).await
     };
     tokio::select! {
         biased;

@@ -9,6 +9,7 @@ pub(super) async fn serve_modern(
     state: &ControlPlaneState,
     headers: &HeaderMap,
     request: super::McpRequest,
+    mode: super::ToolMode,
 ) -> Response {
     if let Err(error) = validate_modern_request(headers, &request) {
         return error_response(
@@ -61,14 +62,14 @@ pub(super) async fn serve_modern(
             }
         }
         "tools/list" => {
-            let mut tools = super::mcp_tools(state);
+            let mut tools = super::listed_tools(state, mode);
             tools.sort_by_key(|tool| tool.name);
             json!({"tools": tools})
         }
         "tools/call" => {
-            if !super::agent_tools()
-                .iter()
-                .any(|tool| Some(tool.name) == request.params["name"].as_str())
+            if !request.params["name"]
+                .as_str()
+                .is_some_and(|name| super::search::callable(name, mode))
                 || request
                     .params
                     .get("arguments")
@@ -82,7 +83,7 @@ pub(super) async fn serve_modern(
                     json!({}),
                 );
             }
-            match super::call_tool(state, &auth, request.params).await {
+            match super::call_tool_in(state, &auth, request.params, mode).await {
                 Ok(result) => result,
                 Err(response) => return tool_execution_error(request.id.as_ref(), response).await,
             }

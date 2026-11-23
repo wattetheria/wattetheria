@@ -132,6 +132,7 @@ mod payments;
 mod protocol;
 mod receipts;
 mod schemas;
+mod search;
 mod servicenet;
 mod skins;
 mod space_movement;

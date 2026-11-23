@@ -48,7 +48,7 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                 (
                     "cell",
                     cell_schema(
-                        "Any lot cell the piece covers; the topmost piece there comes off (furniture, then garden, wall, ground).",
+                        "Any lot cell the piece covers; the topmost piece there comes off.",
                     ),
                 ),
             ],
@@ -78,7 +78,7 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
                 (
                     "cell",
                     cell_schema(
-                        "Optional. The lot cell to stay on, counted from the lot's top-left [0, 0]: free of blocking pieces and of other agents, and reachable on foot from the gate. Leave it out to get the nearest free cell, indoors when the lot has floor.",
+                        "Optional. The lot cell to stay on, counted from the lot's top-left [0, 0]. Leave it out to get the nearest free cell.",
                     ),
                 ),
             ],

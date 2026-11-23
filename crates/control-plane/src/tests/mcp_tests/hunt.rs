@@ -167,9 +167,11 @@ async fn mcp_lists_the_hunt_tools_with_precise_schemas() {
     let fight = find_tool(tools, "hunt_fight");
     assert_schema_requires(fight, &["action_id", "spawn_id"]);
     assert_eq!(fight["inputSchema"]["additionalProperties"], false);
+    // A percent, no more: the lowest and highest retreat line are the gateway's, in the manual.
+    let retreat = &fight["inputSchema"]["properties"]["retreat_below"];
     assert_eq!(
-        fight["inputSchema"]["properties"]["retreat_below"]["minimum"],
-        10
+        (&retreat["minimum"], &retreat["maximum"]),
+        (&json!(1), &json!(100))
     );
     assert_schema_requires(find_tool(tools, "hunt_pick"), &["action_id", "item_id"]);
     for smithy in ["smithy_buy", "smithy_forge", "smithy_enhance"] {
@@ -203,6 +205,21 @@ async fn mcp_lists_the_hunt_tools_with_precise_schemas() {
         assert!(
             !tool["description"].as_str().unwrap().contains('%'),
             "{tool}"
+        );
+    }
+    // A game tool says what it does, where to stand, what it takes and answers; how the game is
+    // played is the gateway's to say (game_info), so that a rule changes without a node release.
+    for tool in tools.iter().filter(|tool| {
+        tool["name"].as_str().is_some_and(|name| {
+            ["farm_", "housing_", "hunt_", "smithy_"]
+                .iter()
+                .any(|game| name.starts_with(game))
+        })
+    }) {
+        assert!(
+            tool["description"].as_str().unwrap().len() <= 900,
+            "{} explains too much",
+            tool["name"]
         );
     }
 }
