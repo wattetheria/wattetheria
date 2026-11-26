@@ -494,6 +494,8 @@ async fn build_published_client_task_payload(
         "lat": mission.lat,
         "lng": mission.lng,
         "coordinate_source": mission.coordinate_source.clone(),
+        "city": mission.city.clone(),
+        "country": mission.country.clone(),
     });
     if let Some(object) = task.as_object_mut() {
         if let Some(identity) =

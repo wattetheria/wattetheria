@@ -56,3 +56,47 @@ test("stack release stops when download succeeds without a manifest asset", (con
   const stderr = runWithMissingManifest(context, 0);
   assert.match(stderr, /no release manifest asset found on v1\.1\.1/);
 });
+
+function makeCheckout(workspace, name) {
+  const repoPath = path.join(workspace, name);
+  fs.mkdirSync(repoPath, { recursive: true });
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git("init", "--quiet");
+  git("-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "init");
+}
+
+test("stack release covers only the open-source repositories", (context) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "watt-stack-release-test-"));
+  context.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  makeCheckout(workspace, "wattetheria");
+  makeCheckout(workspace, "wattswarm");
+  const outDir = path.join(workspace, "output");
+
+  const result = spawnSync(process.execPath, [generator], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      RELEASE: "9.9.9",
+      PREVIOUS_STACK_MANIFEST: "",
+      STACK_RELEASE_SKIP_GITHUB: "1",
+      STACK_RELEASE_WORKSPACE: workspace,
+      STACK_RELEASE_OUT_DIR: outDir,
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(outDir, "release-manifest.9.9.9.json"), "utf8"),
+  );
+  assert.deepEqual(
+    manifest.components.map((component) => component.repo),
+    ["wattetheria/wattetheria", "wattetheria/wattswarm"],
+  );
+
+  const notes = fs.readFileSync(path.join(outDir, "release-notes.md"), "utf8");
+  const headings = notes.match(/^### .*$/gm);
+  assert.deepEqual(headings, ["### wattetheria", "### wattswarm"]);
+});

@@ -16,6 +16,11 @@ pub struct PublicGeoPayload {
     pub lat: f64,
     pub lng: f64,
     pub coordinate_source: String,
+    /// The place the coordinates stand for, when the lookup named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 impl PublicGeoPayload {
@@ -26,6 +31,12 @@ impl PublicGeoPayload {
             "coordinate_source".to_string(),
             Value::String(self.coordinate_source.clone()),
         );
+        if let Some(city) = &self.city {
+            object.insert("city".to_string(), Value::String(city.clone()));
+        }
+        if let Some(country) = &self.country {
+            object.insert("country".to_string(), Value::String(country.clone()));
+        }
     }
 }
 

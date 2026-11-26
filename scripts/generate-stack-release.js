@@ -33,51 +33,6 @@ const COMPONENTS = [
       "ghcr.io/wattetheria/wattswarm-worker:${release}",
     ],
   },
-  {
-    name: "watt-did",
-    repo: "wattetheria/watt-did",
-    path: "watt-did",
-    role: "shared identity and proof library",
-    artifacts: [],
-  },
-  {
-    name: "watt-wallet",
-    repo: "wattetheria/watt-wallet",
-    path: "watt-wallet",
-    role: "local key-custody and signing layer",
-    artifacts: [],
-  },
-  // Start tracking these repositories from the v1.1.1 release boundary.
-  {
-    name: "watt-credential",
-    repo: "wattetheria/watt-credential",
-    path: "watt-credential",
-    role: "shared verifiable credential library",
-    baselineCommit: "7cdb9beaa3c440d7072dd98c2d5770e92446f4fd",
-    artifacts: [],
-  },
-  {
-    name: "watt-registry",
-    repo: "wattetheria/watt-registry",
-    path: "watt-registry",
-    role: "network agent registration authority",
-    baselineCommit: "971ae1c0f47caf2777036b55b1a8699e43c72612",
-    artifacts: [],
-  },
-  {
-    name: "watt-servicenet",
-    repo: "wattetheria/watt-servicenet",
-    path: "watt-servicenet",
-    role: "public-agent registry and invocation boundary",
-    artifacts: [],
-  },
-  {
-    name: "watt-gateway",
-    repo: "wattetheria/watt-gateway",
-    path: "watt-gateway",
-    role: "global read-only aggregation surface",
-    artifacts: [],
-  },
 ];
 
 function run(command, args, options = {}) {
@@ -548,10 +503,6 @@ function renderArtifacts(components) {
     }
   }
 
-  lines.push("");
-  lines.push(
-    "Components without listed artifacts are tracked by repository commit in the release manifest.",
-  );
   lines.push("");
   return lines.join("\n");
 }

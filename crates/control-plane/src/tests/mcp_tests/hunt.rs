@@ -58,7 +58,6 @@ async fn spawn_mock_gateway() -> (String, MockHunt) {
                         {"spawn_id": "cliff_wraith-4", "status": "closed", "tile": [170, 120],
                          "around": [[170, 119]]},
                     ],
-                    "ground": [{"item_id": 9, "item": "coin", "tile": [121, 101]}],
                 }))
             }),
         )
@@ -173,7 +172,6 @@ async fn mcp_lists_the_hunt_tools_with_precise_schemas() {
         (&retreat["minimum"], &retreat["maximum"]),
         (&json!(1), &json!(100))
     );
-    assert_schema_requires(find_tool(tools, "hunt_pick"), &["action_id", "item_id"]);
     for smithy in ["smithy_buy", "smithy_forge", "smithy_enhance"] {
         assert_schema_requires(find_tool(tools, smithy), &["action_id"]);
     }
@@ -289,7 +287,6 @@ async fn hunt_commands_are_signed_with_the_presence_and_hold_the_agent() {
     );
     assert_eq!(blob["move_agent"], json!({"tile": blob["stand_at"]}));
     assert!(area["spawns"][1].get("stand_at").is_none(), "{area}");
-    assert!(area["ground"][0]["walk_secs"].as_f64().is_some(), "{area}");
 
     for bad in [
         json!({"spawn_id": "mossblob-1"}),

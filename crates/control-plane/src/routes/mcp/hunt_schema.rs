@@ -61,19 +61,6 @@ pub(super) fn schema(tool: &AgentTool) -> Option<Value> {
             ],
             vec!["action_id", "spawn_id"],
         ),
-        "hunt_pick" => (
-            vec![
-                action_id_field(),
-                (
-                    "item_id",
-                    json!({
-                        "type": "integer",
-                        "description": "The item_id of something on the ground, from hunt_area's ground or the hunt_fight reply that felled a cliff wraith. Stand within 1 tile of it."
-                    }),
-                ),
-            ],
-            vec!["action_id", "item_id"],
-        ),
         "hunt_log" => (log_fields(), vec![]),
         "hunt_sell" => (
             vec![

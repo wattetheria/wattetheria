@@ -201,6 +201,8 @@ mod tests {
                 lat: -33.8399,
                 lng: 151.0583,
                 coordinate_source: "ip_api".to_string(),
+                city: None,
+                country: None,
             }),
             active: true,
         });

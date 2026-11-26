@@ -458,6 +458,8 @@ fn build_test_state_with_bridge(
             lat: 0.0,
             lng: 0.0,
             source: crate::state::GeoSource::Derived,
+            city: None,
+            country: None,
         }),
     };
 
@@ -2617,6 +2619,7 @@ mod galaxy_tests;
 mod identity_tests;
 mod mcp_events_tests;
 mod mcp_tests;
+mod mission_trade_tests;
 mod network_registration_tests;
 mod organization_tests;
 mod servicenet_publication_tests;

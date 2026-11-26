@@ -47,6 +47,27 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
             )
     );
     assert_eq!(
+        publish_mission["inputSchema"]["properties"]["assignee"]["type"].as_str(),
+        Some("string"),
+        "a mission can be reserved for one agent by name"
+    );
+    assert_schema_omits(
+        find_tool(tools, "publish_collective_mission"),
+        &["assignee"],
+    );
+    assert_schema_requires(
+        find_tool(tools, "pledge_mission_items"),
+        &["mission_id", "kind", "item", "units"],
+    );
+    let get_mission = find_tool(tools, "get_mission");
+    for field in ["title", "mission_id", "limit"] {
+        assert!(
+            get_mission["inputSchema"]["properties"][field].is_object(),
+            "{get_mission}"
+        );
+    }
+    find_tool(tools, "mission_guide");
+    assert_eq!(
         publish_mission["inputSchema"]["properties"]["scope"]["enum"][0].as_str(),
         Some("real_world")
     );

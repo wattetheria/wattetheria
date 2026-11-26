@@ -260,11 +260,16 @@ struct PersistedGatewayEventSequence {
     last_seq: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeGeoLocation {
     pub lat: f64,
     pub lng: f64,
     pub source: GeoSource,
+    /// Named by the lookup that gave the coordinates; a derived location has neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +289,8 @@ impl NodeGeoLocation {
             lat: self.lat,
             lng: self.lng,
             coordinate_source: self.source.as_str().to_string(),
+            city: self.city.clone(),
+            country: self.country.clone(),
         }
     }
 
@@ -304,6 +311,8 @@ impl NodeGeoLocation {
                     lat,
                     lng,
                     source: GeoSource::Derived,
+                    city: None,
+                    country: None,
                 })
             }
         }
@@ -326,6 +335,8 @@ impl NodeGeoLocation {
                     lat,
                     lng,
                     source: GeoSource::Derived,
+                    city: None,
+                    country: None,
                 })
             }
         }
@@ -348,49 +359,50 @@ struct IpApiResponse {
     status: String,
     lat: Option<f64>,
     lon: Option<f64>,
+    city: Option<String>,
+    country: Option<String>,
+}
+
+const IP_API_URL: &str = "http://ip-api.com/json/?fields=status,lat,lon,city,country";
+
+impl IpApiResponse {
+    fn into_location(self) -> anyhow::Result<NodeGeoLocation> {
+        if self.status != "success" {
+            anyhow::bail!("ip-api.com returned status: {}", self.status);
+        }
+        let lat = self.lat.context("ip-api.com missing lat")?;
+        let lon = self.lon.context("ip-api.com missing lon")?;
+        Ok(NodeGeoLocation {
+            lat,
+            lng: lon,
+            source: GeoSource::IpApi,
+            city: named_place(self.city),
+            country: named_place(self.country),
+        })
+    }
+}
+
+fn named_place(name: Option<String>) -> Option<String> {
+    name.map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
 }
 
 async fn fetch_geo_from_ip_api() -> anyhow::Result<NodeGeoLocation> {
-    let response: IpApiResponse = reqwest::get("http://ip-api.com/json/?fields=status,lat,lon")
+    let response: IpApiResponse = reqwest::get(IP_API_URL)
         .await
         .context("ip-api.com request failed")?
         .json()
         .await
         .context("ip-api.com response parse failed")?;
-
-    if response.status != "success" {
-        anyhow::bail!("ip-api.com returned status: {}", response.status);
-    }
-
-    let lat = response.lat.context("ip-api.com missing lat")?;
-    let lon = response.lon.context("ip-api.com missing lon")?;
-
-    Ok(NodeGeoLocation {
-        lat,
-        lng: lon,
-        source: GeoSource::IpApi,
-    })
+    response.into_location()
 }
 
 fn fetch_geo_from_ip_api_blocking() -> anyhow::Result<NodeGeoLocation> {
-    let response: IpApiResponse =
-        reqwest::blocking::get("http://ip-api.com/json/?fields=status,lat,lon")
-            .context("ip-api.com request failed")?
-            .json()
-            .context("ip-api.com response parse failed")?;
-
-    if response.status != "success" {
-        anyhow::bail!("ip-api.com returned status: {}", response.status);
-    }
-
-    let lat = response.lat.context("ip-api.com missing lat")?;
-    let lon = response.lon.context("ip-api.com missing lon")?;
-
-    Ok(NodeGeoLocation {
-        lat,
-        lng: lon,
-        source: GeoSource::IpApi,
-    })
+    let response: IpApiResponse = reqwest::blocking::get(IP_API_URL)
+        .context("ip-api.com request failed")?
+        .json()
+        .context("ip-api.com response parse failed")?;
+    response.into_location()
 }
 
 use anyhow::Context as _;
@@ -718,6 +730,10 @@ pub struct MissionPublishBody {
     /// Unix seconds; after this an unfinished mission is cancelled and its bounty refunded.
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Display name (or `did:key`) of the one agent allowed to take the mission; anyone when
+    /// absent.
+    #[serde(default)]
+    pub assignee: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1214,7 +1230,37 @@ pub(crate) async fn send_stream_text(
 
 #[cfg(test)]
 mod tests {
-    use super::GatewayEventSequence;
+    use super::{GatewayEventSequence, GeoSource, IpApiResponse};
+
+    #[test]
+    fn the_ip_lookup_names_the_city_and_country_with_the_coordinates() {
+        let found: IpApiResponse = serde_json::from_value(serde_json::json!({
+            "status": "success", "lat": -33.8399, "lon": 151.0583,
+            "city": " Sydney ", "country": "Australia",
+        }))
+        .unwrap();
+        let location = found.into_location().unwrap();
+        assert_eq!(location.source, GeoSource::IpApi);
+        assert_eq!(location.city.as_deref(), Some("Sydney"));
+        assert_eq!(location.country.as_deref(), Some("Australia"));
+        let public = serde_json::to_value(location.public_payload()).unwrap();
+        assert_eq!(public["city"], "Sydney");
+        assert_eq!(public["country"], "Australia");
+
+        // A lookup that names no place still gives the coordinates.
+        let bare: IpApiResponse = serde_json::from_value(serde_json::json!({
+            "status": "success", "lat": 1.0, "lon": 2.0, "city": "",
+        }))
+        .unwrap();
+        let location = bare.into_location().unwrap();
+        assert!(location.city.is_none() && location.country.is_none());
+        let public = serde_json::to_value(location.public_payload()).unwrap();
+        assert!(public.get("city").is_none(), "{public}");
+
+        let failed: IpApiResponse =
+            serde_json::from_value(serde_json::json!({"status": "fail"})).unwrap();
+        assert!(failed.into_location().is_err());
+    }
 
     #[test]
     fn gateway_event_sequence_resumes_from_persisted_last_seq() {

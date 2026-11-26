@@ -13,6 +13,7 @@ use crate::routes::mcp::{
     fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
 };
 use crate::routes::message_validation::{validate_mission_inputs, validation_error_response};
+use crate::routes::mission_trade;
 use crate::routes::settlement_delegation::{
     normalize_publish_delegation, payload_with_settlement_delegation,
     settlement_delegation_from_payload,
@@ -821,6 +822,8 @@ fn mission_task_inputs(
         "lat": mission.lat,
         "lng": mission.lng,
         "coordinate_source": mission.coordinate_source.clone(),
+        "city": mission.city.clone(),
+        "country": mission.country.clone(),
         "payload": mission.payload,
     });
     if let Some(delegation) = settlement_delegation_from_payload(&mission.payload)
@@ -833,7 +836,22 @@ fn mission_task_inputs(
     {
         object.insert("reward".to_owned(), json!(reward));
     }
+    insert_mission_assignee(&mut inputs, mission);
     inputs
+}
+
+/// Says, in what a mission announces to the network, which agent it is reserved for, so that
+/// agent's node lets the claim through and every other node refuses it at once.
+fn insert_mission_assignee(target: &mut Value, mission: &CivilMission) {
+    let (Some(object), Some(assignee)) = (target.as_object_mut(), mission.assignee_did.as_ref())
+    else {
+        return;
+    };
+    object.insert("assignee_did".to_owned(), json!(assignee));
+    object.insert(
+        "assignee_display_name".to_owned(),
+        json!(mission.assignee_display_name),
+    );
 }
 
 pub(crate) fn mission_task_contract(
@@ -878,6 +896,8 @@ fn mission_announce_command(
         "lat": mission.lat,
         "lng": mission.lng,
         "coordinate_source": mission.coordinate_source.clone(),
+        "city": mission.city.clone(),
+        "country": mission.country.clone(),
         "mission_feed_key": MISSION_FEED_KEY,
         "mission_scope_hint": mission_scope_hint,
     });
@@ -891,6 +911,7 @@ fn mission_announce_command(
     {
         object.insert("reward".to_owned(), json!(reward));
     }
+    insert_mission_assignee(&mut summary, mission);
     SwarmTaskAnnounceCommand {
         task_id: mission.mission_id.clone(),
         announcement_id: None,
@@ -1818,6 +1839,7 @@ pub(crate) async fn lock_mission_bounty(
                 payee_label: None,
                 subject: Some(&subject),
             },
+            mission_trade::escrow_terms(mission),
         )
         .await
     else {
@@ -2304,6 +2326,9 @@ pub struct MissionEscrowSweepReport {
     pub escrows_confirmed: usize,
     /// Such escrows the ledger never saw: the mission was cancelled as unfunded once stale.
     pub escrows_abandoned: usize,
+    /// Claimed or completed missions ended because the ledger already returned their bounty:
+    /// the pledged items were turned down, or a deadline of the trade passed.
+    pub trades_ended: usize,
 }
 
 /// Periodic mission/ledger reconciliation: resolves escrows whose lock outcome was never
@@ -2314,7 +2339,10 @@ pub async fn reconcile_mission_escrows(
     state: &ControlPlaneState,
     stale_after_secs: i64,
 ) -> MissionEscrowSweepReport {
-    let mut report = MissionEscrowSweepReport::default();
+    let mut report = MissionEscrowSweepReport {
+        trades_ended: mission_trade::end_returned_missions(state).await,
+        ..MissionEscrowSweepReport::default()
+    };
     let now = Utc::now().timestamp();
     let unconfirmed = {
         let board = state.mission_board.lock().await;
@@ -2551,6 +2579,7 @@ async fn publish_mission_on_board(
     state: &ControlPlaneState,
     body: MissionPublishBody,
     settlement_delegation: Option<&Value>,
+    assignee: Option<&mission_trade::Assignee>,
 ) -> Result<CivilMission, Response> {
     if let Some(expires_at) = body.expires_at
         && expires_at <= Utc::now().timestamp()
@@ -2581,6 +2610,15 @@ async fn publish_mission_on_board(
     if body.expires_at.is_some() {
         mission = board
             .set_expiry(&mission.mission_id, body.expires_at)
+            .map_err(|error| internal_error(&error))?;
+    }
+    if let Some(assignee) = assignee {
+        mission = board
+            .set_assignee(
+                &mission.mission_id,
+                &assignee.did,
+                assignee.display_name.as_deref(),
+            )
             .map_err(|error| internal_error(&error))?;
     }
     state
@@ -2615,8 +2653,23 @@ pub(crate) async fn mission_publish(
                     .into_response();
             }
         };
+    // The named agent is looked up before anything is published: an unknown name publishes
+    // nothing and locks no Watt.
+    let assignee = match body.assignee.take() {
+        Some(name) => match mission_trade::resolve_assignee(&state, &name).await {
+            Ok(assignee) => Some(assignee),
+            Err(response) => return response,
+        },
+        None => None,
+    };
     let request_json = json!({"title": body.title, "publisher": body.publisher});
-    let mission = match publish_mission_on_board(&state, body, settlement_delegation.as_ref()).await
+    let mission = match publish_mission_on_board(
+        &state,
+        body,
+        settlement_delegation.as_ref(),
+        assignee.as_ref(),
+    )
+    .await
     {
         Ok(mission) => mission,
         Err(response) => return response,
@@ -2731,6 +2784,20 @@ fn mission_claim_body_with_path_id(
     serde_json::from_value(value).map_err(|error| format!("invalid mission request body: {error}"))
 }
 
+/// The task contract of another node's mission, once the ledger's rules let this agent ask for
+/// it: a mission reserved for someone else, or a claim ban on this agent, stops the claim here
+/// and it is never sent to the publisher.
+async fn claimable_network_task_contract(
+    state: &ControlPlaneState,
+    route: &NetworkMissionClaimRoute,
+    body: &MissionClaimBody,
+) -> Result<TaskContract, Response> {
+    let contract = network_task_contract_for_action(state, route, body, "claim").await?;
+    mission_trade::ask_ledger_for_claim(state, &body.mission_id, &body.agent_did, &contract.inputs)
+        .await?;
+    Ok(contract)
+}
+
 async fn claim_network_mission(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -2765,7 +2832,7 @@ async fn claim_network_mission(
     {
         return response;
     }
-    let contract = match network_task_contract_for_action(&state, &route, &body, "claim").await {
+    let contract = match claimable_network_task_contract(&state, &route, &body).await {
         Ok(contract) => contract,
         Err(response) => return response,
     };
@@ -2943,6 +3010,7 @@ async fn complete_network_mission(
         Ok(route) => route,
         Err(response) => return response,
     };
+    mission_trade::reopen_sent_back_claim(&state, &body.mission_id, &body.agent_did).await;
     let claim_record = match ensure_network_claim_claimed_for_complete(&state, &body, &route) {
         Ok(record) => record,
         Err(response) => return *response,
@@ -2966,6 +3034,16 @@ async fn complete_network_mission(
         Ok(contract) => contract,
         Err(response) => return response,
     };
+    if let Err(response) = mission_trade::report_delivery(
+        &state,
+        &body.mission_id,
+        Some(&result),
+        mission_trade::inputs_expect_terms(&contract.inputs),
+    )
+    .await
+    {
+        return response;
+    }
     let (subscriber_node_id, task_contract_sync) =
         match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
@@ -3172,6 +3250,44 @@ fn apply_local_mission_transition(
     }
 }
 
+/// What the ledger's rules say about a claim or a completion on a mission this node published,
+/// asked before the board changes. A claim on an open mission is refused for anyone but the
+/// named agent and for an agent under a claim ban, and the accepted claimer is recorded with
+/// the ledger. A completion by the claimer is reported to the ledger; if the ledger refuses it
+/// (an `in_world` mission completed empty-handed) the agent is told, the board stays as it is, and
+/// if the ledger already ended the trade the board follows.
+async fn check_local_transition_with_ledger(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    body: &MissionClaimBody,
+    action: &str,
+) -> Result<(), Response> {
+    let by_claimer = mission.claimed_by.as_deref() == Some(body.agent_did.as_str());
+    match (action, &mission.status) {
+        ("claim", MissionStatus::Open) => {
+            mission_trade::approve_claim_at_ledger(state, mission, &body.agent_did).await
+        }
+        ("complete", MissionStatus::Claimed)
+            if by_claimer && mission_trade::has_claim_terms(mission) =>
+        {
+            // An in_world mission is never completed empty-handed, so the ledger must answer.
+            let strict = mission_trade::needs_something_handed_in(mission);
+            let reported = mission_trade::report_delivery(
+                state,
+                &mission.mission_id,
+                body.result.as_ref(),
+                strict,
+            )
+            .await;
+            if reported.is_err() {
+                mission_trade::end_returned_mission(state, &mission.mission_id).await;
+            }
+            reported
+        }
+        _ => Ok(()),
+    }
+}
+
 async fn transition_mission(
     state: ControlPlaneState,
     headers: HeaderMap,
@@ -3197,17 +3313,19 @@ async fn transition_mission(
     } else {
         None
     };
-    let mut board = state.mission_board.lock().await;
-    if board.get(&body.mission_id).is_none() {
-        if action == "claim" {
-            drop(board);
-            return claim_network_mission(state, headers, auth, body).await;
-        }
-        if action == "complete" {
-            drop(board);
-            return complete_network_mission(state, headers, auth, body).await;
-        }
+    let local = state.mission_board.lock().await.get(&body.mission_id);
+    match (&local, action) {
+        (None, "claim") => return claim_network_mission(state, headers, auth, body).await,
+        (None, "complete") => return complete_network_mission(state, headers, auth, body).await,
+        _ => {}
     }
+    if let Some(local) = &local
+        && let Err(response) =
+            check_local_transition_with_ledger(&state, local, &body, action).await
+    {
+        return response;
+    }
+    let mut board = state.mission_board.lock().await;
     let mission =
         apply_local_mission_transition(&mut board, action, &body, claimer_display_name.as_deref());
     let mission = match mission {
@@ -3289,6 +3407,11 @@ pub(crate) async fn mission_settle(
         Err(response) => return response,
     };
     let request_mission_id = body.mission_id.clone();
+    // A trade the ledger already ended (items turned down, or a deadline passed) cannot be
+    // settled: each side has its own back and the mission ends on the board.
+    if let Some(ended) = mission_trade::end_returned_mission(&state, &body.mission_id).await {
+        return mission_trade::trade_ended_response(&body.mission_id, &ended);
+    }
     let swarm_finalize = match finalize_mission_task_before_settle(&state, &body, &headers).await {
         Ok(value) => value,
         Err(response) => return response,

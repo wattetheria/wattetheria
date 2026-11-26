@@ -51,8 +51,6 @@ pub enum HuntAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hp_potion_below: Option<u32>,
     },
-    /// Pick up one thing a cliff wraith dropped on the ground, standing within one tile of it.
-    Pick { item_id: i64 },
     /// Buy the training sword, standing in the smithy.
     SmithyBuy,
     /// Forge the next sword of the line, standing in the smithy.
@@ -73,7 +71,6 @@ impl HuntAction {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Fight { .. } => "fight",
-            Self::Pick { .. } => "pick",
             Self::SmithyBuy => "smithy_buy",
             Self::SmithyForge => "smithy_forge",
             Self::SmithyEnhance => "smithy_enhance",
@@ -123,18 +120,8 @@ pub enum HuntRejection {
     Respawning,
     /// The cliff wraith was already defeated before this fight came to it.
     AlreadyDefeated,
-    /// The thing on the ground was picked up by someone else first.
-    Taken,
-    /// The thing on the ground is gone.
-    Vanished,
-    /// The thing on the ground is still kept for the agents who fought for it.
-    Protected,
-    /// The caller is too far from the thing on the ground.
-    TooFar,
-    /// The caller picked or looked a moment ago; one a second.
+    /// The caller looked a moment ago; one a second.
     TooSoon,
-    /// The caller cannot take Watt or gems from the hunt (not registered).
-    NotEligible,
     /// The caller already has that weapon.
     AlreadyOwned,
     /// The caller lacks a weapon, material or gem the command needs.
@@ -161,12 +148,7 @@ impl HuntRejection {
             Self::Fighting => "fighting",
             Self::Respawning => "respawning",
             Self::AlreadyDefeated => "already_defeated",
-            Self::Taken => "taken",
-            Self::Vanished => "vanished",
-            Self::Protected => "protected",
-            Self::TooFar => "too_far",
             Self::TooSoon => "too_soon",
-            Self::NotEligible => "not_eligible",
             Self::AlreadyOwned => "already_owned",
             Self::Missing => "missing",
             Self::MaxLevel => "max_level",
@@ -209,7 +191,6 @@ mod tests {
     #[test]
     fn names_and_codes_match_their_serde_names() {
         for (action, name) in [
-            (HuntAction::Pick { item_id: 7 }, "pick"),
             (HuntAction::SmithyBuy, "smithy_buy"),
             (HuntAction::SmithyForge, "smithy_forge"),
             (HuntAction::SmithyEnhance, "smithy_enhance"),

@@ -516,6 +516,7 @@ fn invite_private_hive_participant_fields() -> Vec<(&'static str, Value)> {
 fn mission_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "list_missions" => Some(tool_schema(tool, &list_mission_fields(), &[], false)),
+        "get_mission" => Some(tool_schema(tool, &get_mission_fields(), &[], false)),
         "publish_mission" => Some(tool_schema(
             tool,
             &publish_mission_fields(),
@@ -578,6 +579,13 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
             &["mission_id"],
             false,
         )),
+        "pledge_mission_items" => Some(tool_schema(
+            tool,
+            &pledge_mission_items_fields(),
+            &["mission_id", "kind", "item", "units"],
+            false,
+        )),
+        "mission_guide" => Some(empty_tool_schema(tool)),
         _ => None,
     }
 }
@@ -600,6 +608,20 @@ fn list_mission_fields() -> Vec<(&'static str, Value)> {
         integer_field(
             "offset",
             "Zero-based client offset into the bounded gateway result window.",
+        ),
+    ]
+}
+
+fn get_mission_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field(
+            "title",
+            "Mission title, or any part of it; case is ignored. Give this or mission_id.",
+        ),
+        string_field("mission_id", "Exact mission ID. Give this or title."),
+        integer_field(
+            "limit",
+            "Maximum number of matching missions to return; defaults to 5, at most 20.",
         ),
     ]
 }
@@ -646,8 +668,35 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
             "expires_at",
             "Optional unix seconds. An open or claimed mission past this time is cancelled and its Watt bounty refunded to the publisher.",
         ),
+        string_field(
+            "assignee",
+            "Optional display name of the one agent allowed to take this mission. Omit to leave it open to anyone. Publishing fails with assignee_not_found when no agent carries the name.",
+        ),
         reward_field(),
     ]
+}
+
+fn pledge_mission_items_fields() -> Vec<(&'static str, Value)> {
+    let mut fields = vec![
+        string_field("mission_id", "Mission ID."),
+        enum_field(
+            "kind",
+            "Which bag the item is in: crop (farm harvest), hunt (hunt bag), housing (building pieces in store).",
+            &["crop", "hunt", "housing"],
+        ),
+        string_field("item", "The item's id, as your bag lists it."),
+        (
+            "units",
+            json!({"type": "integer", "minimum": 1, "description": "How many to hand over."}),
+        ),
+    ];
+    // The same optional route a completion takes, for a mission another node published.
+    fields.extend(
+        claim_mission_fields()
+            .into_iter()
+            .filter(|(name, _)| !matches!(*name, "mission_id" | "agent_did")),
+    );
+    fields
 }
 
 /// The Watt bounty a publisher offers. Omitted means no bounty; `agent_watt` is locked from
@@ -695,8 +744,9 @@ fn publish_delegated_mission_fields() -> Vec<(&'static str, Value)> {
 
 fn publish_collective_mission_fields() -> Vec<(&'static str, Value)> {
     let mut fields = publish_mission_fields();
-    // Collective missions carry no Watt bounty; the Hive flow never reads a reward.
-    fields.retain(|(name, _)| *name != "reward");
+    // Collective missions carry no Watt bounty; the Hive flow never reads a reward. They are
+    // joined by a Hive's members, so they name no single agent either.
+    fields.retain(|(name, _)| !matches!(*name, "reward" | "assignee"));
     fields.extend([
         string_field(
             "hive_id",

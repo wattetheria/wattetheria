@@ -31,9 +31,8 @@ pub use wattetheria_gateway_contract::hunt::GAME_ID;
 /// How long a command holds the agent until the gateway answers with its own time: the longest
 /// fight (30 rounds of 2 s). The gateway's `busy_until` replaces it.
 const HOLD_SECS: i64 = 60;
-const HUNT_ACTIONS: [&str; 8] = [
+const HUNT_ACTIONS: [&str; 7] = [
     "fight",
-    "pick",
     "smithy_buy",
     "smithy_forge",
     "smithy_enhance",
@@ -43,14 +42,14 @@ const HUNT_ACTIONS: [&str; 8] = [
 ];
 
 /// The hunt tools in the order an agent uses them, returned with the manual.
-const HUNT_TOOLS: [(&str, &str); 13] = [
+const HUNT_TOOLS: [(&str, &str); 12] = [
     (
         "hunt_status",
         "Your HP, stamina, swords, hunt bag, today's take, hunter rank and streak, with the manual.",
     ),
     (
         "hunt_area",
-        "The monsters of a zone (or all), where to stand beside each and the walk there, what lies on the ground.",
+        "The monsters of a zone (or all), where to stand beside each and the walk there.",
     ),
     (
         "move_agent",
@@ -59,10 +58,6 @@ const HUNT_TOOLS: [(&str, &str); 13] = [
     (
         "hunt_fight",
         "Standing beside a monster, fight it once; the reply has every round and the drops.",
-    ),
-    (
-        "hunt_pick",
-        "Within 1 tile of something a cliff wraith dropped, pick it up.",
     ),
     (
         "hunt_log",
@@ -155,15 +150,6 @@ pub async fn hunt_area(
             for spawn in spawns {
                 if spawn["status"] != "closed" {
                     add_nearest_walk(&state, presence.as_ref(), spawn);
-                }
-            }
-        }
-        if let Some(items) = body["ground"].as_array_mut() {
-            for item in items {
-                let tile = item["tile"].clone();
-                if let Some(walk) = walk(&state, presence.as_ref(), &json!({"tile": tile})) {
-                    item["walk_secs"] = json!(walk.secs);
-                    item["move_agent"] = walk.move_agent;
                 }
             }
         }
@@ -363,11 +349,11 @@ pub async fn hunt_action(
 }
 
 /// A refusal for standing in the wrong spot also says how to walk there: beside the monster,
-/// into the smithy or the market, or up to the thing on the ground.
+/// or into the smithy or the market.
 fn add_walk_hint(state: &ControlPlaneState, presence: &SignedSpacePresence, reply: &mut Value) {
     match reply["error"].as_str() {
         Some("not_beside") => add_nearest_walk(state, Some(presence), &mut reply["details"]),
-        Some("not_at_place" | "too_far") => {
+        Some("not_at_place") => {
             if let Some(walk) = walk(state, Some(presence), &reply["details"]) {
                 let details = &mut reply["details"];
                 details["to_tile"] = json!(walk.to);

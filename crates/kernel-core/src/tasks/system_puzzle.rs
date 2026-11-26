@@ -389,6 +389,8 @@ mod tests {
             lat: None,
             lng: None,
             coordinate_source: None,
+            city: None,
+            country: None,
             created_at: 1,
             updated_at: 1,
             claimed_by: None,
@@ -400,6 +402,8 @@ mod tests {
             escrow_id: None,
             escrow_confirmed: false,
             expires_at: None,
+            assignee_did: None,
+            assignee_display_name: None,
         }
     }
 }

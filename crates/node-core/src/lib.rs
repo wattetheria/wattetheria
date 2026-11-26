@@ -198,6 +198,7 @@ fn spawn_mission_ledger_sweep_task(state: ControlPlaneState) -> tokio::task::Joi
                     refunds_pending = report.refunds_pending,
                     escrows_confirmed = report.escrows_confirmed,
                     escrows_abandoned = report.escrows_abandoned,
+                    trades_ended = report.trades_ended,
                     "mission ledger sweep finished"
                 );
             }

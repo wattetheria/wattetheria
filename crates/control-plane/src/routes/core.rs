@@ -1521,6 +1521,12 @@ async fn commit_publish_mission(
                 .payload
                 .get("expires_at")
                 .and_then(Value::as_i64),
+            assignee: body
+                .decision
+                .payload
+                .get("assignee")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
         }),
     )
     .await
@@ -1753,7 +1759,19 @@ async fn commit_mission_result_review(
     let execution_id = payload_string(&body.decision.payload, "/execution_id")
         .or_else(|| payload_string(&body.event.payload, "/execution_id"))
         .unwrap_or_else(|| format!("wattetheria:{mission_id}:{agent_did}"));
-    let payload = json!({
+    // Sending back the hand-in of an `in_world` mission with a bounty returns held items to
+    // the claimer and lets it hand in again; the mission goes on. It comes first: if the ledger
+    // cannot be reached nothing has been decided yet and the agent can decide again. Missions
+    // of any other kind are not touched here.
+    let returned = if matches!(action, "reject_result" | "request_retry") {
+        match crate::routes::mission_trade::send_back_hand_in(&state, &mission_id).await {
+            Ok(returned) => returned,
+            Err(response) => return response,
+        }
+    } else {
+        None
+    };
+    let mut payload = json!({
         "mission_id": mission_id,
         "task_id": task_id,
         "candidate_id": payload_string(&body.decision.payload, "/candidate_id")
@@ -1766,6 +1784,9 @@ async fn commit_mission_result_review(
         "event_id": body.event.event_id.clone(),
         "decision_id": body.decision.decision_id.clone(),
     });
+    if let Some(returned) = returned {
+        payload["returned"] = returned;
+    }
     let target_node_id = payload_string(&body.event.payload, "/completed_by_node_id")
         .or_else(|| body.event.source_node_id.clone());
     let agent_envelope = match task_lifecycle_envelope_for_commit(

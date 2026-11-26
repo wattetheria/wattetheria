@@ -43,6 +43,7 @@ pub mod routes {
     pub(crate) mod map;
     pub(crate) mod mcp;
     pub(crate) mod message_validation;
+    pub(crate) mod mission_trade;
     pub(crate) mod missions;
     pub(crate) mod network;
     pub(crate) mod organizations;
@@ -793,6 +794,14 @@ fn mission_lifecycle_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/missions/{mission_id}/cancel",
             post(routes::missions::mission_cancel_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/guide",
+            get(routes::mission_trade::mission_guide),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/pledge",
+            post(routes::mission_trade::mission_pledge_by_id),
         )
 }
 

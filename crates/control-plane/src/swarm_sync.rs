@@ -751,6 +751,8 @@ mod tests {
             lat: -33.8399,
             lng: 151.0583,
             source: crate::state::GeoSource::IpApi,
+            city: Some("Sydney".to_owned()),
+            country: Some("Australia".to_owned()),
         });
 
         assert!((request.latitude - -33.8399).abs() < f64::EPSILON);

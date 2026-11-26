@@ -68,6 +68,15 @@ pub struct EscrowLabels<'a> {
     pub subject: Option<&'a str>,
 }
 
+/// Who may claim a bounty, sent with its lock: the mission's scope (`real_world` / `in_world`)
+/// and, when the publisher named one, the agent it is reserved for.
+#[derive(Debug, Clone, Copy)]
+pub struct EscrowTerms<'a> {
+    pub scope: &'a str,
+    pub assignee: Option<&'a str>,
+    pub assignee_label: Option<&'a str>,
+}
+
 /// Display-name snapshots sent with a transfer so the ledger can show who paid whom and why.
 /// The ledger-wide transfer id for one of this agent's transfers: the payer's DID
 /// fingerprint, then the caller's id. Entry ids are a global namespace on the ledger.
@@ -280,8 +289,9 @@ impl LedgerClient {
         amount: i64,
         reference: &str,
         labels: EscrowLabels<'_>,
+        terms: Option<EscrowTerms<'_>>,
     ) -> std::result::Result<Value, LedgerError> {
-        let payload = json!({
+        let mut payload = json!({
             "escrow_id": escrow_id,
             "payer": state.identity.agent_did,
             "amount": amount,
@@ -290,7 +300,137 @@ impl LedgerClient {
             "subject": labels.subject,
             "issued_at_ms": chrono::Utc::now().timestamp_millis(),
         });
+        if let Some(terms) = terms {
+            payload["terms"] = json!({
+                "scope": terms.scope,
+                "assignee": terms.assignee,
+                "assignee_label": terms.assignee_label,
+            });
+        }
         self.post_signed(state, "/api/ledger/escrows", payload)
+            .await
+    }
+
+    /// Asks the ledger for the bounty on behalf of this agent, before the claim leaves the
+    /// node. The ledger's answer comes back as it is: a refusal says why this agent may not
+    /// claim, and `404` means the bounty carries no claim terms.
+    pub async fn request_claim(
+        &self,
+        state: &ControlPlaneState,
+        escrow_id: &str,
+        claimer_label: Option<&str>,
+    ) -> Result<(StatusCode, Value)> {
+        let payload = json!({
+            "escrow_id": escrow_id,
+            "claimer": state.identity.agent_did,
+            "claimer_label": claimer_label,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed_raw(
+            state,
+            &format!("/api/ledger/escrows/{escrow_id}/claims"),
+            payload,
+        )
+        .await
+    }
+
+    /// Tells the ledger that this agent, the publisher, accepts `claimer` for the bounty.
+    pub async fn approve_claim(
+        &self,
+        state: &ControlPlaneState,
+        escrow_id: &str,
+        claimer: &str,
+    ) -> Result<(StatusCode, Value)> {
+        let payload = json!({
+            "escrow_id": escrow_id,
+            "payer": state.identity.agent_did,
+            "claimer": claimer,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed_raw(
+            state,
+            &format!("/api/ledger/escrows/{escrow_id}/claims/approve"),
+            payload,
+        )
+        .await
+    }
+
+    /// Hands `units` of `item` from this agent's bag to the ledger for the bounty's publisher
+    /// to look at. `kind` names the bag (`crop`, `hunt`, `housing`).
+    pub async fn pledge_items(
+        &self,
+        state: &ControlPlaneState,
+        escrow_id: &str,
+        kind: &str,
+        item: &str,
+        units: i64,
+    ) -> Result<(StatusCode, Value)> {
+        let payload = json!({
+            "escrow_id": escrow_id,
+            "claimer": state.identity.agent_did,
+            "kind": kind,
+            "item": item,
+            "units": units,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed_raw(
+            state,
+            &format!("/api/ledger/escrows/{escrow_id}/pledge"),
+            payload,
+        )
+        .await
+    }
+
+    /// Reports that the bounty's work was handed in without any item, as its publisher or its
+    /// claimer. `has_result` says whether the completion carries a result that shows the work.
+    pub async fn report_delivery(
+        &self,
+        state: &ControlPlaneState,
+        escrow_id: &str,
+        has_result: bool,
+    ) -> Result<(StatusCode, Value)> {
+        let payload = json!({
+            "escrow_id": escrow_id,
+            "signer": state.identity.agent_did,
+            "has_result": has_result,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed_raw(
+            state,
+            &format!("/api/ledger/escrows/{escrow_id}/deliver"),
+            payload,
+        )
+        .await
+    }
+
+    /// Turns down the items pledged for this agent's bounty: every side gets its own back.
+    pub async fn reject_pledge(
+        &self,
+        state: &ControlPlaneState,
+        escrow_id: &str,
+    ) -> Result<(StatusCode, Value)> {
+        let payload = json!({
+            "escrow_id": escrow_id,
+            "payer": state.identity.agent_did,
+            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        self.post_signed_raw(
+            state,
+            &format!("/api/ledger/escrows/{escrow_id}/reject"),
+            payload,
+        )
+        .await
+    }
+
+    /// The bounty's claim terms and what the ledger holds for it; `404` when it has none.
+    pub async fn trade(&self, escrow_id: &str) -> Result<(StatusCode, Value)> {
+        self.get_public(&format!("/api/ledger/escrows/{escrow_id}/trade"), &[])
+            .await
+    }
+
+    /// Whether `agent_did` may claim missions now, as the ledger records it.
+    pub async fn claim_standing(&self, agent_did: &str) -> Result<(StatusCode, Value)> {
+        self.get_public(&format!("/api/missions/claimers/{agent_did}"), &[])
             .await
     }
 
