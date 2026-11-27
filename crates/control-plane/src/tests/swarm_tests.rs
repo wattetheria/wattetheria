@@ -132,6 +132,13 @@ async fn network_routes_surface_bridge_read_models() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let (_dir, app, token, _, _state) =
         build_test_app_with_bridge(20, dir, identity, event_log, bridge);
@@ -151,9 +158,9 @@ async fn network_routes_surface_bridge_read_models() {
 
 #[tokio::test]
 async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
-    let (dir, app, token, _, state) = build_test_app(20);
+    let (_dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
-    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-1").await;
+    seed_gateway_remote_mission(&state, "mission-remote-1").await;
     let response = authed_post_json(
         app,
         &token,
@@ -191,11 +198,7 @@ async fn claim_network_mission_subscribes_scope_and_claims_wattswarm_task() {
     assert!(response.get("task_announcement_sync").is_none());
 }
 
-async fn seed_gateway_remote_mission(
-    data_dir: &std::path::Path,
-    state: &ControlPlaneState,
-    mission_id: &str,
-) {
+async fn seed_gateway_remote_mission(state: &ControlPlaneState, mission_id: &str) {
     let mut contract = state
         .swarm_bridge
         .sample_task_contract(mission_id)
@@ -223,49 +226,51 @@ async fn seed_gateway_remote_mission(
             "result": {}
         }
     });
-    let gateway_task = json!({
-        "id": mission_id,
-        "task_id": mission_id,
-        "task_type": "wattetheria.mission",
-        "title": "Remote mission",
-        "status": "published",
-        "source_node_id": "publisher-node",
-        "publisher_wattswarm_node_id": "publisher-node",
-        "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": format!("group:{mission_id}"),
-        "task_contract": contract,
-    });
-    let gateway_app = Router::new().route(
-        "/api/missions",
-        get(move || {
-            let gateway_task = gateway_task.clone();
-            async move { Json(json!([gateway_task])) }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        axum::serve(listener, gateway_app).await.unwrap();
-    });
-    std::fs::write(
-        data_dir.join("config.json"),
-        json!({"gateway_urls": [gateway_url]}).to_string(),
-    )
-    .unwrap();
+    mission_gateway::mission_gateway(state)
+        .lock()
+        .await
+        .seed(mission_gateway::remote_record(
+            mission_id,
+            "Remote mission",
+            "did:agent:publisher",
+            "published",
+            Some(&contract),
+        ));
+}
+
+/// The gateway records this agent as the approved claimer of the remote mission.
+async fn approve_gateway_remote_claim(state: &ControlPlaneState, mission_id: &str) {
+    let gateway = mission_gateway::mission_gateway(state);
+    let mut gateway = gateway.lock().await;
+    gateway.set(mission_id, "status", json!("claimed"));
+    gateway.set(mission_id, "claimer", json!(state.agent_did));
+}
+
+/// The result of every `mission_completed` notice posted on the mission's topic, oldest first.
+async fn completed_results_told(state: &ControlPlaneState, scope_hint: &str) -> Vec<Value> {
+    state
+        .swarm_bridge
+        .list_topic_messages(None, "wattetheria.missions", scope_hint, 10, None, None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|notice| notice.content["kind"] == "mission_completed")
+        .map(|notice| notice.content["result"].clone())
+        .collect()
 }
 
 #[tokio::test]
 async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice() {
-    let (dir, app, token, _, state) = build_test_app(20);
+    let (_dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
-    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-2").await;
+    seed_gateway_remote_mission(&state, "mission-remote-2").await;
+    approve_gateway_remote_claim(&state, "mission-remote-2").await;
     let mut claims = NetworkMissionClaimRegistry::default();
     claims.record(
         "mission-remote-2",
         "mission-remote-2",
         &agent_did,
         &format!("wattetheria:mission-remote-2:{agent_did}"),
-        Some("claimed".to_string()),
         NetworkMissionClaimMetadata {
             mission_feed_key: Some("wattetheria.missions".to_string()),
             mission_scope_hint: Some("group:mission-remote-2".to_string()),
@@ -280,23 +285,35 @@ async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice(
             &claims,
         )
         .unwrap();
-    let response = authed_post_json(
-        app,
-        &token,
-        "/v1/wattetheria/missions/mission-remote-2/complete",
-        json!({
-            "mission_id": "mission-remote-2",
-            "agent_did": agent_did,
-            "claim_route": {
-                "task_id": "mission-remote-2",
-                "mission_feed_key": "wattetheria.missions",
-                "mission_scope_hint": "group:mission-remote-2",
-                "publisher_wattswarm_node_id": "publisher-node"
-            },
-            "result": {"delivered": true}
-        }),
-    )
-    .await;
+    let complete_with = |result: Value| {
+        authed_post_json(
+            app.clone(),
+            &token,
+            "/v1/wattetheria/missions/mission-remote-2/complete",
+            json!({
+                "mission_id": "mission-remote-2",
+                "agent_did": agent_did,
+                "claim_route": {
+                    "task_id": "mission-remote-2",
+                    "mission_feed_key": "wattetheria.missions",
+                    "mission_scope_hint": "group:mission-remote-2",
+                    "publisher_wattswarm_node_id": "publisher-node"
+                },
+                "result": result
+            }),
+        )
+    };
+    let response = complete_with(json!({"delivered": true})).await;
+
+    // A mission is handed in once: handing in again changes nothing on the gateway, and the
+    // publisher is told the result the gateway keeps.
+    let again = complete_with(json!({"delivered": "something else"})).await;
+    assert_eq!(again["ok"].as_bool(), Some(true), "{again}");
+    let told = completed_results_told(&state, "group:mission-remote-2").await;
+    assert_eq!(
+        told,
+        [json!({"delivered": true}), json!({"delivered": true})]
+    );
 
     assert_eq!(response["ok"].as_bool(), Some(true));
     assert_eq!(
@@ -335,28 +352,31 @@ async fn complete_network_mission_syncs_contract_and_publishes_lifecycle_notice(
         Some("group:mission-remote-2")
     );
     assert!(response.get("task_announcement_sync").is_none());
-    let registry: NetworkMissionClaimRegistry = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
-        .unwrap();
-    let claim = registry
-        .get("mission-remote-2", "mission-remote-2", &agent_did)
-        .expect("network claim");
-    assert_eq!(claim.status.as_deref(), Some("completed"));
+    assert_eq!(
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .status("mission-remote-2")
+            .as_deref(),
+        Some("completed")
+    );
+    assert_eq!(
+        response["mission"]["gateway_status"].as_str(),
+        Some("completed")
+    );
 }
 
 #[tokio::test]
-async fn complete_network_mission_requires_claimed_network_claim_record() {
-    let (dir, app, token, _, state) = build_test_app(20);
+async fn complete_network_mission_requires_the_gateway_to_record_the_claim() {
+    let (_dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
-    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-unclaimed").await;
+    seed_gateway_remote_mission(&state, "mission-remote-unclaimed").await;
     let mut claims = NetworkMissionClaimRegistry::default();
     claims.record(
         "mission-remote-unclaimed",
         "mission-remote-unclaimed",
         &agent_did,
         &format!("wattetheria:mission-remote-unclaimed:{agent_did}"),
-        Some("approved".to_string()),
         NetworkMissionClaimMetadata {
             mission_feed_key: Some("wattetheria.missions".to_string()),
             mission_scope_hint: Some("group:mission-remote-unclaimed".to_string()),
@@ -390,25 +410,32 @@ async fn complete_network_mission_requires_claimed_network_claim_record() {
     )
     .await;
 
+    // The gateway has not recorded this agent as the mission's claimer: it refuses the
+    // hand-in, and no completion notice leaves the node.
+    assert_eq!(response["code"].as_str(), Some("not_a_party"));
+    assert!(response.get("mission_lifecycle_notice").is_none());
     assert_eq!(
-        response["error"].as_str(),
-        Some("network mission complete requires a recorded claimed mission")
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .status("mission-remote-unclaimed")
+            .as_deref(),
+        Some("published")
     );
-    assert_eq!(response["claim_status"].as_str(), Some("approved"));
 }
 
 #[tokio::test]
 async fn agent_action_commit_completes_claimed_network_mission_from_claim_registry() {
-    let (dir, app, token, _, state) = build_test_app(20);
+    let (_dir, app, token, _, state) = build_test_app(20);
     let agent_did = state.agent_did.clone();
-    seed_gateway_remote_mission(dir.path(), &state, "mission-remote-commit-complete").await;
+    seed_gateway_remote_mission(&state, "mission-remote-commit-complete").await;
+    approve_gateway_remote_claim(&state, "mission-remote-commit-complete").await;
     let mut claims = NetworkMissionClaimRegistry::default();
     claims.record(
         "mission-remote-commit-complete",
         "mission-remote-commit-complete",
         &agent_did,
         &format!("wattetheria:mission-remote-commit-complete:{agent_did}"),
-        Some("claimed".to_string()),
         NetworkMissionClaimMetadata {
             mission_feed_key: Some("wattetheria.missions".to_string()),
             mission_scope_hint: Some("group:mission-remote-commit-complete".to_string()),
@@ -469,18 +496,14 @@ async fn agent_action_commit_completes_claimed_network_mission_from_claim_regist
         response["mission_lifecycle_notice"]["kind"].as_str(),
         Some("mission_completed")
     );
-    let registry: NetworkMissionClaimRegistry = state
-        .local_db
-        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
-        .unwrap();
-    let claim = registry
-        .get(
-            "mission-remote-commit-complete",
-            "mission-remote-commit-complete",
-            &agent_did,
-        )
-        .expect("network claim");
-    assert_eq!(claim.status.as_deref(), Some("completed"));
+    assert_eq!(
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .status("mission-remote-commit-complete")
+            .as_deref(),
+        Some("completed")
+    );
 }
 
 #[tokio::test]
@@ -756,6 +779,13 @@ fn topic_routes_mock_bridge(identity: &Identity) -> Arc<MockSwarmBridge> {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     })
 }
 

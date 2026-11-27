@@ -9,6 +9,7 @@ use wattetheria_kernel::emergency::evaluate_emergencies;
 use wattetheria_kernel::night_shift::generate_night_shift_report;
 use wattetheria_kernel::policy_engine::{CapabilityRequest, DecisionKind};
 use wattetheria_kernel::profiles::strategy_directive;
+use wattetheria_kernel::swarm_bridge::agent_stats_from_missions;
 
 pub(crate) fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> Result<Value> {
     let now = Utc::now().timestamp();
@@ -20,11 +21,10 @@ pub(crate) fn load_night_shift_report(state: &ControlPlaneState, hours: i64) -> 
 pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value> {
     let events = state.event_log.get_all()?;
     let pending_policy_requests = state.policy_engine.lock().await.list_pending().len();
-    let agent_view = state.swarm_bridge.agent_view(&state.agent_did).await?;
+    let missions = crate::routes::gateway_missions::board_view(state).await?;
     let latest_report_digest = events
         .last()
         .map_or_else(|| "no-events".to_string(), |event| event.hash.clone());
-    let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
@@ -40,7 +40,7 @@ pub(crate) async fn build_brain_state(state: &ControlPlaneState) -> Result<Value
         "events": events.len(),
         "pending_policy_requests": pending_policy_requests,
         "latest_report_digest": latest_report_digest,
-        "agent_stats": agent_view.stats,
+        "agent_stats": agent_stats_from_missions(&missions, &state.agent_did),
         "profile": profile,
         "strategy": strategy,
         "emergencies": emergencies,

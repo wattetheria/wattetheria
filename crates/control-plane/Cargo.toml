@@ -55,6 +55,7 @@ protoc-bin-vendored = "3"
 tonic-build = "0.12"
 
 [dev-dependencies]
+wattetheria-kernel = { package = "wattetheria-kernel-core", path = "../kernel-core", features = ["test-fixtures"] }
 tracing-subscriber.workspace = true
 async-trait.workspace = true
 ed25519-dalek.workspace = true

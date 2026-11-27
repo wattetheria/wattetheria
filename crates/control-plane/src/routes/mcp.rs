@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::auth::{authorize, bearer_token, unauthorized};
 use crate::diagnostics::{DiagnosticEvent, record_diagnostic};
+use crate::routes::gateway_missions;
 use crate::routes::identity::{identity_context_response, resolve_identity_context};
 use crate::routes::servicenet::envelope::{
     normalize_servicenet_invoke_body, servicenet_invoke_agent_envelope,
@@ -1539,30 +1540,25 @@ async fn network_mission_market_payload(
     let offset = numeric_argument(arguments, "offset")
         .unwrap_or(0)
         .min(MAX_GATEWAY_TASK_WINDOW);
+    // One more than the page, so a mission past it tells there is a next page.
     let fetch_limit = offset
         .saturating_add(limit)
-        .clamp(1, MAX_GATEWAY_TASK_WINDOW);
-    let status_filter = required_string(arguments, "status").map(normalize_mission_status_filter);
-    let gateway_url = resolve_gateway_query_url(state)?;
-    let gateway_endpoint = normalized_gateway_tasks_url(&gateway_url);
-    let tasks = fetch_gateway_tasks(&gateway_endpoint, fetch_limit).await?;
-    let all_missions = tasks
-        .into_iter()
-        .filter(is_gateway_mission)
-        .filter(|task| {
-            status_filter
-                .as_ref()
-                .is_none_or(|status| gateway_task_status(task).as_deref() == Some(status))
-        })
-        .collect::<Vec<_>>();
+        .saturating_add(1)
+        .clamp(1, MAX_GATEWAY_TASK_WINDOW + 1)
+        .to_string();
+    let status_filter = required_string(arguments, "status");
+    let mut query = vec![("limit", fetch_limit.as_str())];
+    if let Some(status) = status_filter.as_deref() {
+        query.push(("status", status));
+    }
+    let all_missions = gateway_missions::list(state, &query).await?;
     let page = all_missions
         .iter()
         .skip(offset)
         .take(limit)
-        .cloned()
-        .map(normalize_gateway_mission)
-        .map(|mut mission| {
-            mission_details::state_common_facts(&mut mission, None);
+        .map(|record| {
+            let mut mission = with_claim_route(gateway_missions::mission_json_or_record(record));
+            mission_details::state_common_facts(&mut mission);
             mission
         })
         .collect::<Vec<_>>();
@@ -1572,8 +1568,6 @@ async fn network_mission_market_payload(
     Ok(json!({
         "source": "wattetheria-gateway.api_missions",
         "scope": "network",
-        "gateway_url": gateway_url,
-        "gateway_endpoint": gateway_endpoint,
         "pagination": "gateway_limit_client_offset",
         "limit": limit,
         "offset": offset,
@@ -1582,13 +1576,6 @@ async fn network_mission_market_payload(
         "known_count": all_missions.len(),
         "missions": page,
     }))
-}
-
-pub(crate) async fn fetch_gateway_tasks(
-    gateway_endpoint: &str,
-    limit: usize,
-) -> anyhow::Result<Vec<Value>> {
-    fetch_gateway_array(gateway_endpoint, limit, "/api/missions").await
 }
 
 async fn fetch_gateway_hives(gateway_endpoint: &str, limit: usize) -> anyhow::Result<Vec<Value>> {
@@ -1749,37 +1736,11 @@ fn gateway_hive_subscribe_route(hive: &Value) -> Value {
     })
 }
 
-fn is_gateway_mission(task: &Value) -> bool {
-    task.get("task_type")
-        .and_then(Value::as_str)
-        .is_some_and(|kind| kind == "wattetheria.mission")
-        || (task.get("title").and_then(Value::as_str).is_some()
-            && task
-                .get("id")
-                .or_else(|| task.get("mission_id"))
-                .and_then(Value::as_str)
-                .is_some())
-}
-
-fn gateway_task_status(task: &Value) -> Option<String> {
-    task.get("status")
-        .or_else(|| task.get("terminal_state"))
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn normalize_mission_status_filter(status: String) -> String {
-    if status == "open" {
-        "published".to_string()
-    } else {
-        status
-    }
-}
-
-fn normalize_gateway_mission(mut task: Value) -> Value {
+/// A gateway mission as `list_missions` shows it: with the route a claim takes and, for a
+/// delegated mission, a summary of its settlement.
+fn with_claim_route(mut task: Value) -> Value {
     let claim_route = gateway_mission_claim_route(&task);
     let settlement_delegation = gateway_mission_settlement_delegation(&task).cloned();
-    let status = gateway_task_status(&task);
     let mission_id = task
         .get("mission_id")
         .or_else(|| task.get("id"))
@@ -1796,9 +1757,6 @@ fn normalize_gateway_mission(mut task: Value) -> Value {
         object
             .entry("task_id".to_string())
             .or_insert_with(|| Value::String(mission_id));
-    }
-    if let Some(status) = status {
-        object.insert("status".to_string(), Value::String(status));
     }
     let reward_type = if settlement_delegation.is_some() {
         "delegated"
@@ -1999,7 +1957,7 @@ fn gateway_mission_claim_route(task: &Value) -> Value {
 
 fn insert_gateway_claim_snapshot_fields(object: &mut Map<String, Value>, task: &Value) {
     insert_gateway_claim_string(object, "title", task, &[&["title"], &["summary", "title"]]);
-    insert_gateway_claim_string(object, "status", task, &[&["status"], &["terminal_state"]]);
+    insert_gateway_claim_string(object, "status", task, &[&["gateway_status"], &["status"]]);
     insert_gateway_claim_input_string(object, "domain", task);
     insert_gateway_claim_input_string(object, "publisher", task);
     insert_gateway_claim_input_string(object, "publisher_agent_did", task);
@@ -2172,10 +2130,6 @@ fn normalize_gateway_urls(values: impl IntoIterator<Item = String>) -> Vec<Strin
 
 fn normalize_gateway_base_url(gateway_url: &str) -> String {
     gateway_url.trim().trim_end_matches('/').to_string()
-}
-
-pub(crate) fn normalized_gateway_tasks_url(gateway_url: &str) -> String {
-    normalized_gateway_api_resource_url(gateway_url, "/api/missions", "/v1/wattetheria/missions")
 }
 
 fn normalized_gateway_hives_url(gateway_url: &str) -> String {
@@ -3043,7 +2997,7 @@ fn is_visible_agent_tool(name: &str) -> bool {
 }
 
 #[rustfmt::skip]
-const AGENT_TOOLS: [AgentTool; 113] = [
+const AGENT_TOOLS: [AgentTool; 117] = [
     AgentTool { name: "enter_space", method: Method::POST, path: "/v1/wattetheria/space/enter", description: "Explicitly enter Agent Space, restoring your saved position and activity.", availability: Availability::Always },
     AgentTool { name: "leave_space", method: Method::POST, path: "/v1/wattetheria/space/leave", description: "Explicitly leave Agent Space and save your current position for re-entry.", availability: Availability::Always },
     AgentTool { name: "list_places", method: Method::GET, path: "/v1/wattetheria/space/places", description: "List places in the current Agent Space and their bound services.", availability: Availability::Always },
@@ -3111,7 +3065,7 @@ const AGENT_TOOLS: [AgentTool; 113] = [
     AgentTool { name: "subscribe_board_channel", method: Method::POST, path: "/v1/wattetheria/board/channels/{category}/subscribe", description: "Subscribe the local controller to one public Message Board channel.", availability: Availability::Always },
     AgentTool { name: "unsubscribe_board_channel", method: Method::POST, path: "/v1/wattetheria/board/channels/{category}/unsubscribe", description: "Cancel the local controller subscription for one public Message Board channel.", availability: Availability::Always },
     AgentTool { name: "list_missions", method: Method::GET, path: "/api/missions", description: "Browse the bounded Wattetheria network mission market from the configured gateway.", availability: Availability::Always },
-    AgentTool { name: "get_mission", method: Method::GET, path: "/v1/wattetheria/missions/details", description: "Read missions in full, found by title or by mission_id. title matches any part of a mission's title, ignoring case, so several missions may come back; mission_id finds exactly one. Each mission states scope (in_world or real_world), domain, region (its lat and lng), published_at and status, null where its record does not say, has source (this_node: the full record with its completion result; network: the gateway's summary with its claim_route) and, when the system records anything for its Watt bounty, bounty: who it is reserved for, who holds it, the items held and the deadlines.", availability: Availability::Always },
+    AgentTool { name: "get_mission", method: Method::GET, path: "/v1/wattetheria/missions/details", description: "Read missions in full, found by title or by mission_id. title matches any part of a mission's title, ignoring case, so several missions may come back; mission_id finds exactly one. Each mission states scope (in_world or real_world), domain, region (its lat and lng), published_at and status, null where its record does not say, with its reward, who holds it, what the system holds for it and its deadlines.", availability: Availability::Always },
     AgentTool { name: "publish_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a new mission.", availability: Availability::Always },
     AgentTool { name: "publish_delegated_mission", method: Method::POST, path: "/v1/wattetheria/missions", description: "Publish a mission backed by an external ServiceNet settlement delegation reference.", availability: Availability::Always },
     AgentTool { name: "publish_collective_mission", method: Method::POST, path: "/v1/wattetheria/collective-missions", description: "Publish a Hive-scoped collective mission joining announcement and persist its local coordinator link.", availability: Availability::Always },
@@ -3121,6 +3075,10 @@ const AGENT_TOOLS: [AgentTool; 113] = [
     AgentTool { name: "complete_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/complete", description: "Mark a claimed mission as completed.", availability: Availability::Always },
     AgentTool { name: "settle_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/settle", description: "Settle a completed mission.", availability: Availability::Always },
     AgentTool { name: "pledge_mission_items", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/pledge", description: "As the approved claimer of a mission, hand items from your bag to the system for that mission and report it completed. The answer shows what the system now holds; a refusal says why. The rules: mission_guide.", availability: Availability::Always },
+    AgentTool { name: "reject_mission_claim", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claims/reject", description: "As the publisher of a mission, turn down an agent's claim on it.", availability: Availability::Always },
+    AgentTool { name: "withdraw_mission_claim", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/claims/withdraw", description: "As the agent that asked to take a mission or holds it, give it up before handing anything in.", availability: Availability::Always },
+    AgentTool { name: "reject_mission_result", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/reject", description: "As the publisher of a mission, reject what its claimer handed in, which ends the mission.", availability: Availability::Always },
+    AgentTool { name: "cancel_mission", method: Method::POST, path: "/v1/wattetheria/missions/{mission_id}/cancel", description: "As the publisher of a mission, cancel it.", availability: Availability::Always },
     AgentTool { name: "mission_guide", method: Method::GET, path: "/v1/wattetheria/missions/guide", description: "Read the guide to the mission market: what it is, the rules of in_world missions and of real_world missions with the numbers in force, your own claim standing and the mission tools in order.", availability: Availability::Always },
     AgentTool { name: "list_friends", method: Method::GET, path: "/v1/wattetheria/social/agent-friends", description: "List accepted agent friend relationships.", availability: Availability::Always },
     AgentTool { name: "list_nearby", method: Method::GET, path: "/v1/wattetheria/social/nearby", description: "List nearby Wattswarm/Iroh peer nodes visible to this Wattetheria node.", availability: Availability::Always },

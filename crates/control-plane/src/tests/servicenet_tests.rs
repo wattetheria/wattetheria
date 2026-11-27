@@ -1511,26 +1511,28 @@ async fn servicenet_callback_decision_routes_into_mission_commit() {
     let (servicenet_addr, servicenet_server) = spawn_mock_servicenet().await;
     let (_dir, _router, token, _, state) = build_test_app(20);
     let mission_id = {
-        let mut board = state.mission_board.lock().await;
-        board
-            .publish(
-                "Inspect Result",
-                "mission seeded for servicenet callback",
-                &state.agent_did,
-                wattetheria_kernel::civilization::missions::MissionPublisherKind::System,
-                wattetheria_kernel::civilization::missions::MissionDomain::Trade,
-                None,
-                None,
-                None,
-                None,
-                wattetheria_kernel::civilization::missions::MissionReward {
-                    agent_watt: 0,
-                    reputation: 0,
-                    capacity: 0,
-                },
-                Value::Null,
-            )
-            .mission_id
+        let mut board = wattetheria_kernel::civilization::missions::MissionBoard::default();
+        let mission = board.publish(
+            "Inspect Result",
+            "mission seeded for servicenet callback",
+            &state.agent_did,
+            wattetheria_kernel::civilization::missions::MissionPublisherKind::System,
+            wattetheria_kernel::civilization::missions::MissionDomain::Trade,
+            None,
+            None,
+            None,
+            None,
+            wattetheria_kernel::civilization::missions::MissionReward {
+                agent_watt: 0,
+                reputation: 0,
+                capacity: 0,
+            },
+            Value::Null,
+        );
+        mission_gateway::gateway_publish(&state, &mission).await["mission_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     };
 
     let callback_app = axum::Router::new().route(
@@ -1584,12 +1586,7 @@ async fn servicenet_callback_decision_routes_into_mission_commit() {
     .await;
     assert_eq!(invoke_json["status"].as_str(), Some("completed"));
 
-    let board = state.mission_board.lock().await;
-    let claimed = board
-        .list(None)
-        .into_iter()
-        .find(|mission| mission.mission_id == mission_id)
-        .expect("mission present");
+    let claimed = mission_gateway::gateway_mission(&state, &mission_id).await;
     assert_eq!(
         claimed.claimed_by.as_deref(),
         Some(state.agent_did.as_str())

@@ -1,230 +1,15 @@
-//! Missions reserved for one agent, claim bans and item trades, against a stand-in for the
-//! gateway ledger's claim and trade routes.
+//! Missions reserved for one agent, claim bans, item hand-ins and sent-back results, against
+//! the stand-in for the gateway's mission API.
 
 use super::*;
-use wattetheria_kernel::civilization::missions::MissionStatus;
 
-/// What the stand-in gateway keeps: escrows, the terms each was locked with, who asked for a
-/// bounty, every signed command it received, and the network's mission market.
-#[derive(Default)]
-struct Gateway {
-    market: Vec<Value>,
-    escrows: BTreeMap<String, Value>,
-    trades: BTreeMap<String, Value>,
-    asked: Vec<(String, String)>,
-    banned: Vec<String>,
-    calls: Vec<(String, Value)>,
-}
-
-type Shared = Arc<Mutex<Gateway>>;
-type GatewayState = axum::extract::State<Shared>;
-
-fn refused(status: StatusCode, code: &str) -> axum::response::Response {
-    (status, Json(json!({"error": code, "code": code}))).into_response()
-}
-
-#[allow(clippy::too_many_lines)]
-fn gateway_router(gateway: Shared) -> Router {
-    async fn lock(
-        axum::extract::State(gateway): GatewayState,
-        Json(body): Json<Value>,
-    ) -> Json<Value> {
-        let mut gateway = gateway.lock().await;
-        let payload = body["payload"].clone();
-        let escrow_id = payload["escrow_id"].as_str().unwrap().to_owned();
-        gateway.escrows.insert(
-            escrow_id.clone(),
-            json!({
-                "escrow_id": escrow_id,
-                "payer_account": payload["payer"],
-                "amount": payload["amount"],
-                "status": "locked",
-            }),
-        );
-        if payload["terms"].is_object() {
-            gateway.trades.insert(
-                escrow_id.clone(),
-                json!({
-                    "escrow_id": escrow_id,
-                    "scope": payload["terms"]["scope"],
-                    "assignee": payload["terms"]["assignee"],
-                    "status": "open",
-                    "claimer": null,
-                    "held": null,
-                }),
-            );
-        }
-        gateway.calls.push(("lock".to_owned(), body));
-        Json(json!({"escrow_id": escrow_id, "status": "locked"}))
-    }
-    async fn escrow(
-        axum::extract::State(gateway): GatewayState,
-        Path(escrow_id): Path<String>,
-    ) -> axum::response::Response {
-        match gateway.lock().await.escrows.get(&escrow_id) {
-            Some(escrow) => Json(escrow.clone()).into_response(),
-            None => refused(StatusCode::NOT_FOUND, "not_found"),
-        }
-    }
-    async fn resolve(
-        axum::extract::State(gateway): GatewayState,
-        Path((escrow_id, action)): Path<(String, String)>,
-        Json(body): Json<Value>,
-    ) -> axum::response::Response {
-        let mut gateway = gateway.lock().await;
-        let payload = body["payload"].clone();
-        gateway.calls.push((action.clone(), body));
-        let Some(mut trade) = gateway.trades.get(&escrow_id).cloned() else {
-            // A bounty locked without terms: only the ledger's own movements exist for it.
-            return match action.as_str() {
-                "release" | "refund" => {
-                    let status = if action == "release" {
-                        "released"
-                    } else {
-                        "refunded"
-                    };
-                    if let Some(escrow) = gateway.escrows.get_mut(&escrow_id) {
-                        escrow["status"] = json!(status);
-                    }
-                    Json(json!({"escrow_id": escrow_id, "status": status})).into_response()
-                }
-                _ => refused(StatusCode::NOT_FOUND, "no_terms"),
-            };
-        };
-        let live = matches!(
-            trade["status"].as_str(),
-            Some("open" | "claimed" | "delivered" | "pledged")
-        );
-        if !live {
-            return refused(StatusCode::CONFLICT, "trade_closed");
-        }
-        match action.as_str() {
-            "claims" => {
-                let claimer = payload["claimer"].as_str().unwrap().to_owned();
-                if trade["assignee"]
-                    .as_str()
-                    .is_some_and(|assignee| assignee != claimer)
-                {
-                    return refused(StatusCode::FORBIDDEN, "assignee_only");
-                }
-                if gateway.banned.contains(&claimer) {
-                    return refused(StatusCode::FORBIDDEN, "claimer_banned");
-                }
-                gateway.asked.push((escrow_id.clone(), claimer));
-            }
-            "approve" => {
-                let claimer = payload["claimer"].as_str().unwrap().to_owned();
-                if !gateway
-                    .asked
-                    .contains(&(escrow_id.clone(), claimer.clone()))
-                {
-                    return refused(StatusCode::CONFLICT, "claim_not_requested");
-                }
-                trade["claimer"] = json!(claimer);
-                trade["status"] = json!("claimed");
-            }
-            "pledge" => {
-                if trade["claimer"] != payload["claimer"] {
-                    return refused(StatusCode::FORBIDDEN, "not_the_claimer");
-                }
-                trade["held"] = json!({
-                    "kind": payload["kind"],
-                    "item": payload["item"],
-                    "units": payload["units"],
-                });
-                trade["status"] = json!("pledged");
-            }
-            "deliver" => {
-                if trade["status"] == "claimed" {
-                    if trade["scope"] == "in_world" && payload["has_result"] != true {
-                        return refused(StatusCode::CONFLICT, "delivery_required");
-                    }
-                    trade["status"] = json!("delivered");
-                }
-            }
-            "reject" => {
-                if trade["scope"] != "in_world" {
-                    return refused(StatusCode::CONFLICT, "not_in_world");
-                }
-                if !matches!(trade["status"].as_str(), Some("pledged" | "delivered")) {
-                    return refused(StatusCode::CONFLICT, "nothing_handed_in");
-                }
-                // The hand-in goes back and the bounty stays locked: the mission goes on.
-                trade["held"] = Value::Null;
-                trade["status"] = json!("claimed");
-            }
-            "release" => {
-                if trade["scope"] == "in_world"
-                    && !matches!(trade["status"].as_str(), Some("pledged" | "delivered"))
-                {
-                    return refused(StatusCode::CONFLICT, "conflict");
-                }
-                trade["status"] = json!("settled");
-                gateway.escrows.get_mut(&escrow_id).unwrap()["status"] = json!("released");
-            }
-            "refund" => {
-                trade["status"] = json!("cancelled");
-                gateway.escrows.get_mut(&escrow_id).unwrap()["status"] = json!("refunded");
-            }
-            _ => return refused(StatusCode::NOT_FOUND, "not_found"),
-        }
-        gateway.trades.insert(escrow_id, trade.clone());
-        Json(trade).into_response()
-    }
-    async fn approve(
-        state: GatewayState,
-        Path(escrow_id): Path<String>,
-        body: Json<Value>,
-    ) -> axum::response::Response {
-        resolve(state, Path((escrow_id, "approve".to_owned())), body).await
-    }
-    async fn trade(
-        axum::extract::State(gateway): GatewayState,
-        Path(escrow_id): Path<String>,
-    ) -> axum::response::Response {
-        match gateway.lock().await.trades.get(&escrow_id) {
-            Some(trade) => Json(trade.clone()).into_response(),
-            None => refused(StatusCode::NOT_FOUND, "no_terms"),
-        }
-    }
-    async fn standing(
-        axum::extract::State(gateway): GatewayState,
-        Path(agent_did): Path<String>,
-    ) -> Json<Value> {
-        let banned = gateway.lock().await.banned.contains(&agent_did);
-        Json(json!({
-            "agent_did": agent_did,
-            "can_claim": !banned,
-            "banned_until": banned.then_some("2026-12-02T00:00:00Z"),
-            "timeouts": if banned { 3 } else { 0 },
-            "bans": i32::from(banned),
-            "free_timeouts": 2,
-        }))
-    }
-    async fn guide() -> Json<Value> {
-        Json(json!({
-            "market": [{"en": "The mission market is where agents publish what they want done.", "zh": "任务市场是 agent 发布需求的地方。"}],
-            "in_world": [{"en": "An in_world mission cannot be completed empty-handed.", "zh": "in_world 任务不能空手完成。"}],
-            "real_world": [{"en": "Items cannot be pledged on a real_world mission.", "zh": "real_world 任务不能押物品。"}],
-            "rules": {"fee_bps": 500, "pledge_secs": 21600, "confirm_secs": 86400},
-        }))
-    }
-    async fn market(axum::extract::State(gateway): GatewayState) -> Json<Value> {
-        Json(json!(gateway.lock().await.market))
-    }
-    Router::new()
-        .route("/api/missions", get(market))
-        .route("/api/ledger/escrows", post(lock))
-        .route("/api/ledger/escrows/{escrow_id}", get(escrow))
-        .route("/api/ledger/escrows/{escrow_id}/trade", get(trade))
-        .route(
-            "/api/ledger/escrows/{escrow_id}/claims/approve",
-            post(approve),
-        )
-        .route("/api/ledger/escrows/{escrow_id}/{action}", post(resolve))
-        .route("/api/missions/claimers/{agent_did}", get(standing))
-        .route("/api/missions/guide", get(guide))
-        .with_state(gateway)
+async fn guide() -> Json<Value> {
+    Json(json!({
+        "market": [{"en": "The mission market is where agents publish what they want done.", "zh": "任务市场是 agent 发布需求的地方。"}],
+        "in_world": [{"en": "An in_world mission cannot be completed empty-handed.", "zh": "in_world 任务不能空手完成。"}],
+        "real_world": [{"en": "Items cannot be pledged on a real_world mission.", "zh": "real_world 任务不能押物品。"}],
+        "rules": {"fee_bps": 500, "pledge_secs": 21600, "confirm_secs": 86400},
+    }))
 }
 
 struct Node {
@@ -232,22 +17,18 @@ struct Node {
     state: crate::state::ControlPlaneState,
     token: String,
     public_id: String,
-    gateway: Shared,
+    gateway: mission_gateway::SharedMissionGateway,
+    bridge: Arc<MockSwarmBridge>,
     _dir: tempfile::TempDir,
 }
 
-/// A node whose gateway is the stand-in above and whose registry knows the agents in `known`
-/// (display name, DID).
+/// A node whose gateway is the mission stand-in, with the gateway's guide, and whose registry
+/// knows the agents in `known` (display name, DID).
 async fn trade_node(known: &[(&str, &str)]) -> Node {
-    let gateway: Shared = Arc::default();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = gateway_router(gateway.clone());
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let dir = tempfile::tempdir().unwrap();
     let identity = Identity::new_random();
     let event_log = EventLog::new(dir.path().join("events.jsonl")).unwrap();
-    let bridge: Arc<dyn SwarmBridge> = Arc::new(MockSwarmBridge {
+    let bridge = Arc::new(MockSwarmBridge {
         discovered_agents: known
             .iter()
             .map(|(name, did)| {
@@ -268,8 +49,13 @@ async fn trade_node(known: &[(&str, &str)]) -> Node {
         ..MockSwarmBridge::default_for(identity.agent_did.clone())
     });
     let (dir, mut state, token, _) =
-        build_test_state_with_bridge(50, dir, identity, event_log, bridge);
-    state.gateway_urls = vec![format!("http://{address}/api/ingest/snapshot")];
+        build_test_state_with_bridge(50, dir, identity, event_log, bridge.clone());
+    let (url, gateway) = mission_gateway::spawn_mission_gateway(
+        Router::new().route("/api/missions/guide", get(guide)),
+    )
+    .unwrap();
+    // The configured URL is the gateway's ingest endpoint, as on a real node.
+    state.gateway_urls = vec![format!("{url}/api/ingest/snapshot")];
     let app = crate::app(state.clone());
     let public_id = bootstrap_broker_identity(app.clone(), &token, &state.agent_did).await;
     Node {
@@ -278,6 +64,7 @@ async fn trade_node(known: &[(&str, &str)]) -> Node {
         token,
         public_id,
         gateway,
+        bridge,
         _dir: dir,
     }
 }
@@ -338,13 +125,9 @@ impl Node {
         .await
     }
 
-    /// What the claimer's own node does before its claim reaches this node: asks the ledger.
+    /// What the claimer's own node does before its claim reaches this node: asks the gateway.
     async fn asked_by(&self, mission_id: &str, agent_did: &str) {
-        self.gateway
-            .lock()
-            .await
-            .asked
-            .push((mission_id.to_owned(), agent_did.to_owned()));
+        self.gateway.lock().await.ask(mission_id, agent_did);
     }
 
     /// Calls the `get_mission` tool and returns its answer.
@@ -376,31 +159,68 @@ impl Node {
         response["result"]["structuredContent"].clone()
     }
 
-    async fn status(&self, mission_id: &str) -> MissionStatus {
-        self.state
-            .mission_board
-            .lock()
+    /// The mission's status as the gateway keeps it, read the way the node reads it.
+    async fn status(&self, mission_id: &str) -> String {
+        crate::routes::gateway_missions::fetch(&self.state, mission_id)
             .await
-            .get(mission_id)
             .unwrap()
-            .status
+            .unwrap()["status"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     }
 
-    async fn set_trade(&self, mission_id: &str, status: &str) {
+    async fn calls(&self, action: &str) -> Vec<Value> {
+        self.gateway.lock().await.commands(action)
+    }
+
+    /// The claimer's own node pledges items for the mission.
+    async fn pledged_by_claimer(&self, mission_id: &str) {
         let mut gateway = self.gateway.lock().await;
-        gateway.trades.get_mut(mission_id).unwrap()["status"] = json!(status);
-        gateway.escrows.get_mut(mission_id).unwrap()["status"] = json!("refunded");
+        gateway.set(mission_id, "status", json!("completed"));
+        gateway.set(
+            mission_id,
+            "held",
+            json!({"kind": "crop", "item": "coffee", "units": 5}),
+        );
     }
 
-    async fn calls(&self, kind: &str) -> Vec<Value> {
+    /// A deadline of the mission passes.
+    async fn passed(&self, mission_id: &str, deadline: &str) {
+        let past = (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
         self.gateway
             .lock()
             .await
-            .calls
-            .iter()
-            .filter(|(called, _)| called == kind)
-            .map(|(_, body)| body["payload"].clone())
-            .collect()
+            .set(mission_id, deadline, json!(past));
+    }
+
+    /// A mission another node published on wattswarm.
+    async fn remote(&self, mission_id: &str, assignee: Option<&str>) {
+        let mut contract = self
+            .state
+            .swarm_bridge
+            .sample_task_contract(mission_id)
+            .await
+            .unwrap();
+        contract.task_type = "wattetheria.mission".to_owned();
+        contract.inputs = json!({
+            "mission_id": mission_id,
+            "publisher_wattswarm_node_id": "publisher-node",
+            "mission_feed_key": "wattetheria.missions",
+            "mission_scope_hint": format!("group:{mission_id}"),
+            "swarm_scope": {"kind": "group", "id": mission_id},
+            "domain": "trade",
+            "scope": "in_world",
+        });
+        let mut record = mission_gateway::remote_record(
+            mission_id,
+            "Wanted far away",
+            "did:key:publisher-far",
+            "published",
+            Some(&contract),
+        );
+        record["assignee"] = json!(assignee);
+        self.gateway.lock().await.seed(record);
     }
 }
 
@@ -409,14 +229,15 @@ async fn a_mission_reserved_for_one_agent_refuses_everyone_else() {
     let momo = Identity::new_random().agent_did;
     let other = Identity::new_random().agent_did;
     let node = trade_node(&[("Momo", &momo)]).await;
+    let me = node.state.identity.agent_did.clone();
 
     let (status, refused) = node.publish("in_world", 50, Some("Nobody")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
     assert_eq!(refused["code"], "assignee_not_found");
     assert_eq!(
-        node.calls("lock").await,
+        node.calls("publish").await,
         Vec::<Value>::new(),
-        "an unknown name publishes nothing and locks no Watt"
+        "an unknown name publishes nothing"
     );
 
     let (status, mission) = node.publish("in_world", 50, Some("Momo")).await;
@@ -429,112 +250,148 @@ async fn a_mission_reserved_for_one_agent_refuses_everyone_else() {
         json!(momo),
         "the reservation is announced with the mission: {mission}"
     );
-    let lock = node.calls("lock").await;
-    assert_eq!(
-        lock[0]["terms"],
-        json!({"scope": "in_world", "assignee": momo, "assignee_label": "Momo"})
-    );
+    let publish = node.calls("publish").await;
+    assert_eq!(publish[0]["assignee"], json!(momo));
+    assert_eq!(publish[0]["assignee_label"], "Momo");
+    assert_eq!(publish[0]["scope"], "in_world");
+    assert_eq!(publish[0]["reward"]["kind"], "watt");
+    assert_eq!(publish[0]["reward"]["amount"], 50);
 
-    // Anyone else is refused before the board changes, even one that asked the ledger.
-    node.asked_by(&mission_id, &other).await;
-    let (status, refused) = node.claim(&mission_id, &other).await;
+    // This node's own agent is not the named one: the gateway refuses its request.
+    let (status, refused) = node.claim(&mission_id, &me).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
     assert_eq!(refused["code"], "assignee_only");
-    assert!(
-        refused["error"].as_str().unwrap().contains("Momo"),
-        "{refused}"
-    );
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Open);
-    assert_eq!(node.calls("approve").await, Vec::<Value>::new());
+    assert_eq!(node.status(&mission_id).await, "published");
 
-    // The named agent must have asked the ledger itself.
+    // The publisher approves only an agent that asked the gateway itself.
+    let (status, refused) = node.claim(&mission_id, &other).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "claim_not_requested");
     let (status, refused) = node.claim(&mission_id, &momo).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["code"], "claim_not_requested");
+    assert_eq!(node.status(&mission_id).await, "published");
     node.asked_by(&mission_id, &momo).await;
     let (status, claimed) = node.claim(&mission_id, &momo).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Claimed);
-    assert_eq!(node.calls("approve").await[0]["claimer"], json!(momo));
+    assert_eq!(node.status(&mission_id).await, "claimed");
+    let approved = node.calls("approve").await;
+    assert_eq!(approved.last().unwrap()["claimer"], json!(momo));
+    assert_eq!(approved.last().unwrap()["publisher"], json!(me));
 }
 
 #[tokio::test]
-async fn a_plain_bounty_is_locked_without_terms_and_claimed_as_before() {
+async fn a_bounty_open_to_anyone_is_published_with_its_reward_and_no_assignee() {
     let worker = Identity::new_random().agent_did;
     let node = trade_node(&[]).await;
     let mission_id = node.published("real_world", 40, None).await;
-    assert!(
-        node.calls("lock").await[0].get("terms").is_none(),
-        "a real_world bounty open to anyone carries no claim terms"
+    let publish = node.calls("publish").await;
+    assert!(publish[0]["assignee"].is_null(), "{}", publish[0]);
+    assert_eq!(publish[0]["scope"], "real_world");
+    assert_eq!(
+        (
+            &publish[0]["reward"]["kind"],
+            &publish[0]["reward"]["amount"]
+        ),
+        (&json!("watt"), &json!(40))
     );
+
+    // The node names the request, never the mission: the gateway makes the mission's id.
+    assert!(mission_id.starts_with("rw_"), "{mission_id}");
+    assert!(publish[0]["request_id"].is_string(), "{}", publish[0]);
+    assert!(publish[0].get("mission_id").is_none(), "{}", publish[0]);
+    let sent = &publish[0]["payload"];
+    assert!(sent.get("task_id").is_none(), "{sent}");
+    assert_eq!(sent["task_contract"]["task_id"], "", "{sent}");
+    assert_eq!(sent["task_contract"]["inputs"]["mission_id"], "", "{sent}");
+    // The gateway writes the id into the contract it keeps, which is what a claiming node
+    // imports, and the publisher puts that same contract on wattswarm.
+    let scope = json!({"kind": "group", "id": mission_id});
+    let hint = format!("group:{mission_id}");
+    let kept = node.gateway.lock().await.record(&mission_id).unwrap();
+    let kept = &kept["payload"];
+    assert_eq!(kept["task_id"], json!(mission_id), "{kept}");
+    assert_eq!(kept["swarm_scope"], scope, "{kept}");
+    assert_eq!(kept["mission_scope_hint"], json!(hint), "{kept}");
+    let on_swarm = node.bridge.published_tasks.lock().await.clone();
+    assert_eq!(on_swarm.len(), 2, "{on_swarm:?}");
+    let submitted = &on_swarm[0]["submitted"];
+    assert_eq!(submitted, &kept["task_contract"]);
+    assert_eq!(submitted["task_id"], json!(mission_id));
+    assert_eq!(submitted["inputs"]["mission_id"], json!(mission_id));
+    assert_eq!(submitted["inputs"]["swarm_scope"], scope);
+    assert_eq!(submitted["inputs"]["mission_scope_hint"], json!(hint));
+    let announced = &on_swarm[1]["announced"];
+    assert_eq!(announced["task_id"], json!(mission_id));
+    assert_eq!(announced["scope_hint"], json!(hint));
+    assert_eq!(announced["summary"]["mission_id"], json!(mission_id));
+
+    node.asked_by(&mission_id, &worker).await;
     let (status, claimed) = node.claim(&mission_id, &worker).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    assert_eq!(node.calls("approve").await, Vec::<Value>::new());
+    assert_eq!(node.calls("approve").await[0]["claimer"], json!(worker));
 }
 
 #[tokio::test]
 async fn an_agent_under_a_claim_ban_cannot_claim_any_mission() {
-    let worker = Identity::new_random().agent_did;
     let node = trade_node(&[]).await;
-    node.gateway.lock().await.banned.push(worker.clone());
+    let me = node.state.identity.agent_did.clone();
+    node.gateway.lock().await.banned.push(me.clone());
 
     // A mission with no bounty at all: the ban still holds.
     let free = node.published("real_world", 0, None).await;
-    let (status, refused) = node.claim(&free, &worker).await;
+    let (status, refused) = node.claim(&free, &me).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
     assert_eq!(refused["code"], "claimer_banned");
     assert_eq!(refused["details"]["banned_until"], "2026-12-02T00:00:00Z");
-    assert_eq!(node.status(&free).await, MissionStatus::Open);
+    assert_eq!(node.status(&free).await, "published");
+    assert_eq!(node.calls("approve").await, Vec::<Value>::new());
 
-    // This node's own agent, before its claim for another node's mission is sent.
-    let me = node.state.identity.agent_did.clone();
-    node.gateway.lock().await.banned.push(me.clone());
-    let inputs = json!({"scope": "real_world", "reward": {"agent_watt": 0}});
-    let refused =
-        crate::routes::mission_trade::ask_ledger_for_claim(&node.state, "elsewhere", &me, &inputs)
-            .await
-            .expect_err("a banned agent's claim is not sent");
-    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    // Another node's mission: the claim is refused before it is sent on wattswarm.
+    node.remote("elsewhere", None).await;
+    let (status, refused) = node.claim("elsewhere", &me).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["code"], "claimer_banned");
+    let claims: NetworkMissionClaimRegistry = node
+        .state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    assert!(claims.records().is_empty(), "no claim was sent");
 }
 
 #[tokio::test]
-async fn a_claim_for_another_nodes_mission_is_checked_before_it_is_sent() {
+async fn a_claim_for_another_nodes_mission_is_asked_on_the_gateway_first() {
     let momo = Identity::new_random().agent_did;
     let node = trade_node(&[]).await;
     let me = node.state.identity.agent_did.clone();
 
-    // Reserved for someone else: refused from what the mission announces, the ledger unasked.
-    let reserved = json!({
-        "scope": "in_world",
-        "reward": {"agent_watt": 30},
-        "assignee_did": momo,
-        "assignee_display_name": "Momo",
-    });
-    let refused =
-        crate::routes::mission_trade::ask_ledger_for_claim(&node.state, "m-1", &me, &reserved)
-            .await
-            .expect_err("only the named agent may claim");
-    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-    assert_eq!(node.calls("claims").await, Vec::<Value>::new());
+    // Reserved for someone else: the gateway refuses, nothing is sent on wattswarm.
+    node.remote("m-1", Some(&momo)).await;
+    let (status, refused) = node.claim("m-1", &me).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["code"], "assignee_only");
+    let claims: NetworkMissionClaimRegistry = node
+        .state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    assert!(claims.records().is_empty(), "no claim was sent");
 
-    // Open to anyone: the request is registered with the ledger under this agent's signature.
-    let payer = Identity::new_random().agent_did;
-    {
-        let mut gateway = node.gateway.lock().await;
-        gateway.escrows.insert(
-            "m-2".to_owned(),
-            json!({"escrow_id": "m-2", "payer_account": payer, "amount": 30, "status": "locked"}),
-        );
-        gateway.trades.insert(
-            "m-2".to_owned(),
-            json!({"escrow_id": "m-2", "scope": "in_world", "assignee": null, "status": "open"}),
-        );
-    }
-    let open = json!({"scope": "in_world", "reward": {"agent_watt": 30}});
-    crate::routes::mission_trade::ask_ledger_for_claim(&node.state, "m-2", &me, &open)
-        .await
-        .expect("an open mission may be asked for");
-    assert_eq!(node.calls("claims").await[0]["claimer"], json!(me));
+    // Open to anyone: the request is registered on the gateway under this agent's signature,
+    // then the claim goes to the publisher.
+    node.remote("m-2", None).await;
+    let (status, claimed) = node.claim("m-2", &me).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(claimed["status"], "network_claim_submitted", "{claimed}");
+    let asked = node.calls("claims").await;
+    assert_eq!(asked.last().unwrap()["mission_id"], "m-2");
+    assert_eq!(asked.last().unwrap()["claimer"], json!(me));
+    assert_eq!(
+        node.status("m-2").await,
+        "published",
+        "the publisher has not approved the claim yet"
+    );
 }
 
 #[tokio::test]
@@ -543,10 +400,11 @@ async fn the_claimer_pledges_items_and_the_publisher_settles() {
     let me = node.state.identity.agent_did.clone();
     let mission_id = node.published("in_world", 60, None).await;
 
-    // One agent on both sides: its node asks the ledger and approves the claim itself.
+    // One agent on both sides: its node asks the gateway and approves the claim itself.
     let (status, claimed) = node.claim(&mission_id, &me).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
     assert_eq!(node.calls("claims").await[0]["claimer"], json!(me));
+    assert_eq!(node.calls("approve").await[0]["claimer"], json!(me));
 
     let (status, pledged) = node
         .post(
@@ -555,31 +413,38 @@ async fn the_claimer_pledges_items_and_the_publisher_settles() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{pledged}");
-    assert_eq!(pledged["trade"]["status"], "pledged");
-    assert_eq!(pledged["trade"]["held"]["item"], "soul_gem");
-    assert_eq!(pledged["completion"]["status"], "completed", "{pledged}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Completed);
-    let board = node
-        .state
-        .mission_board
-        .lock()
-        .await
-        .get(&mission_id)
-        .unwrap();
     assert_eq!(
-        board.completion_result,
-        Some(json!({"pledged": {"kind": "hunt", "item": "soul_gem", "units": 1}}))
+        pledged["mission"]["gateway_status"], "completed",
+        "{pledged}"
+    );
+    assert_eq!(pledged["mission"]["held"]["item"], "soul_gem");
+    assert_eq!(pledged["completion"]["status"], "completed", "{pledged}");
+    assert_eq!(node.status(&mission_id).await, "completed");
+    assert_eq!(
+        node.calls("pledge").await[0],
+        json!({
+            "action": "pledge",
+            "mission_id": mission_id,
+            "claimer": me,
+            "kind": "hunt",
+            "item": "soul_gem",
+            "units": 1,
+            "issued_at": node.calls("pledge").await[0]["issued_at"],
+            "nonce": node.calls("pledge").await[0]["nonce"],
+        })
+    );
+    assert!(
+        node.calls("deliver").await.is_empty(),
+        "the pledge is the hand-in"
     );
 
-    // The publisher reads the mission before settling: the result and what the system holds.
+    // The publisher reads the mission before settling: what the system holds and the reward.
     let read = node.get_mission(json!({"mission_id": mission_id})).await;
     let mission = &read["missions"][0];
     assert_eq!(read["count"], 1, "{read}");
-    assert_eq!(mission["source"], "this_node", "{read}");
-    assert_eq!(mission["status"], "completed");
-    assert_eq!(mission["completion_result"]["pledged"]["item"], "soul_gem");
-    assert_eq!(mission["bounty"]["status"], "pledged", "{read}");
-    assert_eq!(mission["bounty"]["held"]["units"], 1);
+    assert_eq!(mission["status"], "completed", "{read}");
+    assert_eq!(mission["held"]["units"], 1);
+    assert_eq!(mission["reward_terms"]["amount"], 60, "{read}");
 
     let (status, settled) = node
         .post(
@@ -588,16 +453,30 @@ async fn the_claimer_pledges_items_and_the_publisher_settles() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{settled}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Settled);
-    assert_eq!(node.calls("release").await[0]["payee"], json!(me));
+    assert_eq!(node.status(&mission_id).await, "settled");
+    assert_eq!(node.calls("settle").await[0]["publisher"], json!(me));
+
+    // Sent again, the settle pays nothing twice but sends its notice to the claimer again.
+    let (status, again) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(node.calls("settle").await.len(), 1, "{again}");
+    assert_eq!(
+        again["mission_lifecycle_notice"]["kind"], "mission_settled",
+        "{again}"
+    );
 }
 
-/// Every mission states the same facts in the same fields, wherever its record came from: `ours`
-/// read from this node's board, `far` from the market.
+/// Every mission states the same facts in the same fields, however its record lays them out:
+/// `ours` published by this node, `far` by another.
 fn assert_the_same_facts_in_the_same_fields(ours: &Value, far: &Value) {
     assert_eq!(ours["scope"], "in_world", "{ours}");
     assert_eq!(ours["domain"], "trade");
-    assert_eq!(ours["status"], "open");
+    assert_eq!(ours["status"], "published");
     assert_eq!(
         ours["region"],
         // This node's location was derived, so it names no place.
@@ -639,41 +518,44 @@ async fn a_mission_is_read_in_full_by_any_part_of_its_title_or_by_its_id() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{gem}");
     let gem_id = gem["mission_id"].as_str().unwrap().to_owned();
-    // The mission market is read from the gateway the node's config names.
-    let gateway_url = node.state.gateway_urls[0].trim_end_matches("/api/ingest/snapshot");
-    std::fs::write(
-        node.state.data_dir.join("config.json"),
-        json!({"gateway_urls": [gateway_url]}).to_string(),
-    )
-    .unwrap();
-    node.gateway.lock().await.market = vec![
-        // The same mission as the network sees it, and two of other nodes.
-        json!({"id": gem_id, "title": "Want one Soul Gem", "status": "published"}),
-        // A market record keeps what its publisher announced one level down, and its time as
-        // Unix seconds.
-        json!({"id": "m-far", "title": "Soul gem wanted, paying well", "status": "published",
-               "source_node_id": "node-far", "created_at": 1_795_000_000_i64,
-               "summary": {"scope": "real_world", "domain": "trade",
-                           "lat": 40.7128, "lng": -74.006,
-                           "city": "New York", "country": "United States"}}),
-        json!({"id": "m-water", "title": "Water my field", "terminal_state": "claimed"}),
-    ];
+    {
+        let mut gateway = node.gateway.lock().await;
+        // Another node's mission, with its place and time as the gateway keeps them.
+        let mut far = mission_gateway::remote_record(
+            "m-far",
+            "Soul gem wanted, paying well",
+            "did:key:node-far",
+            "published",
+            None,
+        );
+        far["place"] = json!({"lat": 40.7128, "lng": -74.006, "city": "New York",
+                              "country": "United States", "source": "ip"});
+        far["created_at"] = json!("2026-11-18T11:06:40Z");
+        gateway.seed(far);
+        // A record that states almost nothing.
+        gateway
+            .seed(json!({"mission_id": "m-water", "title": "Water my field", "status": "claimed"}));
+    }
 
-    // Any part of the title, whatever the case; a mission on this node is answered from its
-    // board, once, with what the ledger records for its bounty.
+    // Any part of the title, whatever the case, each mission once.
     let read = node.get_mission(json!({"title": "soul GEM"})).await;
     assert_eq!(read["count"], 2, "{read}");
     assert_eq!(read["has_more"], false);
-    let ours = &read["missions"][0];
-    assert_eq!(ours["mission_id"], json!(gem_id), "{read}");
-    assert_eq!(ours["source"], "this_node");
+    let ours = read["missions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mission| mission["mission_id"] == json!(gem_id))
+        .expect("ours is found");
     assert_eq!(ours["description"], "Buying a soul gem.");
-    assert_eq!(ours["bounty"]["status"], "open", "{read}");
-    let far = &read["missions"][1];
-    assert_eq!(far["mission_id"], "m-far");
-    assert_eq!(far["source"], "network");
-    assert!(far["claim_route"].is_object(), "{read}");
-    assert!(far.get("bounty").is_none(), "no record, no bounty field");
+    assert_eq!(ours["reward_terms"]["amount"], 80, "{read}");
+    let far = read["missions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mission| mission["mission_id"] == "m-far")
+        .expect("far is found");
+    assert_eq!(far["publisher_agent_did"], "did:key:node-far");
 
     assert_the_same_facts_in_the_same_fields(ours, far);
 
@@ -698,7 +580,7 @@ async fn a_mission_is_read_in_full_by_any_part_of_its_title_or_by_its_id() {
     assert_eq!((&cut["count"], &cut["known_count"]), (&json!(1), &json!(2)));
     assert_eq!(cut["has_more"], true);
 
-    // By id: exactly that one, wherever it lives.
+    // By id: exactly that one.
     let by_id = node.get_mission(json!({"mission_id": "m-water"})).await;
     assert_eq!(by_id["count"], 1, "{by_id}");
     assert_eq!(by_id["missions"][0]["title"], "Water my field");
@@ -710,6 +592,8 @@ async fn a_mission_is_read_in_full_by_any_part_of_its_title_or_by_its_id() {
             "{unsaid} is stated as unknown, not left out or guessed: {by_id}"
         );
     }
+    let unknown = node.get_mission(json!({"mission_id": "m-none"})).await;
+    assert_eq!(unknown["count"], 0, "{unknown}");
     let nothing = node.get_mission(json!({"title": "dragon"})).await;
     assert_eq!(nothing["count"], 0, "{nothing}");
     assert_eq!(nothing["missions"], json!([]));
@@ -729,25 +613,19 @@ async fn an_in_world_mission_is_not_completed_empty_handed() {
     let mission_id = node.published("in_world", 60, None).await;
     let (status, claimed) = node.claim(&mission_id, &me).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    for nothing in [
-        json!({"agent_did": me}),
-        json!({"agent_did": me, "result": "  "}),
-    ] {
-        let (status, refused) = node
-            .post(
-                &format!("/v1/wattetheria/missions/{mission_id}/complete"),
-                nothing,
-            )
-            .await;
-        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-        assert_eq!(refused["code"], "delivery_required");
-        assert_eq!(node.status(&mission_id).await, MissionStatus::Claimed);
-        let trade = node.gateway.lock().await.trades[&mission_id].clone();
-        assert_eq!(
-            trade["status"], "claimed",
-            "the time to deliver keeps running"
-        );
-    }
+    let (status, refused) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+            json!({"agent_did": me}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "delivery_required");
+    assert_eq!(
+        node.status(&mission_id).await,
+        "claimed",
+        "the time to deliver keeps running"
+    );
 
     // A mission that asks for no item is handed in with a result that shows the work, then
     // settled like any other.
@@ -759,9 +637,8 @@ async fn an_in_world_mission_is_not_completed_empty_handed() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{completed}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Completed);
-    let trade = node.gateway.lock().await.trades[&mission_id].clone();
-    assert_eq!(trade["status"], "delivered");
+    assert_eq!(node.status(&mission_id).await, "completed");
+    assert_eq!(node.calls("deliver").await.last().unwrap()["result"], proof);
     let (status, settled) = node
         .post(
             &format!("/v1/wattetheria/missions/{mission_id}/settle"),
@@ -769,7 +646,7 @@ async fn an_in_world_mission_is_not_completed_empty_handed() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{settled}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Settled);
+    assert_eq!(node.status(&mission_id).await, "settled");
 
     // Outside the Space a named mission asks for no item: it completes as it always did.
     let outside = node.published("real_world", 60, Some("Momo")).await;
@@ -783,7 +660,7 @@ async fn an_in_world_mission_is_not_completed_empty_handed() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{completed}");
-    assert_eq!(node.status(&outside).await, MissionStatus::Completed);
+    assert_eq!(node.status(&outside).await, "completed");
 }
 
 /// The publisher's decision on a result that reached it, committed the way its agent does.
@@ -821,7 +698,7 @@ async fn decide(node: &Node, mission_id: &str, claimer: &str, action: &str) -> V
 }
 
 #[tokio::test]
-async fn a_hand_in_sent_back_is_handed_in_again_and_the_mission_goes_on() {
+async fn a_rejected_hand_in_ends_the_mission_as_rejected() {
     let seller = Identity::new_random().agent_did;
     let momo = Identity::new_random().agent_did;
     let node = trade_node(&[("Momo", &momo)]).await;
@@ -840,12 +717,7 @@ async fn a_hand_in_sent_back_is_handed_in_again_and_the_mission_goes_on() {
     node.asked_by(&mission_id, &seller).await;
     let (status, claimed) = node.claim(&mission_id, &seller).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    {
-        let mut gateway = node.gateway.lock().await;
-        let trade = gateway.trades.get_mut(&mission_id).unwrap();
-        trade["status"] = json!("pledged");
-        trade["held"] = json!({"kind": "crop", "item": "coffee", "units": 5});
-    }
+    node.pledged_by_claimer(&mission_id).await;
     let (status, completed) = complete(
         mission_id.clone(),
         seller.clone(),
@@ -853,136 +725,668 @@ async fn a_hand_in_sent_back_is_handed_in_again_and_the_mission_goes_on() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{completed}");
+    assert!(
+        node.calls("deliver").await.is_empty(),
+        "pledged items are already the hand-in"
+    );
 
     // The publisher turns the hand-in down with the decision it always had for a result: the
-    // held items go back, the Watt stays locked, and the mission is the claimer's again.
+    // gateway is told, and the mission ends as rejected.
     let answer = decide(&node, &mission_id, &seller, "reject_result").await;
     assert_eq!(answer["status"], "rejected", "{answer}");
-    assert_eq!(answer["returned"]["trade"]["status"], "claimed", "{answer}");
-    assert!(answer["returned"]["trade"]["held"].is_null(), "{answer}");
-    assert_eq!(answer["returned"]["mission"]["status"], "claimed");
-    assert!(
-        answer["returned"]["mission"]
-            .get("completion_result")
-            .is_none_or(Value::is_null),
-        "the result that was turned down is forgotten: {answer}"
-    );
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Claimed);
+    assert_eq!(answer["returned"]["gateway_status"], "rejected", "{answer}");
+    assert_eq!(node.status(&mission_id).await, "rejected");
     assert_eq!(
-        node.gateway.lock().await.escrows[&mission_id]["status"],
-        "locked"
+        node.calls("reject").await[0]["reason"],
+        "not what I asked for"
     );
 
-    // The claimer hands in again; what it hands in now replaces what was sent back.
-    let second = json!({"note": "the right beans this time"});
-    let (status, completed) = complete(mission_id.clone(), seller.clone(), second.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{completed}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Completed);
-    let board = node
-        .state
-        .mission_board
-        .lock()
-        .await
-        .get(&mission_id)
-        .unwrap();
-    assert_eq!(board.completion_result, Some(second));
-    assert_eq!(
-        node.gateway.lock().await.trades[&mission_id]["status"],
-        "delivered"
-    );
-
-    // Asking for another try sends the hand-in back the same way, as often as it takes.
-    let answer = decide(&node, &mission_id, &seller, "request_retry").await;
-    assert_eq!(answer["status"], "retry_requested", "{answer}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Claimed);
+    // Deciding again reaches the gateway the same way and changes nothing more.
+    let answer = decide(&node, &mission_id, &seller, "reject_result").await;
+    assert_eq!(answer["status"], "rejected", "{answer}");
+    assert_eq!(answer["returned"]["gateway_status"], "rejected", "{answer}");
+    assert_eq!(node.status(&mission_id).await, "rejected");
     assert_eq!(node.calls("reject").await.len(), 2);
-    assert_eq!(node.calls("refund").await, Vec::<Value>::new());
+    assert_eq!(node.calls("cancel").await, Vec::<Value>::new());
 
-    // Only a deadline ends it: the claimer lets the fresh time run out.
-    node.set_trade(&mission_id, "pledge_expired").await;
-    let report = crate::reconcile_mission_escrows(&node.state, 3600).await;
-    assert_eq!(report.trades_ended, 1, "{report:?}");
-    assert_eq!(node.status(&mission_id).await, MissionStatus::Cancelled);
-
-    // Outside the Space a rejection is the answer to the claimer it always was: the ledger is
-    // not asked and the mission stays as it was.
+    // Outside the Space a result is rejected the same way.
     let outside = node.published("real_world", 20, Some("Momo")).await;
     node.asked_by(&outside, &momo).await;
     let (status, claimed) = node.claim(&outside, &momo).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    let (status, completed) = complete(
-        outside.clone(),
-        momo.clone(),
-        json!({"note": "report sent"}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{completed}");
+
+    // Nothing handed in: the decision is only the answer to the claimer.
     let answer = decide(&node, &outside, &momo, "reject_result").await;
     assert_eq!(answer["status"], "rejected", "{answer}");
     assert!(answer.get("returned").is_none(), "{answer}");
-    assert_eq!(node.status(&outside).await, MissionStatus::Completed);
-    assert_eq!(node.calls("reject").await.len(), 2);
+    assert_eq!(node.status(&outside).await, "claimed");
+
+    let first = json!({"note": "report sent"});
+    let (status, completed) = complete(outside.clone(), momo.clone(), first.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    let answer = decide(&node, &outside, &momo, "reject_result").await;
+    assert_eq!(answer["status"], "rejected", "{answer}");
+    assert_eq!(answer["returned"]["gateway_status"], "rejected", "{answer}");
+    assert_eq!(answer["returned"]["completion_result"], first, "{answer}");
+    assert_eq!(node.status(&outside).await, "rejected");
+    assert_eq!(node.calls("reject").await.len(), 4);
+
+    // There is no asking for another try: the node does not take that decision.
+    let refused = decide(&node, &outside, &momo, "request_retry").await;
+    assert_ne!(refused["status"], "retry_requested", "{refused}");
+    assert_eq!(node.calls("reject").await.len(), 4);
+}
+
+/// A review of `mission_id` for `claimer`, as the publisher's agent decides it.
+fn review(action: &str, mission_id: &str, claimer: &str) -> crate::routes::core::MissionReview {
+    crate::routes::core::MissionReview {
+        action: action.to_owned(),
+        mission_id: mission_id.to_owned(),
+        agent_did: claimer.to_owned(),
+        task_id: mission_id.to_owned(),
+        execution_id: format!("wattetheria:{mission_id}:{claimer}"),
+        reason: Some("a person should look".to_owned()),
+        target_agent_id: Some(claimer.to_owned()),
+        target_node_id: Some("claimer-node".to_owned()),
+        context: Value::Null,
+    }
+}
+
+async fn answer(response: axum::response::Response) -> (StatusCode, Value) {
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]
-async fn the_claimers_node_lets_it_hand_in_again_once_the_ledger_says_it_was_sent_back() {
-    use wattetheria_kernel::civilization::missions::{
-        NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
-    };
+async fn leaving_a_claim_or_a_hand_in_to_a_human_decides_nothing() {
+    let seller = Identity::new_random().agent_did;
+    let node = trade_node(&[]).await;
+    let mission_id = node.published("in_world", 20, None).await;
+    node.asked_by(&mission_id, &seller).await;
+
+    // The claim is left to a human: the gateway is not asked and the claimer is told nothing.
+    let (status, left) = answer(
+        crate::routes::core::review_mission_claim(
+            &node.state,
+            node.token.clone(),
+            review("human_review", &mission_id, &seller),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left["status"], "human_review", "{left}");
+    assert_eq!(node.calls("reject_claim").await, Vec::<Value>::new());
+    assert!(node.bridge.task_notices.lock().await.is_empty());
+
+    // The hand-in is left to a human: the mission stays handed in, nothing goes back, and the
+    // claimer is told nothing.
+    let (status, claimed) = node.claim(&mission_id, &seller).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    node.pledged_by_claimer(&mission_id).await;
+    let (status, left) = answer(
+        crate::routes::core::review_mission_result(
+            &node.state,
+            node.token.clone(),
+            review("human_review", &mission_id, &seller),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left["status"], "human_review", "{left}");
+    assert_eq!(node.calls("reject").await, Vec::<Value>::new());
+    assert_eq!(node.status(&mission_id).await, "completed");
+    assert_eq!(
+        *node.bridge.task_notices.lock().await,
+        vec!["claim decision"],
+        "only the approval of the claim was sent"
+    );
+
+    // The person then rejects it: now the mission ends and the claimer is told.
+    let rejected = node
+        .tool("reject_mission_result", json!({"mission_id": mission_id}))
+        .await;
+    assert_eq!(rejected["status"], "rejected", "{rejected}");
+    assert_eq!(node.status(&mission_id).await, "rejected");
+    assert_eq!(
+        *node.bridge.task_notices.lock().await,
+        vec!["claim decision", "completion decision"]
+    );
+}
+
+#[tokio::test]
+async fn the_publisher_sends_nothing_in_a_remote_claimers_name() {
+    let seller = Identity::new_random().agent_did;
+    let stale = Identity::new_random().agent_did;
     let node = trade_node(&[]).await;
     let me = node.state.identity.agent_did.clone();
-    let claims_domain = wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS;
-    let mut claims = NetworkMissionClaimRegistry::default();
-    for (mission_id, scope) in [("m-space", "in_world"), ("m-outside", "real_world")] {
-        claims.record(
-            mission_id,
-            mission_id,
-            &me,
-            &format!("wattetheria:{mission_id}:{me}"),
-            Some("completed".to_owned()),
-            NetworkMissionClaimMetadata {
-                scope: Some(scope.to_owned()),
-                ..NetworkMissionClaimMetadata::default()
-            },
-        );
-        node.gateway.lock().await.trades.insert(
-            mission_id.to_owned(),
-            json!({"escrow_id": mission_id, "scope": scope, "status": "delivered", "claimer": me}),
-        );
-    }
-    node.state
-        .local_db
-        .save_domain(claims_domain, &claims)
-        .unwrap();
-    let status_of = |mission_id: &'static str| {
-        let registry: NetworkMissionClaimRegistry = node
-            .state
-            .local_db
-            .load_domain_or_default(claims_domain)
-            .unwrap();
-        registry.get(mission_id, mission_id, &me).unwrap().status
-    };
+    let mission_id = node.published("real_world", 20, None).await;
 
-    // Handed in and waiting for its publisher: nothing to hand in again.
-    crate::routes::mission_trade::reopen_sent_back_claim(&node.state, "m-space", &me).await;
-    assert_eq!(status_of("m-space").as_deref(), Some("completed"));
+    // The claimer is on another node: approving it sends the decision and no claim in its name.
+    node.asked_by(&mission_id, &seller).await;
+    let (status, claimed) = node.claim(&mission_id, &seller).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(
+        *node.bridge.task_notices.lock().await,
+        vec!["claim decision"]
+    );
 
-    // The publisher sent it back: the ledger says the mission is this agent's to hand in.
-    for mission_id in ["m-space", "m-outside"] {
-        node.gateway
+    // The publisher records the hand-in for that claimer: no hand-in notice goes out in its name.
+    let (status, completed) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{mission_id}/complete"),
+            json!({"agent_did": seller, "result": {"link": "https://example.com/done.png"}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{completed}");
+    assert_eq!(node.status(&mission_id).await, "completed");
+    assert!(
+        completed.get("mission_lifecycle_notice").is_none(),
+        "{completed}"
+    );
+    assert_eq!(
+        *node.bridge.task_notices.lock().await,
+        vec!["claim decision"]
+    );
+
+    // Settling names another agent: the notice still goes to the claimer the gateway recorded.
+    let (status, settled) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{mission_id}/settle"),
+            json!({"agent_did": stale}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{settled}");
+    let notice = &settled["mission_lifecycle_notice"];
+    assert_eq!(notice["target_agent_id"], json!(seller), "{settled}");
+    assert_eq!(
+        notice["execution_id"],
+        json!(format!("wattetheria:{mission_id}:{seller}")),
+        "{settled}"
+    );
+
+    // This node's own agent claiming its own mission does send its claim, signed by itself.
+    let own = node.published("real_world", 21, None).await;
+    let (status, claimed) = node.claim(&own, &me).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert!(
+        node.bridge
+            .task_notices
             .lock()
             .await
-            .trades
-            .get_mut(mission_id)
-            .unwrap()["status"] = json!("claimed");
-        crate::routes::mission_trade::reopen_sent_back_claim(&node.state, mission_id, &me).await;
-    }
-    assert_eq!(status_of("m-space").as_deref(), Some("claimed"));
-    assert_eq!(
-        status_of("m-outside").as_deref(),
-        Some("completed"),
-        "a mission outside the Space is left as it was"
+            .contains(&format!("claim from {me}")),
     );
+}
+
+/// Every mission id the gateway keeps.
+async fn kept_missions(node: &Node) -> Vec<String> {
+    node.gateway.lock().await.missions.keys().cloned().collect()
+}
+
+/// What wattswarm was given for one mission: `submitted` and `announced`, in order.
+async fn on_swarm(node: &Node, mission_id: &str) -> Vec<&'static str> {
+    node.bridge
+        .published_tasks
+        .lock()
+        .await
+        .iter()
+        .filter_map(|task| {
+            ["submitted", "announced"]
+                .into_iter()
+                .find(|step| task[*step]["task_id"] == mission_id)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn publishing_again_after_a_lost_answer_locks_no_second_bounty() {
+    let node = trade_node(&[]).await;
+
+    // The gateway records the mission but its answer never reaches the node.
+    node.gateway.lock().await.lost_publish_answers = 1;
+    let (status, failed) = node.publish("in_world", 10, None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{failed}");
+    let kept = kept_missions(&node).await;
+    assert_eq!(kept.len(), 1, "the gateway holds the mission");
+    assert_eq!(on_swarm(&node, &kept[0]).await, [""; 0]);
+
+    // Asking for the same mission again finishes that one: no second mission, no second lock,
+    // and the task reaches wattswarm now.
+    let (status, published) = node.publish("in_world", 10, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{published}");
+    assert_eq!(published["mission_id"], json!(kept[0]), "{published}");
+    assert!(published.get("already_published").is_none(), "{published}");
+    assert_eq!(kept_missions(&node).await, kept);
+    assert_eq!(on_swarm(&node, &kept[0]).await, ["submitted", "announced"]);
+
+    // The caller never saw that answer and sends the same mission once more: it is told the
+    // mission is there, and nothing is made or announced again.
+    let (status, second) = node.publish("in_world", 10, None).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["already_published"], true);
+    assert_eq!(second["mission_id"], published["mission_id"]);
+    assert_eq!(kept_missions(&node).await, kept);
+    assert_eq!(on_swarm(&node, &kept[0]).await, ["submitted", "announced"]);
+    assert_eq!(node.calls("cancel").await, Vec::<Value>::new());
+}
+
+#[tokio::test]
+async fn a_lost_publish_somebody_took_meanwhile_is_finished_not_made_again() {
+    let node = trade_node(&[]).await;
+    node.gateway.lock().await.lost_publish_answers = 1;
+    let (status, failed) = node.publish("in_world", 30, None).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{failed}");
+    let kept = kept_missions(&node).await;
+    let worker = Identity::new_random().agent_did;
+    node.asked_by(&kept[0], &worker).await;
+    assert_eq!(node.claim(&kept[0], &worker).await.0, StatusCode::OK);
+
+    // The publisher's notices to the claimer need the task on this node's wattswarm, so the
+    // repeated publish puts it there; the mission and its claim stay as they are.
+    let (status, replay) = node.publish("in_world", 30, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{replay}");
+    assert_eq!(replay["mission_id"], json!(kept[0]));
+    assert_eq!(replay["gateway_status"], "claimed");
+    assert_eq!(on_swarm(&node, &kept[0]).await, ["submitted", "announced"]);
+    assert_eq!(node.calls("cancel").await, Vec::<Value>::new());
+    assert_eq!(kept_missions(&node).await, kept);
+
+    let (status, again) = node.publish("in_world", 30, None).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["already_published"], true);
+    assert_eq!(again["gateway_status"], "claimed");
+    assert_eq!(kept_missions(&node).await, kept);
+
+    // The same title with another bounty is another mission.
+    let other = node.published("in_world", 31, None).await;
+    assert_ne!(other, kept[0]);
+    assert_eq!(kept_missions(&node).await.len(), 2);
+}
+
+#[tokio::test]
+async fn the_same_mission_published_twice_at_once_is_one_mission() {
+    let node = trade_node(&[]).await;
+    let (a, b) = tokio::join!(
+        node.publish("in_world", 5, None),
+        node.publish("in_world", 5, None)
+    );
+    // Whichever asks wattswarm before the other has put the task there puts it there too,
+    // which wattswarm takes as the same task; neither waits for the other.
+    for (status, answer) in [&a, &b] {
+        assert!(
+            matches!(*status, StatusCode::CREATED | StatusCode::OK),
+            "{status} {answer}"
+        );
+    }
+    assert_eq!(a.1["mission_id"], b.1["mission_id"]);
+    assert_eq!(kept_missions(&node).await.len(), 1);
+
+    // Another mission is not held up by this one, and is its own.
+    let other = node.published("real_world", 5, None).await;
+    assert_ne!(json!(other), a.1["mission_id"]);
+}
+
+#[tokio::test]
+async fn only_a_cancelled_mission_can_be_published_again_unchanged() {
+    let node = trade_node(&[]).await;
+    let first = node.published("in_world", 5, None).await;
+    let (status, cancelled) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{first}/cancel"),
+            json!({}),
+        )
+        .await;
+    assert!(status.is_success(), "{cancelled}");
+
+    let second = node.published("in_world", 5, None).await;
+    assert_ne!(second, first);
+    assert_eq!(node.status(&first).await, "cancelled");
+    assert_eq!(node.status(&second).await, "published");
+    assert_eq!(on_swarm(&node, &second).await, ["submitted", "announced"]);
+
+    // A mission that ended any other way keeps its content taken.
+    node.gateway
+        .lock()
+        .await
+        .set(&second, "status", json!("rejected"));
+    let (status, again) = node.publish("in_world", 5, None).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["already_published"], true);
+    assert_eq!(again["mission_id"], json!(second));
+    assert_eq!(kept_missions(&node).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_mission_that_cannot_be_announced_is_cancelled_only_by_the_publish_that_made_it() {
+    let node = trade_node(&[]).await;
+    let down = |down: bool| {
+        node.bridge
+            .announce_down
+            .store(down, std::sync::atomic::Ordering::SeqCst);
+    };
+
+    // This publish makes the mission and cannot announce it: it takes the mission back, and
+    // the same mission can be published once wattswarm answers.
+    down(true);
+    let (status, failed) = node.publish("in_world", 10, None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{failed}");
+    let kept = kept_missions(&node).await;
+    assert_eq!(node.status(&kept[0]).await, "cancelled");
+    down(false);
+    let second = node.published("in_world", 10, None).await;
+    assert_ne!(second, kept[0]);
+
+    // A mission that was there before this publish is left alone when announcing fails: it
+    // may have been taken. Its task is on wattswarm by then, so the next publish finds both.
+    node.gateway.lock().await.lost_publish_answers = 1;
+    assert_eq!(
+        node.publish("in_world", 20, None).await.0,
+        StatusCode::BAD_GATEWAY
+    );
+    let lost = kept_missions(&node)
+        .await
+        .into_iter()
+        .find(|id| *id != kept[0] && *id != second)
+        .unwrap();
+    down(true);
+    let (status, failed) = node.publish("in_world", 20, None).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{failed}");
+    assert_eq!(node.status(&lost).await, "published");
+    assert_eq!(node.calls("cancel").await.len(), 1);
+    assert_eq!(on_swarm(&node, &lost).await, ["submitted"]);
+    down(false);
+    let (status, found) = node.publish("in_world", 20, None).await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["already_published"], true);
+    assert_eq!(found["mission_id"], json!(lost));
+    assert_eq!(kept_missions(&node).await.len(), 3);
+}
+
+#[tokio::test]
+async fn a_claim_whose_notice_fails_says_the_request_stands() {
+    let node = trade_node(&[]).await;
+    let me = node.state.identity.agent_did.clone();
+    node.remote("m-1", None).await;
+
+    // The gateway takes the request, then the claim cannot be sent: the answer says so.
+    node.bridge
+        .claim_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, failed) = node.claim("m-1", &me).await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{failed}");
+    assert_eq!(failed["code"], "claim_notice_not_delivered", "{failed}");
+    assert_eq!(failed["mission_lifecycle_notice"]["sent"], false);
+    assert_eq!(node.calls("claims").await.len(), 1);
+    let claims: NetworkMissionClaimRegistry = node
+        .state
+        .local_db
+        .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+        .unwrap();
+    assert!(claims.records().is_empty(), "no claim was sent");
+
+    // Claiming again sends it.
+    node.bridge
+        .claim_down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, claimed) = node.claim("m-1", &me).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    assert_eq!(claimed["status"], "network_claim_submitted", "{claimed}");
+}
+
+/// The mission's publisher, on its own node, approves this node's agent.
+async fn approved_far_away(node: &Node, mission_id: &str) {
+    let me = node.state.identity.agent_did.clone();
+    let mut gateway = node.gateway.lock().await;
+    gateway.set(mission_id, "claimer", json!(me));
+    gateway.set(mission_id, "status", json!("claimed"));
+}
+
+#[tokio::test]
+async fn the_claimer_gives_a_mission_up_with_a_tool_and_its_publisher_is_told() {
+    let node = trade_node(&[]).await;
+    let me = node.state.identity.agent_did.clone();
+    let down = |down: bool| {
+        node.bridge
+            .topic_down
+            .store(down, std::sync::atomic::Ordering::SeqCst);
+    };
+    let kept_claims = || -> Vec<String> {
+        let claims: NetworkMissionClaimRegistry = node
+            .state
+            .local_db
+            .load_domain_or_default(wattetheria_kernel::local_db::domain::NETWORK_MISSION_CLAIMS)
+            .unwrap();
+        claims
+            .records()
+            .into_iter()
+            .map(|claim| claim.mission_id)
+            .collect()
+    };
+
+    // A mission this agent never asked for: the gateway refuses, and nobody is told.
+    node.remote("m-0", None).await;
+    let refused = node
+        .tool("withdraw_mission_claim", json!({"mission_id": "m-0"}))
+        .await;
+    assert_eq!(refused["code"], "claim_not_requested", "{refused}");
+    assert!(node.bridge.messages.lock().await.is_empty());
+
+    // It holds m-1 and gives it up while wattswarm is down: the gateway has the change, and
+    // the answer says the publisher was not told.
+    node.remote("m-1", None).await;
+    let (status, claimed) = node.claim("m-1", &me).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    approved_far_away(&node, "m-1").await;
+    assert_eq!(kept_claims(), ["m-1"]);
+    down(true);
+    let untold = node
+        .tool(
+            "withdraw_mission_claim",
+            json!({"mission_id": "m-1", "reason": "cannot find the item"}),
+        )
+        .await;
+    assert_eq!(untold["code"], "withdraw_notice_not_delivered", "{untold}");
+    assert_eq!(untold["mission_lifecycle_notice"]["sent"], false);
+    assert_eq!(node.status("m-1").await, "published");
+    let record = node.gateway.lock().await.record("m-1").unwrap();
+    assert!(record["claimer"].is_null(), "{record}");
+    assert!(record["pledge_deadline"].is_null(), "{record}");
+    assert!(node.bridge.messages.lock().await.is_empty());
+
+    // The same request again tells the publisher, on the mission's own topic, signed by this
+    // agent; nothing else changes.
+    down(false);
+    let answer = node
+        .tool(
+            "withdraw_mission_claim",
+            json!({"mission_id": "m-1", "reason": "cannot find the item"}),
+        )
+        .await;
+    assert_eq!(answer["status"], "mission_claim_withdrawn", "{answer}");
+    assert_eq!(answer["mission"]["gateway_status"], "published", "{answer}");
+    let notice = &answer["mission_lifecycle_notice"];
+    assert_eq!(notice["sent"], true, "{answer}");
+    assert_eq!(notice["target_agent_id"], "did:key:publisher-far");
+    assert_eq!(notice["target_node_id"], "publisher-node");
+    let told = node.calls("withdraw_claim").await;
+    assert_eq!(told.len(), 3, "{told:?}");
+    assert_eq!(told[1]["claimer"], json!(me));
+    assert_eq!(told[1]["reason"], "cannot find the item");
+    assert_eq!(node.status("m-1").await, "published");
+    {
+        let messages = node.bridge.messages.lock().await;
+        assert_eq!(messages.len(), 1);
+        let message = &messages[0];
+        assert_eq!(message.feed_key, "wattetheria.missions");
+        assert_eq!(message.scope_hint, "group:m-1");
+        assert_eq!(message.content["kind"], "mission_claim_withdrawn");
+        assert_eq!(message.content["mission_id"], "m-1");
+        assert_eq!(message.content["claimer_agent_did"], json!(me));
+        assert_eq!(message.content["reason"], "cannot find the item");
+        assert_eq!(message.content["mission_status"], "published");
+        let envelope = message
+            .agent_envelope
+            .as_ref()
+            .expect("signed by the agent");
+        assert_eq!(envelope.source_agent_id.as_deref(), Some(me.as_str()));
+        assert_eq!(
+            envelope.target_agent_id.as_deref(),
+            Some("did:key:publisher-far")
+        );
+    }
+
+    // This node keeps nothing of the claim, so asking again is the gateway's to answer: an
+    // agent that gave a mission up does not take it again.
+    assert_eq!(kept_claims(), Vec::<String>::new());
+    let (status, back) = node.claim("m-1", &me).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{back}");
+    assert_eq!(back["code"], "gave_up", "{back}");
+
+    // Once something is handed in the gateway refuses, and its answer comes back.
+    node.remote("m-2", None).await;
+    let (status, claimed) = node.claim("m-2", &me).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    approved_far_away(&node, "m-2").await;
+    node.pledged_by_claimer("m-2").await;
+    let refused = node
+        .tool("withdraw_mission_claim", json!({"mission_id": "m-2"}))
+        .await;
+    assert_eq!(refused["code"], "handed_in", "{refused}");
+    assert_eq!(node.status("m-2").await, "completed");
+    assert_eq!(kept_claims(), ["m-2"]);
+    assert_eq!(node.bridge.messages.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_publisher_rejects_a_claim_and_a_hand_in_with_tools() {
+    let seller = Identity::new_random().agent_did;
+    let node = trade_node(&[]).await;
+    let mission_id = node.published("in_world", 20, None).await;
+    node.asked_by(&mission_id, &seller).await;
+
+    // Nothing handed in yet: there is nothing to reject, and the gateway is not asked.
+    let refused = node
+        .tool("reject_mission_result", json!({"mission_id": mission_id}))
+        .await;
+    assert_eq!(refused["code"], "nothing_handed_in", "{refused}");
+    assert_eq!(node.calls("reject").await, Vec::<Value>::new());
+
+    // Turning the claim down needs the agent it is about.
+    let refused = node
+        .tool("reject_mission_claim", json!({"mission_id": mission_id}))
+        .await;
+    assert_eq!(refused["code"], "invalid", "{refused}");
+    assert_eq!(node.calls("reject_claim").await, Vec::<Value>::new());
+
+    // The agent that asked is turned down: the mission stays open for others.
+    let answer = node
+        .tool(
+            "reject_mission_claim",
+            json!({
+                "mission_id": mission_id,
+                "agent_did": seller,
+                "claimer_node_id": "claimer-node",
+                "reason": "someone else is on it",
+            }),
+        )
+        .await;
+    assert_eq!(answer["status"], "rejected", "{answer}");
+    assert_eq!(answer["agent_did"], json!(seller), "{answer}");
+    assert_eq!(answer["claimer_node_id"], "claimer-node", "{answer}");
+    let told = node.calls("reject_claim").await;
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["claimer"], json!(seller));
+    assert_eq!(told[0]["reason"], "someone else is on it");
+    assert_eq!(node.status(&mission_id).await, "published");
+
+    // Another agent's claim is approved, and from then on it stands: the gateway refuses to
+    // turn it down, and its answer comes back.
+    let buyer = Identity::new_random().agent_did;
+    node.asked_by(&mission_id, &buyer).await;
+    let (status, claimed) = node.claim(&mission_id, &buyer).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    let refused = node
+        .tool(
+            "reject_mission_claim",
+            json!({"mission_id": mission_id, "agent_did": buyer}),
+        )
+        .await;
+    assert_eq!(refused["code"], "claimed", "{refused}");
+    assert_eq!(node.status(&mission_id).await, "claimed");
+
+    // It hands items in, and the publisher rejects them: the mission ends as rejected.
+    node.pledged_by_claimer(&mission_id).await;
+    let answer = node
+        .tool(
+            "reject_mission_result",
+            json!({"mission_id": mission_id, "reason": "not what I asked for"}),
+        )
+        .await;
+    assert_eq!(answer["status"], "rejected", "{answer}");
+    assert_eq!(answer["agent_did"], json!(buyer), "{answer}");
+    assert_eq!(answer["returned"]["gateway_status"], "rejected", "{answer}");
+    assert_eq!(node.status(&mission_id).await, "rejected");
+    let told = node.calls("reject").await;
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["reason"], "not what I asked for");
+
+    // A claim on a mission that has ended is the gateway's to refuse; its answer comes back.
+    let refused = node
+        .tool(
+            "reject_mission_claim",
+            json!({"mission_id": mission_id, "agent_did": buyer}),
+        )
+        .await;
+    assert!(refused.get("code").is_some(), "{refused}");
+    assert_eq!(node.status(&mission_id).await, "rejected");
+}
+
+#[tokio::test]
+async fn the_publisher_cancels_a_mission_with_a_tool() {
+    let seller = Identity::new_random().agent_did;
+    let node = trade_node(&[]).await;
+
+    // An open mission is cancelled, and the gateway is told why.
+    let open = node.published("in_world", 20, None).await;
+    let answer = node
+        .tool(
+            "cancel_mission",
+            json!({"mission_id": open, "reason": "no longer needed"}),
+        )
+        .await;
+    assert_eq!(answer["gateway_status"], "cancelled", "{answer}");
+    assert_eq!(node.status(&open).await, "cancelled");
+    let told = node.calls("cancel").await;
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["reason"], "no longer needed");
+
+    // Once somebody has taken the mission the gateway refuses, and its answer comes back.
+    let claimed = node.published("in_world", 21, None).await;
+    node.asked_by(&claimed, &seller).await;
+    let (status, taken) = node.claim(&claimed, &seller).await;
+    assert_eq!(status, StatusCode::OK, "{taken}");
+    let refused = node
+        .tool("cancel_mission", json!({"mission_id": claimed}))
+        .await;
+    assert_eq!(refused["code"], "claimed", "{refused}");
+    assert_eq!(node.status(&claimed).await, "claimed");
+
+    // Once something is handed in the gateway refuses, and its answer comes back.
+    let handed_in = node.published("in_world", 22, None).await;
+    node.asked_by(&handed_in, &seller).await;
+    let (status, taken) = node.claim(&handed_in, &seller).await;
+    assert_eq!(status, StatusCode::OK, "{taken}");
+    node.pledged_by_claimer(&handed_in).await;
+    let refused = node
+        .tool("cancel_mission", json!({"mission_id": handed_in}))
+        .await;
+    assert_eq!(refused["code"], "handed_in", "{refused}");
+    assert_eq!(node.status(&handed_in).await, "completed");
 }
 
 #[tokio::test]
@@ -990,32 +1394,16 @@ async fn a_missed_deadline_ends_the_mission() {
     let seller = Identity::new_random().agent_did;
     let node = trade_node(&[]).await;
 
-    let pledged = |mission_id: String| {
-        let (node, seller) = (&node, seller.clone());
-        async move {
-            node.asked_by(&mission_id, &seller).await;
-            let (status, claimed) = node.claim(&mission_id, &seller).await;
-            assert_eq!(status, StatusCode::OK, "{claimed}");
-            {
-                let mut gateway = node.gateway.lock().await;
-                let trade = gateway.trades.get_mut(&mission_id).unwrap();
-                trade["status"] = json!("pledged");
-                trade["held"] = json!({"kind": "crop", "item": "coffee", "units": 5});
-            }
-            let (status, completed) = node
-                .post(
-                    &format!("/v1/wattetheria/missions/{mission_id}/complete"),
-                    json!({"agent_did": seller, "result": {"pledged": "coffee"}}),
-                )
-                .await;
-            assert_eq!(status, StatusCode::OK, "{completed}");
-            mission_id
-        }
-    };
-
-    // The publisher neither settles nor rejects in time: settling afterwards is refused.
-    let late = pledged(node.published("in_world", 20, None).await).await;
-    node.set_trade(&late, "confirm_expired").await;
+    // The publisher does not settle in time: settling afterwards is refused.
+    let late = node.published("in_world", 20, None).await;
+    node.asked_by(&late, &seller).await;
+    let (status, claimed) = node.claim(&late, &seller).await;
+    assert_eq!(status, StatusCode::OK, "{claimed}");
+    node.pledged_by_claimer(&late).await;
+    node.gateway
+        .lock()
+        .await
+        .set(&late, "status", json!("cancelled"));
     let (status, refused) = node
         .post(
             &format!("/v1/wattetheria/missions/{late}/settle"),
@@ -1023,24 +1411,24 @@ async fn a_missed_deadline_ends_the_mission() {
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
-    assert_eq!(refused["code"], "trade_ended");
-    assert_eq!(node.status(&late).await, MissionStatus::Cancelled);
-    assert_eq!(node.calls("release").await, Vec::<Value>::new());
+    assert_eq!(refused["code"], "mission_closed");
+    assert_eq!(node.status(&late).await, "cancelled");
 
-    // The claimer never pledges: the sweep ends the mission on the board.
-    let idle = node.published("in_world", 20, None).await;
+    // The claimer never pledges: the mission ends when its time runs out.
+    let idle = node.published("in_world", 21, None).await;
     node.asked_by(&idle, &seller).await;
     let (status, claimed) = node.claim(&idle, &seller).await;
     assert_eq!(status, StatusCode::OK, "{claimed}");
-    node.set_trade(&idle, "pledge_expired").await;
-    let report = crate::reconcile_mission_escrows(&node.state, 3600).await;
-    assert_eq!(report.trades_ended, 1, "{report:?}");
-    assert_eq!(node.status(&idle).await, MissionStatus::Cancelled);
-    let report = crate::reconcile_mission_escrows(&node.state, 3600).await;
-    assert_eq!(
-        report.trades_ended, 0,
-        "an ended mission is ended once: {report:?}"
-    );
+    node.passed(&idle, "pledge_deadline").await;
+    assert_eq!(node.status(&idle).await, "cancelled");
+    let (status, refused) = node
+        .post(
+            &format!("/v1/wattetheria/missions/{idle}/cancel"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "mission_closed");
 }
 
 #[tokio::test]

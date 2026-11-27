@@ -28,6 +28,13 @@ async fn agent_dm_is_denied_when_counterpart_is_blocked() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =

@@ -1,44 +1,23 @@
 //! `get_mission`: missions read in full, found by title or by id.
 //!
-//! Two places know missions: this node's board (the ones it published or took part in, with
-//! everything about them) and the gateway's network market (the recent ones of every node, as
-//! summaries). A mission on both is answered from the board. Each mission found also carries
-//! what the ledger records for its Watt bounty, when it records anything, and states its scope,
-//! domain, region, publishing time and status in the same fields whichever place it came from.
+//! The gateway keeps every mission. A search by id reads that one mission; a search by title
+//! looks through the missions this agent takes part in, the open ones and the most recent of
+//! every node. Each mission found states its scope, domain, region, publishing time and status
+//! in the same fields.
 
-use super::{
-    MAX_GATEWAY_TASK_WINDOW, fetch_gateway_tasks, gateway_task_string, is_gateway_mission,
-    normalize_gateway_mission, normalized_gateway_tasks_url, numeric_argument, required_string,
-    resolve_gateway_query_url, tool_error, tool_success,
-};
-use crate::ledger_client::LedgerClient;
-use crate::routes::mission_trade;
+use super::{numeric_argument, required_string, tool_error, tool_success};
+use crate::routes::gateway_missions::{self, MissionResult};
 use crate::state::ControlPlaneState;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 20;
+const RECENT_LIMIT: &str = "200";
 
-const TITLE_PATHS: [&[&str]; 5] = [
-    &["title"],
-    &["summary", "title"],
-    &["task_contract", "inputs", "title"],
-    &["contract", "inputs", "title"],
-    &["inputs", "title"],
-];
-const ID_PATHS: [&[&str]; 3] = [&["mission_id"], &["id"], &["task_id"]];
-
-/// Where a mission record may keep a fact about the mission: on itself (the board, and market
-/// records that state it outright) or inside what its publisher announced.
-const FACT_HOLDERS: [&[&str]; 6] = [
-    &[],
-    &["summary"],
-    &["task_contract", "inputs"],
-    &["contract", "inputs"],
-    &["inputs"],
-    &["payload"],
-];
+/// Where a mission record may keep a fact about the mission: on itself, in the gateway's
+/// `place` (a record the node could not read) or inside what its publisher announced.
+const FACT_HOLDERS: [&[&str]; 3] = [&[], &["place"], &["task_contract", "inputs"]];
 
 /// The first of `keys` the record states, wherever it keeps it.
 fn fact<'a>(record: &'a Value, keys: &[&str]) -> Option<&'a Value> {
@@ -75,16 +54,11 @@ fn time_fact(record: &Value, keys: &[&str]) -> Option<String> {
         .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
-/// States the same facts on every mission in the answer, wherever its record came from and
-/// however that source lays them out: `scope`, `domain`, `region` (the mission's coordinates),
-/// `published_at` and `status`. A fact the record does not give is `null`, never guessed; the
-/// scope also comes from the ledger's record of the bounty when only that states it.
-pub(super) fn state_common_facts(record: &mut Value, bounty: Option<&Value>) {
-    let scope = text_fact(record, &["scope"]).or_else(|| {
-        bounty
-            .and_then(|bounty| bounty["scope"].as_str())
-            .map(ToOwned::to_owned)
-    });
+/// States the same facts on every mission in the answer, however its record lays them out:
+/// `scope`, `domain`, `region` (the mission's coordinates), `published_at` and `status` (the
+/// gateway's). A fact the record does not give is `null`, never guessed.
+pub(super) fn state_common_facts(record: &mut Value) {
+    let scope = text_fact(record, &["scope"]);
     let domain = text_fact(record, &["domain"]);
     let region = match (
         fact(record, &["lat", "latitude"]).and_then(Value::as_f64),
@@ -99,7 +73,7 @@ pub(super) fn state_common_facts(record: &mut Value, bounty: Option<&Value>) {
         _ => Value::Null,
     };
     let published_at = time_fact(record, &["published_at", "created_at"]);
-    let status = text_fact(record, &["status", "terminal_state"]);
+    let status = text_fact(record, &["gateway_status", "status"]);
     let Some(object) = record.as_object_mut() else {
         return;
     };
@@ -135,37 +109,37 @@ impl Wanted {
 
 /// One mission found, before the answer is built.
 struct Found {
-    mission_id: String,
     title: String,
-    on_this_node: bool,
     record: Value,
 }
 
-async fn network_missions(state: &ControlPlaneState) -> anyhow::Result<Vec<Value>> {
-    let gateway_url = resolve_gateway_query_url(state)?;
-    let endpoint = normalized_gateway_tasks_url(&gateway_url);
-    Ok(fetch_gateway_tasks(&endpoint, MAX_GATEWAY_TASK_WINDOW)
-        .await?
-        .into_iter()
-        .filter(is_gateway_mission)
-        .collect())
+/// The missions a title search looks through: the ones this agent takes part in, the open ones
+/// and the most recent of every node.
+async fn searchable_records(state: &ControlPlaneState) -> MissionResult<Vec<Value>> {
+    let mut records = gateway_missions::view_records(state).await?;
+    let recent = gateway_missions::list(state, &[("limit", RECENT_LIMIT)]).await?;
+    let mut seen = records
+        .iter()
+        .filter_map(|record| record["mission_id"].as_str().map(ToOwned::to_owned))
+        .collect::<BTreeSet<_>>();
+    records.extend(recent.into_iter().filter(|record| {
+        record["mission_id"]
+            .as_str()
+            .is_some_and(|id| seen.insert(id.to_owned()))
+    }));
+    Ok(records)
 }
 
-/// The board's record of a mission, as it stands after the ledger's verdict on its bounty
-/// (a trade the ledger already ended ends the mission here too).
-async fn board_record(state: &ControlPlaneState, mission_id: &str) -> Option<Value> {
-    mission_trade::end_returned_mission(state, mission_id).await;
-    let mission = state.mission_board.lock().await.get(mission_id)?;
-    serde_json::to_value(mission).ok()
-}
-
-/// What the ledger records for the mission's bounty: who it is reserved for, who holds it, the
-/// items held and the deadlines. `None` when the bounty carries no such record.
-async fn bounty_record(state: &ControlPlaneState, mission_id: &str) -> Option<Value> {
-    let ledger = LedgerClient::from_state(state)?;
-    match ledger.trade(mission_id).await {
-        Ok((status, record)) if status.is_success() => Some(record),
-        _ => None,
+async fn candidate_records(
+    state: &ControlPlaneState,
+    wanted: &Wanted,
+) -> MissionResult<Vec<Value>> {
+    match &wanted.mission_id {
+        Some(mission_id) => Ok(gateway_missions::fetch(state, mission_id)
+            .await?
+            .into_iter()
+            .collect()),
+        None => searchable_records(state).await,
     }
 }
 
@@ -181,82 +155,37 @@ pub(crate) async fn get_mission_result(state: &ControlPlaneState, arguments: &Va
         .unwrap_or(DEFAULT_LIMIT)
         .clamp(1, MAX_LIMIT);
 
-    let mut found = state
-        .mission_board
-        .lock()
-        .await
-        .list(None)
+    let records = match candidate_records(state, &wanted).await {
+        Ok(records) => records,
+        Err(error) => return tool_error(&json!({"error": error.to_string()})),
+    };
+    let mut found = records
         .into_iter()
-        .filter(|mission| wanted.matches(&mission.mission_id, &mission.title))
-        .map(|mission| Found {
-            mission_id: mission.mission_id,
-            title: mission.title,
-            on_this_node: true,
-            record: Value::Null,
+        .filter_map(|record| {
+            let mission_id = record["mission_id"].as_str()?.to_owned();
+            let title = record["title"].as_str().unwrap_or_default().to_owned();
+            wanted
+                .matches(&mission_id, &title)
+                .then_some(Found { title, record })
         })
         .collect::<Vec<_>>();
-    let mut seen = found
-        .iter()
-        .map(|mission| mission.mission_id.clone())
-        .collect::<BTreeSet<_>>();
-    let network_error = match network_missions(state).await {
-        Ok(tasks) => {
-            for task in tasks {
-                let Some(mission_id) = gateway_task_string(&task, &ID_PATHS) else {
-                    continue;
-                };
-                let title = gateway_task_string(&task, &TITLE_PATHS).unwrap_or_default();
-                if wanted.matches(&mission_id, &title) && seen.insert(mission_id.clone()) {
-                    found.push(Found {
-                        mission_id,
-                        title,
-                        on_this_node: false,
-                        record: normalize_gateway_mission(task),
-                    });
-                }
-            }
-            None
-        }
-        Err(error) => Some(format!("{error:#}")),
-    };
     found.sort_by_key(|mission| !wanted.is_exact(&mission.title));
     let known_count = found.len();
     found.truncate(limit);
 
-    let mut missions = Vec::with_capacity(found.len());
-    for mission in found {
-        let record = if mission.on_this_node {
-            board_record(state, &mission.mission_id).await
-        } else {
-            Some(mission.record)
-        };
-        let Some(mut record) = record else {
-            continue;
-        };
-        let bounty = bounty_record(state, &mission.mission_id).await;
-        state_common_facts(&mut record, bounty.as_ref());
-        if let Some(object) = record.as_object_mut() {
-            let source = if mission.on_this_node {
-                "this_node"
-            } else {
-                "network"
-            };
-            object.insert("source".to_owned(), json!(source));
-            if let Some(bounty) = bounty {
-                object.insert("bounty".to_owned(), bounty);
-            }
-        }
-        missions.push(record);
-    }
+    let missions = found
+        .into_iter()
+        .map(|mission| {
+            let mut record = gateway_missions::mission_json_or_record(&mission.record);
+            state_common_facts(&mut record);
+            record
+        })
+        .collect::<Vec<_>>();
 
-    let mut answer = json!({
+    tool_success(&json!({
         "count": missions.len(),
         "known_count": known_count,
         "has_more": known_count > missions.len(),
         "missions": missions,
-    });
-    if let Some(error) = network_error {
-        answer["network_error"] = json!(error);
-    }
-    tool_success(&answer)
+    }))
 }

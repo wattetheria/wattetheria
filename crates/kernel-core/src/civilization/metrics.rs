@@ -1,5 +1,5 @@
 use crate::civilization::galaxy::{DynamicEventCategory, GalaxyState};
-use crate::civilization::missions::{MissionBoard, MissionDomain, MissionStatus};
+use crate::civilization::missions::{MissionBoard, MissionDomain};
 use crate::civilization::profiles::{CitizenRegistry, Faction, RolePath};
 use crate::governance::GovernanceEngine;
 use crate::types::AgentStats;
@@ -24,20 +24,10 @@ pub fn compute_scores(
     governance: &GovernanceEngine,
     galaxy: &GalaxyState,
 ) -> CivilizationScores {
-    let settled_status = MissionStatus::Settled;
-    let settled = missions.list(Some(&settled_status));
-    let by_agent: Vec<_> = settled
-        .into_iter()
-        .filter(|mission| mission.completed_by.as_deref() == Some(agent_did))
-        .collect();
-
+    let completed = missions.completed_by(agent_did);
     let domain_score = |domain: MissionDomain| -> i64 {
-        by_agent
-            .iter()
-            .filter(|mission| mission.domain == domain)
-            .filter_map(|mission| mission.reward.as_ref())
-            .map(|reward| reward.agent_watt + reward.reputation * 2)
-            .sum()
+        let totals = completed.domain(&domain);
+        totals.watt + totals.reputation * 2
     };
 
     let planets = governance.list_planets();

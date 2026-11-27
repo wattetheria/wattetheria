@@ -97,7 +97,7 @@ async fn mcp_tools_list_surfaces_precise_input_schemas_for_agent_tools() {
         reward["description"]
             .as_str()
             .unwrap()
-            .contains("locked from your own Watt balance")
+            .contains("paid from your Watt balance")
     );
     // Delegated and collective missions are not funded with Watt; neither offers a reward.
     assert_schema_omits(find_tool(tools, "publish_delegated_mission"), &["reward"]);

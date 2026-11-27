@@ -324,42 +324,6 @@ fn build_priority_cards(game: &GameView) -> Vec<SupervisionPriorityCard> {
         target: "game_bootstrap".to_string(),
     }];
 
-    if let Some(starter_set) = game.starter_missions.as_ref() {
-        cards.push(SupervisionPriorityCard {
-            key: "starter_chain".to_string(),
-            title: starter_set.objective_chain.title.clone(),
-            summary: starter_set.objective_chain.summary.clone(),
-            status_label: starter_set
-                .objective_chain
-                .current_step_key
-                .clone()
-                .unwrap_or_else(|| "completed".to_string()),
-            progress_pct: starter_set.objective_chain.progress_pct,
-            target: "starter_missions".to_string(),
-        });
-    }
-
-    if let Some(mission_pack) = game.mission_pack.as_ref() {
-        let progress_pct = mission_pack
-            .summary
-            .existing_count
-            .checked_mul(100)
-            .and_then(|value| value.checked_div(mission_pack.summary.current_template_count))
-            .map_or(0, |progress| u8::try_from(progress.min(100)).unwrap_or(100));
-        cards.push(SupervisionPriorityCard {
-            key: "mission_pack".to_string(),
-            title: "Current stage mission pack".to_string(),
-            summary: format!(
-                "{} templates are active for the {} stage.",
-                mission_pack.summary.current_template_count,
-                mission_pack.summary.current_stage_label
-            ),
-            status_label: mission_pack.summary.current_stage_label.clone(),
-            progress_pct,
-            target: "mission_pack".to_string(),
-        });
-    }
-
     if let Some(travel_state) = game.travel_state.as_ref() {
         cards.push(travel_priority_card(travel_state));
     }

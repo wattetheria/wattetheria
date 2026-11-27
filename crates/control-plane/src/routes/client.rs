@@ -387,8 +387,8 @@ async fn build_supervision_home_view(
     } else {
         None
     };
+    let missions = crate::routes::gateway_missions::board_view(state).await?;
     let maps = state.galaxy_map_registry.lock().await;
-    let missions = state.mission_board.lock().await;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
@@ -479,13 +479,16 @@ pub(crate) async fn public_identities(
             .collect::<Vec<_>>()
     };
 
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions,
+        Err(error) => return error.into_response(),
+    };
     let mut identities = Vec::with_capacity(public_ids.len());
     for public_id in &public_ids {
         let context = resolve_identity_context(&state, Some(public_id), None).await;
         let travel_state = state.travel_state_registry.lock().await.get(public_id);
         let organizations = {
             let organizations = state.organization_registry.lock().await;
-            let missions = state.mission_board.lock().await;
             let governance = state.governance_engine.lock().await;
             build_organization_views(&organizations, &missions, &governance, public_id)
         };
@@ -618,9 +621,12 @@ pub(crate) async fn my_missions(
     } else {
         None
     };
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions.list(None),
+        Err(error) => return error.into_response(),
+    };
     let maps = state.galaxy_map_registry.lock().await;
     let galaxy = state.galaxy_state.lock().await;
-    let missions = state.mission_board.lock().await.list(None);
     let buckets = build_mission_client_buckets(
         &missions,
         &agent_did,

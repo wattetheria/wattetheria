@@ -267,7 +267,9 @@ async fn custom_skins_are_published_listed_and_worn_through_the_gateway() {
 
 #[tokio::test]
 async fn custom_skins_need_a_gateway() {
-    let (_dir, app, token, _state_policy, _state) = build_test_app(100);
+    let (_dir, _app, token, _state_policy, mut state) = build_test_app(100);
+    state.gateway_urls.clear();
+    let app = crate::app(state);
     let entered = call(app.clone(), &token, "enter_space", json!({})).await;
     assert_eq!(entered["result"]["isError"], false, "{entered}");
     for (name, arguments) in [

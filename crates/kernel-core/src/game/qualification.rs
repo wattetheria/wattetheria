@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::civilization::metrics::CivilizationScores;
-use crate::civilization::missions::{MissionBoard, MissionDomain, MissionStatus};
+use crate::civilization::missions::{MissionBoard, MissionDomain};
 use crate::civilization::profiles::{CitizenProfile, RolePath};
 use crate::governance::GovernanceEngine;
 
@@ -41,12 +41,8 @@ pub fn compute_qualifications(
     missions: &MissionBoard,
     governance: &GovernanceEngine,
 ) -> Vec<QualificationTrack> {
-    let settled = missions.list(Some(&MissionStatus::Settled));
-    let settled_for_agent: Vec<_> = settled
-        .into_iter()
-        .filter(|mission| mission.completed_by.as_deref() == Some(controller_id))
-        .collect();
-    let role_track = role_track(profile, scores, &settled_for_agent);
+    let completed = missions.completed_by(controller_id);
+    let role_track = role_track(profile, scores, &completed);
     let civic = civic_track(controller_id, scores, governance);
     let expansion = qualification(
         "expansion_planning",
@@ -68,14 +64,9 @@ pub fn compute_qualifications(
 fn role_track(
     profile: Option<&CitizenProfile>,
     scores: &CivilizationScores,
-    settled_for_agent: &[crate::civilization::missions::CivilMission],
+    completed: &crate::civilization::missions::CompletedMissions,
 ) -> QualificationTrack {
-    let domain_count = |domain: MissionDomain| -> usize {
-        settled_for_agent
-            .iter()
-            .filter(|mission| mission.domain == domain)
-            .count()
-    };
+    let domain_count = |domain: MissionDomain| -> usize { completed.domain(&domain).missions };
     match profile.map(|profile| &profile.role) {
         Some(RolePath::Operator) => qualification(
             "operator_logistics",
@@ -247,29 +238,12 @@ fn role_unlocks(key: &str, state: &QualificationState) -> Vec<QualificationUnloc
         "expansion_planning" => "Expansion sponsorship",
         _ => "Role progression",
     };
-    vec![
-        unlock(
-            "starter_contracts",
-            "Starter contracts",
-            "Take the first role-aligned missions for this profession.",
-            !matches!(state, QualificationState::Locked),
-        ),
-        unlock(
-            "phase_mission_packs",
-            "Stage mission packs",
-            "Receive stronger role and civic mission packs tied to your current phase.",
-            matches!(
-                state,
-                QualificationState::Qualified | QualificationState::Advanced
-            ),
-        ),
-        unlock(
-            "advanced_role_authority",
-            domain_title,
-            "Signal to the client and future systems that this role can carry higher-stakes work.",
-            matches!(state, QualificationState::Advanced),
-        ),
-    ]
+    vec![unlock(
+        "advanced_role_authority",
+        domain_title,
+        "Signal to the client and future systems that this role can carry higher-stakes work.",
+        matches!(state, QualificationState::Advanced),
+    )]
 }
 
 fn unlock(key: &str, title: &str, description: &str, unlocked: bool) -> QualificationUnlock {

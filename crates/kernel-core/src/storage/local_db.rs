@@ -43,7 +43,6 @@ pub fn prepare_primary_db(data_dir: impl AsRef<Path>) -> Result<PathBuf> {
 pub mod domain {
     pub const GOVERNANCE: &str = "governance";
     pub const MAILBOX: &str = "mailbox";
-    pub const MISSION_BOARD: &str = "mission_board";
     pub const PUBLIC_IDENTITY_REGISTRY: &str = "public_identity_registry";
     pub const CONTROLLER_BINDING_REGISTRY: &str = "controller_binding_registry";
     pub const CITIZEN_REGISTRY: &str = "citizen_registry";
@@ -69,7 +68,6 @@ pub mod domain {
 const DOMAIN_TABLES: &[(&str, &str)] = &[
     (domain::GOVERNANCE, "governance_state"),
     (domain::MAILBOX, "mailbox_state"),
-    (domain::MISSION_BOARD, "mission_board"),
     (
         domain::PUBLIC_IDENTITY_REGISTRY,
         "public_identity_registry_state",

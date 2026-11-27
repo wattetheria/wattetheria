@@ -152,7 +152,10 @@ pub(crate) async fn galaxy_event_generate(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let missions = state.mission_board.lock().await;
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions,
+        Err(error) => return error.into_response(),
+    };
     let governance = state.governance_engine.lock().await;
     let mut galaxy = state.galaxy_state.lock().await;
     let generated = match generate_system_galaxy_events(

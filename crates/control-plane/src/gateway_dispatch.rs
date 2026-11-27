@@ -69,8 +69,7 @@ pub fn plan_stream_event(event: &StreamEvent) -> Option<GatewayDispatchPlan> {
 pub fn describe_stream_event(event: &StreamEvent) -> Option<GatewayDispatchDecision> {
     let kind = event.kind.as_str();
     let payload = &event.payload;
-    if let Some(plan) = plan_mission_event(kind, payload)
-        .or_else(|| plan_identity_event(kind, payload))
+    if let Some(plan) = plan_identity_event(kind, payload)
         .or_else(|| plan_organization_event(kind, payload))
         .or_else(|| plan_governance_event(kind, payload))
         .or_else(|| plan_topic_event(kind, payload))
@@ -349,53 +348,6 @@ fn proposal_id_from_payload(payload: &Value) -> Option<String> {
         })
 }
 
-fn plan_mission_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
-    match kind {
-        "mission.published" | "mission.claimed" | "mission.completed" | "mission.settled"
-        | "mission.cancelled" => Some(GatewayDispatchPlan {
-            data_kind: GatewayDataKind::MissionLifecycle,
-            visibility: GatewayVisibility::Public,
-            provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
-            scope: GatewayEventScope {
-                node_id: None,
-                topic_id: None,
-                organization_id: organization_id_from_payload(payload),
-                task_id: payload
-                    .get("mission_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-            },
-            identity_key: payload
-                .get("mission_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        }),
-        "organization.mission.published" => Some(GatewayDispatchPlan {
-            data_kind: GatewayDataKind::MissionLifecycle,
-            visibility: GatewayVisibility::Public,
-            provisional_policy: GatewayProvisionalExportPolicy::NeverBeforeConfirmation,
-            scope: GatewayEventScope {
-                node_id: None,
-                topic_id: None,
-                organization_id: payload
-                    .pointer("/memory_owner/subject")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .or_else(|| organization_id_from_payload(payload)),
-                task_id: payload
-                    .pointer("/data/mission/mission_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-            },
-            identity_key: payload
-                .pointer("/data/mission/mission_id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        }),
-        _ => None,
-    }
-}
-
 fn plan_identity_event(kind: &str, payload: &Value) -> Option<GatewayDispatchPlan> {
     match kind {
         "civilization.public_identity.updated"
@@ -599,34 +551,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn mission_events_become_public_gateway_events() {
-        let event = StreamEvent {
-            kind: "mission.published".to_string(),
-            timestamp: 1_710_000_000,
-            payload: json!({
-                "mission_id": "mission-1",
-                "organization_id": "org-1",
-            }),
-        };
-        let plan = plan_stream_event(&event).expect("mission plan");
-        assert_eq!(plan.data_kind, GatewayDataKind::MissionLifecycle);
-        assert_eq!(plan.scope.organization_id.as_deref(), Some("org-1"));
-        assert_eq!(plan.scope.task_id.as_deref(), Some("mission-1"));
-    }
-
-    #[test]
-    fn agent_published_missions_do_not_use_publisher_as_organization_scope() {
-        let event = StreamEvent {
-            kind: "mission.published".to_string(),
-            timestamp: 1_710_000_000,
-            payload: json!({
-                "mission_id": "mission-1",
-                "publisher": "Agent-agent-b2HM",
-            }),
-        };
-        let plan = plan_stream_event(&event).expect("mission plan");
-        assert_eq!(plan.scope.organization_id, None);
-        assert_eq!(plan.scope.task_id.as_deref(), Some("mission-1"));
+    fn mission_events_are_not_gateway_events() {
+        // The gateway keeps every mission's status; the node never reports one.
+        for kind in [
+            "mission.published",
+            "mission.claimed",
+            "mission.completed",
+            "mission.settled",
+            "mission.cancelled",
+            "organization.mission.published",
+        ] {
+            let event = StreamEvent {
+                kind: kind.to_string(),
+                timestamp: 1,
+                payload: json!({"mission_id": "mission-1", "organization_id": "org-1"}),
+            };
+            assert!(plan_stream_event(&event).is_none(), "{kind}");
+            assert!(describe_stream_event(&event).is_none(), "{kind}");
+        }
     }
 
     #[test]
@@ -796,48 +738,6 @@ mod tests {
         assert_eq!(
             normalized_gateway_snapshot_ingest_url("https://gw.example/api/ingest/snapshot"),
             "https://gw.example/api/ingest/snapshot"
-        );
-    }
-
-    #[test]
-    fn mission_cancellation_is_routed_like_other_lifecycle_events() {
-        let event = StreamEvent {
-            kind: "mission.cancelled".to_string(),
-            timestamp: 1,
-            payload: json!({"mission_id": "mission-3", "publisher": "org-3"}),
-        };
-        let plan = plan_mission_event(&event.kind, &event.payload).expect("cancel plan");
-        assert_eq!(plan.data_kind, GatewayDataKind::MissionLifecycle);
-        assert_eq!(plan.scope.task_id.as_deref(), Some("mission-3"));
-        let decision = describe_stream_event(&event).expect("mission decision");
-        assert_eq!(
-            decision.push_disposition,
-            GatewayPushDisposition::PushEligible
-        );
-    }
-
-    #[test]
-    fn mission_events_are_router_approved_for_direct_gateway_push() {
-        let event = StreamEvent {
-            kind: "mission.settled".to_string(),
-            timestamp: 1,
-            payload: json!({
-                "mission_id": "mission-2",
-                "publisher": "org-2",
-            }),
-        };
-        let decision = describe_stream_event(&event).expect("mission decision");
-        assert_eq!(
-            decision.mechanism_path,
-            GatewayMechanismPath::DirectProjection
-        );
-        assert_eq!(
-            decision.push_disposition,
-            GatewayPushDisposition::PushEligible
-        );
-        assert_eq!(
-            decision.confirmation_requirement,
-            GatewayConfirmationRequirement::Required
         );
     }
 }

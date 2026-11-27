@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Wattetheria deployment CLI",
   "license": "AGPL-3.0-only",
+  "homepage": "https://www.wattetheria.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wattetheria/wattetheria.git"
+  },
   "type": "commonjs",
   "bin": {
     "wattetheria": "bin/wattetheria.js"

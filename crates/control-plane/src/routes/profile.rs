@@ -72,7 +72,10 @@ pub(crate) async fn civilization_metrics(
         Ok(view) => view.stats,
         Err(error) => return internal_error(&error),
     };
-    let missions = state.mission_board.lock().await;
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions,
+        Err(error) => return error.into_response(),
+    };
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
@@ -135,7 +138,10 @@ pub(crate) async fn civilization_emergencies(
     )
     .await;
     let agent_did = context.public_memory_owner.controller.clone();
-    let missions = state.mission_board.lock().await;
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions,
+        Err(error) => return error.into_response(),
+    };
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;

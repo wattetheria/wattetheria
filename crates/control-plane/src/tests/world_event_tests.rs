@@ -146,10 +146,7 @@ async fn callback_state(
         .unwrap();
     state.mcp_events = Some(events.clone());
     state.agent_event_mode = AgentEventMode::McpEvents;
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        dir.path().join("missions/state.json"),
-        Some(projection_url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(projection_url)));
     (dir, state, events)
 }
 
@@ -266,10 +263,7 @@ async fn world_event_rejects_tampering_unknown_place_and_unstored_valid_signer()
     let original = announcement();
     let (projection_url, projection) = global_projection_server(original.clone()).await;
     let (_dir, _router, _token, _policy, mut state) = build_test_app(100);
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&projection_url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&projection_url)));
     assert!(parse_world_event(&state, &original).unwrap().is_some());
     let mut tampered = original.clone();
     tampered.content["title"] = json!("tampered");
@@ -305,10 +299,7 @@ async fn world_event_other_space_generic_announcement_preserves_global_board_and
     generic.content = json!({"space_id":"another-space","notice":"generic opaque content"});
     let (projection_url, projection) = global_projection_server(generic.clone()).await;
     let (_dir, _router, token, _policy, mut state) = build_test_app(100);
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&projection_url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&projection_url)));
     assert_eq!(parse_world_event(&state, &generic).unwrap(), None);
     assert_eq!(
         crate::routes::space::world::world_announcements(&state)
@@ -436,10 +427,7 @@ async fn world_events_cold_forward_pages_warm_cursor_bad_records_and_restart_pre
     }));
     let (url, server) = projection_fixture_server(fixture.clone()).await;
     let (_dir, _router, _token, _policy, mut state) = build_test_app(100);
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&url)));
     let expected = vec![first.clone(), last.clone()];
     assert_eq!(
         crate::routes::space::world::world_announcements(&state)
@@ -557,10 +545,7 @@ async fn world_events_sparse_empty_forward_pages_advance_and_network_change_clea
     }));
     let (url, server) = projection_fixture_server(fixture.clone()).await;
     let (_dir, _router, _token, _policy, mut state) = build_test_app(100);
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&url)));
     assert_eq!(
         crate::routes::space::world::world_announcements(&state)
             .await
@@ -618,10 +603,7 @@ async fn world_events_partial_refresh_timeout_keeps_page_cursor_and_valid_payloa
     }));
     let (url, server) = projection_fixture_server(fixture.clone()).await;
     let (_dir, _router, _token, _policy, mut state) = build_test_app(100);
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&url)));
     let started = std::time::Instant::now();
     assert_eq!(
         crate::routes::space::world::world_announcements(&state)
@@ -658,10 +640,7 @@ async fn world_events_active_read_prunes_expiry_without_mutating_signed_history(
         ..GlobalFixture::default()
     }));
     let (url, server) = projection_fixture_server(fixture.clone()).await;
-    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(
-        state.data_dir.join("missions/state.json"),
-        Some(&url),
-    ));
+    state.swarm_bridge = Arc::new(HybridSwarmBridge::new(Some(&url)));
     assert_eq!(
         crate::routes::space::world::world_announcements(&state)
             .await

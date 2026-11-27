@@ -30,7 +30,7 @@ use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, PublicIdentityRegistry,
 };
 use wattetheria_kernel::civilization::missions::{
-    MissionBoard, NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
+    NetworkMissionClaimMetadata, NetworkMissionClaimRegistry,
 };
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
@@ -66,7 +66,8 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmTopicMessageView,
 };
 use wattetheria_kernel::swarm_sync::{
-    SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTopicActivitySnapshot,
+    SwarmRunEventsSnapshot, SwarmRunResultSnapshot, SwarmTaskDecisionSnapshot,
+    SwarmTopicActivitySnapshot,
 };
 use wattetheria_kernel::types::AgentStats;
 use wattetheria_kernel::wallet_identity::open_local_wallet;
@@ -333,7 +334,6 @@ fn build_test_state_with_bridge(
     let audit_log =
         AuditLog::new(dir.path().join("audit/control_plane.jsonl"), "test-token").unwrap();
     let mailbox = Arc::new(Mutex::new(CrossSubnetMailbox::default()));
-    let mission_board = Arc::new(Mutex::new(MissionBoard::default()));
     let mut public_identity_registry = PublicIdentityRegistry::default();
     let default_identity = public_identity_registry
         .ensure_local_default_for_agent(&identity.agent_did, Some(&identity.agent_did))
@@ -417,7 +417,6 @@ fn build_test_state_with_bridge(
         governance_engine,
         policy_engine: policy_engine.clone(),
         mailbox,
-        mission_board,
         public_identity_registry,
         controller_binding_registry,
         citizen_registry,
@@ -447,7 +446,9 @@ fn build_test_state_with_bridge(
         local_db,
         social_store,
         servicenet_client: None,
-        gateway_urls: Vec::new(),
+        gateway_urls: mission_gateway::spawn_mission_gateway(Router::new())
+            .map(|(url, _)| vec![url])
+            .unwrap_or_default(),
         agent_executor_base_url: None,
         agent_event_callback_base_url: None,
         agent_topic_bridge_enabled: true,
@@ -1343,6 +1344,21 @@ struct MockSwarmBridge {
     dm_commands: Mutex<Vec<SwarmDirectMessageCommand>>,
     private_hive_key_share_commands: Mutex<Vec<SwarmPrivateHiveKeyShareCommand>>,
     payment_commands: Mutex<Vec<SwarmAgentPaymentCommand>>,
+    settled_tasks: Mutex<Vec<String>>,
+    /// While set, a settle notice cannot be delivered.
+    settle_down: std::sync::atomic::AtomicBool,
+    /// While set, a claim cannot be delivered.
+    claim_down: std::sync::atomic::AtomicBool,
+    /// While set, announcing a task fails, as when wattswarm is down.
+    announce_down: std::sync::atomic::AtomicBool,
+    /// While set, a topic message cannot be posted.
+    topic_down: std::sync::atomic::AtomicBool,
+    /// The task notices sent, in order: what each is and, for a claim and a hand-in, the agent
+    /// it says it is from.
+    task_notices: Mutex<Vec<String>>,
+    /// What publishing put on wattswarm, in order: `{"submitted": contract}` for a task and
+    /// `{"announced": {task_id, scope_hint, summary}}` for its announcement.
+    published_tasks: Mutex<Vec<Value>>,
     fail_accept_and_finalize: bool,
 }
 
@@ -1369,6 +1385,13 @@ impl MockSwarmBridge {
             dm_commands: Mutex::new(Vec::new()),
             private_hive_key_share_commands: Mutex::new(Vec::new()),
             payment_commands: Mutex::new(Vec::new()),
+            settled_tasks: Mutex::new(Vec::new()),
+            settle_down: std::sync::atomic::AtomicBool::new(false),
+            claim_down: std::sync::atomic::AtomicBool::new(false),
+            announce_down: std::sync::atomic::AtomicBool::new(false),
+            topic_down: std::sync::atomic::AtomicBool::new(false),
+            task_notices: Mutex::new(Vec::new()),
+            published_tasks: Mutex::new(Vec::new()),
             fail_accept_and_finalize: false,
         }
     }
@@ -1412,6 +1435,9 @@ impl SwarmBridge for MockSwarmBridge {
         reply_to_message_id: Option<String>,
         agent_envelope: Option<SwarmAgentEnvelope>,
     ) -> anyhow::Result<String> {
+        if self.topic_down.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("wattswarm is unreachable");
+        }
         let mut messages = self.messages.lock().await;
         let next_id = messages.len() + 1;
         let message_id = format!("msg-{next_id}");
@@ -1815,7 +1841,33 @@ impl SwarmBridge for MockSwarmBridge {
         })
     }
 
+    /// Answers for a task this bridge was given, and fails for any other, as wattswarm does.
+    async fn task_decision_snapshot(
+        &self,
+        task_id: &str,
+    ) -> anyhow::Result<SwarmTaskDecisionSnapshot> {
+        let known = self
+            .published_tasks
+            .lock()
+            .await
+            .iter()
+            .any(|task| task["submitted"]["task_id"] == task_id);
+        if !known {
+            anyhow::bail!("task not found");
+        }
+        Ok(SwarmTaskDecisionSnapshot {
+            ok: true,
+            task_id: task_id.to_owned(),
+            committed_candidate_id: None,
+            finalized_candidate_id: None,
+        })
+    }
+
     async fn submit_task(&self, contract: TaskContract) -> anyhow::Result<Value> {
+        self.published_tasks
+            .lock()
+            .await
+            .push(json!({"submitted": contract}));
         Ok(json!({
             "ok": true,
             "task_id": contract.task_id,
@@ -1868,6 +1920,14 @@ impl SwarmBridge for MockSwarmBridge {
     }
 
     async fn announce_task(&self, command: SwarmTaskAnnounceCommand) -> anyhow::Result<Value> {
+        if self.announce_down.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("wattswarm is down");
+        }
+        self.published_tasks.lock().await.push(json!({"announced": {
+            "task_id": command.task_id,
+            "scope_hint": command.scope_hint,
+            "summary": command.summary,
+        }}));
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -1877,6 +1937,17 @@ impl SwarmBridge for MockSwarmBridge {
     }
 
     async fn claim_task(&self, command: SwarmTaskClaimCommand) -> anyhow::Result<Value> {
+        if self.claim_down.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("wattswarm is down");
+        }
+        self.task_notices.lock().await.push(format!(
+            "claim from {}",
+            command
+                .agent_envelope
+                .source_agent_id
+                .as_deref()
+                .unwrap_or("nobody")
+        ));
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -1888,6 +1959,7 @@ impl SwarmBridge for MockSwarmBridge {
         &self,
         command: SwarmTaskClaimDecisionCommand,
     ) -> anyhow::Result<Value> {
+        self.task_notices.lock().await.push("claim decision".into());
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -1897,6 +1969,14 @@ impl SwarmBridge for MockSwarmBridge {
     }
 
     async fn complete_task(&self, command: SwarmTaskCompleteCommand) -> anyhow::Result<Value> {
+        self.task_notices.lock().await.push(format!(
+            "hand-in from {}",
+            command
+                .agent_envelope
+                .source_agent_id
+                .as_deref()
+                .unwrap_or("nobody")
+        ));
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -1908,6 +1988,10 @@ impl SwarmBridge for MockSwarmBridge {
         &self,
         command: SwarmTaskCompletionDecisionCommand,
     ) -> anyhow::Result<Value> {
+        self.task_notices
+            .lock()
+            .await
+            .push("completion decision".into());
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -1918,6 +2002,13 @@ impl SwarmBridge for MockSwarmBridge {
     }
 
     async fn settle_task(&self, command: SwarmTaskSettleCommand) -> anyhow::Result<Value> {
+        if self.settle_down.load(std::sync::atomic::Ordering::SeqCst) {
+            anyhow::bail!("wattswarm is down");
+        }
+        self.settled_tasks
+            .lock()
+            .await
+            .push(command.task_id.clone());
         Ok(json!({
             "ok": true,
             "task_id": command.task_id,
@@ -2075,19 +2166,6 @@ async fn bootstrap_broker_identity(app: Router, token: &str, agent_did: &str) ->
     )
     .await;
     public_id
-}
-
-async fn bootstrap_broker_game(app: Router, token: &str, agent_did: &str) -> (Value, String) {
-    let public_id = bootstrap_broker_identity(app.clone(), token, agent_did).await;
-    let starter_bootstrap = authed_post_json(
-        app,
-        token,
-        "/v1/game/starter-missions/bootstrap",
-        json!({"public_id": public_id}),
-    )
-    .await;
-    assert_eq!(starter_bootstrap["created"].as_array().unwrap().len(), 2);
-    (starter_bootstrap, public_id)
 }
 
 fn seed_active_payment_account(state: &ControlPlaneState) -> String {
@@ -2254,51 +2332,12 @@ async fn seed_client_view_missions(app: Router, token: &str, agent_did: &str) {
     complete_and_settle_mission(app, token, &history["mission_id"], agent_did).await;
 }
 
-fn assert_starter_templates_with_anchor(payload: &Value) {
-    assert_eq!(
-        payload["starter_missions"]["templates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        payload["starter_missions"]["objective_chain"]["steps"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(
-        payload["starter_missions"]["templates"][0]["anchor"]["map_id"]
-            .as_str()
-            .is_some()
-    );
-}
-
 fn assert_game_status_payload(status_json: &Value, expected_public_id: &str) {
     assert_eq!(
         status_json["identity"]["public_identity"]["public_id"].as_str(),
         Some(expected_public_id)
     );
     assert!(status_json["bootstrap"]["progress_pct"].as_u64().unwrap() > 0);
-    assert_eq!(
-        status_json["starter_missions"]["templates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(
-        status_json["starter_missions"]["objective_chain"]["progress_pct"]
-            .as_u64()
-            .is_some()
-    );
-    assert!(
-        status_json["starter_missions"]["objective_chain"]["current_step_key"]
-            .as_str()
-            .is_some()
-    );
     assert!(
         status_json["status"]["qualifications"]
             .as_array()
@@ -2314,11 +2353,6 @@ fn assert_game_status_payload(status_json: &Value, expected_public_id: &str) {
     assert!(
         status_json["status"]["qualifications"][0]["unlocks"]
             .as_array()
-            .is_some()
-    );
-    assert!(
-        status_json["starter_missions"]["templates"][0]["anchor"]["route_id"]
-            .as_str()
             .is_some()
     );
     assert_eq!(
@@ -2341,7 +2375,7 @@ fn assert_game_status_payload(status_json: &Value, expected_public_id: &str) {
             .as_array()
             .unwrap()
             .len()
-            >= 4
+            >= 3
     );
     assert!(status_json["organizations"].as_array().is_some());
     assert!(
@@ -2354,61 +2388,6 @@ fn assert_game_status_payload(status_json: &Value, expected_public_id: &str) {
         status_json["supervision"]["priority_cards"]
             .as_array()
             .is_some_and(|cards| !cards.is_empty())
-    );
-}
-
-fn assert_game_mission_pack_payload(payload: &Value, expected_public_id: &str) {
-    assert_eq!(
-        payload["identity"]["public_identity"]["public_id"].as_str(),
-        Some(expected_public_id)
-    );
-    assert_eq!(
-        payload["mission_pack"]["templates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-    assert_eq!(
-        payload["mission_pack"]["summary"]["current_template_count"].as_u64(),
-        Some(2)
-    );
-    assert_eq!(
-        payload["mission_pack"]["summary"]["role_template_count"].as_u64(),
-        Some(1)
-    );
-    assert_eq!(
-        payload["mission_pack"]["summary"]["civic_template_count"].as_u64(),
-        Some(1)
-    );
-    assert!(
-        payload["mission_pack"]["templates"][0]["payload_schema"]["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|field| field["key"].as_str() == Some("map_anchor"))
-    );
-    assert!(
-        payload["mission_pack"]["templates"][0]["anchor"]["system_id"]
-            .as_str()
-            .is_some()
-    );
-    assert!(
-        payload["mission_pack"]["templates"][0]["suggested_payload"]["objective"]
-            .as_str()
-            .is_some()
-    );
-    assert_eq!(
-        payload["mission_pack"]["upcoming_templates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        usize::try_from(
-            payload["mission_pack"]["summary"]["upcoming_template_count"]
-                .as_u64()
-                .unwrap()
-        )
-        .unwrap()
     );
 }
 
@@ -2428,44 +2407,6 @@ fn assert_supervision_home_game_block(supervision_home_json: &Value, expected_pu
     assert_eq!(
         supervision_home_json["game"]["status"]["stage"].as_str(),
         Some("expansion")
-    );
-    assert!(
-        supervision_home_json["game"]["starter_missions"]["templates"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 2
-    );
-    assert!(
-        supervision_home_json["game"]["starter_missions"]["objective_chain"]["steps"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 2
-    );
-    assert!(
-        supervision_home_json["game"]["mission_pack"]["templates"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 2
-    );
-    assert_eq!(
-        supervision_home_json["game"]["mission_pack"]["upcoming_templates"]
-            .as_array()
-            .unwrap()
-            .len(),
-        usize::try_from(
-            supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
-                .as_u64()
-                .unwrap()
-        )
-        .unwrap()
-    );
-    assert!(
-        supervision_home_json["game"]["mission_pack"]["summary"]["upcoming_template_count"]
-            .as_u64()
-            .is_some()
     );
     assert!(
         supervision_home_json["game"]["bootstrap_flow"]["first_cycle_plan"]
@@ -2542,13 +2483,19 @@ fn assert_game_bootstrap_payload(payload: &Value, expected_public_id: &str) {
         payload["identity"]["public_identity"]["public_id"].as_str(),
         Some(expected_public_id)
     );
+    let cards = payload["bootstrap_flow"]["action_cards"]
+        .as_array()
+        .unwrap();
     assert!(
-        payload["bootstrap_flow"]["action_cards"]
-            .as_array()
-            .unwrap()
+        cards
             .iter()
-            .any(|card| card["key"].as_str() == Some("bootstrap_starter_missions"))
+            .any(|card| card["key"].as_str() == Some("open_briefing"))
     );
+    assert!(cards.iter().all(|card| {
+        card["target"]
+            .as_str()
+            .is_none_or(|target| !target.contains("starter") && !target.contains("mission-pack"))
+    }));
     assert!(
         payload["bootstrap_flow"]["first_cycle_plan"]
             .as_array()
@@ -2619,6 +2566,7 @@ mod galaxy_tests;
 mod identity_tests;
 mod mcp_events_tests;
 mod mcp_tests;
+mod mission_gateway;
 mod mission_trade_tests;
 mod network_registration_tests;
 mod organization_tests;

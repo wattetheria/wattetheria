@@ -1,16 +1,20 @@
-use anyhow::{Context, anyhow, bail};
+//! Mission routes. The gateway keeps every mission and its status; this node turns each of its
+//! agent's actions into a signed gateway command and carries the wattswarm task messages
+//! between the two agents of a mission.
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::{authorize, internal_error};
-use crate::ledger_client::{EscrowLabels, LedgerClient, LedgerError};
-use crate::routes::mcp::{
-    fetch_gateway_tasks, normalized_gateway_tasks_url, resolve_gateway_query_url,
+use crate::ledger_client::MissionAction;
+use crate::routes::gateway_missions::{
+    self, KIND_DELEGATED, KIND_STANDARD, PublishTerms, civil_mission, is_own,
 };
 use crate::routes::message_validation::{validate_mission_inputs, validation_error_response};
 use crate::routes::mission_trade;
@@ -25,6 +29,7 @@ use crate::state::{
     ControlPlaneState, MissionClaimBody, MissionPublishBody, MissionSettleBody, MissionsQuery,
     StreamEvent, agent_commit_context_from_headers,
 };
+use anyhow::bail;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::{
     CivilMission, MissionStatus, NetworkMissionClaimMetadata, NetworkMissionClaimRecord,
@@ -36,11 +41,9 @@ use wattetheria_kernel::swarm_bridge::{
     SwarmAgentEnvelope, SwarmTaskAnnounceCommand, SwarmTaskClaimCommand,
     SwarmTaskClaimDecisionCommand, SwarmTaskCompleteCommand, SwarmTaskSettleCommand,
 };
-use wattetheria_kernel::tasks::system_puzzle::system_puzzle_settlement_from_mission;
 use wattswarm_protocol::types::{ClaimRole, TaskContract};
 
 const MISSION_FEED_KEY: &str = "wattetheria.missions";
-const GATEWAY_CONTRACT_FETCH_LIMIT: usize = 200;
 pub(crate) const MISSION_TASK_NO_EXPIRY_MS: u64 = u64::MAX;
 
 struct CommitResponseArgs<'a> {
@@ -56,7 +59,6 @@ struct NetworkMissionClaimRoute {
     mission_feed_key: String,
     mission_scope_hint: String,
     publisher_wattswarm_node_id: Option<String>,
-    status: Option<String>,
 }
 
 fn mission_stream_kind(action: &str) -> &'static str {
@@ -101,47 +103,6 @@ fn mission_already_claimed_response(
         })),
     )
         .into_response()
-}
-
-fn mission_not_claimable_response(
-    mission_id: &str,
-    task_id: &str,
-    agent_did: &str,
-    execution_id: &str,
-    status: &str,
-) -> Response {
-    let normalized = status.trim().to_ascii_lowercase();
-    if normalized == "claimed" {
-        return mission_already_claimed_response(
-            mission_id,
-            task_id,
-            agent_did,
-            execution_id,
-            "Gateway reports this mission is already claimed.",
-        );
-    }
-    (
-        StatusCode::CONFLICT,
-        Json(json!({
-            "ok": false,
-            "error": "mission is not claimable",
-            "code": "mission_not_claimable",
-            "mission_id": mission_id,
-            "task_id": task_id,
-            "agent_did": agent_did,
-            "execution_id": execution_id,
-            "claim_status": normalized,
-            "detail": "Gateway reports this mission is not open for claims.",
-        })),
-    )
-        .into_response()
-}
-
-fn network_claim_status_allows_claim(status: &str) -> bool {
-    matches!(
-        status.trim().to_ascii_lowercase().as_str(),
-        "published" | "open"
-    )
 }
 
 fn network_claim_already_recorded(
@@ -193,20 +154,12 @@ fn record_network_claim_submission(
     task_id: &str,
     agent_did: &str,
     execution_id: &str,
-    status: Option<String>,
     metadata: NetworkMissionClaimMetadata,
 ) -> anyhow::Result<()> {
     let mut registry: NetworkMissionClaimRegistry = state
         .local_db
         .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
-    registry.record(
-        mission_id,
-        task_id,
-        agent_did,
-        execution_id,
-        status,
-        metadata,
-    );
+    registry.record(mission_id, task_id, agent_did, execution_id, metadata);
     state
         .local_db
         .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
@@ -233,7 +186,6 @@ fn network_claim_metadata(
             .or_else(|| network_claim_string(body, contract, "publisher_wattswarm_node_id")),
         domain: network_claim_string(body, contract, "domain"),
         scope: network_claim_string(body, contract, "scope"),
-        task_status: None,
         mission_feed_key: Some(route.mission_feed_key.clone()),
         mission_scope_hint: Some(route.mission_scope_hint.clone()),
         reward,
@@ -315,7 +267,28 @@ fn network_claim_error_response(
             "Wattswarm rejected the claim because another active lease already exists for this task and role.",
         );
     }
-    internal_error(error)
+    claim_notice_failed(&body.mission_id, error)
+}
+
+/// The answer when the gateway has recorded the request to take a mission but the claim did not
+/// reach the publisher. It is an error status, so the caller knows to try again, and it says the
+/// request stands, so nobody takes it for a claim that was never made. Claiming again only sends
+/// the notice.
+fn claim_notice_failed(mission_id: &str, error: &anyhow::Error) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({
+            "error": format!(
+                "the request to take the mission is recorded, but the notice to the publisher \
+                 was not delivered: {error}. Claim again to retry the notice; the request is \
+                 not recorded twice."
+            ),
+            "code": "claim_notice_not_delivered",
+            "mission_id": mission_id,
+            "mission_lifecycle_notice": {"kind": "mission_claim", "sent": false},
+        })),
+    )
+        .into_response()
 }
 
 fn non_empty_string(value: Option<&String>) -> Option<String> {
@@ -512,91 +485,48 @@ fn claim_route_value<'a>(body: &'a MissionClaimBody, field: &str) -> Option<&'a 
     body.claim_route.as_ref().and_then(|route| route.get(field))
 }
 
-fn network_claim_route(body: &MissionClaimBody) -> Result<NetworkMissionClaimRoute, String> {
+/// The route to another node's mission: what the request carries, else what the publisher put
+/// in the gateway record's payload.
+fn network_claim_route(
+    body: &MissionClaimBody,
+    record: &Value,
+) -> Result<NetworkMissionClaimRoute, Response> {
+    let payload = record.get("payload").cloned().unwrap_or(Value::Null);
     let task_id = non_empty_string(body.task_id.as_ref())
         .or_else(|| claim_route_string(body, "task_id"))
+        .or_else(|| value_string(&payload, "task_id"))
         .unwrap_or_else(|| body.mission_id.clone());
     let publisher_wattswarm_node_id = non_empty_string(body.publisher_wattswarm_node_id.as_ref())
-        .or_else(|| claim_route_string(body, "publisher_wattswarm_node_id"));
+        .or_else(|| claim_route_string(body, "publisher_wattswarm_node_id"))
+        .or_else(|| value_string(&payload, "publisher_wattswarm_node_id"));
     let mission_feed_key = non_empty_string(body.mission_feed_key.as_ref())
         .or_else(|| claim_route_string(body, "mission_feed_key"))
+        .or_else(|| value_string(&payload, "mission_feed_key"))
         .unwrap_or_else(|| MISSION_FEED_KEY.to_owned());
     let mission_scope_hint = non_empty_string(body.mission_scope_hint.as_ref())
         .or_else(|| claim_route_string(body, "mission_scope_hint"))
+        .or_else(|| value_string(&payload, "mission_scope_hint"))
         .or_else(|| {
             publisher_wattswarm_node_id
                 .as_ref()
                 .map(|node_id| publisher_node_scope_hint(node_id))
         })
         .ok_or_else(|| {
-            "network mission transition requires mission_scope_hint or publisher_wattswarm_node_id from list_missions claim_route".to_owned()
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "this mission is not on wattswarm: its gateway record names no mission_scope_hint or publisher_wattswarm_node_id",
+                    "mission_id": body.mission_id,
+                })),
+            )
+                .into_response()
         })?;
-
     Ok(NetworkMissionClaimRoute {
         task_id,
         mission_feed_key,
         mission_scope_hint,
         publisher_wattswarm_node_id,
-        status: claim_route_string(body, "status"),
     })
-}
-
-fn task_id_from_gateway_task(task: &Value) -> Option<&str> {
-    task.get("task_id")
-        .or_else(|| task.get("id"))
-        .or_else(|| task.get("mission_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn gateway_task_string(task: &Value, field: &str) -> Option<String> {
-    gateway_task_value(task, field)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn gateway_task_value<'a>(task: &'a Value, field: &str) -> Option<&'a Value> {
-    task.get(field)
-        .or_else(|| task.get("claim_route").and_then(|value| value.get(field)))
-        .or_else(|| task.get("summary").and_then(|value| value.get(field)))
-        .or_else(|| task.get("inputs").and_then(|value| value.get(field)))
-}
-
-fn network_claim_route_from_gateway_task(
-    body: &MissionClaimBody,
-    task: &Value,
-) -> Result<NetworkMissionClaimRoute, String> {
-    let task_id =
-        task_id_from_gateway_task(task).map_or_else(|| body.mission_id.clone(), ToOwned::to_owned);
-    let publisher_wattswarm_node_id = gateway_task_string(task, "publisher_wattswarm_node_id");
-    let mission_feed_key = gateway_task_string(task, "mission_feed_key")
-        .unwrap_or_else(|| MISSION_FEED_KEY.to_owned());
-    let status = gateway_task_string(task, "status").or_else(|| gateway_task_string(task, "state"));
-    let mission_scope_hint = gateway_task_string(task, "mission_scope_hint")
-        .or_else(|| {
-            publisher_wattswarm_node_id
-                .as_ref()
-                .map(|node_id| publisher_node_scope_hint(node_id))
-        })
-        .ok_or_else(|| {
-            "gateway mission is missing mission_scope_hint or publisher_wattswarm_node_id"
-                .to_owned()
-        })?;
-
-    Ok(NetworkMissionClaimRoute {
-        task_id,
-        mission_feed_key,
-        mission_scope_hint,
-        publisher_wattswarm_node_id,
-        status,
-    })
-}
-
-fn contract_value_from_gateway_task(task: &Value) -> Option<&Value> {
-    task.get("task_contract").or_else(|| task.get("contract"))
 }
 
 fn parse_network_task_contract(value: &Value) -> Result<TaskContract, String> {
@@ -604,25 +534,27 @@ fn parse_network_task_contract(value: &Value) -> Result<TaskContract, String> {
         .map_err(|error| format!("gateway task_contract is invalid: {error}"))
 }
 
-fn enrich_gateway_task_contract_inputs(mut contract: TaskContract, task: &Value) -> TaskContract {
+/// Adds to the contract's inputs what the gateway record says of the mission and the contract
+/// left out.
+fn enrich_task_contract_inputs(mut contract: TaskContract, record: &Value) -> TaskContract {
     let Some(inputs) = contract.inputs.as_object_mut() else {
         return contract;
     };
-    for field in [
-        "title",
-        "description",
-        "domain",
-        "publisher",
-        "publisher_agent_did",
-        "publisher_display_name",
-        "publisher_wattswarm_node_id",
-        "reward",
-        "reward_watt",
-        "executor_bounty_watt",
-        "publisher_network_reward_watt",
-    ] {
+    let fields = [
+        ("title", record.get("title")),
+        ("description", record.get("description")),
+        ("domain", record.get("domain")),
+        ("publisher_agent_did", record.get("publisher")),
+        ("publisher_display_name", record.get("publisher_label")),
+        (
+            "publisher_wattswarm_node_id",
+            record.pointer("/payload/publisher_wattswarm_node_id"),
+        ),
+        ("publisher", record.pointer("/payload/civil/publisher")),
+    ];
+    for (field, value) in fields {
         if !inputs.contains_key(field)
-            && let Some(value) = gateway_task_value(task, field)
+            && let Some(value) = value.filter(|value| !value.is_null())
         {
             inputs.insert(field.to_owned(), value.clone());
         }
@@ -661,112 +593,43 @@ fn validate_network_task_contract(
     Ok(())
 }
 
-async fn gateway_network_task_contract(
-    state: &ControlPlaneState,
-    task_id: &str,
-) -> anyhow::Result<Option<TaskContract>> {
-    let Some(task) = gateway_network_task(state, task_id).await? else {
-        return Ok(None);
-    };
-    let Some(contract_value) = contract_value_from_gateway_task(&task) else {
-        return Ok(None);
-    };
-    parse_network_task_contract(contract_value)
-        .map(|contract| Some(enrich_gateway_task_contract_inputs(contract, &task)))
-        .map_err(anyhow::Error::msg)
-}
-
-async fn gateway_network_task(
-    state: &ControlPlaneState,
-    task_id: &str,
-) -> anyhow::Result<Option<Value>> {
-    let gateway_url = resolve_gateway_query_url(state)?;
-    let gateway_endpoint = normalized_gateway_tasks_url(&gateway_url);
-    let tasks = fetch_gateway_tasks(&gateway_endpoint, GATEWAY_CONTRACT_FETCH_LIMIT).await?;
-    let Some(task) = tasks
-        .iter()
-        .find(|task| task_id_from_gateway_task(task) == Some(task_id))
-    else {
-        return Ok(None);
-    };
-    Ok(Some(task.clone()))
-}
-
-async fn network_claim_route_for_action(
-    state: &ControlPlaneState,
-    body: &MissionClaimBody,
-) -> Result<NetworkMissionClaimRoute, Response> {
-    match network_claim_route(body) {
-        Ok(route) => Ok(route),
-        Err(route_error) => match gateway_network_task(state, &body.mission_id).await {
-            Ok(Some(task)) => network_claim_route_from_gateway_task(body, &task).map_err(|error| {
-                (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response()
-            }),
-            Ok(None) => Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": route_error,
-                    "mission_id": body.mission_id.clone(),
-                    "detail": "refresh list_missions or gateway snapshot before retrying",
-                })),
-            )
-                .into_response()),
-            Err(error) => Err(internal_error(&error)),
-        },
-    }
-}
-
-async fn network_task_contract_for_action(
-    state: &ControlPlaneState,
+/// The wattswarm task contract of another node's mission: the one the request carries, else
+/// the one its publisher put in the gateway record.
+fn network_task_contract_for_action(
+    record: &Value,
     route: &NetworkMissionClaimRoute,
     body: &MissionClaimBody,
     action: &str,
 ) -> Result<TaskContract, Response> {
-    let inline_contract = claim_route_value(body, "task_contract")
+    let bad_request =
+        |error: String| (StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response();
+    let contract_value = claim_route_value(body, "task_contract")
         .or_else(|| claim_route_value(body, "contract"))
-        .map(parse_network_task_contract)
-        .transpose();
-    let contract = match inline_contract {
-        Ok(Some(contract)) => contract,
-        Ok(None) => match gateway_network_task_contract(state, &route.task_id).await {
-            Ok(Some(contract)) => contract,
-            Ok(None) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({
-                        "error": format!("network mission {action} requires task_contract from gateway; refresh publisher snapshot before retrying"),
-                        "action": action,
-                        "task_id": route.task_id,
-                    })),
-                )
-                    .into_response());
-            }
-            Err(error) => return Err(internal_error(&error)),
-        },
-        Err(error) => {
-            return Err((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
-        }
+        .or_else(|| record.pointer("/payload/task_contract"))
+        .filter(|value| !value.is_null());
+    let Some(contract_value) = contract_value else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("network mission {action} needs the mission's task_contract, and its gateway record has none"),
+                "action": action,
+                "task_id": route.task_id,
+            })),
+        )
+            .into_response());
     };
-    if let Err(error) = validate_network_task_contract(&contract, route, body) {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": error}))).into_response());
-    }
+    let contract = parse_network_task_contract(contract_value).map_err(bad_request)?;
+    let contract = enrich_task_contract_inputs(contract, record);
+    validate_network_task_contract(&contract, route, body).map_err(bad_request)?;
     Ok(contract)
 }
 
 async fn import_network_task_contract(
     state: &ControlPlaneState,
     contract: TaskContract,
-) -> Result<(String, Value), Response> {
-    let subscriber_node_id = state
-        .swarm_bridge
-        .local_node_id()
-        .await
-        .map_err(|error| internal_error(&error))?;
-    let task_contract_sync = state
-        .swarm_bridge
-        .import_task_contract(contract)
-        .await
-        .map_err(|error| internal_error(&error))?;
+) -> anyhow::Result<(String, Value)> {
+    let subscriber_node_id = state.swarm_bridge.local_node_id().await?;
+    let task_contract_sync = state.swarm_bridge.import_task_contract(contract).await?;
     Ok((subscriber_node_id, task_contract_sync))
 }
 
@@ -923,82 +786,57 @@ fn mission_announce_command(
     }
 }
 
-fn mission_gateway_payload(mission: &CivilMission, task_contract: Option<&TaskContract>) -> Value {
-    let mut payload = serde_json::to_value(mission).unwrap_or(Value::Null);
+/// What a route answers for a mission: the gateway record as this node shows it, with the
+/// names this node knows for its publisher, its claimer and this node's own agent.
+async fn mission_payload(state: &ControlPlaneState, record: &Value) -> Value {
+    let mut payload = gateway_missions::mission_json_or_record(record);
+    let participant = |field: &str| {
+        payload
+            .get(field)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+    let publisher = participant("publisher");
+    let claimer = participant("claimed_by");
+    let completer = participant("completed_by");
+    let identities = state.public_identity_registry.lock().await.list();
     let Some(object) = payload.as_object_mut() else {
         return payload;
     };
-    let task_type = mission
-        .payload
-        .get("task_type")
-        .and_then(Value::as_str)
-        .unwrap_or("wattetheria.mission");
-    object
-        .entry("task_id".to_string())
-        .or_insert_with(|| Value::String(mission.mission_id.clone()));
-    object
-        .entry("task_type".to_string())
-        .or_insert_with(|| Value::String(task_type.to_string()));
-    if let Some(delegation) = settlement_delegation_from_payload(&mission.payload) {
-        object.insert("settlement_delegation".to_owned(), delegation.clone());
-    }
-    let Some(contract) = task_contract else {
-        return payload;
-    };
-    object.insert(
-        "task_id".to_string(),
-        Value::String(contract.task_id.clone()),
-    );
-    object.insert(
-        "task_type".to_string(),
-        Value::String(task_type.to_string()),
-    );
-    object.insert(
-        "task_contract".to_string(),
-        serde_json::to_value(contract).unwrap_or(Value::Null),
-    );
-    for key in [
-        "publisher_wattswarm_node_id",
-        "mission_feed_key",
-        "mission_scope_hint",
-        "settlement_delegation",
-        "swarm_scope",
+    for (prefix, participant) in [
+        ("created_by", publisher.as_deref()),
+        ("claimer", claimer.as_deref()),
+        ("completer", completer.as_deref()),
+        ("source", Some(state.agent_did.as_str())),
     ] {
-        if let Some(value) = contract.inputs.get(key) {
-            object.insert(key.to_string(), value.clone());
+        if let Some(identity) = mission_identity_for_participant(&identities, participant) {
+            insert_mission_identity_projection(object, prefix, identity);
         }
     }
     payload
 }
 
-async fn mission_gateway_payload_with_identities(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-    task_contract: Option<&TaskContract>,
-) -> Value {
-    let mut payload = mission_gateway_payload(mission, task_contract);
-    let identities = state.public_identity_registry.lock().await.list();
-    let Some(object) = payload.as_object_mut() else {
-        return payload;
-    };
-    if let Some(identity) = mission_identity_for_participant(&identities, Some(&mission.publisher))
-    {
-        insert_mission_identity_projection(object, "created_by", identity);
+/// The gateway record of a mission, or `404` when the gateway does not know it.
+async fn mission_record(state: &ControlPlaneState, mission_id: &str) -> Result<Value, Response> {
+    match gateway_missions::fetch(state, mission_id).await {
+        Ok(Some(record)) => Ok(record),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "mission not found", "mission_id": mission_id})),
+        )
+            .into_response()),
+        Err(error) => Err(error.into_response()),
     }
-    if let Some(identity) =
-        mission_identity_for_participant(&identities, mission.claimed_by.as_deref())
-    {
-        insert_mission_identity_projection(object, "claimer", identity);
-    }
-    if let Some(identity) =
-        mission_identity_for_participant(&identities, mission.completed_by.as_deref())
-    {
-        insert_mission_identity_projection(object, "completer", identity);
-    }
-    if let Some(identity) = mission_identity_for_participant(&identities, Some(&state.agent_did)) {
-        insert_mission_identity_projection(object, "source", identity);
-    }
-    payload
+}
+
+/// The gateway record read as a mission; an error when the gateway sent one this node cannot
+/// read.
+fn readable_mission(record: &Value) -> Result<CivilMission, Response> {
+    civil_mission(record).ok_or_else(|| {
+        internal_error(&anyhow::anyhow!(
+            "the gateway sent a mission this node cannot read: {record}"
+        ))
+    })
 }
 
 fn mission_identity_for_participant<'a>(
@@ -1095,7 +933,11 @@ fn insert_mission_settle_actor_projection_fallbacks(
         actor_body.claim_route.clone_from(&body.claim_route);
         insert_mission_actor_projection_fallback(object, "claimer", agent_did, &actor_body);
     }
-    if let Some(agent_did) = body.agent_did.as_deref() {
+    let completer_agent_did = mission
+        .completed_by
+        .as_deref()
+        .or(body.agent_did.as_deref());
+    if let Some(agent_did) = completer_agent_did {
         let mut actor_body = MissionClaimBody::local(body.mission_id.clone(), agent_did.to_owned());
         actor_body.claim_route.clone_from(&body.claim_route);
         insert_mission_actor_projection_fallback(object, "completer", agent_did, &actor_body);
@@ -1112,16 +954,6 @@ async fn claimer_display_name(
     match agent_display_name_for_did(state, &body.agent_did).await {
         Some(name) => Some(name),
         None => mission_claim_actor_display_name(body),
-    }
-}
-
-/// Subject the ledger shows next to every movement of a mission's bounty.
-pub(crate) fn mission_bounty_subject(title: &str) -> String {
-    let title = title.trim();
-    if title.is_empty() {
-        "Mission bounty".to_owned()
-    } else {
-        format!("Mission bounty: {title}")
     }
 }
 
@@ -1253,43 +1085,20 @@ fn mission_lifecycle_target_node_id_from_settle(body: &MissionSettleBody) -> Opt
     .find_map(|path| value_path_string(route, path))
 }
 
-async fn mission_gateway_payload_with_current_contract(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-) -> Value {
-    let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
-    let task_contract = match state.swarm_bridge.local_node_id().await {
-        Ok(publisher_wattswarm_node_id) => state
-            .swarm_bridge
-            .sample_task_contract(&mission.mission_id)
-            .await
-            .ok()
-            .map(|contract| {
-                mission_task_contract(
-                    contract,
-                    mission,
-                    &state.agent_did,
-                    publisher_display_name.as_deref(),
-                    &publisher_wattswarm_node_id,
-                )
-            }),
-        Err(_) => None,
-    };
-    mission_gateway_payload_with_identities(state, mission, task_contract.as_ref()).await
-}
-
-async fn publish_mission_task_to_swarm(
+/// The wattswarm task contract of a mission this node publishes. It is built before the
+/// gateway Publish so the gateway record carries it to the nodes that claim the mission. The
+/// mission has no id yet, so the contract names none: the gateway writes it in.
+async fn mission_contract(
     state: &ControlPlaneState,
     mission: &CivilMission,
 ) -> Result<TaskContract, Response> {
     let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
-    let publisher_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let publisher_wattswarm_node_id = state
         .swarm_bridge
         .local_node_id()
         .await
         .map_err(|error| internal_error(&error))?;
-    let contract = state
+    state
         .swarm_bridge
         .sample_task_contract(&mission.mission_id)
         .await
@@ -1302,12 +1111,19 @@ async fn publish_mission_task_to_swarm(
                 &publisher_wattswarm_node_id,
             )
         })
-        .map_err(|error| internal_error(&error))?;
-    state
-        .swarm_bridge
-        .submit_task(contract.clone())
-        .await
-        .map_err(|error| internal_error(&error))?;
+        .map_err(|error| internal_error(&error))
+}
+
+/// Puts the mission's task on wattswarm and announces it to the mission feed.
+async fn announce_mission_on_swarm(
+    state: &ControlPlaneState,
+    mission: &CivilMission,
+    contract: &TaskContract,
+) -> anyhow::Result<()> {
+    let publisher_display_name = agent_display_name_for_did(state, &state.agent_did).await;
+    let publisher_public_id = agent_public_id_for_did(state, &state.agent_did).await;
+    let publisher_wattswarm_node_id = state.swarm_bridge.local_node_id().await?;
+    state.swarm_bridge.submit_task(contract.clone()).await?;
     let agent_envelope = task_agent_envelope(
         state,
         TaskAgentEnvelopeArgs {
@@ -1325,9 +1141,7 @@ async fn publish_mission_task_to_swarm(
             "publisher_wattswarm_node_id": publisher_wattswarm_node_id,
             }),
         },
-    )
-    .map(Some)
-    .map_err(|error| internal_error(&error))?;
+    )?;
     state
         .swarm_bridge
         .announce_task(mission_announce_command(
@@ -1335,11 +1149,140 @@ async fn publish_mission_task_to_swarm(
             &state.agent_did,
             publisher_display_name.as_deref(),
             &publisher_wattswarm_node_id,
-            agent_envelope,
+            Some(agent_envelope),
         ))
+        .await?;
+    Ok(())
+}
+
+/// What a publish asks for, apart from what this node adds to each draft (its times and where
+/// the node is), as one fingerprint: two publishes with the same one ask for the same mission.
+/// It goes to the gateway as the publish's request id. The gateway keeps one mission per
+/// publisher and request id, so the same mission asked for again, by a caller that lost the
+/// answer or by this node after a restart, is answered with the one already there and locks no
+/// second reward. Only a cancelled mission lets the same one be published anew.
+fn publish_request_id(mission: &CivilMission, terms: &PublishTerms<'_>) -> anyhow::Result<String> {
+    let mut asked = serde_json::to_value(mission)?;
+    if let Some(object) = asked.as_object_mut() {
+        for added in [
+            "created_at",
+            "updated_at",
+            "lat",
+            "lng",
+            "coordinate_source",
+            "city",
+            "country",
+        ] {
+            object.remove(added);
+        }
+        object.insert("kind".to_owned(), json!(terms.kind));
+        object.insert("organization_id".to_owned(), json!(terms.organization_id));
+    }
+    Ok(hex::encode(Sha256::digest(asked.to_string().as_bytes())))
+}
+
+/// What publishing a drafted mission came to.
+pub(crate) struct MissionPublication {
+    /// The mission as the gateway keeps it.
+    pub(crate) record: Value,
+    /// The mission was there already, on the gateway and where it belongs on wattswarm:
+    /// nothing was published now.
+    pub(crate) already_published: bool,
+}
+
+/// The task contract as the gateway keeps it for `record`, with the mission's id written in.
+fn recorded_task_contract(record: &Value) -> anyhow::Result<TaskContract> {
+    let contract = record
+        .pointer("/payload/task_contract")
+        .ok_or_else(|| anyhow::anyhow!("the gateway kept no task contract for the mission"))?;
+    parse_network_task_contract(contract).map_err(anyhow::Error::msg)
+}
+
+/// Publishes a drafted mission on the gateway and returns the record it keeps. The gateway
+/// makes the mission's id, which `mission` carries from then on, and answers a mission this
+/// agent already published with that one (see [`publish_request_id`]).
+///
+/// With `on_swarm`, the mission's task contract travels in the record, where the gateway
+/// writes the id into it, and the task is put on this node's wattswarm and announced with that
+/// contract, unless wattswarm has the task already. A mission that was there before is put on
+/// wattswarm all the same when it is missing there: an earlier publish got as far as the
+/// gateway and no further. If announcing fails, the publish fails; the publish that made the
+/// mission also cancels it, which returns its reward and lets it be published again, while a
+/// mission that was there before is left as it is, somebody may be working on it. Its task
+/// may be on wattswarm by then with only the announcement missing, and then stays so: the
+/// announcement goes to the mission's own topic, which nobody but this node follows yet.
+pub(crate) async fn publish_drafted_mission(
+    state: &ControlPlaneState,
+    mission: &mut CivilMission,
+    terms: &PublishTerms<'_>,
+    on_swarm: bool,
+) -> Result<MissionPublication, Response> {
+    if mission
+        .expires_at
+        .is_some_and(|at| at <= Utc::now().timestamp())
+    {
+        return Err(bad_publish("expires_at must be in the future", "invalid"));
+    }
+    let request_id = publish_request_id(mission, terms).map_err(|error| internal_error(&error))?;
+    let contract = if on_swarm {
+        Some(mission_contract(state, mission).await?)
+    } else {
+        None
+    };
+    let record = gateway_missions::publish(state, &request_id, mission, contract.as_ref(), terms)
         .await
-        .map_err(|error| internal_error(&error))?;
-    Ok(contract)
+        .map_err(IntoResponse::into_response)?;
+    let Some(mission_id) = record.get("mission_id").and_then(Value::as_str) else {
+        return Err(internal_error(&anyhow::anyhow!(
+            "the gateway answered a publish without a mission id"
+        )));
+    };
+    mission_id.clone_into(&mut mission.mission_id);
+    let mission = &*mission;
+    let already_published = record
+        .get("already_published")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // wattswarm itself says whether the task is there: this node keeps no list of its own.
+    if !on_swarm
+        || (already_published
+            && state
+                .swarm_bridge
+                .task_decision_snapshot(&mission.mission_id)
+                .await
+                .is_ok())
+    {
+        return Ok(MissionPublication {
+            record,
+            already_published,
+        });
+    }
+    let announced = match recorded_task_contract(&record) {
+        Ok(contract) => announce_mission_on_swarm(state, mission, &contract).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = announced {
+        if !already_published
+            && let Err(cancel_error) = gateway_missions::command(
+                state,
+                &mission.mission_id,
+                MissionAction::Cancel,
+                json!({"reason": "the mission could not be announced on wattswarm"}),
+            )
+            .await
+        {
+            // The mission stays on the gateway and is found again by the next publish.
+            tracing::warn!(
+                mission_id = %mission.mission_id,
+                "mission not cancelled after its wattswarm announce failed: {cancel_error}"
+            );
+        }
+        return Err(internal_error(&error));
+    }
+    Ok(MissionPublication {
+        record,
+        already_published: false,
+    })
 }
 
 fn network_claim_agent_envelope(
@@ -1585,10 +1528,13 @@ async fn publish_settled_lifecycle_notice(
         .as_ref()
         .and_then(|route| value_path_string(route, &["mission_scope_hint"]))
         .unwrap_or_else(|| mission_task_scope_hint(&task_id));
-    let target_agent_id = body
-        .agent_did
+    // Who is paid is the gateway's to say: the request names a claimer only when the record
+    // does not.
+    let target_agent_id = mission
+        .completed_by
         .clone()
-        .or_else(|| mission.completed_by.clone());
+        .or_else(|| mission.claimed_by.clone())
+        .or_else(|| body.agent_did.clone());
     let execution_id = settle_route_execution_id(body)
         .or_else(|| {
             target_agent_id
@@ -1684,27 +1630,14 @@ async fn finalize_mission_task_before_settle(
     state: &ControlPlaneState,
     body: &MissionSettleBody,
     headers: &HeaderMap,
+    mission: &CivilMission,
 ) -> Result<Option<Value>, Response> {
-    if agent_commit_context_from_headers(headers).is_some() {
+    if agent_commit_context_from_headers(headers).is_some()
+        || mission.status != MissionStatus::Completed
+    {
         return Ok(None);
     }
-    let mission = {
-        let board = state.mission_board.lock().await;
-        match board.get(&body.mission_id) {
-            Some(mission) => mission.clone(),
-            None => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "mission not found"})),
-                )
-                    .into_response());
-            }
-        }
-    };
-    if mission.status != MissionStatus::Completed {
-        return Ok(None);
-    }
-    let Some((task_id, candidate_id)) = mission_settle_candidate(body, &mission) else {
+    let Some((task_id, candidate_id)) = mission_settle_candidate(body, mission) else {
         return Ok(None);
     };
     let target_agent_did = body
@@ -1715,7 +1648,7 @@ async fn finalize_mission_task_before_settle(
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
     let source_public_id = agent_public_id_for_did(state, &state.agent_did).await;
     let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
-    let agent_envelope = match task_agent_envelope(
+    let agent_envelope = task_agent_envelope(
         state,
         TaskAgentEnvelopeArgs {
             source_agent_id: state.agent_did.clone(),
@@ -1733,562 +1666,25 @@ async fn finalize_mission_task_before_settle(
             "target_agent_did": target_agent_did,
             }),
         },
-    ) {
-        Ok(envelope) => Some(envelope),
-        Err(error) => return Err(internal_error(&error)),
-    };
+    )
+    .map_err(|error| internal_error(&error))?;
     state
         .swarm_bridge
-        .accept_and_finalize_task(&task_id, &candidate_id, agent_envelope)
+        .accept_and_finalize_task(&task_id, &candidate_id, Some(agent_envelope))
         .await
         .map(Some)
         .map_err(|error| internal_error(&error))
 }
 
-/// Refuses to settle a system puzzle verification mission whose proof or
-/// receipt fails validation (wrong verdict, mismatched ids, self-verification).
-async fn reject_invalid_system_puzzle_settlement(
-    state: &ControlPlaneState,
-    mission_id: &str,
-) -> Result<(), Response> {
-    let board = state.mission_board.lock().await;
-    let Some(mission) = board.get(mission_id) else {
-        return Ok(());
-    };
-    system_puzzle_settlement_from_mission(&mission)
-        .map(|_| ())
-        .map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": error.to_string()})),
-            )
-                .into_response()
-        })
-}
-
-async fn settle_mission_board(
-    state: &ControlPlaneState,
-    mission_id: &str,
-) -> Result<CivilMission, Response> {
-    let mut board = state.mission_board.lock().await;
-    let mission = board.settle(mission_id).map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": error.to_string()})),
-        )
-            .into_response()
-    })?;
-    state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        .map_err(|error| internal_error(&error))?;
-    Ok(mission)
-}
-
-/// How long a cancelled mission with an unconfirmed escrow waits before the sweep concludes
-/// that nothing was ever locked and stops tracking it.
-pub const ESCROW_STALE_AFTER_SECS: i64 = 60 * 60;
-/// How long after publication an escrow recorded before its lock request may stay unconfirmed
-/// before the sweep gives up on it: the lock request times out after seconds, so a few minutes
-/// is already generous.
-pub const ESCROW_UNCONFIRMED_GRACE_SECS: i64 = 5 * 60;
-
-/// Locks the mission bounty in the gateway ledger escrow, paid by this node's Agent, and records
-/// the escrow on the mission. A bounty needs a ledger: without a configured gateway the mission
-/// is cancelled and publishing fails. If the ledger definitely refuses (no Watt, bad request,
-/// unknown account) the mission is cancelled. If the outcome is uncertain (timeout, 5xx) the
-/// escrow is looked up: a lock that landed is kept; otherwise the mission is cancelled and keeps
-/// the escrow id as a pending refund that [`reconcile_mission_escrows`] settles later.
-pub(crate) async fn lock_mission_bounty(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-) -> Result<CivilMission, Response> {
-    let bounty = mission
-        .reward
-        .as_ref()
-        .map_or(0, |reward| reward.agent_watt);
-    if bounty <= 0 {
-        return Ok(mission.clone());
-    }
-    let mission_id = mission.mission_id.as_str();
-    let Some(ledger) = LedgerClient::from_state(state) else {
-        cancel_on_board(state, mission_id).await?;
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "error": "a Watt bounty needs a gateway ledger and this node has none configured",
-                "code": "ledger_unavailable",
-            })),
-        )
-            .into_response());
-    };
-    let escrow_id = mission_id;
-    // Persist the escrow id before the lock request leaves: if the node dies while the request
-    // is in flight, the sweep finds the unconfirmed escrow and resolves it against the ledger.
-    record_mission_escrow_intent(state, mission_id, escrow_id).await?;
-    let payer_label = agent_display_name_for_did(state, &state.agent_did).await;
-    let subject = mission_bounty_subject(&mission.title);
-    let Err(error) = ledger
-        .lock_escrow(
-            state,
-            escrow_id,
-            bounty,
-            mission_id,
-            EscrowLabels {
-                payer_label: payer_label.as_deref(),
-                payee_label: None,
-                subject: Some(&subject),
-            },
-            mission_trade::escrow_terms(mission),
-        )
-        .await
-    else {
-        return record_mission_escrow(state, mission_id, escrow_id).await;
-    };
-    if ledger_outcome_is_definitive(&error) {
-        cancel_on_board(state, mission_id).await?;
-        clear_mission_escrow(state, mission_id).await?;
-        return Err(ledger_error_response(&error));
-    }
-    // The request may have been committed even though the response never arrived.
-    match ledger.escrow(escrow_id).await {
-        Ok(Some(escrow)) if escrow_is_locked_by(&escrow, &state.identity.agent_did, bounty) => {
-            tracing::warn!(
-                mission_id,
-                error = %error,
-                "escrow lock response was lost but the ledger holds the escrow; keeping the mission"
-            );
-            return record_mission_escrow(state, mission_id, escrow_id).await;
-        }
-        _ => {}
-    }
-    // Cancel and keep the escrow id as a pending refund: a lock that lands after this point is
-    // refunded by the next reconciliation instead of being stranded in `system:escrow`.
-    cancel_on_board(state, mission_id).await?;
-    if let Err(reconcile_error) =
-        refund_pending_escrow(state, mission_id, ESCROW_STALE_AFTER_SECS).await
-    {
-        tracing::warn!(
-            mission_id,
-            error = %response_summary(&reconcile_error),
-            "mission escrow left pending after a failed lock; the sweep will retry"
-        );
-    }
-    Err(ledger_error_response(&error))
-}
-
-/// Ledger answers that mean "no escrow exists": the money was never moved.
-fn ledger_outcome_is_definitive(error: &LedgerError) -> bool {
-    match error {
-        LedgerError::InsufficientBalance(_) | LedgerError::NotFound(_) => true,
-        LedgerError::Rejected(status, _) => status.is_client_error(),
-        LedgerError::Unavailable(_) => false,
-    }
-}
-
-fn escrow_is_locked_by(escrow: &Value, payer: &str, amount: i64) -> bool {
-    escrow.get("status").and_then(Value::as_str) == Some("locked")
-        && escrow.get("payer_account").and_then(Value::as_str) == Some(payer)
-        && escrow.get("amount").and_then(Value::as_i64) == Some(amount)
-}
-
-fn response_summary(response: &Response) -> String {
-    format!("status {}", response.status())
-}
-
-async fn cancel_on_board(state: &ControlPlaneState, mission_id: &str) -> Result<(), Response> {
-    let mut board = state.mission_board.lock().await;
-    if board.cancel(mission_id).is_ok() {
-        state
-            .local_db
-            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-            .map_err(|error| internal_error(&error))?;
-    }
-    Ok(())
-}
-
-async fn record_mission_escrow_intent(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    escrow_id: &str,
-) -> Result<CivilMission, Response> {
-    let mut board = state.mission_board.lock().await;
-    let mission = board
-        .record_bounty_escrow_intent(mission_id, escrow_id)
-        .map_err(|error| internal_error(&error))?;
-    state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        .map_err(|error| internal_error(&error))?;
-    Ok(mission)
-}
-
-async fn record_mission_escrow(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    escrow_id: &str,
-) -> Result<CivilMission, Response> {
-    let mut board = state.mission_board.lock().await;
-    let mission = board
-        .mark_bounty_escrowed(mission_id, escrow_id)
-        .map_err(|error| internal_error(&error))?;
-    state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        .map_err(|error| internal_error(&error))?;
-    Ok(mission)
-}
-
-async fn clear_mission_escrow(
-    state: &ControlPlaneState,
-    mission_id: &str,
-) -> Result<CivilMission, Response> {
-    let mut board = state.mission_board.lock().await;
-    let mission = board
-        .clear_bounty_escrow(mission_id)
-        .map_err(|error| internal_error(&error))?;
-    state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        .map_err(|error| internal_error(&error))?;
-    Ok(mission)
-}
-
-/// Releases the escrowed bounty to the executor before the board settles. Only a mission that
-/// recorded an escrow pays Watt; one without (pre-ledger, or no bounty) settles without pay. A
-/// recorded escrow the ledger cannot find is an inconsistency, not a legacy mission, and blocks
-/// settlement.
-async fn release_mission_bounty(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    fallback_executor: Option<&str>,
-) -> Result<(), Response> {
-    let (escrow_id, executor, executor_label) = {
-        let board = state.mission_board.lock().await;
-        let Some(mission) = board.get(mission_id) else {
-            return Ok(());
-        };
-        if mission.status != MissionStatus::Completed {
-            return Ok(());
-        }
-        let executor = mission
-            .completed_by
-            .clone()
-            .or(mission.claimed_by.clone())
-            .or_else(|| fallback_executor.map(str::to_owned))
-            .filter(|executor| !executor.trim().is_empty());
-        // The name recorded at claim time belongs to the claimer; only reuse it for them.
-        let executor_label = mission
-            .claimed_by_display_name
-            .clone()
-            .filter(|_| executor.is_some() && executor == mission.claimed_by);
-        (mission.escrow_id.clone(), executor, executor_label)
-    };
-    let Some(escrow_id) = escrow_id else {
-        return Ok(());
-    };
-    // An escrow whose lock was never confirmed (the node stopped mid-request) is checked
-    // against the ledger before any payout; one the ledger does not hold cancels the mission
-    // instead of settling it for free.
-    ensure_mission_escrow_confirmed(state, mission_id).await?;
-    let Some(ledger) = LedgerClient::from_state(state) else {
-        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
-            "mission {mission_id} has escrow {escrow_id} but no gateway is configured"
-        ))));
-    };
-    let outcome = if let Some(executor) = executor {
-        let executor_label = match executor_label {
-            Some(label) => Some(label),
-            None => agent_display_name_for_did(state, &executor).await,
-        };
-        ledger
-            .release_escrow(state, &escrow_id, &executor, executor_label.as_deref())
-            .await
-    } else {
-        // Completed, yet nobody is recorded as the executor: there is no one to pay, so the
-        // Watt goes back to the publisher rather than staying locked forever.
-        tracing::warn!(
-            mission_id,
-            "completed mission has no executor on record; refunding its bounty"
-        );
-        ledger.refund_escrow(state, &escrow_id).await
-    };
-    match outcome {
-        Ok(_) => Ok(()),
-        Err(LedgerError::NotFound(message)) => {
-            Err(escrow_missing_response(mission_id, &escrow_id, &message))
-        }
-        Err(error) => Err(ledger_error_response(&error)),
-    }
-}
-
-/// Makes sure the mission's bounty escrow, if one is recorded, is confirmed by the ledger before
-/// the mission moves on (claim, complete, settle). A confirmed or absent escrow passes at once.
-/// An unconfirmed one is looked up: held by the ledger → confirmed; not held → the mission is
-/// cancelled as unfunded and the caller gets `409 mission_unfunded`; ledger unreachable → 502.
-pub(crate) async fn ensure_mission_escrow_confirmed(
-    state: &ControlPlaneState,
-    mission_id: &str,
-) -> Result<(), Response> {
-    let mission = {
-        let board = state.mission_board.lock().await;
-        match board.get(mission_id) {
-            Some(mission)
-                if mission.has_unconfirmed_escrow()
-                    && mission.status != MissionStatus::Cancelled =>
-            {
-                mission
-            }
-            _ => return Ok(()),
-        }
-    };
-    if confirm_escrow_with_ledger(state, &mission).await? {
-        return Ok(());
-    }
-    cancel_unfunded_mission(state, mission_id, ESCROW_STALE_AFTER_SECS).await?;
-    Err((
-        StatusCode::CONFLICT,
-        Json(json!({
-            "error": format!(
-                "mission {mission_id} bounty was never escrowed in the ledger; the mission has been cancelled"
-            ),
-            "code": "mission_unfunded",
-        })),
-    )
-        .into_response())
-}
-
-/// Asks the ledger whether the mission's unconfirmed escrow is locked by this node for the
-/// bounty. `Ok(true)` after confirming it on the board; `Ok(false)` when the ledger does not hold
-/// it; `Err` when the ledger cannot answer (nothing is decided).
-async fn confirm_escrow_with_ledger(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-) -> Result<bool, Response> {
-    let mission_id = mission.mission_id.as_str();
-    let Some(escrow_id) = mission.escrow_id.as_deref() else {
-        return Ok(true);
-    };
-    let bounty = mission
-        .reward
-        .as_ref()
-        .map_or(0, |reward| reward.agent_watt);
-    let Some(ledger) = LedgerClient::from_state(state) else {
-        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
-            "mission {mission_id} has an unconfirmed escrow {escrow_id} but no gateway is configured"
-        ))));
-    };
-    match ledger.escrow(escrow_id).await {
-        Ok(Some(escrow)) if escrow_is_locked_by(&escrow, &state.identity.agent_did, bounty) => {
-            record_mission_escrow(state, mission_id, escrow_id).await?;
-            tracing::info!(
-                mission_id,
-                "escrow lock confirmed against the ledger after its outcome was lost"
-            );
-            Ok(true)
-        }
-        Ok(_) => Ok(false),
-        Err(error) => Err(ledger_error_response(&error)),
-    }
-}
-
-/// Cancels a mission whose escrow the ledger does not hold, announces the cancellation and
-/// tries to forget the escrow (the ledger's 404 is trusted once the mission is stale). Returns
-/// whether this call cancelled it.
-async fn cancel_unfunded_mission(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    stale_after_secs: i64,
-) -> Result<bool, Response> {
-    let cancelled = {
-        let mut board = state.mission_board.lock().await;
-        match board.get(mission_id) {
-            Some(mission) if mission.status == MissionStatus::Cancelled => None,
-            Some(_) => {
-                let cancelled = board
-                    .cancel_unfunded(mission_id)
-                    .map_err(|error| internal_error(&error))?;
-                state
-                    .local_db
-                    .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-                    .map_err(|error| internal_error(&error))?;
-                Some(cancelled)
-            }
-            None => return Ok(false),
-        }
-    };
-    let Some(cancelled) = cancelled else {
-        return Ok(false);
-    };
-    tracing::warn!(
-        mission_id,
-        escrow_id = cancelled.escrow_id.as_deref().unwrap_or_default(),
-        "escrow lock never reached the ledger; mission cancelled as unfunded"
-    );
-    announce_mission_cancelled(
-        state,
-        &cancelled,
-        Some("escrow_unconfirmed".to_owned()),
-        None,
-    )
-    .await;
-    if let Err(response) = refund_pending_escrow(state, mission_id, stale_after_secs).await {
-        tracing::debug!(
-            mission_id,
-            error = %response_summary(&response),
-            "unfunded mission keeps its escrow id as a pending refund until the sweep forgets it"
-        );
-    }
-    Ok(true)
-}
-
-fn escrow_missing_response(mission_id: &str, escrow_id: &str, message: &str) -> Response {
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(json!({
-            "error": format!(
-                "escrow {escrow_id} recorded on mission {mission_id} is missing from the ledger: {message}"
-            ),
-            "code": "ledger_escrow_missing",
-        })),
-    )
-        .into_response()
-}
-
-/// Returns a cancelled mission's escrowed Watt to the publisher and forgets the escrow. An
-/// escrow the ledger never saw is forgotten once the mission is older than `stale_after_secs`
-/// (the lock request can no longer land); before that it stays pending and is retried.
-async fn refund_pending_escrow(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    stale_after_secs: i64,
-) -> Result<CivilMission, Response> {
-    let mission = {
-        let board = state.mission_board.lock().await;
-        board.get(mission_id).ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "mission not found"})),
-            )
-                .into_response()
-        })?
-    };
-    let Some(escrow_id) = mission.escrow_id.clone() else {
-        return Ok(mission);
-    };
-    let Some(ledger) = LedgerClient::from_state(state) else {
-        return Err(ledger_error_response(&LedgerError::Unavailable(anyhow!(
-            "mission {mission_id} has escrow {escrow_id} but no gateway is configured"
-        ))));
-    };
-    match ledger.refund_escrow(state, &escrow_id).await {
-        Ok(_) => clear_mission_escrow(state, mission_id).await,
-        Err(LedgerError::NotFound(message)) => {
-            let age = Utc::now().timestamp().saturating_sub(mission.updated_at);
-            if age >= stale_after_secs {
-                tracing::warn!(
-                    mission_id,
-                    escrow_id,
-                    "ledger holds no escrow for a cancelled mission; forgetting it: {message}"
-                );
-                clear_mission_escrow(state, mission_id).await
-            } else {
-                Err(escrow_missing_response(mission_id, &escrow_id, &message))
-            }
-        }
-        Err(error) => Err(ledger_error_response(&error)),
-    }
-}
-
-/// Cancels a mission that is not completed and refunds its bounty. The board is cancelled
-/// first, under its lock, so a `complete` racing with the refund is rejected instead of leaving
-/// a completed mission whose Watt went back to the publisher. The cancellation is announced
-/// (stream, signed event, audit) as soon as the board is cancelled, before the refund, so a
-/// refund that fails and is retried later never leaves the gateway unaware of the cancel.
-/// Returns the mission and whether this call performed the cancellation.
-async fn cancel_mission_and_refund(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    stale_after_secs: i64,
-    reason: Option<String>,
-    actor: Option<String>,
-) -> Result<(CivilMission, bool), Response> {
-    let newly_cancelled = {
-        let mut board = state.mission_board.lock().await;
-        let Some(mission) = board.get(mission_id) else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "mission not found"})),
-            )
-                .into_response());
-        };
-        match mission.status {
-            MissionStatus::Completed | MissionStatus::Settled => {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({"error": "mission can no longer be cancelled"})),
-                )
-                    .into_response());
-            }
-            MissionStatus::Cancelled => None,
-            MissionStatus::Open | MissionStatus::Claimed => {
-                let cancelled = board
-                    .cancel(mission_id)
-                    .map_err(|error| internal_error(&error))?;
-                state
-                    .local_db
-                    .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-                    .map_err(|error| internal_error(&error))?;
-                Some(cancelled)
-            }
-        }
-    };
-    if let Some(cancelled) = &newly_cancelled {
-        announce_mission_cancelled(state, cancelled, reason, actor).await;
-    }
-    let mission = refund_pending_escrow(state, mission_id, stale_after_secs).await?;
-    Ok((mission, newly_cancelled.is_some()))
-}
-
-/// Cancels an open or claimed mission and refunds its escrowed bounty to the publisher.
-/// Repeating the call is safe: a cancelled mission whose refund is still pending retries it.
-pub(crate) async fn mission_cancel_by_id(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Path(mission_id): Path<String>,
-    body: Option<Json<Value>>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let reason = body
-        .as_ref()
-        .and_then(|Json(body)| body.get("reason").and_then(Value::as_str))
-        .map(str::to_owned);
-    let (mission, _) = match cancel_mission_and_refund(
-        &state,
-        &mission_id,
-        ESCROW_STALE_AFTER_SECS,
-        reason,
-        Some(auth),
-    )
-    .await
-    {
-        Ok(outcome) => outcome,
-        Err(response) => return response,
-    };
-    Json(mission).into_response()
-}
-
 /// Publishes a cancellation to the local stream, the signed event log and the audit log.
-pub(crate) async fn announce_mission_cancelled(
+fn announce_mission_cancelled(
     state: &ControlPlaneState,
-    mission: &CivilMission,
+    mission_id: &str,
+    payload: &Value,
     reason: Option<String>,
     actor: Option<String>,
 ) {
-    let mut payload = mission_gateway_payload_with_current_contract(state, mission).await;
+    let mut payload = payload.clone();
     if let (Some(object), Some(reason)) = (payload.as_object_mut(), reason.as_deref()) {
         object.insert("cancel_reason".to_string(), json!(reason));
     }
@@ -2305,7 +1701,7 @@ pub(crate) async fn announce_mission_cancelled(
         action: "mission.cancel".to_string(),
         status: "ok".to_string(),
         actor,
-        subject: Some(mission.mission_id.clone()),
+        subject: Some(mission_id.to_owned()),
         capability: Some("mission.cancel".to_string()),
         reason,
         duration_ms: None,
@@ -2313,154 +1709,205 @@ pub(crate) async fn announce_mission_cancelled(
     });
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct MissionEscrowSweepReport {
-    /// Open or claimed missions past their expiry that this sweep cancelled.
-    pub expired: usize,
-    /// Cancelled missions whose escrow was refunded or forgotten in this sweep.
-    pub refunds_settled: usize,
-    /// Cancelled missions whose refund is still pending after this sweep.
-    pub refunds_pending: usize,
-    /// Escrows recorded before a lock whose outcome was never persisted and that the ledger
-    /// now confirms as locked.
-    pub escrows_confirmed: usize,
-    /// Such escrows the ledger never saw: the mission was cancelled as unfunded once stale.
-    pub escrows_abandoned: usize,
-    /// Claimed or completed missions ended because the ledger already returned their bounty:
-    /// the pledged items were turned down, or a deadline of the trade passed.
-    pub trades_ended: usize,
+/// `POST /v1/wattetheria/missions/{mission_id}/cancel`: the publisher cancels its mission on
+/// the gateway, which returns a held reward.
+pub(crate) async fn mission_cancel_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let reason = body
+        .as_ref()
+        .and_then(|Json(body)| body.get("reason").and_then(Value::as_str))
+        .map(str::to_owned);
+    let record = match gateway_missions::command(
+        &state,
+        &mission_id,
+        MissionAction::Cancel,
+        json!({"reason": reason}),
+    )
+    .await
+    {
+        Ok(record) => record,
+        Err(error) => return error.into_response(),
+    };
+    let payload = mission_payload(&state, &record).await;
+    announce_mission_cancelled(&state, &mission_id, &payload, reason, Some(auth));
+    Json(payload).into_response()
 }
 
-/// Periodic mission/ledger reconciliation: resolves escrows whose lock outcome was never
-/// persisted, expires overdue missions (cancel + refund) and retries refunds of cancelled
-/// missions that still hold an escrow. Escrows the ledger has no record of are forgotten once
-/// the mission is older than `stale_after_secs`.
-pub async fn reconcile_mission_escrows(
+/// Drops what this node kept about its agent's claim on a mission it gave up, so that asking
+/// for the mission again is answered by the gateway.
+fn forget_network_claim(state: &ControlPlaneState, mission_id: &str) -> anyhow::Result<()> {
+    let mut registry: NetworkMissionClaimRegistry = state
+        .local_db
+        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
+    registry.forget(mission_id, &state.agent_did);
+    state
+        .local_db
+        .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
+}
+
+/// Tells a mission's publisher, on the mission's own topic, that this node's agent gave the
+/// mission up. `record` is the mission as the gateway keeps it after the change; the notice
+/// only wakes the publisher's agent.
+async fn publish_claim_withdrawn_lifecycle_notice(
     state: &ControlPlaneState,
-    stale_after_secs: i64,
-) -> MissionEscrowSweepReport {
-    let mut report = MissionEscrowSweepReport {
-        trades_ended: mission_trade::end_returned_missions(state).await,
-        ..MissionEscrowSweepReport::default()
+    record: &Value,
+    mission_id: &str,
+    reason: Option<&str>,
+) -> anyhow::Result<Value> {
+    let body = MissionClaimBody::local(mission_id.to_owned(), state.agent_did.clone());
+    let Ok(route) = network_claim_route(&body, record) else {
+        bail!("the gateway record names no wattswarm topic for this mission");
     };
-    let now = Utc::now().timestamp();
-    let unconfirmed = {
-        let board = state.mission_board.lock().await;
-        board.unconfirmed_escrows()
+    let publisher_agent_did = value_string(record, "publisher");
+    let source_public_id = agent_public_id_for_did(state, &state.agent_did).await;
+    let source_display_name = agent_display_name_for_did(state, &state.agent_did).await;
+    let envelope = build_mission_lifecycle_envelope(
+        state,
+        MissionLifecycleEnvelopeArgs {
+            kind: "mission_claim_withdrawn",
+            task_id: route.task_id.clone(),
+            mission_id: mission_id.to_owned(),
+            mission_feed_key: route.mission_feed_key.clone(),
+            mission_scope_hint: route.mission_scope_hint.clone(),
+            source_agent_id: state.agent_did.clone(),
+            source_public_id,
+            source_display_name,
+            target_agent_id: publisher_agent_did.clone(),
+            target_node_id: route.publisher_wattswarm_node_id.clone(),
+            capability: "mission.claim.withdraw",
+            content: json!({
+                "kind": "mission_claim_withdrawn",
+                "mission_id": mission_id,
+                "task_id": route.task_id,
+                "mission_feed_key": route.mission_feed_key,
+                "mission_scope_hint": route.mission_scope_hint,
+                "publisher_agent_did": publisher_agent_did,
+                "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
+                "claimer_agent_did": state.agent_did,
+                "agent_did": state.agent_did,
+                "reason": reason,
+                "status": "withdrawn",
+                "mission_status": gateway_missions::status(record),
+            }),
+        },
+    )
+    .await?;
+    post_mission_lifecycle_topic_notice(
+        state,
+        &route.mission_feed_key,
+        &route.mission_scope_hint,
+        &envelope,
+    )
+    .await?;
+    Ok(json!({
+        "kind": "mission_claim_withdrawn",
+        "sent": true,
+        "mission_id": mission_id,
+        "task_id": route.task_id,
+        "mission_feed_key": route.mission_feed_key,
+        "mission_scope_hint": route.mission_scope_hint,
+        "source_agent_id": state.agent_did,
+        "source_node_id": envelope.source_node_id,
+        "target_agent_id": publisher_agent_did,
+        "target_node_id": route.publisher_wattswarm_node_id,
+    }))
+}
+
+/// `POST /v1/wattetheria/missions/{mission_id}/claims/withdraw` (`withdraw_mission_claim`):
+/// this node's agent gives up a mission it asked for or holds. The gateway records it, then
+/// the mission's publisher is told on wattswarm. The gateway's refusal comes back as it is.
+pub(crate) async fn mission_claim_withdraw_by_id(
+    State(state): State<ControlPlaneState>,
+    headers: HeaderMap,
+    Path(mission_id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Response {
+    let auth = match authorize(&state, &headers).await {
+        Ok(token) => token,
+        Err(response) => return response,
     };
-    for mission in unconfirmed {
-        resolve_unconfirmed_escrow(state, &mission, now, stale_after_secs, &mut report).await;
+    let reason = body
+        .as_ref()
+        .and_then(|Json(body)| body.get("reason").and_then(Value::as_str))
+        .map(str::to_owned);
+    let record = match gateway_missions::command(
+        &state,
+        &mission_id,
+        MissionAction::WithdrawClaim,
+        json!({"reason": reason}),
+    )
+    .await
+    {
+        Ok(record) => record,
+        Err(error) => return error.into_response(),
+    };
+    // From here the gateway holds the change: whatever fails next, the answer says so.
+    if let Err(error) = forget_network_claim(&state, &mission_id) {
+        return internal_error(&error);
     }
-    let (expired, pending): (Vec<CivilMission>, Vec<String>) = {
-        let board = state.mission_board.lock().await;
-        let expired = board.expired_missions(now);
-        let pending = board
-            .list(Some(&MissionStatus::Cancelled))
-            .into_iter()
-            .filter(|mission| mission.escrow_id.is_some())
-            .map(|mission| mission.mission_id)
-            .collect();
-        (expired, pending)
-    };
-    for mission in expired {
-        match cancel_mission_and_refund(
-            state,
-            &mission.mission_id,
-            stale_after_secs,
-            Some("expired".to_owned()),
-            None,
+    let mission = gateway_missions::mission_json_or_record(&record);
+    let mission_lifecycle_notice = if gateway_missions::is_own(&state, &record) {
+        Value::Null
+    } else {
+        match publish_claim_withdrawn_lifecycle_notice(
+            &state,
+            &record,
+            &mission_id,
+            reason.as_deref(),
         )
         .await
         {
-            Ok(_) => report.expired += 1,
-            // Completed (or gone) between the snapshot and the cancel: not expired after all.
-            Err(response)
-                if matches!(
-                    response.status(),
-                    StatusCode::CONFLICT | StatusCode::NOT_FOUND
-                ) => {}
-            Err(response) => {
-                // Cancelled on the board (so it stops being claimable) but the refund did not
-                // go through: it is now a pending refund and retried by the next sweep.
-                report.expired += 1;
-                report.refunds_pending += 1;
-                tracing::warn!(
-                    mission_id = %mission.mission_id,
-                    error = %response_summary(&response),
-                    "expired mission cancelled but its refund is pending"
-                );
+            Ok(notice) => notice,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": format!(
+                            "the mission is given up, but the notice to its publisher was not \
+                             delivered: {error}. Send the same request again to retry the \
+                             notice; nothing else changes."
+                        ),
+                        "code": "withdraw_notice_not_delivered",
+                        "mission_id": mission_id,
+                        "mission": mission,
+                        "mission_lifecycle_notice":
+                            {"kind": "mission_claim_withdrawn", "sent": false},
+                    })),
+                )
+                    .into_response();
             }
         }
-    }
-    for mission_id in pending {
-        match refund_pending_escrow(state, &mission_id, stale_after_secs).await {
-            Ok(mission) if mission.escrow_id.is_none() => report.refunds_settled += 1,
-            Ok(_) => report.refunds_pending += 1,
-            Err(response) => {
-                report.refunds_pending += 1;
-                tracing::warn!(
-                    mission_id,
-                    error = %response_summary(&response),
-                    "pending mission refund not settled yet"
-                );
-            }
-        }
-    }
-    report
-}
-
-/// Settles an escrow that was recorded before its lock request but whose outcome never reached
-/// the board (the node stopped mid-request). A lock the ledger holds is confirmed; one the ledger
-/// has no record of is left alone while the mission is younger than the grace period (the request
-/// can still land), then the mission is cancelled as unfunded. A ledger that cannot answer is
-/// retried by the next sweep.
-async fn resolve_unconfirmed_escrow(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-    now: i64,
-    stale_after_secs: i64,
-    report: &mut MissionEscrowSweepReport,
-) {
-    let mission_id = mission.mission_id.as_str();
-    match confirm_escrow_with_ledger(state, mission).await {
-        Ok(true) => report.escrows_confirmed += 1,
-        Ok(false) => {
-            // Measured from publication: the lock is requested right after it, and a claim in
-            // the meantime must not restart the clock.
-            let grace = stale_after_secs.min(ESCROW_UNCONFIRMED_GRACE_SECS);
-            if now.saturating_sub(mission.created_at) < grace {
-                return;
-            }
-            match cancel_unfunded_mission(state, mission_id, stale_after_secs).await {
-                Ok(true) => report.escrows_abandoned += 1,
-                Ok(false) => {}
-                Err(response) => tracing::warn!(
-                    mission_id,
-                    error = %response_summary(&response),
-                    "unconfirmed escrow could not be resolved; retrying next sweep"
-                ),
-            }
-        }
-        Err(response) => tracing::warn!(
-            mission_id,
-            error = %response_summary(&response),
-            "unconfirmed escrow could not be checked; retrying next sweep"
-        ),
-    }
-}
-
-fn ledger_error_response(error: &LedgerError) -> Response {
-    let (status, code) = match error {
-        LedgerError::InsufficientBalance(_) => (StatusCode::PAYMENT_REQUIRED, "insufficient_watt"),
-        LedgerError::NotFound(_) => (StatusCode::NOT_FOUND, "ledger_not_found"),
-        LedgerError::Rejected(..) => (StatusCode::BAD_GATEWAY, "ledger_rejected"),
-        LedgerError::Unavailable(_) => (StatusCode::BAD_GATEWAY, "ledger_unavailable"),
     };
-    (
-        status,
-        Json(json!({"error": error.to_string(), "code": code})),
-    )
-        .into_response()
+    let payload = json!({
+        "ok": true,
+        "status": "mission_claim_withdrawn",
+        "mission_id": mission_id,
+        "agent_did": state.agent_did,
+        "mission": mission,
+        "mission_lifecycle_notice": mission_lifecycle_notice,
+    });
+    let _ = state.audit_log.append(AuditEntry {
+        id: String::new(),
+        timestamp: 0,
+        category: "mission".to_string(),
+        action: "mission.claim.withdraw".to_string(),
+        status: "ok".to_string(),
+        actor: Some(auth),
+        subject: Some(mission_id),
+        capability: Some("mission.claim".to_string()),
+        reason,
+        duration_ms: None,
+        details: Some(payload.clone()),
+    });
+    Json(payload).into_response()
 }
 
 fn replay_commit_response(
@@ -2523,7 +1970,23 @@ pub(crate) async fn mission_list(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let missions = state.mission_board.lock().await.list(query.status.as_ref());
+    let records = match gateway_missions::view_records(&state).await {
+        Ok(records) => records,
+        Err(error) => return error.into_response(),
+    };
+    let mut missions = Vec::new();
+    for record in &records {
+        let Some(mission) = civil_mission(record) else {
+            continue;
+        };
+        if query
+            .status
+            .as_ref()
+            .is_none_or(|status| &mission.status == status)
+        {
+            missions.push(mission_payload(&state, record).await);
+        }
+    }
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
         timestamp: 0,
@@ -2549,13 +2012,9 @@ pub(crate) async fn mission_get(
         Ok(token) => token,
         Err(response) => return response,
     };
-    let mission = state.mission_board.lock().await.get(&mission_id);
-    let Some(mission) = mission else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "mission not found", "mission_id": mission_id})),
-        )
-            .into_response();
+    let record = match mission_record(&state, &mission_id).await {
+        Ok(record) => record,
+        Err(response) => return response,
     };
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -2564,35 +2023,23 @@ pub(crate) async fn mission_get(
         action: "mission.get".to_string(),
         status: "ok".to_string(),
         actor: Some(auth),
-        subject: Some(mission.mission_id.clone()),
+        subject: Some(mission_id),
         capability: None,
         reason: None,
         duration_ms: None,
         details: None,
     });
-    Json(mission).into_response()
+    Json(mission_payload(&state, &record).await).into_response()
 }
 
-/// Validates the expiry, publishes the mission on the local board and persists it. The Watt
-/// bounty is escrowed afterwards by [`lock_mission_bounty`].
-async fn publish_mission_on_board(
+/// The mission a publish request describes, before the gateway records it.
+fn draft_mission(
     state: &ControlPlaneState,
     body: MissionPublishBody,
     settlement_delegation: Option<&Value>,
-    assignee: Option<&mission_trade::Assignee>,
-) -> Result<CivilMission, Response> {
-    if let Some(expires_at) = body.expires_at
-        && expires_at <= Utc::now().timestamp()
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "expires_at must be in the future"})),
-        )
-            .into_response());
-    }
-    let mission_payload = payload_with_settlement_delegation(body.payload, settlement_delegation);
-    let mut board = state.mission_board.lock().await;
-    let mut mission = board.publish_with_scope_and_geo(
+    assignee: Option<mission_trade::Assignee>,
+) -> CivilMission {
+    let mut mission = CivilMission::draft(
         &body.title,
         &body.description,
         &body.publisher,
@@ -2604,30 +2051,26 @@ async fn publish_mission_on_board(
         body.required_role,
         body.required_faction,
         body.reward,
-        mission_payload,
+        payload_with_settlement_delegation(body.payload, settlement_delegation),
         Some(state.public_geo_payload()),
     );
-    if body.expires_at.is_some() {
-        mission = board
-            .set_expiry(&mission.mission_id, body.expires_at)
-            .map_err(|error| internal_error(&error))?;
-    }
+    mission.expires_at = body.expires_at;
     if let Some(assignee) = assignee {
-        mission = board
-            .set_assignee(
-                &mission.mission_id,
-                &assignee.did,
-                assignee.display_name.as_deref(),
-            )
-            .map_err(|error| internal_error(&error))?;
+        mission.assignee_did = Some(assignee.did);
+        mission.assignee_display_name = assignee.display_name;
     }
-    state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        .map_err(|error| internal_error(&error))?;
-    Ok(mission)
+    mission
 }
 
+fn bad_publish(error: impl Into<String>, code: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": error.into(), "code": code})),
+    )
+        .into_response()
+}
+
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn mission_publish(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -2637,7 +2080,8 @@ pub(crate) async fn mission_publish(
         Ok(token) => token,
         Err(response) => return response,
     };
-    if agent_commit_context_from_headers(&headers).is_none()
+    let in_commit = agent_commit_context_from_headers(&headers).is_some();
+    if !in_commit
         && let Err(error) = validate_mission_inputs(&body.title, &body.description, &body.payload)
     {
         return validation_error_response(error);
@@ -2645,16 +2089,10 @@ pub(crate) async fn mission_publish(
     let settlement_delegation =
         match normalize_publish_delegation(body.settlement_delegation.take()) {
             Ok(delegation) => delegation,
-            Err(error) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": error.to_string()})),
-                )
-                    .into_response();
-            }
+            Err(error) => return bad_publish(error.to_string(), "invalid"),
         };
     // The named agent is looked up before anything is published: an unknown name publishes
-    // nothing and locks no Watt.
+    // nothing.
     let assignee = match body.assignee.take() {
         Some(name) => match mission_trade::resolve_assignee(&state, &name).await {
             Ok(assignee) => Some(assignee),
@@ -2663,33 +2101,26 @@ pub(crate) async fn mission_publish(
         None => None,
     };
     let request_json = json!({"title": body.title, "publisher": body.publisher});
-    let mission = match publish_mission_on_board(
-        &state,
-        body,
-        settlement_delegation.as_ref(),
-        assignee.as_ref(),
-    )
-    .await
+    let mut mission = draft_mission(&state, body, settlement_delegation.as_ref(), assignee);
+    let publisher_label = agent_display_name_for_did(&state, &state.agent_did).await;
+    let terms = PublishTerms {
+        publisher_label: publisher_label.as_deref(),
+        ..PublishTerms::kind(if settlement_delegation.is_some() {
+            KIND_DELEGATED
+        } else {
+            KIND_STANDARD
+        })
+    };
+    let publication = match publish_drafted_mission(&state, &mut mission, &terms, !in_commit).await
     {
-        Ok(mission) => mission,
+        Ok(publication) => publication,
         Err(response) => return response,
     };
-    let mission = match lock_mission_bounty(&state, &mission).await {
-        Ok(mission) => mission,
-        Err(response) => return response,
-    };
-    let mut published_task_contract = None;
-    if agent_commit_context_from_headers(&headers).is_none() {
-        let contract = match publish_mission_task_to_swarm(&state, &mission).await {
-            Ok(contract) => contract,
-            Err(response) => return response,
-        };
-        published_task_contract = Some(contract);
+    let mut payload = mission_payload(&state, &publication.record).await;
+    if publication.already_published {
+        payload["already_published"] = json!(true);
+        return Json(payload).into_response();
     }
-
-    let payload =
-        mission_gateway_payload_with_identities(&state, &mission, published_task_contract.as_ref())
-            .await;
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.published".to_string(),
         timestamp: Utc::now().timestamp(),
@@ -2785,24 +2216,15 @@ fn mission_claim_body_with_path_id(
 }
 
 /// The task contract of another node's mission, once the ledger's rules let this agent ask for
-/// it: a mission reserved for someone else, or a claim ban on this agent, stops the claim here
-/// and it is never sent to the publisher.
-async fn claimable_network_task_contract(
-    state: &ControlPlaneState,
-    route: &NetworkMissionClaimRoute,
-    body: &MissionClaimBody,
-) -> Result<TaskContract, Response> {
-    let contract = network_task_contract_for_action(state, route, body, "claim").await?;
-    mission_trade::ask_ledger_for_claim(state, &body.mission_id, &body.agent_did, &contract.inputs)
-        .await?;
-    Ok(contract)
-}
-
+/// This node's agent asks to take another node's mission: the gateway records the request
+/// (and refuses it for a reserved mission, a banned claimer or a mission already taken), then
+/// the claim goes to the publisher on wattswarm.
 async fn claim_network_mission(
     state: ControlPlaneState,
     headers: HeaderMap,
     auth: String,
     body: MissionClaimBody,
+    record: Value,
 ) -> Response {
     if agent_commit_context_from_headers(&headers).is_some() {
         return (
@@ -2811,40 +2233,38 @@ async fn claim_network_mission(
         )
             .into_response();
     }
-    let route = match network_claim_route_for_action(&state, &body).await {
+    let route = match network_claim_route(&body, &record) {
         Ok(route) => route,
         Err(response) => return response,
     };
     let execution_id = mission_execution_id(&route.task_id, &body.agent_did);
-    if let Some(status) = route.status.as_deref()
-        && !network_claim_status_allows_claim(status)
-    {
-        return mission_not_claimable_response(
-            &body.mission_id,
-            &route.task_id,
-            &body.agent_did,
-            &execution_id,
-            status,
-        );
-    }
     if let Some(response) =
         network_claim_already_recorded_response(&state, &body, &route, &execution_id)
     {
         return response;
     }
-    let contract = match claimable_network_task_contract(&state, &route, &body).await {
+    let contract = match network_task_contract_for_action(&record, &route, &body, "claim") {
         Ok(contract) => contract,
         Err(response) => return response,
     };
-    let claim_record_status = route
-        .status
-        .clone()
-        .or_else(|| network_claim_string(&body, &contract, "status"));
+    let claimer_label = claimer_display_name(&state, &body).await;
+    let requested = match gateway_missions::command(
+        &state,
+        &body.mission_id,
+        MissionAction::RequestClaim,
+        json!({"claimer_label": claimer_label}),
+    )
+    .await
+    {
+        Ok(requested) => requested,
+        Err(error) => return error.into_response(),
+    };
+    // From here the gateway holds the request: whatever fails next, the answer says so.
     let claim_metadata = network_claim_metadata(&body, &route, &contract);
     let (subscriber_node_id, task_contract_sync) =
         match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(error) => return claim_notice_failed(&body.mission_id, &error),
         };
     let source_public_id = agent_public_id_for_did(&state, &body.agent_did).await;
     let source_display_name = agent_display_name_for_did(&state, &body.agent_did).await;
@@ -2858,7 +2278,7 @@ async fn claim_network_mission(
         Some(subscriber_node_id.clone()),
     ) {
         Ok(envelope) => envelope,
-        Err(error) => return internal_error(&error),
+        Err(error) => return claim_notice_failed(&body.mission_id, &error),
     };
     let swarm_claim = match state
         .swarm_bridge
@@ -2886,16 +2306,12 @@ async fn claim_network_mission(
         "subscriber_node_id": subscriber_node_id,
         "task_contract_sync": task_contract_sync,
         "swarm_claim": swarm_claim,
+        "mission": gateway_missions::mission_json_or_record(&requested),
     });
 
-    if let Err(error) = record_network_claim_success(
-        &state,
-        auth,
-        &execution_id,
-        &response_json,
-        claim_record_status,
-        claim_metadata,
-    ) {
+    if let Err(error) =
+        record_network_claim_success(&state, auth, &execution_id, &response_json, claim_metadata)
+    {
         return internal_error(&error);
     }
     Json(response_json).into_response()
@@ -2906,7 +2322,6 @@ fn record_network_claim_success(
     auth: String,
     execution_id: &str,
     response_json: &Value,
-    status: Option<String>,
     metadata: NetworkMissionClaimMetadata,
 ) -> anyhow::Result<()> {
     record_network_claim_submission(
@@ -2915,7 +2330,6 @@ fn record_network_claim_success(
         response_json["task_id"].as_str().unwrap_or_default(),
         response_json["agent_did"].as_str().unwrap_or_default(),
         execution_id,
-        status,
         metadata,
     )?;
 
@@ -2935,85 +2349,41 @@ fn record_network_claim_success(
     Ok(())
 }
 
-fn network_claim_status_allows_complete(status: Option<&str>) -> bool {
-    status.is_some_and(|status| status.trim().eq_ignore_ascii_case("claimed"))
-}
-
-fn network_claim_complete_status_response(
+/// Hands `result` in on the gateway. Returns the mission as it stands and the result the
+/// gateway keeps, which is what the publisher is told: a mission handed in before keeps its
+/// first result, whatever this request carries.
+async fn deliver_on_gateway(
+    state: &ControlPlaneState,
     mission_id: &str,
-    task_id: &str,
-    agent_did: &str,
-    status: Option<&str>,
-) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "error": "network mission complete requires a recorded claimed mission",
-            "mission_id": mission_id,
-            "task_id": task_id,
-            "agent_did": agent_did,
-            "claim_status": status.unwrap_or("missing"),
-        })),
+    result: Value,
+) -> gateway_missions::MissionResult<(Value, Value)> {
+    let delivered = gateway_missions::command(
+        state,
+        mission_id,
+        MissionAction::Deliver,
+        json!({"result": result}),
     )
-        .into_response()
+    .await?;
+    let kept = delivered
+        .get("result")
+        .filter(|saved| !saved.is_null())
+        .cloned()
+        .unwrap_or(result);
+    Ok((delivered, kept))
 }
 
-fn ensure_network_claim_claimed_for_complete(
-    state: &ControlPlaneState,
-    body: &MissionClaimBody,
-    route: &NetworkMissionClaimRoute,
-) -> Result<NetworkMissionClaimRecord, Box<Response>> {
-    match recorded_network_claim(state, &body.mission_id, &route.task_id, &body.agent_did) {
-        Ok(Some(record)) if network_claim_status_allows_complete(record.status.as_deref()) => {
-            Ok(record)
-        }
-        Ok(Some(record)) => Err(Box::new(network_claim_complete_status_response(
-            &body.mission_id,
-            &route.task_id,
-            &body.agent_did,
-            record.status.as_deref(),
-        ))),
-        Ok(None) => Err(Box::new(network_claim_complete_status_response(
-            &body.mission_id,
-            &route.task_id,
-            &body.agent_did,
-            None,
-        ))),
-        Err(error) => Err(Box::new(internal_error(&error))),
-    }
-}
-
-fn record_network_claim_completed(
-    state: &ControlPlaneState,
-    mission_id: &str,
-    task_id: &str,
-    agent_did: &str,
-) -> anyhow::Result<()> {
-    let mut registry: NetworkMissionClaimRegistry = state
-        .local_db
-        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)?;
-    registry
-        .update_status(mission_id, task_id, agent_did, "completed")
-        .context("recorded network mission claim not found")?;
-    state
-        .local_db
-        .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
-}
-
+/// This node's agent hands in another node's mission: the gateway records the result (and
+/// refuses it when the agent does not hold the mission), then the publisher is told on
+/// wattswarm.
 async fn complete_network_mission(
     state: ControlPlaneState,
-    _headers: HeaderMap,
     auth: String,
     body: MissionClaimBody,
+    record: Value,
 ) -> Response {
-    let route = match network_claim_route_for_action(&state, &body).await {
+    let route = match network_claim_route(&body, &record) {
         Ok(route) => route,
         Err(response) => return response,
-    };
-    mission_trade::reopen_sent_back_claim(&state, &body.mission_id, &body.agent_did).await;
-    let claim_record = match ensure_network_claim_claimed_for_complete(&state, &body, &route) {
-        Ok(record) => record,
-        Err(response) => return *response,
     };
     let Some(result) = body
         .result
@@ -3030,24 +2400,26 @@ async fn complete_network_mission(
         )
             .into_response();
     };
-    let contract = match network_task_contract_for_action(&state, &route, &body, "complete").await {
+    let execution_id =
+        match recorded_network_claim(&state, &body.mission_id, &route.task_id, &body.agent_did) {
+            Ok(claim) => claim.map_or_else(
+                || mission_execution_id(&route.task_id, &body.agent_did),
+                |claim| claim.execution_id,
+            ),
+            Err(error) => return internal_error(&error),
+        };
+    let contract = match network_task_contract_for_action(&record, &route, &body, "complete") {
         Ok(contract) => contract,
         Err(response) => return response,
     };
-    if let Err(response) = mission_trade::report_delivery(
-        &state,
-        &body.mission_id,
-        Some(&result),
-        mission_trade::inputs_expect_terms(&contract.inputs),
-    )
-    .await
-    {
-        return response;
-    }
+    let (delivered, result) = match deliver_on_gateway(&state, &body.mission_id, result).await {
+        Ok(delivered) => delivered,
+        Err(error) => return error.into_response(),
+    };
     let (subscriber_node_id, task_contract_sync) =
         match import_network_task_contract(&state, contract).await {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(error) => return internal_error(&error),
         };
     let mission_lifecycle_notice = match publish_mission_completed_lifecycle_notice(
         &state,
@@ -3057,10 +2429,11 @@ async fn complete_network_mission(
             mission_feed_key: route.mission_feed_key.clone(),
             mission_scope_hint: route.mission_scope_hint.clone(),
             agent_did: body.agent_did.clone(),
-            result: result.clone(),
-            publisher_agent_did: publisher_agent_did_from_claim(&body),
+            result,
+            publisher_agent_did: publisher_agent_did_from_claim(&body)
+                .or_else(|| value_string(&record, "publisher")),
             publisher_wattswarm_node_id: route.publisher_wattswarm_node_id.clone(),
-            execution_id: claim_route_string(&body, "execution_id"),
+            execution_id: Some(execution_id.clone()),
             publish_topic_notice: true,
         },
     )
@@ -3069,24 +2442,20 @@ async fn complete_network_mission(
         Ok(notice) => notice,
         Err(error) => return internal_error(&error),
     };
-    if let Err(error) =
-        record_network_claim_completed(&state, &body.mission_id, &route.task_id, &body.agent_did)
-    {
-        return internal_error(&error);
-    }
     let response_json = json!({
         "ok": true,
         "status": "network_complete_published",
         "mission_id": body.mission_id,
         "task_id": route.task_id,
         "agent_did": body.agent_did,
-        "execution_id": claim_record.execution_id,
+        "execution_id": execution_id,
         "mission_feed_key": route.mission_feed_key,
         "mission_scope_hint": route.mission_scope_hint,
         "publisher_wattswarm_node_id": route.publisher_wattswarm_node_id,
         "subscriber_node_id": subscriber_node_id,
         "task_contract_sync": task_contract_sync,
         "mission_lifecycle_notice": mission_lifecycle_notice,
+        "mission": gateway_missions::mission_json_or_record(&delivered),
     });
 
     let _ = state.audit_log.append(AuditEntry {
@@ -3105,48 +2474,48 @@ async fn complete_network_mission(
     Json(response_json).into_response()
 }
 
+/// Whether `agent_did` is this node's own agent: the only agent this node can sign for.
+fn is_this_nodes_agent(state: &ControlPlaneState, agent_did: &str) -> bool {
+    agent_did == state.identity.agent_did
+}
+
+/// The wattswarm claim of a mission this node publishes, sent when the claimer is on this node.
 async fn dispatch_local_mission_transition_to_swarm(
     state: &ControlPlaneState,
-    action: &str,
     mission: &CivilMission,
     agent_did: &str,
 ) -> anyhow::Result<Value> {
     let local_node_id = state.swarm_bridge.local_node_id().await.ok();
     let source_public_id = agent_public_id_for_did(state, agent_did).await;
     let source_display_name = agent_display_name_for_did(state, agent_did).await;
-    match action {
-        "claim" => {
-            let agent_envelope = task_agent_envelope(
-                state,
-                TaskAgentEnvelopeArgs {
-                    source_agent_id: agent_did.to_owned(),
-                    source_public_id: source_public_id.clone(),
-                    source_display_name: source_display_name.clone(),
-                    target_agent_id: Some(state.agent_did.clone()),
-                    source_node_id: local_node_id.clone(),
-                    target_node_id: None,
-                    capability: "task.claim".to_owned(),
-                    message: json!({
-                    "task_id": mission.mission_id,
-                    "mission_id": mission.mission_id,
-                    "agent_did": agent_did,
-                    "role": "propose",
-                    }),
-                },
-            )?;
-            state
-                .swarm_bridge
-                .claim_task(SwarmTaskClaimCommand {
-                    task_id: mission.mission_id.clone(),
-                    role: ClaimRole::Propose,
-                    execution_id: mission_execution_id(&mission.mission_id, agent_did),
-                    lease_ms: None,
-                    agent_envelope,
-                })
-                .await
-        }
-        _ => unreachable!("unsupported mission transition"),
-    }
+    let agent_envelope = task_agent_envelope(
+        state,
+        TaskAgentEnvelopeArgs {
+            source_agent_id: agent_did.to_owned(),
+            source_public_id,
+            source_display_name,
+            target_agent_id: Some(state.agent_did.clone()),
+            source_node_id: local_node_id,
+            target_node_id: None,
+            capability: "task.claim".to_owned(),
+            message: json!({
+            "task_id": mission.mission_id,
+            "mission_id": mission.mission_id,
+            "agent_did": agent_did,
+            "role": "propose",
+            }),
+        },
+    )?;
+    state
+        .swarm_bridge
+        .claim_task(SwarmTaskClaimCommand {
+            task_id: mission.mission_id.clone(),
+            role: ClaimRole::Propose,
+            execution_id: mission_execution_id(&mission.mission_id, agent_did),
+            lease_ms: None,
+            agent_envelope,
+        })
+        .await
 }
 
 async fn publish_transition_lifecycle_notice(
@@ -3168,6 +2537,12 @@ async fn publish_transition_lifecycle_notice(
         .await
         .map(Some),
         "complete" => {
+            // The publisher recorded this hand-in for a claimer on another node. The notice of
+            // a hand-in is the claimer's to send and sign, and it is addressed to the publisher,
+            // who already knows: none is sent.
+            if !is_this_nodes_agent(state, request_agent_did) {
+                return Ok(None);
+            }
             let result = mission
                 .completion_result
                 .clone()
@@ -3237,55 +2612,47 @@ fn record_mission_transition_events(
     });
 }
 
-fn apply_local_mission_transition(
-    board: &mut wattetheria_kernel::civilization::missions::MissionBoard,
-    action: &str,
-    body: &MissionClaimBody,
-    claimer_display_name: Option<&str>,
-) -> anyhow::Result<CivilMission> {
-    match action {
-        "claim" => board.claim_as(&body.mission_id, &body.agent_did, claimer_display_name),
-        "complete" => board.complete(&body.mission_id, &body.agent_did, body.result.clone()),
-        _ => unreachable!("unsupported mission transition"),
-    }
-}
-
-/// What the ledger's rules say about a claim or a completion on a mission this node published,
-/// asked before the board changes. A claim on an open mission is refused for anyone but the
-/// named agent and for an agent under a claim ban, and the accepted claimer is recorded with
-/// the ledger. A completion by the claimer is reported to the ledger; if the ledger refuses it
-/// (an `in_world` mission completed empty-handed) the agent is told, the board stays as it is, and
-/// if the ledger already ended the trade the board follows.
-async fn check_local_transition_with_ledger(
+/// A claim or a completion on a mission this node's agent published, sent to the gateway. A
+/// claim approves the claimer (the agent claiming its own mission first asks, as any claimer
+/// does); a completion records the result unless the claimer already handed it in.
+async fn own_mission_transition(
     state: &ControlPlaneState,
-    mission: &CivilMission,
+    record: &Value,
     body: &MissionClaimBody,
     action: &str,
-) -> Result<(), Response> {
-    let by_claimer = mission.claimed_by.as_deref() == Some(body.agent_did.as_str());
-    match (action, &mission.status) {
-        ("claim", MissionStatus::Open) => {
-            mission_trade::approve_claim_at_ledger(state, mission, &body.agent_did).await
-        }
-        ("complete", MissionStatus::Claimed)
-            if by_claimer && mission_trade::has_claim_terms(mission) =>
-        {
-            // An in_world mission is never completed empty-handed, so the ledger must answer.
-            let strict = mission_trade::needs_something_handed_in(mission);
-            let reported = mission_trade::report_delivery(
+) -> Result<Value, Response> {
+    let sent = if action == "claim" {
+        if body.agent_did == state.identity.agent_did {
+            let claimer_label = claimer_display_name(state, body).await;
+            gateway_missions::command(
                 state,
-                &mission.mission_id,
-                body.result.as_ref(),
-                strict,
+                &body.mission_id,
+                MissionAction::RequestClaim,
+                json!({"claimer_label": claimer_label}),
             )
-            .await;
-            if reported.is_err() {
-                mission_trade::end_returned_mission(state, &mission.mission_id).await;
-            }
-            reported
+            .await
+            .map_err(IntoResponse::into_response)?;
         }
-        _ => Ok(()),
-    }
+        gateway_missions::command(
+            state,
+            &body.mission_id,
+            MissionAction::ApproveClaim,
+            json!({"claimer": body.agent_did}),
+        )
+        .await
+    } else {
+        if gateway_missions::status(record) == "completed" {
+            return Ok(record.clone());
+        }
+        gateway_missions::command(
+            state,
+            &body.mission_id,
+            MissionAction::Deliver,
+            json!({"result": body.result}),
+        )
+        .await
+    };
+    sent.map_err(IntoResponse::into_response)
 }
 
 async fn transition_mission(
@@ -3305,56 +2672,37 @@ async fn transition_mission(
     };
     let request_mission_id = body.mission_id.clone();
     let request_agent_did = body.agent_did.clone();
-    if let Err(response) = ensure_mission_escrow_confirmed(&state, &body.mission_id).await {
-        return response;
-    }
-    let claimer_display_name = if action == "claim" {
-        claimer_display_name(&state, &body).await
-    } else {
-        None
+    let record = match mission_record(&state, &body.mission_id).await {
+        Ok(record) => record,
+        Err(response) => return response,
     };
-    let local = state.mission_board.lock().await.get(&body.mission_id);
-    match (&local, action) {
-        (None, "claim") => return claim_network_mission(state, headers, auth, body).await,
-        (None, "complete") => return complete_network_mission(state, headers, auth, body).await,
-        _ => {}
+    if !is_own(&state, &record) {
+        return if action == "claim" {
+            claim_network_mission(state, headers, auth, body, record).await
+        } else {
+            complete_network_mission(state, auth, body, record).await
+        };
     }
-    if let Some(local) = &local
-        && let Err(response) =
-            check_local_transition_with_ledger(&state, local, &body, action).await
-    {
-        return response;
-    }
-    let mut board = state.mission_board.lock().await;
-    let mission =
-        apply_local_mission_transition(&mut board, action, &body, claimer_display_name.as_deref());
-    let mission = match mission {
+    let record = match own_mission_transition(&state, &record, &body, action).await {
+        Ok(record) => record,
+        Err(response) => return response,
+    };
+    let mission = match readable_mission(&record) {
         Ok(mission) => mission,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": error.to_string()})),
-            )
-                .into_response();
-        }
+        Err(response) => return response,
     };
-    if let Err(error) = state
-        .local_db
-        .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-    {
-        return internal_error(&error);
-    }
-    drop(board);
+    let in_commit = agent_commit_context_from_headers(&headers).is_some();
+    // A claimer on another node sent its own claim; this node cannot sign one in its name.
     if action == "claim"
-        && agent_commit_context_from_headers(&headers).is_none()
+        && !in_commit
+        && is_this_nodes_agent(&state, &request_agent_did)
         && let Err(error) =
-            dispatch_local_mission_transition_to_swarm(&state, action, &mission, &request_agent_did)
-                .await
+            dispatch_local_mission_transition_to_swarm(&state, &mission, &request_agent_did).await
     {
         return internal_error(&error);
     }
 
-    let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    let mut payload = mission_payload(&state, &record).await;
     insert_mission_transition_actor_projection(&mut payload, action, &request_agent_did, &body);
     record_mission_transition_events(&state, action, auth, &body, &payload);
 
@@ -3364,7 +2712,7 @@ async fn transition_mission(
         &mission,
         &body,
         &request_agent_did,
-        agent_commit_context_from_headers(&headers).is_none(),
+        !in_commit,
     )
     .await
     {
@@ -3394,6 +2742,7 @@ async fn transition_mission(
     Json(response_json).into_response()
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn mission_settle(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -3407,30 +2756,35 @@ pub(crate) async fn mission_settle(
         Err(response) => return response,
     };
     let request_mission_id = body.mission_id.clone();
-    // A trade the ledger already ended (items turned down, or a deadline passed) cannot be
-    // settled: each side has its own back and the mission ends on the board.
-    if let Some(ended) = mission_trade::end_returned_mission(&state, &body.mission_id).await {
-        return mission_trade::trade_ended_response(&body.mission_id, &ended);
-    }
-    let swarm_finalize = match finalize_mission_task_before_settle(&state, &body, &headers).await {
-        Ok(value) => value,
+    let record = match mission_record(&state, &body.mission_id).await {
+        Ok(record) => record,
         Err(response) => return response,
     };
-    if let Err(response) = reject_invalid_system_puzzle_settlement(&state, &body.mission_id).await {
-        return response;
+    if gateway_missions::status(&record) == "settled" {
+        return resend_settled_notice(&state, &headers, &body, &record).await;
     }
-
-    if let Err(response) =
-        release_mission_bounty(&state, &body.mission_id, body.agent_did.as_deref()).await
-    {
-        return response;
-    }
-    let mission = match settle_mission_board(&state, &body.mission_id).await {
+    let mission = match readable_mission(&record) {
+        Ok(mission) => mission,
+        Err(response) => return response,
+    };
+    let swarm_finalize =
+        match finalize_mission_task_before_settle(&state, &body, &headers, &mission).await {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let settled =
+        match gateway_missions::command(&state, &body.mission_id, MissionAction::Settle, json!({}))
+            .await
+        {
+            Ok(settled) => settled,
+            Err(error) => return error.into_response(),
+        };
+    let mission = match readable_mission(&settled) {
         Ok(mission) => mission,
         Err(response) => return response,
     };
 
-    let mut payload = mission_gateway_payload_with_current_contract(&state, &mission).await;
+    let mut payload = mission_payload(&state, &settled).await;
     insert_mission_settle_actor_projection_fallbacks(&mut payload, &mission, &body);
     let _ = state.stream_tx.send(StreamEvent {
         kind: "mission.settled".to_string(),
@@ -3462,7 +2816,7 @@ pub(crate) async fn mission_settle(
     .await
     {
         Ok(notice) => notice,
-        Err(error) => return internal_error(&error),
+        Err(error) => return settle_notice_failed(&mission.mission_id, &error),
     };
     let mut response_json = payload.clone();
     if let Some(swarm_finalize) = swarm_finalize
@@ -3490,6 +2844,61 @@ pub(crate) async fn mission_settle(
         return internal_error(&error);
     }
     Json(response_json).into_response()
+}
+
+/// The answer when a mission is settled in the gateway but its notice to the claimer did not go
+/// out. It is an error status, so a caller that retries on failure (wattswarm's commit delivery)
+/// tries again, and it says the payment is done, so nobody takes it for an unpaid mission. The
+/// retry only sends the notice.
+fn settle_notice_failed(mission_id: &str, error: &anyhow::Error) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({
+            "error": format!(
+                "the mission is settled and its reward is paid, but the notice to the claimer \
+                 was not delivered: {error}. Send settle again to retry the notice; nothing is \
+                 paid twice."
+            ),
+            "code": "settle_notice_not_delivered",
+            "mission_id": mission_id,
+            "status": "settled",
+            "mission_lifecycle_notice": {"kind": "mission_settled", "sent": false},
+        })),
+    )
+        .into_response()
+}
+
+/// A settle sent again for a mission the gateway already settled pays nothing twice, but its
+/// notice to the claimer may not have gone out the first time: the publisher sends it again.
+async fn resend_settled_notice(
+    state: &ControlPlaneState,
+    headers: &HeaderMap,
+    body: &MissionSettleBody,
+    record: &Value,
+) -> Response {
+    let mut payload = mission_payload(state, record).await;
+    if !gateway_missions::is_own(state, record) {
+        return Json(payload).into_response();
+    }
+    let mission = match readable_mission(record) {
+        Ok(mission) => mission,
+        Err(response) => return response,
+    };
+    let notice = match publish_settled_lifecycle_notice(
+        state,
+        &mission,
+        body,
+        agent_commit_context_from_headers(headers).is_none(),
+    )
+    .await
+    {
+        Ok(notice) => notice,
+        Err(error) => return settle_notice_failed(&mission.mission_id, &error),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("mission_lifecycle_notice".to_string(), notice);
+    }
+    Json(payload).into_response()
 }
 
 pub(crate) async fn mission_settle_by_id(
@@ -3522,27 +2931,28 @@ fn mission_settle_body_with_path_id(
 mod tests {
     use super::*;
     use wattetheria_kernel::civilization::missions::{
-        MissionBoard, MissionDomain, MissionPublisherKind, MissionReward,
+        MissionDomain, MissionPublisherKind, MissionReward, MissionScope,
     };
 
     fn sample_mission() -> CivilMission {
-        let mut board = MissionBoard::default();
-        board.publish(
+        CivilMission::draft(
             "Route cargo",
             "Move supplies to the outpost",
             "captain-alpha",
             MissionPublisherKind::Player,
             MissionDomain::Trade,
+            MissionScope::RealWorld,
             Some("subnet-1".to_owned()),
             Some("zone-2".to_owned()),
             None,
             None,
-            MissionReward {
+            Some(MissionReward {
                 agent_watt: 10,
                 reputation: 2,
                 capacity: 1,
-            },
+            }),
             json!({"cargo": "water"}),
+            None,
         )
     }
 

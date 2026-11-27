@@ -367,7 +367,9 @@ pub(crate) async fn build_hives_payload(
         .map(|identity| (identity.public_id, identity.display_name))
         .collect::<std::collections::BTreeMap<_, _>>();
     let organizations = state.organization_registry.lock().await;
-    let missions = state.mission_board.lock().await.list(None);
+    let missions = crate::routes::gateway_missions::board_view(state)
+        .await?
+        .list(None);
     let author_lookup = author_lookup(state).await;
     let mut items = Vec::new();
 

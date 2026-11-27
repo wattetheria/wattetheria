@@ -818,6 +818,8 @@ async fn space_equal_sequence_conflicts_across_gateways_recover_once_under_concu
 async fn space_recovery_ignores_wrong_identity_wrong_space_and_invalid_signature() {
     let (dir, _app, token, _policy, state) = build_test_app(100);
     let mut state = disk_state(state, &dir.path().join("invalid-recovery.db"));
+    // Only the gateways below: none of them holds a valid floor.
+    state.gateway_urls.clear();
     let (_other_dir, _other_app, _other_token, _other_policy, other) = build_test_app(101);
     let mut bad = signed_floor(&state, 900);
     bad.record.seq += 1;

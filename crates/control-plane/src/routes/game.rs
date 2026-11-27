@@ -7,18 +7,17 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::game::{
-    BootstrapFlow, BootstrapState, GameComputation, bootstrap_mission_pack,
-    bootstrap_starter_missions, catalog, compute_bootstrap_flow, compute_bootstrap_state,
-    compute_qualifications, compute_status, mission_pack_set, starter_mission_set,
+    BootstrapFlow, BootstrapState, GameComputation, catalog, compute_bootstrap_flow,
+    compute_bootstrap_state, compute_qualifications, compute_status,
 };
 
 use crate::auth::{authorize, internal_error};
 use crate::routes::identity::{
-    IdentityContextView, identity_context_response, public_memory_payload, resolve_identity_context,
+    IdentityContextView, identity_context_response, resolve_identity_context,
 };
 use crate::routes::organizations::{OrganizationView, build_organization_views};
 use crate::routes::supervision::build_supervision_view;
-use crate::state::{ControlPlaneState, GameActionBody, GameStatusQuery, StreamEvent};
+use crate::state::{ControlPlaneState, GameStatusQuery};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct GameView {
@@ -27,8 +26,6 @@ pub(crate) struct GameView {
     pub status: wattetheria_kernel::game::GameStatus,
     pub bootstrap: BootstrapState,
     pub bootstrap_flow: BootstrapFlow,
-    pub starter_missions: Option<wattetheria_kernel::game::StarterMissionSet>,
-    pub mission_pack: Option<wattetheria_kernel::game::GameMissionPack>,
     pub travel_state: Option<wattetheria_kernel::map::TravelStateRecord>,
     pub organizations: Vec<OrganizationView>,
 }
@@ -50,7 +47,7 @@ pub(crate) async fn build_game_view(
 ) -> Result<GameView> {
     let controller_id = context.public_memory_owner.controller.clone();
     let agent_stats = resolve_agent_stats(state, &controller_id).await?;
-    let missions = state.mission_board.lock().await;
+    let missions = crate::routes::gateway_missions::board_view(state).await?;
     let profiles = state.citizen_registry.lock().await;
     let governance = state.governance_engine.lock().await;
     let galaxy = state.galaxy_state.lock().await;
@@ -71,10 +68,6 @@ pub(crate) async fn build_game_view(
         &missions,
         &governance,
     );
-    let starter_missions = context
-        .profile
-        .as_ref()
-        .map(|profile| starter_mission_set(&controller_id, profile, &maps, &missions));
     let status = compute_status(
         &controller_id,
         context.profile.as_ref(),
@@ -87,29 +80,8 @@ pub(crate) async fn build_game_view(
             qualifications,
         },
     );
-    let mission_pack = context.profile.as_ref().map(|profile| {
-        mission_pack_set(
-            &controller_id,
-            profile,
-            status.stage.clone(),
-            &maps,
-            &galaxy,
-            &missions,
-        )
-    });
-    let bootstrap = compute_bootstrap_state(
-        &controller_id,
-        context.public_identity.as_ref(),
-        &status,
-        &missions,
-    );
-    let bootstrap_flow = compute_bootstrap_flow(
-        context.public_identity.as_ref(),
-        &status,
-        bootstrap.clone(),
-        starter_missions.as_ref(),
-        mission_pack.as_ref(),
-    );
+    let bootstrap = compute_bootstrap_state(context.public_identity.as_ref(), &status);
+    let bootstrap_flow = compute_bootstrap_flow(&status, bootstrap.clone());
     let travel_state = if let Some(identity) = context.public_identity.as_ref() {
         state
             .travel_state_registry
@@ -132,8 +104,6 @@ pub(crate) async fn build_game_view(
         status,
         bootstrap,
         bootstrap_flow,
-        starter_missions,
-        mission_pack,
         travel_state,
         organizations: organization_views,
     })
@@ -147,8 +117,6 @@ pub(crate) fn game_view_payload(view: &GameView) -> Value {
         "status": view.status,
         "bootstrap": view.bootstrap.clone(),
         "bootstrap_flow": view.bootstrap_flow.clone(),
-        "starter_missions": view.starter_missions,
-        "mission_pack": view.mission_pack,
         "travel_state": view.travel_state,
         "organizations": view.organizations,
     })
@@ -282,8 +250,6 @@ pub(crate) async fn game_bootstrap_payload(
         "status": view.status,
         "bootstrap": view.bootstrap,
         "bootstrap_flow": view.bootstrap_flow,
-        "starter_missions": view.starter_missions,
-        "mission_pack": view.mission_pack,
         "briefing": {
             "hours": briefing["hours"].clone(),
             "human_report": briefing["human_report"].clone(),
@@ -300,245 +266,4 @@ pub(crate) async fn game_bootstrap(
     query: Query<GameStatusQuery>,
 ) -> Response {
     game_bootstrap_payload(state, headers, query).await
-}
-
-pub(crate) async fn game_mission_pack(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Query(query): Query<GameStatusQuery>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let context = resolve_identity_context(
-        &state,
-        query.public_id.as_deref(),
-        query.agent_did.as_deref(),
-    )
-    .await;
-    let view = match build_game_view(&state, &context).await {
-        Ok(view) => view,
-        Err(error) => return internal_error(&error),
-    };
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "game".to_string(),
-        action: "game.mission_pack.query".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: context.public_memory_owner.public.clone(),
-        capability: None,
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({
-            "stage": view.status.stage,
-            "template_count": view
-                .mission_pack
-                .as_ref()
-                .map_or(0, |pack| pack.templates.len()),
-        })),
-    });
-
-    Json(json!({
-        "identity": identity_context_response(&context),
-        "mission_pack": view.mission_pack,
-    }))
-    .into_response()
-}
-
-pub(crate) async fn game_starter_missions(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Query(query): Query<GameStatusQuery>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let context = resolve_identity_context(
-        &state,
-        query.public_id.as_deref(),
-        query.agent_did.as_deref(),
-    )
-    .await;
-    let Some(profile) = context.profile.as_ref() else {
-        return Json(json!({"error": "profile not found"})).into_response();
-    };
-    let controller_id = context.public_memory_owner.controller.clone();
-    let board = state.mission_board.lock().await;
-    let maps = state.galaxy_map_registry.lock().await;
-    let starter_set = starter_mission_set(&controller_id, profile, &maps, &board);
-    drop(maps);
-    drop(board);
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "game".to_string(),
-        action: "game.starter_missions.query".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: context.public_memory_owner.public.clone(),
-        capability: None,
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({
-            "template_count": starter_set.templates.len(),
-            "existing_count": starter_set.existing.len(),
-            "missing_count": starter_set.missing_template_ids.len(),
-        })),
-    });
-
-    Json(json!({
-        "identity": identity_context_response(&context),
-        "starter_missions": starter_set,
-    }))
-    .into_response()
-}
-
-pub(crate) async fn bootstrap_starter_missions_route(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Json(body): Json<GameActionBody>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let context =
-        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_did.as_deref())
-            .await;
-    let Some(profile) = context.profile.as_ref() else {
-        return Json(json!({"error": "profile not found"})).into_response();
-    };
-    let controller_id = context.public_memory_owner.controller.clone();
-    let created = {
-        let mut board = state.mission_board.lock().await;
-        let maps = state.galaxy_map_registry.lock().await;
-        let created = bootstrap_starter_missions(&controller_id, profile, &maps, &mut board);
-        drop(maps);
-        if let Err(error) = state
-            .local_db
-            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        {
-            return internal_error(&error);
-        }
-        created
-    };
-
-    let payload = public_memory_payload(
-        &context,
-        "game.starter_missions.bootstrap",
-        json!({
-            "created_count": created.len(),
-            "missions": created.clone(),
-        }),
-    );
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "game.starter_missions.bootstrapped".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        payload: payload.clone(),
-    });
-    let _ = state.append_signed_event("GAME_STARTER_MISSIONS_BOOTSTRAPPED", payload.clone());
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "game".to_string(),
-        action: "game.starter_missions.bootstrap".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: context.public_memory_owner.public.clone(),
-        capability: Some("game.starter_missions.bootstrap".to_string()),
-        reason: None,
-        duration_ms: None,
-        details: Some(payload),
-    });
-
-    Json(json!({
-        "identity": identity_context_response(&context),
-        "created": created,
-    }))
-    .into_response()
-}
-
-pub(crate) async fn bootstrap_mission_pack_route(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Json(body): Json<GameActionBody>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let context =
-        resolve_identity_context(&state, body.public_id.as_deref(), body.agent_did.as_deref())
-            .await;
-    let Some(profile) = context.profile.as_ref() else {
-        return Json(json!({"error": "profile not found"})).into_response();
-    };
-    let view = match build_game_view(&state, &context).await {
-        Ok(view) => view,
-        Err(error) => return internal_error(&error),
-    };
-    let controller_id = context.public_memory_owner.controller.clone();
-    let created = {
-        let mut board = state.mission_board.lock().await;
-        let maps = state.galaxy_map_registry.lock().await;
-        let galaxy = state.galaxy_state.lock().await;
-        let created = bootstrap_mission_pack(
-            &controller_id,
-            profile,
-            &view.status.stage,
-            &maps,
-            &galaxy,
-            &mut board,
-        );
-        drop(galaxy);
-        drop(maps);
-        if let Err(error) = state
-            .local_db
-            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
-        {
-            return internal_error(&error);
-        }
-        created
-    };
-
-    let payload = public_memory_payload(
-        &context,
-        "game.mission_pack.bootstrap",
-        json!({
-            "created_count": created.len(),
-            "stage": view.status.stage,
-            "missions": created.clone(),
-        }),
-    );
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: "game.mission_pack.bootstrapped".to_string(),
-        timestamp: chrono::Utc::now().timestamp(),
-        payload: payload.clone(),
-    });
-    let _ = state.append_signed_event("GAME_MISSION_PACK_BOOTSTRAPPED", payload.clone());
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "game".to_string(),
-        action: "game.mission_pack.bootstrap".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: context.public_memory_owner.public.clone(),
-        capability: Some("game.mission_pack.bootstrap".to_string()),
-        reason: None,
-        duration_ms: None,
-        details: Some(payload),
-    });
-
-    Json(json!({
-        "identity": identity_context_response(&context),
-        "created": created,
-    }))
-    .into_response()
 }

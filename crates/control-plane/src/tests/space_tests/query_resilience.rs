@@ -410,7 +410,7 @@ async fn gateway_queries_isolate_bad_entries_offline_and_stalled_gateways() {
 
 #[tokio::test]
 async fn place_query_retains_verified_local_world_events_when_provider_goes_offline() {
-    let (dir, _app, token, _policy, mut state) = build_test_app(100);
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
     let event = signed_event(&state, "cached-event", "johnson-park");
     let network_id = event.network_id.clone();
     let payload = event.clone();
@@ -430,7 +430,6 @@ async fn place_query_retains_verified_local_world_events_when_provider_goes_offl
             })),
     ).await;
     state.swarm_bridge = Arc::new(wattetheria_kernel::swarm_bridge::HybridSwarmBridge::new(
-        dir.path().join("missions/cache-state.json"),
         Some(&url),
     ));
     assert_eq!(

@@ -6,7 +6,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde_json::json;
 use wattetheria_kernel::audit::AuditEntry;
-use wattetheria_kernel::civilization::missions::{MissionPublisherKind, MissionStatus};
+use wattetheria_kernel::civilization::missions::{
+    CivilMission, MissionPublisherKind, MissionScope, MissionStatus,
+};
 use wattetheria_kernel::civilization::organizations::OrganizationRole;
 use wattetheria_kernel::civilization::organizations::{
     OrganizationAutonomyTrack, OrganizationCreateSpec, OrganizationMembership,
@@ -18,6 +20,7 @@ use wattetheria_kernel::governance::GovernanceEngine;
 use wattetheria_kernel::missions::MissionBoard;
 
 use crate::auth::{authorize, internal_error};
+use crate::routes::gateway_missions::{KIND_ORGANIZATION, PublishTerms, civil_mission};
 use crate::routes::identity::{
     identity_context_response, public_memory_payload, resolve_identity_context,
 };
@@ -157,8 +160,11 @@ pub(crate) async fn list_organizations(
         )
             .into_response();
     };
+    let missions = match crate::routes::gateway_missions::board_view(&state).await {
+        Ok(missions) => missions,
+        Err(error) => return error.into_response(),
+    };
     let organizations = state.organization_registry.lock().await;
-    let missions = state.mission_board.lock().await;
     let governance = state.governance_engine.lock().await;
     let views = build_organization_views(&organizations, &missions, &governance, &public_id);
 
@@ -482,63 +488,61 @@ pub(crate) async fn publish_organization_mission(
         organization
     };
 
-    let mission = {
-        let mut board = state.mission_board.lock().await;
-        let mission = board.publish(
-            &body.title,
-            &body.description,
-            &body.organization_id,
-            MissionPublisherKind::Organization,
-            body.domain,
-            body.subnet_id,
-            body.zone_id,
-            body.required_role,
-            body.required_faction,
-            body.reward,
-            json!({
-                "organization_id": body.organization_id,
-                "published_by_public_id": actor_public_id,
-                "treasury_commit_watt": body.treasury_commit_watt.unwrap_or(0),
-                "organization_mission": true,
-                "payload": body.payload,
-            }),
-        );
-        if let Err(error) = state
-            .local_db
-            .save_domain(wattetheria_kernel::local_db::domain::MISSION_BOARD, &*board)
+    let mut draft = CivilMission::draft(
+        &body.title,
+        &body.description,
+        &body.organization_id,
+        MissionPublisherKind::Organization,
+        body.domain,
+        MissionScope::default(),
+        body.subnet_id,
+        body.zone_id,
+        body.required_role,
+        body.required_faction,
+        Some(body.reward),
+        json!({
+            "organization_id": body.organization_id,
+            "published_by_public_id": actor_public_id,
+            "treasury_commit_watt": body.treasury_commit_watt.unwrap_or(0),
+            "organization_mission": true,
+            "payload": body.payload,
+        }),
+        Some(state.public_geo_payload()),
+    );
+    // The organization's treasury is a local game construct; the Watt reward itself is held by
+    // the gateway from the publishing node's account like any other mission's.
+    let publisher_label =
+        crate::routes::missions::agent_display_name_for_did(&state, &state.agent_did).await;
+    let terms = PublishTerms {
+        organization_id: Some(&body.organization_id),
+        publisher_label: publisher_label.as_deref(),
+        ..PublishTerms::kind(KIND_ORGANIZATION)
+    };
+    let committed = body.treasury_commit_watt.unwrap_or(0);
+    let publication =
+        match crate::routes::missions::publish_drafted_mission(&state, &mut draft, &terms, false)
+            .await
         {
-            return internal_error(&error);
-        }
-        mission
-    };
-    // The organization's treasury is a local game construct; the Watt bounty itself is escrowed
-    // in the gateway ledger from the publishing node's account like any other mission.
-    let mission = match crate::routes::missions::lock_mission_bounty(&state, &mission).await {
-        Ok(mission) => mission,
-        Err(response) => {
-            // The mission was cancelled; give the organization its local treasury commitment back.
-            let committed = body.treasury_commit_watt.unwrap_or(0);
-            if committed > 0 {
-                let mut organizations = state.organization_registry.lock().await;
-                if let Err(error) = organizations
-                    .fund_treasury(&body.organization_id, committed)
-                    .and_then(|_| {
-                        state.local_db.save_domain(
-                            wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
-                            &*organizations,
-                        )
-                    })
-                {
-                    tracing::error!(
-                        organization_id = %body.organization_id,
-                        committed,
-                        "could not restore the organization treasury after a refused bounty: {error:#}"
-                    );
-                }
+            Ok(publication) => publication,
+            Err(response) => {
+                // Nothing was published; give the organization its local treasury commitment back.
+                restore_treasury_commit(&state, &body.organization_id, committed).await;
+                return response;
             }
-            return response;
-        }
-    };
+        };
+    let mission = civil_mission(&publication.record).unwrap_or(draft);
+    if publication.already_published {
+        // The mission was published before and took its commitment then: this one goes back.
+        let organization = restore_treasury_commit(&state, &body.organization_id, committed)
+            .await
+            .unwrap_or(organization);
+        return Json(json!({
+            "organization": organization,
+            "mission": mission,
+            "already_published": true,
+        }))
+        .into_response();
+    }
 
     let event_payload = public_memory_payload(
         &actor_context,
@@ -577,6 +581,39 @@ pub(crate) async fn publish_organization_mission(
         })),
     )
         .into_response()
+}
+
+/// Gives an organization back what it set aside from its treasury for a mission that this
+/// publish did not make, and returns the organization as it stands then.
+async fn restore_treasury_commit(
+    state: &ControlPlaneState,
+    organization_id: &str,
+    committed: i64,
+) -> Option<OrganizationProfile> {
+    if committed <= 0 {
+        return None;
+    }
+    let mut organizations = state.organization_registry.lock().await;
+    let restored = organizations
+        .fund_treasury(organization_id, committed)
+        .and_then(|organization| {
+            state.local_db.save_domain(
+                wattetheria_kernel::local_db::domain::ORGANIZATION_REGISTRY,
+                &*organizations,
+            )?;
+            Ok(organization)
+        });
+    match restored {
+        Ok(organization) => Some(organization),
+        Err(error) => {
+            tracing::error!(
+                organization_id,
+                committed,
+                "could not restore the organization treasury after a publish that made no mission: {error:#}"
+            );
+            None
+        }
+    }
 }
 
 pub(crate) async fn list_organization_governance(
@@ -925,7 +962,10 @@ pub(crate) async fn submit_subnet_charter_application(
             .count()
     };
     let (open_mission_count, settled_mission_count) = {
-        let missions = state.mission_board.lock().await;
+        let missions = match crate::routes::gateway_missions::board_view(&state).await {
+            Ok(missions) => missions,
+            Err(error) => return error.into_response(),
+        };
         (
             organization_missions(&missions, &organization_id, Some(&MissionStatus::Open)).count(),
             organization_missions(&missions, &organization_id, Some(&MissionStatus::Settled))

@@ -238,13 +238,10 @@ async fn mcp_publish_collective_mission_creates_joining_link_without_submitting_
     let self_json = authed_get_json(app.clone(), &token, "/v1/client/self").await;
     let local_public_id = self_json["id"].as_str().unwrap();
     let hive_id = create_collective_hive(app.clone(), &token).await;
-    let mission_count_before = state.mission_board.lock().await.list(None).len();
 
     let response = mcp_request(app.clone(), &token, collective_mission_request(&hive_id)).await;
     let (mission_id, run_id) =
         assert_collective_publish_result(&response, local_public_id, &hive_id);
-    let mission_count_after = state.mission_board.lock().await.list(None).len();
-    assert_eq!(mission_count_after, mission_count_before);
 
     let persisted: Value = state
         .local_db

@@ -18,7 +18,7 @@ use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, ControllerKind, OwnershipScope, PublicIdentityRegistry,
 };
 use wattetheria_kernel::civilization::missions::{
-    MissionBoard, MissionDomain, MissionPublisherKind, MissionReward, MissionScope, MissionStatus,
+    MissionDomain, MissionPublisherKind, MissionReward, MissionScope, MissionStatus,
 };
 use wattetheria_kernel::civilization::organizations::{
     OrganizationKind, OrganizationProposalKind, OrganizationRegistry, OrganizationRole,
@@ -131,7 +131,6 @@ pub struct ControlPlaneState {
     pub governance_engine: Arc<Mutex<GovernanceEngine>>,
     pub policy_engine: Arc<Mutex<PolicyEngine>>,
     pub mailbox: Arc<Mutex<CrossSubnetMailbox>>,
-    pub mission_board: Arc<Mutex<MissionBoard>>,
     pub public_identity_registry: Arc<Mutex<PublicIdentityRegistry>>,
     pub controller_binding_registry: Arc<Mutex<ControllerBindingRegistry>>,
     pub citizen_registry: Arc<Mutex<CitizenRegistry>>,
@@ -1211,12 +1210,6 @@ pub struct BootstrapCatalogQuery {}
 
 #[derive(Debug, Deserialize)]
 pub struct GameStatusQuery {
-    pub agent_did: Option<String>,
-    pub public_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GameActionBody {
     pub agent_did: Option<String>,
     pub public_id: Option<String>,
 }

@@ -6,7 +6,7 @@
 //! (`civilization::metrics`). The leaderboard ranks by the gateway's experience level, not
 //! by anything computed here.
 
-use crate::civilization::missions::{MissionBoard, MissionStatus};
+use crate::civilization::missions::MissionBoard;
 use crate::types::AgentStats;
 use serde::{Deserialize, Serialize};
 
@@ -35,17 +35,11 @@ impl MissionStanding {
 /// Sums the reputation and capacity of every settled mission `controller_id` executed.
 #[must_use]
 pub fn mission_standing(missions: &MissionBoard, controller_id: &str) -> MissionStanding {
-    let mut standing = MissionStanding::default();
-    for mission in missions.list(Some(&MissionStatus::Settled)) {
-        if mission.completed_by.as_deref() != Some(controller_id) {
-            continue;
-        }
-        if let Some(reward) = mission.reward.as_ref() {
-            standing.reputation += reward.reputation;
-            standing.capacity += reward.capacity;
-        }
+    let completed = missions.completed_by(controller_id).all();
+    MissionStanding {
+        reputation: completed.reputation,
+        capacity: completed.capacity,
     }
-    standing
 }
 
 #[cfg(test)]

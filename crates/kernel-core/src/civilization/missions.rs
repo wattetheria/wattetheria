@@ -1,12 +1,9 @@
 use crate::civilization::profiles::{Faction, RolePath};
 use crate::types::PublicGeoPayload;
-use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -96,18 +93,8 @@ pub struct CivilMission {
     pub completion_result: Option<Value>,
     pub settled_at: Option<i64>,
     pub status: MissionStatus,
-    /// Gateway-ledger escrow holding the Watt bounty. `None` means no Watt is funded: the
-    /// mission predates the ledger or carries no bounty. On a `Cancelled` mission a value means
-    /// the refund is still pending (the lock outcome was unconfirmed or the refund failed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub escrow_id: Option<String>,
-    /// True once the ledger confirmed the escrow lock. The id is recorded *before* the lock
-    /// request goes out, so a crash between the two leaves an unconfirmed escrow that the sweep
-    /// resolves against the ledger instead of stranding locked Watt.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub escrow_confirmed: bool,
-    /// Unix seconds after which an `Open` or `Claimed` mission is cancelled and its bounty
-    /// refunded. `None` never expires.
+    /// Unix seconds after which an `Open` or `Claimed` mission ends unsettled. `None` never
+    /// expires.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
     /// DID of the one agent the publisher named to take the mission. `None` leaves it open to
@@ -120,6 +107,69 @@ pub struct CivilMission {
 }
 
 impl CivilMission {
+    /// A new mission as its publisher drafts it. It has no id yet: whoever records it names it,
+    /// the gateway for a mission published to the network, the local board for one kept here.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn draft(
+        title: &str,
+        description: &str,
+        publisher: &str,
+        publisher_kind: MissionPublisherKind,
+        domain: MissionDomain,
+        scope: MissionScope,
+        subnet_id: Option<String>,
+        zone_id: Option<String>,
+        required_role: Option<RolePath>,
+        required_faction: Option<Faction>,
+        reward: Option<MissionReward>,
+        payload: Value,
+        public_geo: Option<PublicGeoPayload>,
+    ) -> Self {
+        let now = Utc::now().timestamp();
+        let (lat, lng, coordinate_source, city, country) =
+            public_geo.map_or((None, None, None, None, None), |geo| {
+                (
+                    Some(geo.lat),
+                    Some(geo.lng),
+                    Some(geo.coordinate_source),
+                    geo.city,
+                    geo.country,
+                )
+            });
+        Self {
+            mission_id: String::new(),
+            title: title.to_string(),
+            description: description.to_string(),
+            publisher: publisher.to_string(),
+            publisher_kind,
+            domain,
+            scope,
+            subnet_id,
+            zone_id,
+            required_role,
+            required_faction,
+            reward,
+            payload,
+            lat,
+            lng,
+            coordinate_source,
+            city,
+            country,
+            created_at: now,
+            updated_at: now,
+            claimed_by: None,
+            claimed_by_display_name: None,
+            completed_by: None,
+            completion_result: None,
+            settled_at: None,
+            status: MissionStatus::Open,
+            expires_at: None,
+            assignee_did: None,
+            assignee_display_name: None,
+        }
+    }
+
     /// Whether `agent_did` may take the mission: anyone, unless the publisher named one agent.
     #[must_use]
     pub fn allows_claimer(&self, agent_did: &str) -> bool {
@@ -133,17 +183,73 @@ impl CivilMission {
     pub fn is_expired(&self, now: i64) -> bool {
         self.expires_at.is_some_and(|expires_at| expires_at <= now)
     }
+}
 
-    /// True while an escrow is recorded whose lock the ledger has not confirmed.
-    #[must_use]
-    pub fn has_unconfirmed_escrow(&self) -> bool {
-        self.escrow_id.is_some() && !self.escrow_confirmed
+/// Missions as the gateway records them, gathered for one read. The node keeps no missions of
+/// its own: every view is built from the gateway's records and dropped after use.
+#[derive(Debug, Clone, Default)]
+pub struct MissionBoard {
+    missions: BTreeMap<String, CivilMission>,
+    /// What the gateway added up for one agent, by its DID. A view lists only the newest
+    /// missions, so an agent's whole record cannot be counted from the list.
+    completed: Option<(String, CompletedMissions)>,
+}
+
+/// What the settled missions an agent carried out add up to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompletedTotals {
+    pub missions: usize,
+    pub watt: i64,
+    pub reputation: i64,
+    pub capacity: i64,
+}
+
+impl CompletedTotals {
+    fn add(&mut self, other: Self) {
+        self.missions += other.missions;
+        self.watt += other.watt;
+        self.reputation += other.reputation;
+        self.capacity += other.capacity;
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct MissionBoard {
-    missions: BTreeMap<String, CivilMission>,
+/// Every settled mission one agent carried out, added up per domain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompletedMissions {
+    by_domain: Vec<(MissionDomain, CompletedTotals)>,
+}
+
+impl CompletedMissions {
+    pub fn add(&mut self, domain: MissionDomain, totals: CompletedTotals) {
+        match self
+            .by_domain
+            .iter_mut()
+            .find(|(known, _)| *known == domain)
+        {
+            Some((_, sum)) => sum.add(totals),
+            None => self.by_domain.push((domain, totals)),
+        }
+    }
+
+    /// The totals of one domain.
+    #[must_use]
+    pub fn domain(&self, domain: &MissionDomain) -> CompletedTotals {
+        self.by_domain
+            .iter()
+            .find(|(known, _)| known == domain)
+            .map(|(_, totals)| *totals)
+            .unwrap_or_default()
+    }
+
+    /// The totals of every domain together.
+    #[must_use]
+    pub fn all(&self) -> CompletedTotals {
+        let mut all = CompletedTotals::default();
+        for (_, totals) in &self.by_domain {
+            all.add(*totals);
+        }
+        all
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,8 +259,6 @@ pub struct NetworkMissionClaimRecord {
     pub agent_did: String,
     pub execution_id: String,
     pub claimed_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
     #[serde(default)]
     pub metadata: NetworkMissionClaimMetadata,
 }
@@ -175,8 +279,6 @@ pub struct NetworkMissionClaimMetadata {
     pub domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    #[serde(default, skip_serializing)]
-    pub task_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mission_feed_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +293,8 @@ pub struct NetworkMissionClaimMetadata {
     pub publisher_network_reward_watt: Option<i64>,
 }
 
+/// How this node reaches the publishers of the missions its agent asked to take: the wattswarm
+/// task and execution each claim runs on. Where a mission stands is the gateway's to say.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NetworkMissionClaimRegistry {
     claims: BTreeMap<String, NetworkMissionClaimRecord>,
@@ -226,7 +330,6 @@ impl NetworkMissionClaimRegistry {
         task_id: &str,
         agent_did: &str,
         execution_id: &str,
-        status: Option<String>,
         metadata: NetworkMissionClaimMetadata,
     ) -> NetworkMissionClaimRecord {
         let record = NetworkMissionClaimRecord {
@@ -235,7 +338,6 @@ impl NetworkMissionClaimRegistry {
             agent_did: agent_did.to_string(),
             execution_id: execution_id.to_string(),
             claimed_at: Utc::now().timestamp(),
-            status,
             metadata,
         };
         self.claims.insert(
@@ -245,51 +347,19 @@ impl NetworkMissionClaimRegistry {
         record
     }
 
+    /// Drops what this node kept about `agent_did`'s claims on the mission, once the agent
+    /// gave the mission up.
+    pub fn forget(&mut self, mission_id: &str, agent_did: &str) {
+        self.claims
+            .retain(|_, record| record.mission_id != mission_id || record.agent_did != agent_did);
+    }
+
     #[must_use]
     pub fn contains_mission(&self, mission_id: &str) -> bool {
         let mission_id = mission_id.trim();
         self.claims
             .values()
             .any(|record| record.mission_id == mission_id)
-    }
-
-    pub fn update_status_by_mission(
-        &mut self,
-        mission_id: &str,
-        status: &str,
-    ) -> Option<NetworkMissionClaimRecord> {
-        let mission_id = mission_id.trim();
-        let status = status.trim();
-        if mission_id.is_empty() || status.is_empty() {
-            return None;
-        }
-        let key = self
-            .claims
-            .iter()
-            .find_map(|(key, record)| (record.mission_id == mission_id).then(|| key.clone()))?;
-        let record = self.claims.get_mut(&key)?;
-        record.status = Some(status.to_owned());
-        record.metadata.task_status = Some(status.to_owned());
-        Some(record.clone())
-    }
-
-    pub fn update_status(
-        &mut self,
-        mission_id: &str,
-        task_id: &str,
-        agent_did: &str,
-        status: &str,
-    ) -> Option<NetworkMissionClaimRecord> {
-        let status = status.trim();
-        if status.is_empty() {
-            return None;
-        }
-        let record = self
-            .claims
-            .get_mut(&network_claim_key(mission_id, task_id, agent_did))?;
-        record.status = Some(status.to_owned());
-        record.metadata.task_status = Some(status.to_owned());
-        Some(record.clone())
     }
 }
 
@@ -303,27 +373,75 @@ fn network_claim_key(mission_id: &str, task_id: &str, agent_did: &str) -> String
 }
 
 impl MissionBoard {
-    pub fn load_or_new(path: impl AsRef<Path>) -> Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create mission board directory")?;
+    #[must_use]
+    pub fn from_missions(missions: impl IntoIterator<Item = CivilMission>) -> Self {
+        Self {
+            missions: missions
+                .into_iter()
+                .map(|mission| (mission.mission_id.clone(), mission))
+                .collect(),
+            completed: None,
         }
-        if !path.as_ref().exists() {
-            return Ok(Self::default());
-        }
-        let raw = fs::read_to_string(path.as_ref()).context("read mission board")?;
-        if raw.trim().is_empty() {
-            return Ok(Self::default());
-        }
-        serde_json::from_str(&raw).context("parse mission board")
     }
 
-    pub fn persist(&self, path: impl AsRef<Path>) -> Result<()> {
-        if let Some(parent) = path.as_ref().parent() {
-            fs::create_dir_all(parent).context("create mission board directory")?;
-        }
-        fs::write(path.as_ref(), serde_json::to_string_pretty(self)?).context("write mission board")
+    /// Keeps the gateway's totals of everything `agent_did` completed, which then answer
+    /// [`Self::completed_by`] for that agent in place of the listed missions.
+    #[must_use]
+    pub fn with_completed(mut self, agent_did: &str, completed: CompletedMissions) -> Self {
+        self.completed = Some((agent_did.to_owned(), completed));
+        self
     }
 
+    /// What the settled missions `agent_did` carried out add up to: the gateway's totals when
+    /// this view holds them for that agent, else the listed missions added up.
+    #[must_use]
+    pub fn completed_by(&self, agent_did: &str) -> CompletedMissions {
+        if let Some((known, completed)) = &self.completed
+            && known == agent_did
+        {
+            return completed.clone();
+        }
+        let mut completed = CompletedMissions::default();
+        for mission in self.missions.values().filter(|mission| {
+            mission.status == MissionStatus::Settled
+                && mission.completed_by.as_deref() == Some(agent_did)
+        }) {
+            let reward = mission.reward.clone().unwrap_or(MissionReward {
+                agent_watt: 0,
+                reputation: 0,
+                capacity: 0,
+            });
+            completed.add(
+                mission.domain.clone(),
+                CompletedTotals {
+                    missions: 1,
+                    watt: reward.agent_watt,
+                    reputation: reward.reputation,
+                    capacity: reward.capacity,
+                },
+            );
+        }
+        completed
+    }
+
+    #[must_use]
+    pub fn list(&self, status: Option<&MissionStatus>) -> Vec<CivilMission> {
+        self.missions
+            .values()
+            .filter(|mission| status.is_none_or(|expected| &mission.status == expected))
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn get(&self, mission_id: &str) -> Option<CivilMission> {
+        self.missions.get(mission_id).cloned()
+    }
+}
+
+/// Builders for tests: they put missions into a view the way the gateway would record them.
+#[cfg(any(test, feature = "test-fixtures"))]
+impl MissionBoard {
     #[allow(clippy::too_many_arguments)]
     pub fn publish(
         &mut self,
@@ -371,7 +489,7 @@ impl MissionBoard {
         reward: MissionReward,
         payload: Value,
     ) -> CivilMission {
-        self.publish_with_scope_and_geo(
+        let mut mission = CivilMission::draft(
             title,
             description,
             publisher,
@@ -385,215 +503,55 @@ impl MissionBoard {
             Some(reward),
             payload,
             None,
-        )
+        );
+        mission.mission_id = uuid::Uuid::new_v4().to_string();
+        self.insert(mission)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish_with_scope_and_geo(
-        &mut self,
-        title: &str,
-        description: &str,
-        publisher: &str,
-        publisher_kind: MissionPublisherKind,
-        domain: MissionDomain,
-        scope: MissionScope,
-        subnet_id: Option<String>,
-        zone_id: Option<String>,
-        required_role: Option<RolePath>,
-        required_faction: Option<Faction>,
-        reward: Option<MissionReward>,
-        payload: Value,
-        public_geo: Option<PublicGeoPayload>,
-    ) -> CivilMission {
-        let now = Utc::now().timestamp();
-        let (lat, lng, coordinate_source, city, country) =
-            public_geo.map_or((None, None, None, None, None), |geo| {
-                (
-                    Some(geo.lat),
-                    Some(geo.lng),
-                    Some(geo.coordinate_source),
-                    geo.city,
-                    geo.country,
-                )
-            });
-        let mission = CivilMission {
-            mission_id: uuid::Uuid::new_v4().to_string(),
-            title: title.to_string(),
-            description: description.to_string(),
-            publisher: publisher.to_string(),
-            publisher_kind,
-            domain,
-            scope,
-            subnet_id,
-            zone_id,
-            required_role,
-            required_faction,
-            reward,
-            payload,
-            lat,
-            lng,
-            coordinate_source,
-            city,
-            country,
-            created_at: now,
-            updated_at: now,
-            claimed_by: None,
-            claimed_by_display_name: None,
-            completed_by: None,
-            completion_result: None,
-            settled_at: None,
-            status: MissionStatus::Open,
-            escrow_id: None,
-            escrow_confirmed: false,
-            expires_at: None,
-            assignee_did: None,
-            assignee_display_name: None,
-        };
+    pub fn insert(&mut self, mission: CivilMission) -> CivilMission {
         self.missions
             .insert(mission.mission_id.clone(), mission.clone());
         mission
     }
 
-    /// Names the one agent allowed to take the mission.
+    fn update(
+        &mut self,
+        mission_id: &str,
+        change: impl FnOnce(&mut CivilMission),
+    ) -> Option<CivilMission> {
+        let mission = self.missions.get_mut(mission_id)?;
+        change(mission);
+        mission.updated_at = Utc::now().timestamp();
+        Some(mission.clone())
+    }
+
     pub fn set_assignee(
         &mut self,
         mission_id: &str,
         assignee_did: &str,
         display_name: Option<&str>,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        mission.assignee_did = Some(assignee_did.trim().to_owned());
-        mission.assignee_display_name = display_name
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
+    ) -> Option<CivilMission> {
+        self.update(mission_id, |mission| {
+            mission.assignee_did = Some(assignee_did.trim().to_owned());
+            mission.assignee_display_name = display_name.map(str::to_owned);
+        })
     }
 
-    /// Sets the mission's expiry (unix seconds).
-    pub fn set_expiry(
-        &mut self,
-        mission_id: &str,
-        expires_at: Option<i64>,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        mission.expires_at = expires_at;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    /// Open or claimed missions whose expiry has passed.
-    #[must_use]
-    pub fn expired_missions(&self, now: i64) -> Vec<CivilMission> {
-        self.missions
-            .values()
-            .filter(|mission| {
-                matches!(mission.status, MissionStatus::Open | MissionStatus::Claimed)
-                    && mission.is_expired(now)
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Missions (other than cancelled ones, whose escrow is a pending refund) that recorded an
-    /// escrow the ledger never confirmed.
-    #[must_use]
-    pub fn unconfirmed_escrows(&self) -> Vec<CivilMission> {
-        self.missions
-            .values()
-            .filter(|mission| {
-                mission.status != MissionStatus::Cancelled && mission.has_unconfirmed_escrow()
-            })
-            .cloned()
-            .collect()
-    }
-
-    /// Forgets the ledger escrow once its Watt has been returned to the publisher (or it turned
-    /// out never to have been locked).
-    pub fn clear_bounty_escrow(&mut self, mission_id: &str) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        mission.escrow_id = None;
-        mission.escrow_confirmed = false;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    /// Records the escrow about to be requested from the ledger, before the request is sent, so
-    /// the escrow is never unknown to the board while the ledger may hold it.
-    pub fn record_bounty_escrow_intent(
-        &mut self,
-        mission_id: &str,
-        escrow_id: &str,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        mission.escrow_id = Some(escrow_id.to_string());
-        mission.escrow_confirmed = false;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    /// Records the ledger escrow that funds the mission bounty as confirmed locked.
-    pub fn mark_bounty_escrowed(
-        &mut self,
-        mission_id: &str,
-        escrow_id: &str,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        mission.escrow_id = Some(escrow_id.to_string());
-        mission.escrow_confirmed = true;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    pub fn claim(&mut self, mission_id: &str, agent_did: &str) -> Result<CivilMission> {
+    pub fn claim(&mut self, mission_id: &str, agent_did: &str) -> Option<CivilMission> {
         self.claim_as(mission_id, agent_did, None)
     }
 
-    /// `claim`, also recording the claimer's display name when the caller knows it.
     pub fn claim_as(
         &mut self,
         mission_id: &str,
         agent_did: &str,
         display_name: Option<&str>,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        if mission.status != MissionStatus::Open {
-            bail!("mission is not open");
-        }
-        if mission.is_expired(Utc::now().timestamp()) {
-            bail!("mission has expired");
-        }
-        if mission.has_unconfirmed_escrow() {
-            bail!("mission bounty escrow is not confirmed");
-        }
-        Self::ensure_allowed_claimer(mission, agent_did)?;
-        mission.claimed_by = Some(agent_did.to_string());
-        mission.claimed_by_display_name = display_name
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
-        mission.status = MissionStatus::Claimed;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
+    ) -> Option<CivilMission> {
+        self.update(mission_id, |mission| {
+            mission.claimed_by = Some(agent_did.to_owned());
+            mission.claimed_by_display_name = display_name.map(str::to_owned);
+            mission.status = MissionStatus::Claimed;
+        })
     }
 
     pub fn complete(
@@ -601,260 +559,25 @@ impl MissionBoard {
         mission_id: &str,
         agent_did: &str,
         result: Option<Value>,
-    ) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        if mission.status != MissionStatus::Claimed {
-            bail!("mission is not claimed");
-        }
-        if mission.claimed_by.as_deref() != Some(agent_did) {
-            bail!("mission claimed by different agent");
-        }
-        if mission.is_expired(Utc::now().timestamp()) {
-            bail!("mission has expired");
-        }
-        if mission.has_unconfirmed_escrow() {
-            bail!("mission bounty escrow is not confirmed");
-        }
-        mission.completed_by = Some(agent_did.to_string());
-        mission.completion_result = result;
-        mission.status = MissionStatus::Completed;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
+    ) -> Option<CivilMission> {
+        self.update(mission_id, |mission| {
+            mission.completed_by = Some(agent_did.to_owned());
+            mission.completion_result = result;
+            mission.status = MissionStatus::Completed;
+        })
     }
 
-    /// Cancels a mission that has not been completed: by its publisher, or because the bounty
-    /// escrow could not be locked after publishing, so an unfunded mission never stays open.
-    pub fn cancel(&mut self, mission_id: &str) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        if matches!(
-            mission.status,
-            MissionStatus::Completed | MissionStatus::Settled
-        ) {
-            bail!("mission can no longer be cancelled");
-        }
-        mission.status = MissionStatus::Cancelled;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    /// Cancels a mission whose bounty escrow was recorded but never confirmed by the ledger,
-    /// whatever its lifecycle state short of `Settled`: the bounty it promised does not exist,
-    /// so it cannot be claimed, completed or settled. The escrow id stays on the mission as a
-    /// pending refund until the ledger is checked once more.
-    pub fn cancel_unfunded(&mut self, mission_id: &str) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        if !mission.has_unconfirmed_escrow() {
-            bail!("mission escrow is confirmed or absent");
-        }
-        if mission.status == MissionStatus::Settled {
-            bail!("mission is already settled");
-        }
-        mission.status = MissionStatus::Cancelled;
-        mission.updated_at = Utc::now().timestamp();
-        Ok(mission.clone())
-    }
-
-    /// Ends a mission whose bounty the ledger has already given back: the publisher turned the
-    /// pledged items down, or a deadline of the trade passed. Unlike [`Self::cancel`] it also
-    /// ends a completed mission, and it forgets the escrow, which holds nothing any more.
-    /// Returns the mission and whether this call ended it.
-    pub fn close_returned(&mut self, mission_id: &str) -> Result<(CivilMission, bool)> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        let closing = matches!(
-            mission.status,
-            MissionStatus::Open | MissionStatus::Claimed | MissionStatus::Completed
-        );
-        if closing {
+    pub fn cancel(&mut self, mission_id: &str) -> Option<CivilMission> {
+        self.update(mission_id, |mission| {
             mission.status = MissionStatus::Cancelled;
-        }
-        if mission.status == MissionStatus::Cancelled {
-            mission.escrow_id = None;
-            mission.escrow_confirmed = false;
-            mission.updated_at = Utc::now().timestamp();
-        }
-        Ok((mission.clone(), closing))
+        })
     }
 
-    /// Hands a completed mission back to the agent that claimed it, after its publisher sent
-    /// the hand-in back: `Completed` becomes `Claimed` again and the result that was turned
-    /// down is forgotten, so the next hand-in is recorded in its place. A mission in any other
-    /// state is left as it is. Returns the mission and whether this call reopened it.
-    pub fn reopen_sent_back(&mut self, mission_id: &str) -> Result<(CivilMission, bool)> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        let reopening = mission.status == MissionStatus::Completed;
-        if reopening {
-            mission.status = MissionStatus::Claimed;
-            mission.completed_by = None;
-            mission.completion_result = None;
-            mission.updated_at = Utc::now().timestamp();
-        }
-        Ok((mission.clone(), reopening))
-    }
-
-    pub fn settle(&mut self, mission_id: &str) -> Result<CivilMission> {
-        let mission = self
-            .missions
-            .get_mut(mission_id)
-            .context("mission not found")?;
-        if mission.status != MissionStatus::Completed {
-            bail!("mission is not completed");
-        }
-        mission.status = MissionStatus::Settled;
-        let now = Utc::now().timestamp();
-        mission.settled_at = Some(now);
-        mission.updated_at = now;
-        Ok(mission.clone())
-    }
-
-    /// A remote lifecycle update for an open or claimed mission whose expiry has passed cancels
-    /// it locally (the escrow id stays on the mission as a pending refund) and reports the
-    /// cancelled mission, so an expired bounty can no longer be claimed or paid out.
-    fn cancel_if_expired(mission: &mut CivilMission) -> Option<CivilMission> {
-        let now = Utc::now().timestamp();
-        if matches!(mission.status, MissionStatus::Open | MissionStatus::Claimed)
-            && mission.is_expired(now)
-        {
-            mission.status = MissionStatus::Cancelled;
-            mission.updated_at = now;
-            return Some(mission.clone());
-        }
-        None
-    }
-
-    /// A claim approval relayed from the network. Only an open mission (or one already claimed
-    /// by the same agent) changes; a mission claimed by someone else rejects the update so a
-    /// relayed envelope cannot reassign the claim. Completed, settled and cancelled missions are
-    /// returned unchanged.
-    pub fn apply_remote_claim_approved(
-        &mut self,
-        mission_id: &str,
-        agent_did: &str,
-    ) -> Result<Option<CivilMission>> {
-        let Some(mission) = self.missions.get_mut(mission_id) else {
-            return Ok(None);
-        };
-        if let Some(cancelled) = Self::cancel_if_expired(mission) {
-            return Ok(Some(cancelled));
-        }
-        let agent_did = agent_did.trim();
-        match mission.status {
-            MissionStatus::Open => {
-                Self::ensure_allowed_claimer(mission, agent_did)?;
-                if !agent_did.is_empty() {
-                    mission.claimed_by = Some(agent_did.to_owned());
-                }
-                mission.status = MissionStatus::Claimed;
-                mission.updated_at = Utc::now().timestamp();
-            }
-            MissionStatus::Claimed => Self::ensure_same_claimer(mission, agent_did)?,
-            MissionStatus::Completed | MissionStatus::Settled | MissionStatus::Cancelled => {}
-        }
-        Ok(Some(mission.clone()))
-    }
-
-    /// A completion relayed from the network. The reporting agent must be the one that claimed
-    /// the mission (an unclaimed mission is claimed by it); anyone else is rejected, so a relayed
-    /// envelope cannot make itself the payee. The result is recorded once; a mission that is
-    /// already completed or settled keeps its executor and result.
-    pub fn apply_remote_completed(
-        &mut self,
-        mission_id: &str,
-        agent_did: &str,
-        result: Option<Value>,
-    ) -> Result<Option<CivilMission>> {
-        let Some(mission) = self.missions.get_mut(mission_id) else {
-            return Ok(None);
-        };
-        if let Some(cancelled) = Self::cancel_if_expired(mission) {
-            return Ok(Some(cancelled));
-        }
-        let agent_did = agent_did.trim();
-        match mission.status {
-            MissionStatus::Cancelled => {}
-            MissionStatus::Completed | MissionStatus::Settled => {
-                Self::ensure_same_executor(mission, agent_did)?;
-            }
-            MissionStatus::Open | MissionStatus::Claimed => {
-                Self::ensure_same_claimer(mission, agent_did)?;
-                Self::ensure_allowed_claimer(mission, agent_did)?;
-                if !agent_did.is_empty() {
-                    mission
-                        .claimed_by
-                        .get_or_insert_with(|| agent_did.to_owned());
-                    mission.completed_by = Some(agent_did.to_owned());
-                }
-                if result.is_some() || mission.completion_result.is_none() {
-                    mission.completion_result = result;
-                }
-                mission.status = MissionStatus::Completed;
-                mission.updated_at = Utc::now().timestamp();
-            }
-        }
-        Ok(Some(mission.clone()))
-    }
-
-    fn ensure_allowed_claimer(mission: &CivilMission, agent_did: &str) -> Result<()> {
-        if mission.allows_claimer(agent_did) {
-            return Ok(());
-        }
-        bail!(
-            "mission {} is reserved for {}",
-            mission.mission_id,
-            mission
-                .assignee_display_name
-                .as_deref()
-                .or(mission.assignee_did.as_deref())
-                .unwrap_or("another agent")
-        )
-    }
-
-    fn ensure_same_claimer(mission: &CivilMission, agent_did: &str) -> Result<()> {
-        match mission.claimed_by.as_deref() {
-            Some(claimer) if !agent_did.is_empty() && claimer != agent_did => bail!(
-                "mission {} is claimed by {claimer}, not by {agent_did}",
-                mission.mission_id
-            ),
-            _ => Ok(()),
-        }
-    }
-
-    fn ensure_same_executor(mission: &CivilMission, agent_did: &str) -> Result<()> {
-        match mission.completed_by.as_deref() {
-            Some(executor) if !agent_did.is_empty() && executor != agent_did => bail!(
-                "mission {} was completed by {executor}, not by {agent_did}",
-                mission.mission_id
-            ),
-            _ => Ok(()),
-        }
-    }
-
-    #[must_use]
-    pub fn list(&self, status: Option<&MissionStatus>) -> Vec<CivilMission> {
-        self.missions
-            .values()
-            .filter(|mission| status.is_none_or(|expected| &mission.status == expected))
-            .cloned()
-            .collect()
-    }
-
-    #[must_use]
-    pub fn get(&self, mission_id: &str) -> Option<CivilMission> {
-        self.missions.get(mission_id).cloned()
+    pub fn settle(&mut self, mission_id: &str) -> Option<CivilMission> {
+        self.update(mission_id, |mission| {
+            mission.status = MissionStatus::Settled;
+            mission.settled_at = Some(Utc::now().timestamp());
+        })
     }
 }
 
@@ -863,68 +586,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mission_lifecycle_roundtrip() {
-        let mut board = MissionBoard::default();
-        let mission = board.publish(
-            "Escort convoy",
-            "Protect freight into frontier belt.",
-            "planet-a",
-            MissionPublisherKind::PlanetaryGovernment,
-            MissionDomain::Security,
-            Some("planet-a".to_string()),
-            Some("frontier-belt".to_string()),
-            Some(RolePath::Enforcer),
-            None,
-            MissionReward {
-                agent_watt: 25,
-                reputation: 4,
-                capacity: 1,
-            },
-            serde_json::json!({"route":"f1"}),
-        );
-
-        let claimed = board.claim(&mission.mission_id, "agent-z").unwrap();
-        assert_eq!(claimed.status, MissionStatus::Claimed);
-        let completed = board
-            .complete(
-                &mission.mission_id,
-                "agent-z",
-                Some(serde_json::json!({"ok": true})),
-            )
-            .unwrap();
-        assert_eq!(completed.status, MissionStatus::Completed);
-        assert_eq!(
-            completed.completion_result,
-            Some(serde_json::json!({"ok": true}))
-        );
-        let settled = board.settle(&mission.mission_id).unwrap();
-        assert_eq!(settled.status, MissionStatus::Settled);
-    }
-
-    fn publish_simple(board: &mut MissionBoard, title: &str) -> CivilMission {
-        board.publish(
-            title,
-            "desc",
-            "publisher",
-            MissionPublisherKind::Player,
-            MissionDomain::Trade,
-            None,
-            None,
-            None,
-            None,
-            MissionReward {
-                agent_watt: 10,
-                reputation: 1,
-                capacity: 0,
-            },
-            serde_json::json!({}),
-        )
-    }
-
-    #[test]
-    fn a_mission_carries_the_place_its_publishing_node_named() {
-        let mut board = MissionBoard::default();
-        let placed = board.publish_with_scope_and_geo(
+    fn a_draft_carries_the_place_its_publishing_node_named() {
+        let placed = CivilMission::draft(
             "placed",
             "desc",
             "publisher",
@@ -945,269 +608,20 @@ mod tests {
                 country: Some("Australia".to_owned()),
             }),
         );
+        assert_eq!(placed.status, MissionStatus::Open);
         let serialized = serde_json::to_value(&placed).unwrap();
         assert_eq!(serialized["city"], "Sydney", "{serialized}");
         assert_eq!(serialized["country"], "Australia");
-
-        // Coordinates alone, as a node that could not look its place up gives them.
-        let unnamed = publish_simple(&mut board, "unnamed");
-        let serialized = serde_json::to_value(&unnamed).unwrap();
-        assert!(serialized.get("city").is_none(), "{serialized}");
-        assert!(serialized.get("country").is_none(), "{serialized}");
+        assert!(serialized.get("escrow_id").is_none(), "{serialized}");
     }
 
     #[test]
-    fn a_mission_reserved_for_one_agent_is_claimed_and_completed_by_it_alone() {
+    fn a_mission_reserved_for_one_agent_allows_only_that_agent() {
         let mut board = MissionBoard::default();
-        let open = publish_simple(&mut board, "open to anyone");
-        assert!(open.allows_claimer("agent-a"));
-        let serialized = serde_json::to_value(&open).unwrap();
-        assert!(serialized.get("assignee_did").is_none(), "{serialized}");
-
-        let reserved = publish_simple(&mut board, "reserved");
-        let reserved = board
-            .set_assignee(&reserved.mission_id, " agent-b ", Some(" Bea "))
-            .unwrap();
-        assert_eq!(reserved.assignee_did.as_deref(), Some("agent-b"));
-        assert_eq!(reserved.assignee_display_name.as_deref(), Some("Bea"));
-        let refused = board.claim(&reserved.mission_id, "agent-a").unwrap_err();
-        assert!(
-            refused.to_string().contains("reserved for Bea"),
-            "{refused}"
-        );
-        // A relayed approval or completion cannot hand it to someone else either.
-        assert!(
-            board
-                .apply_remote_claim_approved(&reserved.mission_id, "agent-a")
-                .is_err()
-        );
-        assert!(
-            board
-                .apply_remote_completed(&reserved.mission_id, "agent-a", None)
-                .is_err()
-        );
-        assert_eq!(
-            board.get(&reserved.mission_id).unwrap().status,
-            MissionStatus::Open
-        );
-        let claimed = board.claim(&reserved.mission_id, "agent-b").unwrap();
-        assert_eq!(claimed.claimed_by.as_deref(), Some("agent-b"));
-    }
-
-    #[test]
-    fn a_returned_bounty_ends_the_mission_even_after_completion() {
-        let mut board = MissionBoard::default();
-        let mission = publish_simple(&mut board, "trade");
-        let id = mission.mission_id.as_str();
-        board.mark_bounty_escrowed(id, id).unwrap();
-        board.claim(id, "agent-a").unwrap();
-        board.complete(id, "agent-a", None).unwrap();
-        assert!(
-            board.cancel(id).is_err(),
-            "a plain cancel keeps a completed mission"
-        );
-
-        let (closed, ended_now) = board.close_returned(id).unwrap();
-        assert!(ended_now);
-        assert_eq!(closed.status, MissionStatus::Cancelled);
-        assert_eq!(
-            closed.escrow_id, None,
-            "the ledger holds nothing for it any more"
-        );
-        let (_, ended_again) = board.close_returned(id).unwrap();
-        assert!(!ended_again);
-
-        // A settled mission stays settled.
-        let paid = publish_simple(&mut board, "paid");
-        board.claim(&paid.mission_id, "agent-a").unwrap();
-        board.complete(&paid.mission_id, "agent-a", None).unwrap();
-        board.settle(&paid.mission_id).unwrap();
-        let (kept, ended) = board.close_returned(&paid.mission_id).unwrap();
-        assert!(!ended);
-        assert_eq!(kept.status, MissionStatus::Settled);
-    }
-
-    #[test]
-    fn claim_as_records_the_claimer_display_name_and_claim_leaves_it_empty() {
-        let mut board = MissionBoard::default();
-        let named = publish_simple(&mut board, "named");
-        let claimed = board
-            .claim_as(&named.mission_id, "agent-a", Some("  Ada  "))
-            .unwrap();
-        assert_eq!(claimed.claimed_by.as_deref(), Some("agent-a"));
-        assert_eq!(claimed.claimed_by_display_name.as_deref(), Some("Ada"));
-        let serialized = serde_json::to_value(&claimed).unwrap();
-        assert_eq!(serialized["claimed_by_display_name"], "Ada");
-
-        let blank = publish_simple(&mut board, "blank");
-        let claimed = board
-            .claim_as(&blank.mission_id, "agent-b", Some("   "))
-            .unwrap();
-        assert_eq!(claimed.claimed_by_display_name, None);
-        let plain = publish_simple(&mut board, "plain");
-        let claimed = board.claim(&plain.mission_id, "agent-c").unwrap();
-        assert_eq!(claimed.claimed_by_display_name, None);
-        let serialized = serde_json::to_value(&claimed).unwrap();
-        assert!(serialized.get("claimed_by_display_name").is_none());
-    }
-
-    #[test]
-    fn expired_missions_cannot_be_claimed_or_completed() {
-        let mut board = MissionBoard::default();
-        let past = Utc::now().timestamp() - 60;
-        let open = publish_simple(&mut board, "open-expired");
-        board.set_expiry(&open.mission_id, Some(past)).unwrap();
-        assert!(
-            board
-                .claim(&open.mission_id, "agent-a")
-                .unwrap_err()
-                .to_string()
-                .contains("expired")
-        );
-
-        let claimed = publish_simple(&mut board, "claimed-expired");
-        board.claim(&claimed.mission_id, "agent-b").unwrap();
-        board.set_expiry(&claimed.mission_id, Some(past)).unwrap();
-        assert!(
-            board
-                .complete(&claimed.mission_id, "agent-b", None)
-                .unwrap_err()
-                .to_string()
-                .contains("expired")
-        );
-        assert_eq!(board.expired_missions(Utc::now().timestamp()).len(), 2);
-
-        let future = publish_simple(&mut board, "still-valid");
-        board
-            .set_expiry(&future.mission_id, Some(Utc::now().timestamp() + 600))
-            .unwrap();
-        board.claim(&future.mission_id, "agent-c").unwrap();
-        board.complete(&future.mission_id, "agent-c", None).unwrap();
-    }
-
-    #[test]
-    fn remote_lifecycle_updates_cancel_an_expired_mission_and_keep_its_escrow() {
-        let mut board = MissionBoard::default();
-        let past = Utc::now().timestamp() - 60;
-        for (title, kind) in [("claim", 0), ("complete", 1)] {
-            let mission = publish_simple(&mut board, title);
-            board
-                .mark_bounty_escrowed(&mission.mission_id, "escrow-1")
-                .unwrap();
-            board.set_expiry(&mission.mission_id, Some(past)).unwrap();
-            let updated = match kind {
-                0 => board.apply_remote_claim_approved(&mission.mission_id, "agent-x"),
-                _ => board.apply_remote_completed(&mission.mission_id, "agent-x", None),
-            }
-            .unwrap()
-            .unwrap();
-            assert_eq!(updated.status, MissionStatus::Cancelled, "{title}");
-            assert_eq!(updated.escrow_id.as_deref(), Some("escrow-1"), "{title}");
-            assert!(updated.completed_by.is_none(), "{title}");
-        }
-
-        // A mission completed before its expiry still settles.
-        let done = publish_simple(&mut board, "done-in-time");
-        board.claim(&done.mission_id, "agent-y").unwrap();
-        board.complete(&done.mission_id, "agent-y", None).unwrap();
-        board.set_expiry(&done.mission_id, Some(past)).unwrap();
-        let settled = board.settle(&done.mission_id).unwrap();
-        assert_eq!(settled.status, MissionStatus::Settled);
-    }
-
-    #[test]
-    fn escrow_intent_is_unconfirmed_until_the_ledger_confirms_it() {
-        let mut board = MissionBoard::default();
-        let mission = publish_simple(&mut board, "escrowed");
-        let intent = board
-            .record_bounty_escrow_intent(&mission.mission_id, "escrow-a")
-            .unwrap();
-        assert!(intent.has_unconfirmed_escrow());
-        assert_eq!(board.unconfirmed_escrows().len(), 1);
-
-        let confirmed = board
-            .mark_bounty_escrowed(&mission.mission_id, "escrow-a")
-            .unwrap();
-        assert!(confirmed.escrow_confirmed);
-        assert_eq!(board.unconfirmed_escrows(), Vec::<CivilMission>::new());
-
-        let cleared = board.clear_bounty_escrow(&mission.mission_id).unwrap();
-        assert!(cleared.escrow_id.is_none());
-        assert!(!cleared.escrow_confirmed);
-        assert!(
-            board
-                .cancel_unfunded(&mission.mission_id)
-                .unwrap_err()
-                .to_string()
-                .contains("confirmed or absent")
-        );
-
-        // Serialized form omits the flag while false and restores it as false.
-        let json = serde_json::to_value(&cleared).unwrap();
-        assert!(json.get("escrow_confirmed").is_none());
-        let restored: CivilMission = serde_json::from_value(json).unwrap();
-        assert!(!restored.escrow_confirmed);
-    }
-
-    #[test]
-    fn unconfirmed_escrow_blocks_claim_and_complete_until_confirmed_or_cancelled() {
-        let mut board = MissionBoard::default();
-        let mission = publish_simple(&mut board, "unfunded");
-        board
-            .record_bounty_escrow_intent(&mission.mission_id, "escrow-u")
-            .unwrap();
-        assert!(
-            board
-                .claim(&mission.mission_id, "agent-a")
-                .unwrap_err()
-                .to_string()
-                .contains("not confirmed")
-        );
-        board
-            .mark_bounty_escrowed(&mission.mission_id, "escrow-u")
-            .unwrap();
-        board.claim(&mission.mission_id, "agent-a").unwrap();
-        board
-            .record_bounty_escrow_intent(&mission.mission_id, "escrow-u")
-            .unwrap();
-        assert!(
-            board
-                .complete(&mission.mission_id, "agent-a", None)
-                .unwrap_err()
-                .to_string()
-                .contains("not confirmed")
-        );
-
-        // A completed mission (synced remotely) whose escrow never existed can still be
-        // cancelled as unfunded; a settled one cannot.
-        let completed = board
-            .apply_remote_completed(&mission.mission_id, "agent-a", None)
-            .unwrap()
-            .unwrap();
-        assert_eq!(completed.status, MissionStatus::Completed);
-        let cancelled = board.cancel_unfunded(&mission.mission_id).unwrap();
-        assert_eq!(cancelled.status, MissionStatus::Cancelled);
-        assert_eq!(cancelled.escrow_id.as_deref(), Some("escrow-u"));
-
-        let settled = publish_simple(&mut board, "settled");
-        board.claim(&settled.mission_id, "agent-b").unwrap();
-        board
-            .complete(&settled.mission_id, "agent-b", None)
-            .unwrap();
-        board.settle(&settled.mission_id).unwrap();
-        board
-            .record_bounty_escrow_intent(&settled.mission_id, "escrow-s")
-            .unwrap();
-        assert!(board.cancel_unfunded(&settled.mission_id).is_err());
-    }
-
-    #[test]
-    fn mission_board_applies_remote_lifecycle_updates_idempotently() {
-        let mut board = MissionBoard::default();
-        let mission = board.publish(
-            "Remote lifecycle",
-            "Publisher receives lifecycle topics.",
-            "publisher-public",
+        let open = board.publish(
+            "open",
+            "desc",
+            "publisher",
             MissionPublisherKind::Player,
             MissionDomain::Trade,
             None,
@@ -1219,109 +633,15 @@ mod tests {
                 reputation: 1,
                 capacity: 0,
             },
-            serde_json::json!({"objective": "sync"}),
+            serde_json::json!({}),
         );
-
-        let claimed = board
-            .apply_remote_claim_approved(&mission.mission_id, "agent-worker")
-            .unwrap()
+        assert!(open.allows_claimer("agent-a"));
+        let reserved = board
+            .set_assignee(&open.mission_id, " agent-b ", Some("Bea"))
             .unwrap();
-        assert_eq!(claimed.status, MissionStatus::Claimed);
-        assert_eq!(claimed.claimed_by.as_deref(), Some("agent-worker"));
-
-        let completed = board
-            .apply_remote_completed(
-                &mission.mission_id,
-                "agent-worker",
-                Some(serde_json::json!({"ok": true})),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(completed.status, MissionStatus::Completed);
-        assert_eq!(completed.completed_by.as_deref(), Some("agent-worker"));
-
-        // Settlement only ever happens locally (it releases the bounty); relayed updates
-        // afterwards are idempotent.
-        let settled = board.settle(&mission.mission_id).unwrap();
-        assert_eq!(settled.status, MissionStatus::Settled);
-        assert_eq!(settled.completed_by.as_deref(), Some("agent-worker"));
-        assert_eq!(
-            settled.completion_result,
-            Some(serde_json::json!({"ok": true}))
-        );
-
-        let replayed = board
-            .apply_remote_completed(
-                &mission.mission_id,
-                "agent-worker",
-                Some(serde_json::json!({"ok": true})),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(replayed.status, MissionStatus::Settled);
-        let replayed = board
-            .apply_remote_claim_approved(&mission.mission_id, "agent-worker")
-            .unwrap()
-            .unwrap();
-        assert_eq!(replayed.status, MissionStatus::Settled);
-    }
-
-    #[test]
-    fn relayed_lifecycle_updates_from_another_agent_are_rejected() {
-        let mut board = MissionBoard::default();
-        let mission = publish_simple(&mut board, "guarded");
-        board
-            .apply_remote_claim_approved(&mission.mission_id, "agent-worker")
-            .unwrap();
-
-        // Someone else cannot take over the claim or report the completion.
-        assert!(
-            board
-                .apply_remote_claim_approved(&mission.mission_id, "agent-intruder")
-                .is_err()
-        );
-        assert!(
-            board
-                .apply_remote_completed(&mission.mission_id, "agent-intruder", None)
-                .is_err()
-        );
-        let stored = board.get(&mission.mission_id).unwrap();
-        assert_eq!(stored.status, MissionStatus::Claimed);
-        assert_eq!(stored.claimed_by.as_deref(), Some("agent-worker"));
-        assert!(stored.completed_by.is_none());
-
-        // The claimer completes; a later report by someone else is rejected and the executor
-        // and result are kept.
-        board
-            .apply_remote_completed(
-                &mission.mission_id,
-                "agent-worker",
-                Some(serde_json::json!({"ok": true})),
-            )
-            .unwrap();
-        assert!(
-            board
-                .apply_remote_completed(
-                    &mission.mission_id,
-                    "agent-intruder",
-                    Some(serde_json::json!({"ok": false})),
-                )
-                .is_err()
-        );
-        let stored = board.get(&mission.mission_id).unwrap();
-        assert_eq!(stored.completed_by.as_deref(), Some("agent-worker"));
-        assert_eq!(
-            stored.completion_result,
-            Some(serde_json::json!({"ok": true}))
-        );
-
-        // An unknown mission is simply not applied.
-        assert!(
-            board
-                .apply_remote_completed("missing", "agent-worker", None)
-                .unwrap()
-                .is_none()
-        );
+        assert!(!reserved.allows_claimer("agent-a"));
+        assert!(reserved.allows_claimer("agent-b"));
+        assert_eq!(MissionBoard::from_missions([reserved]).list(None).len(), 1);
     }
 
     #[test]
@@ -1334,7 +654,6 @@ mod tests {
             "task-1",
             "agent-a",
             "exec-1",
-            Some("published".to_string()),
             NetworkMissionClaimMetadata {
                 domain: Some("trade".to_string()),
                 publisher_id: Some("publisher-public".to_string()),
@@ -1344,23 +663,12 @@ mod tests {
         );
 
         assert_eq!(record.execution_id, "exec-1");
-        assert_eq!(record.status.as_deref(), Some("published"));
         assert_eq!(record.metadata.domain.as_deref(), Some("trade"));
         assert_eq!(record.metadata.reward_watt, Some(10));
         assert!(registry.contains("mission-1", "task-1", "agent-a"));
         let exact = registry.get("mission-1", "task-1", "agent-a").unwrap();
         assert_eq!(exact.execution_id, "exec-1");
         assert!(registry.contains_mission("mission-1"));
-        let updated = registry
-            .update_status_by_mission("mission-1", "approved")
-            .unwrap();
-        assert_eq!(updated.status.as_deref(), Some("approved"));
-        assert_eq!(updated.metadata.task_status.as_deref(), Some("approved"));
-        let updated = registry
-            .update_status("mission-1", "task-1", "agent-a", "completed")
-            .unwrap();
-        assert_eq!(updated.status.as_deref(), Some("completed"));
-        assert_eq!(updated.metadata.task_status.as_deref(), Some("completed"));
         assert!(!registry.contains("mission-1", "task-1", "agent-b"));
     }
 }

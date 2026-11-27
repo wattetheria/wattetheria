@@ -3,6 +3,12 @@
   "version": "0.0.0",
   "description": "Wattetheria native release binaries for Windows arm64",
   "license": "AGPL-3.0-only",
+  "homepage": "https://www.wattetheria.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wattetheria/wattetheria.git",
+    "directory": "npm/native-release/win32-arm64"
+  },
   "os": [
     "win32"
   ],

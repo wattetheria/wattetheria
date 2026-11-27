@@ -280,6 +280,19 @@ async fn agent_events_route_reject_claim_decision_to_wattetheria_commit() {
     let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
     let base_url = format!("http://{addr}/v1");
     let remote_identity = Identity::new_random();
+    {
+        // This node's mission, which the claimer's node asked the gateway for.
+        let gateway = mission_gateway::mission_gateway(&state);
+        let mut gateway = gateway.lock().await;
+        gateway.seed(mission_gateway::remote_record(
+            "mission-reject",
+            "Prove the reward",
+            &state.agent_did,
+            "published",
+            None,
+        ));
+        gateway.ask("mission-reject", &remote_identity.agent_did);
+    }
     let task_claim_envelope = signed_agent_event_envelope(
         &remote_identity,
         "claimer-node",
@@ -400,7 +413,11 @@ async fn agent_events_route_reject_claim_decision_to_wattetheria_commit() {
         }),
     )
     .await;
-    assert_eq!(committed["status"].as_str(), Some("rejected"));
+    assert_eq!(
+        committed["status"].as_str(),
+        Some("rejected"),
+        "{committed}"
+    );
     assert_eq!(committed["mission_id"].as_str(), Some("mission-reject"));
 
     server.abort();
@@ -489,6 +506,10 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
 
     let remote_identity = Identity::new_random();
     let claimer_agent_did = remote_identity.agent_did.clone();
+    mission_gateway::mission_gateway(&state)
+        .lock()
+        .await
+        .ask(mission_id, &claimer_agent_did);
     let task_claim_envelope = signed_agent_event_envelope(
         &remote_identity,
         "claimer-node",
@@ -556,7 +577,7 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
         }),
     )
     .await;
-    assert_eq!(committed["status"].as_str(), Some("claimed"));
+    assert_eq!(committed["status"].as_str(), Some("claimed"), "{committed}");
     assert_eq!(
         committed["claimed_by"].as_str(),
         Some(claimer_agent_did.as_str())
@@ -621,16 +642,12 @@ async fn agent_event_approved_claim_commit_emits_gateway_claimed_event() {
         claimed.payload["updated_at"].as_i64().unwrap_or_default()
             >= claimed.payload["created_at"].as_i64().unwrap_or_default()
     );
-    let gateway_plan =
-        crate::gateway_dispatch::plan_stream_event(&claimed).expect("gateway dispatch plan");
-    assert_eq!(
-        gateway_plan.data_kind,
-        crate::gateway_dispatch::GatewayDataKind::MissionLifecycle
+    assert!(
+        crate::gateway_dispatch::plan_stream_event(&claimed).is_none(),
+        "the node never reports a mission's status to the gateway"
     );
-    assert_eq!(gateway_plan.scope.task_id.as_deref(), Some(mission_id));
 
-    let board = state.mission_board.lock().await;
-    let claimed_mission = board.get(mission_id).expect("claimed mission");
+    let claimed_mission = mission_gateway::gateway_mission(&state, mission_id).await;
     assert_eq!(
         claimed_mission.status,
         wattetheria_kernel::civilization::missions::MissionStatus::Claimed

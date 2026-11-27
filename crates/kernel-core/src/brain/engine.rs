@@ -714,10 +714,6 @@ fn mission_agent_event_action_rule(
             "reject_result: reject the task result; payload should include reason when available."
                 .to_owned(),
         ),
-        ("task_result_received", "request_retry") => Some(
-            "request_retry: ask the claimer to retry; payload should include reason or retry_instructions."
-                .to_owned(),
-        ),
         ("task_result_received", "human_review") => {
             Some("human_review: defer the result for human review; payload may be empty.".to_owned())
         }

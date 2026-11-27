@@ -270,7 +270,6 @@ async fn board_public_projection_retains_signed_mention_and_real_agent_author() 
     });
     let state = ControlPlaneState {
         swarm_bridge: Arc::new(wattetheria_kernel::swarm_bridge::HybridSwarmBridge::new(
-            state.data_dir.join("missions/state.json"),
             Some(&format!("http://{address}")),
         )),
         ..state

@@ -45,7 +45,9 @@ async fn mcp_lists_read_only_watt_wallet_tools_with_precise_schemas() {
 
 #[tokio::test]
 async fn mcp_watt_wallet_tools_report_a_missing_gateway_ledger_instead_of_inventing_watt() {
-    let (_dir, app, token, _policy, _state) = build_test_app(100);
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
+    state.gateway_urls.clear();
+    let app = crate::app(state);
     for (name, arguments) in [
         ("get_watt_balance", json!({})),
         ("list_watt_ledger_entries", json!({"limit": 5})),
@@ -106,7 +108,9 @@ async fn mcp_lists_send_watt_with_a_precise_schema() {
 
 #[tokio::test]
 async fn mcp_send_watt_validates_before_touching_the_ledger() {
-    let (_dir, app, token, _policy, state) = build_test_app(100);
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
+    state.gateway_urls.clear();
+    let app = crate::app(state.clone());
     let own_did = state.agent_did.clone();
     for (arguments, expected) in [
         (

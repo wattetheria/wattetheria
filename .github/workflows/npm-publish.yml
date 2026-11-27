@@ -15,6 +15,9 @@ jobs:
   publish:
     name: Publish wattetheria npm package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +39,6 @@ jobs:
 
       - name: Publish
         if: ${{ !inputs.dry_run }}
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -9,7 +9,6 @@ use uuid::Uuid;
 use watt_did::{Did, PaymentAccountBindingProof, VerifiedAgentContext};
 use watt_wallet::verify_payment_account_binding_proof;
 use wattetheria_kernel::brain::AgentEventResolution;
-use wattetheria_kernel::civilization::missions::{MissionStatus, NetworkMissionClaimRegistry};
 use wattetheria_kernel::local_db;
 use wattetheria_kernel::payments::{
     PaymentAgentMessage, PaymentMessageKind, PaymentStatus, PaymentTransaction,
@@ -134,11 +133,7 @@ fn routes_to_wattetheria_commit(event_type: &str, action: &str) -> bool {
         "task_claim_decision_received" => matches!(action, "complete_mission"),
         "task_result_received" => matches!(
             action,
-            "complete_mission"
-                | "settle_mission"
-                | "reject_result"
-                | "request_retry"
-                | "human_review"
+            "complete_mission" | "settle_mission" | "reject_result" | "human_review"
         ),
         "topic_message_requires_reply" => matches!(
             action,
@@ -340,7 +335,12 @@ pub(super) fn is_mission_event(event: &AgentEventEnvelope) -> bool {
             .is_some()
         || matches!(
             topic_lifecycle_kind(event),
-            Some("mission_claim_approved" | "mission_completed" | "mission_settled")
+            Some(
+                "mission_claim_approved"
+                    | "mission_claim_withdrawn"
+                    | "mission_completed"
+                    | "mission_settled"
+            )
         )
 }
 
@@ -459,6 +459,11 @@ fn add_mission_allowed_actions(state: &ControlPlaneState, event: &mut AgentEvent
             }
         }
         "task_result_received" => {
+            // A mission is handed in once, so there is no asking for another try: a result is
+            // settled or rejected.
+            event
+                .allowed_actions
+                .retain(|action| action != "request_retry");
             push_allowed_action(event, "complete_mission");
             push_allowed_action(event, "settle_mission");
         }
@@ -472,7 +477,7 @@ fn add_mission_allowed_actions(state: &ControlPlaneState, event: &mut AgentEvent
             Some("mission_completed") => {
                 set_allowed_actions(event, &["settle_mission", "ignore"]);
             }
-            Some("mission_settled") => {
+            Some("mission_settled" | "mission_claim_withdrawn") => {
                 set_allowed_actions(event, &["ignore"]);
             }
             _ => {}
@@ -1155,26 +1160,26 @@ async fn sync_payment_event_to_ledger(
     Ok(())
 }
 
-fn mission_lifecycle_status(kind: &str) -> Option<&'static str> {
-    match kind {
-        "mission_claim_approved" => Some("claimed"),
-        "mission_completed" => Some("completed"),
-        "mission_settled" => Some("settled"),
-        _ => None,
-    }
-}
-
-async fn sync_mission_lifecycle_event_to_state(
+/// Lifecycle notices about a mission (claim approved, given up, completed, settled) only wake
+/// the agent:
+/// the gateway keeps where the mission stands. A notice addressed to another agent, or one
+/// nobody signed, is refused.
+fn check_mission_lifecycle_event(
     state: &ControlPlaneState,
     event: &AgentEventEnvelope,
     verified_context: Option<&VerifiedAgentContext>,
 ) -> Result<(), Response> {
-    let Some(kind) = mission_lifecycle_kind(event) else {
+    if !matches!(
+        mission_lifecycle_kind(event),
+        Some(
+            "mission_claim_approved"
+                | "mission_claim_withdrawn"
+                | "mission_completed"
+                | "mission_settled"
+        )
+    ) {
         return Ok(());
-    };
-    let Some(status) = mission_lifecycle_status(kind) else {
-        return Ok(());
-    };
+    }
     if let Some(target_agent_id) = event.target_agent_id.as_deref()
         && target_agent_id != state.agent_did
     {
@@ -1186,193 +1191,6 @@ async fn sync_mission_lifecycle_event_to_state(
         return Err(payment_event_bad_request(
             "signed agent_envelope is required for mission lifecycle event",
         ));
-    }
-    let Some(mission_id) = mission_lifecycle_string_from_event(event, "mission_id") else {
-        return Ok(());
-    };
-    let mut registry: NetworkMissionClaimRegistry = state
-        .local_db
-        .load_domain_or_default(local_db::domain::NETWORK_MISSION_CLAIMS)
-        .map_err(|error| payment_event_bad_request(error.to_string()))?;
-    let claim_exists = registry.contains_mission(&mission_id);
-    let board_exists = {
-        let board = state.mission_board.lock().await;
-        board.get(&mission_id).is_some()
-    };
-    match (board_exists, claim_exists) {
-        (true, true) => {
-            record_agent_event_diagnostic(
-                state,
-                event,
-                "warn",
-                "mission_lifecycle.sync.skipped",
-                "ambiguous_state_owner",
-                "mission lifecycle sync skipped because mission exists in both local tables",
-                &json!({
-                    "mission_id": mission_id,
-                    "kind": kind,
-                    "status": status,
-                }),
-            );
-            Ok(())
-        }
-        (true, false) => {
-            let Some(signer) = verified_context else {
-                return Err(payment_event_bad_request(
-                    "signed agent_envelope is required for mission lifecycle event",
-                ));
-            };
-            sync_mission_lifecycle_to_board(
-                state,
-                event,
-                &mission_id,
-                kind,
-                &signer.agent_did.to_string(),
-            )
-            .await
-        }
-        (false, true) => {
-            let updated = registry.update_status_by_mission(&mission_id, status);
-            if updated.is_some() {
-                state
-                    .local_db
-                    .save_domain(local_db::domain::NETWORK_MISSION_CLAIMS, &registry)
-                    .map_err(|error| payment_event_bad_request(error.to_string()))?;
-            }
-            Ok(())
-        }
-        (false, false) => {
-            record_agent_event_diagnostic(
-                state,
-                event,
-                "info",
-                "mission_lifecycle.sync.skipped",
-                "unknown_mission",
-                "mission lifecycle sync skipped because mission is not tracked locally",
-                &json!({
-                    "mission_id": mission_id,
-                    "kind": kind,
-                    "status": status,
-                }),
-            );
-            Ok(())
-        }
-    }
-}
-
-/// Applies a relayed lifecycle notice about a locally published mission. The acting agent is
-/// the verified signer of the envelope, never a DID named in the content: a claimer field that
-/// disagrees with the signer is rejected, so nobody can act (or get paid) in someone else's name.
-async fn sync_mission_lifecycle_to_board(
-    state: &ControlPlaneState,
-    event: &AgentEventEnvelope,
-    mission_id: &str,
-    kind: &str,
-    signer_agent_did: &str,
-) -> Result<(), Response> {
-    if signer_agent_did == state.agent_did {
-        // This node's own transitions happen through the local mission routes; a notice it signed
-        // itself (claim approval, completion decision, settlement) coming back around is an echo.
-        record_agent_event_diagnostic(
-            state,
-            event,
-            "info",
-            "mission_lifecycle.sync.skipped",
-            "own_lifecycle_echo",
-            "mission lifecycle sync skipped because the envelope was signed by this node",
-            &json!({"mission_id": mission_id, "kind": kind}),
-        );
-        return Ok(());
-    }
-    let agent_did = signer_agent_did.to_owned();
-    let claimed_as = mission_lifecycle_string_from_event(event, "claimer_agent_did")
-        .or_else(|| mission_lifecycle_string_from_event(event, "agent_did"));
-    let result = mission_lifecycle_value_from_event(event, "result").cloned();
-    let (updated, was_cancelled) = {
-        let mut board = state.mission_board.lock().await;
-        let before = board.get(mission_id);
-        let was_cancelled = before
-            .as_ref()
-            .is_some_and(|mission| mission.status == MissionStatus::Cancelled);
-        let outcome = match kind {
-            _ if claimed_as
-                .as_deref()
-                .is_some_and(|claimed_as| claimed_as != agent_did) =>
-            {
-                Err(anyhow::anyhow!(
-                    "envelope signed by {agent_did} names {} as the claimer",
-                    claimed_as.as_deref().unwrap_or_default()
-                ))
-            }
-            "mission_claim_approved" => board.apply_remote_claim_approved(mission_id, &agent_did),
-            "mission_completed" => board.apply_remote_completed(mission_id, &agent_did, result),
-            // Settling a locally published mission releases its escrowed bounty, which only the
-            // local settle route does. A relayed "settled" is accepted only as the echo of that
-            // settlement; anything else leaves the board untouched.
-            "mission_settled" => match before {
-                Some(mission) if mission.status == MissionStatus::Settled => Ok(Some(mission)),
-                Some(mission) => Err(anyhow::anyhow!(
-                    "mission {mission_id} is {:?}; settlement must go through the local settle route",
-                    mission.status
-                )),
-                None => Ok(None),
-            },
-            _ => Ok(None),
-        };
-        let updated = match outcome {
-            Ok(updated) => updated,
-            Err(error) => {
-                record_agent_event_diagnostic(
-                    state,
-                    event,
-                    "warn",
-                    "mission_lifecycle.sync.rejected",
-                    "untrusted_lifecycle_transition",
-                    format!("mission lifecycle sync rejected: {error}"),
-                    &json!({
-                        "mission_id": mission_id,
-                        "kind": kind,
-                        "agent_did": agent_did,
-                    }),
-                );
-                return Ok(());
-            }
-        };
-        if updated.is_some() {
-            state
-                .local_db
-                .save_domain(local_db::domain::MISSION_BOARD, &*board)
-                .map_err(|error| payment_event_bad_request(error.to_string()))?;
-        }
-        (updated, was_cancelled)
-    };
-    if let Some(mission) = updated
-        .as_ref()
-        .filter(|mission| mission.status == MissionStatus::Cancelled && !was_cancelled)
-    {
-        // The remote update arrived after the mission expired: the board cancelled it instead;
-        // tell the gateway and let the sweep refund the escrow.
-        crate::routes::missions::announce_mission_cancelled(
-            state,
-            mission,
-            Some("expired".to_owned()),
-            None,
-        )
-        .await;
-    }
-    if updated.is_none() {
-        record_agent_event_diagnostic(
-            state,
-            event,
-            "info",
-            "mission_lifecycle.sync.skipped",
-            "unknown_mission",
-            "mission lifecycle sync skipped because mission is not tracked in mission board",
-            &json!({
-                "mission_id": mission_id,
-                "kind": kind,
-            }),
-        );
     }
     Ok(())
 }
@@ -2185,9 +2003,7 @@ pub(crate) async fn replay_deferred_dm_agent_events_for_friendship(
         {
             continue;
         }
-        if let Err(_response) =
-            sync_mission_lifecycle_event_to_state(state, &event, verified_context.as_ref()).await
-        {
+        if check_mission_lifecycle_event(state, &event, verified_context.as_ref()).is_err() {
             continue;
         }
         let acked_at = Utc::now().timestamp_millis().max(0).cast_unsigned();
@@ -2241,8 +2057,7 @@ pub(crate) async fn callback(
     {
         return response;
     }
-    if let Err(response) =
-        sync_mission_lifecycle_event_to_state(&state, &event, verified_context.as_ref()).await
+    if let Err(response) = check_mission_lifecycle_event(&state, &event, verified_context.as_ref())
     {
         return response;
     }

@@ -157,11 +157,7 @@ pub fn compute_status(
 }
 
 fn settled_mission_count(controller_id: &str, missions: &MissionBoard) -> usize {
-    missions
-        .list(Some(&MissionStatus::Settled))
-        .into_iter()
-        .filter(|mission| mission.completed_by.as_deref() == Some(controller_id))
-        .count()
+    missions.completed_by(controller_id).all().missions
 }
 
 fn active_mission_count(controller_id: &str, missions: &MissionBoard) -> usize {

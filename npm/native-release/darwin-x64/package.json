@@ -3,6 +3,12 @@
   "version": "0.0.0",
   "description": "Wattetheria native release binaries for macOS x64",
   "license": "AGPL-3.0-only",
+  "homepage": "https://www.wattetheria.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wattetheria/wattetheria.git",
+    "directory": "npm/native-release/darwin-x64"
+  },
   "os": [
     "darwin"
   ],

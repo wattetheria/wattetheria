@@ -10,11 +10,8 @@ use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use wattetheria_kernel::audit::AuditEntry;
 use wattetheria_kernel::civilization::missions::{
-    CivilMission, MissionDomain, MissionPublisherKind, MissionStatus, NetworkMissionClaimRecord,
-    NetworkMissionClaimRegistry,
+    CivilMission, MissionPublisherKind, MissionStatus,
 };
-use wattetheria_kernel::identities::PublicIdentity;
-use wattetheria_kernel::local_db;
 use wattetheria_kernel::storage::event_log::EventRecord;
 use wattetheria_kernel::swarm_bridge::{
     SwarmDiagnosticsQuery, SwarmDiagnosticsSnapshot, SwarmPeerView,
@@ -25,10 +22,10 @@ use crate::ledger_client::watt_balance;
 use crate::routes::board::build_public_board_messages_snapshot_payload;
 use crate::routes::civilization::build_agent_relationship_payload;
 use crate::routes::client_swarm::{
-    build_hives_payload, build_public_topic_messages_snapshot_payload, build_task_activity_payload,
+    build_hives_payload, build_public_topic_messages_snapshot_payload,
 };
+use crate::routes::gateway_missions::board_view;
 use crate::routes::identity::resolve_identity_context;
-use crate::routes::missions::mission_task_contract;
 use crate::routes::reward_view::{
     active_wallet_payment_account_payload, wallet_payment_accounts_payload,
     wallet_payment_binding_payload,
@@ -65,9 +62,6 @@ pub struct PublicClientSnapshot {
     pub world_events: Vec<wattetheria_kernel::swarm_bridge::EventAnnouncementPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_presence: Option<wattetheria_gateway_contract::space::NodePresence>,
-    #[serde(default)]
-    pub swarm_task_activity: Value,
-    pub tasks: Vec<Value>,
     pub organizations: Vec<Value>,
     /// Always empty: the gateway ranks Agents from its own records. The field stays because
     /// gateways parse it as required and verify the signature over the re-serialized payload.
@@ -423,287 +417,14 @@ fn build_client_rpc_logs_payload(
         .collect())
 }
 
-async fn build_client_tasks_payload(state: &ControlPlaneState, limit: usize) -> Vec<Value> {
-    let public_identities = state.public_identity_registry.lock().await.list();
-    let mut missions = state.mission_board.lock().await.list(None);
-    missions.sort_by(|left, right| {
-        right
-            .created_at
-            .cmp(&left.created_at)
-            .then_with(|| left.mission_id.cmp(&right.mission_id))
-    });
-    let publisher_wattswarm_node_id = state.swarm_bridge.local_node_id().await.ok();
-    let mut tasks = Vec::new();
-    for mission in missions
-        .into_iter()
-        .filter(|mission| mission.status != MissionStatus::Cancelled)
-        .take(limit)
-    {
-        tasks.push(
-            build_published_client_task_payload(
-                state,
-                mission,
-                &public_identities,
-                publisher_wattswarm_node_id.as_deref(),
-            )
-            .await,
-        );
-    }
-    let mut claims = state
-        .local_db
-        .load_domain_or_default::<NetworkMissionClaimRegistry>(
-            local_db::domain::NETWORK_MISSION_CLAIMS,
-        )
-        .map(|registry| registry.records())
-        .unwrap_or_default();
-    claims.sort_by(|left, right| {
-        right
-            .claimed_at
-            .cmp(&left.claimed_at)
-            .then_with(|| left.mission_id.cmp(&right.mission_id))
-            .then_with(|| left.task_id.cmp(&right.task_id))
-    });
-    for claim in claims.into_iter().take(limit) {
-        tasks.push(build_claimed_client_task_payload(
-            &claim,
-            &public_identities,
-        ));
-    }
-    tasks
-}
-
-async fn build_published_client_task_payload(
+/// The node's organizations. `missions`, the gateway's view, adds each one's mission count;
+/// the snapshot leaves it out, since the gateway counts the missions it keeps.
+async fn build_client_organizations_payload(
     state: &ControlPlaneState,
-    mission: CivilMission,
-    public_identities: &[PublicIdentity],
-    publisher_wattswarm_node_id: Option<&str>,
-) -> Value {
-    let base_status = client_task_status(&mission.status);
-    let mut task = json!({
-        "id": mission.mission_id,
-        "task_id": mission.mission_id,
-        "task_type": "wattetheria.mission",
-        "title": mission.title,
-        "domain": mission_domain_label(&mission.domain),
-        "scope": mission.scope,
-        "status": base_status,
-        "publisher_id": mission.publisher,
-        "claimer_id": mission.claimed_by,
-        "created_at": timestamp_to_rfc3339(mission.created_at),
-        "task_origin": "published",
-        "lat": mission.lat,
-        "lng": mission.lng,
-        "coordinate_source": mission.coordinate_source.clone(),
-        "city": mission.city.clone(),
-        "country": mission.country.clone(),
-    });
-    if let Some(object) = task.as_object_mut() {
-        if let Some(identity) =
-            identity_for_participant(public_identities, Some(&mission.publisher))
-        {
-            insert_identity_projection(object, "created_by", identity);
-        }
-        if let Some(reward) = mission.reward.as_ref() {
-            object.insert("reward_watt".to_owned(), json!(reward.agent_watt));
-            object.insert("task_bounty_watt".to_owned(), json!(reward.agent_watt));
-            object.insert("executor_bounty_watt".to_owned(), json!(reward.agent_watt));
-        }
-        if let Some(identity) =
-            identity_for_participant(public_identities, mission.claimed_by.as_deref())
-        {
-            insert_identity_projection(object, "claimer", identity);
-        }
-        if let Some(identity) =
-            identity_for_participant(public_identities, mission.completed_by.as_deref())
-        {
-            insert_identity_projection(object, "completer", identity);
-        }
-    }
-    if let Some(node_id) = publisher_wattswarm_node_id
-        && let Some(contract) = build_client_task_contract_payload(state, &mission, node_id).await
-        && let Some(object) = task.as_object_mut()
-    {
-        insert_client_task_contract_fields(object, contract);
-    }
-    task
-}
-
-fn build_claimed_client_task_payload(
-    claim: &NetworkMissionClaimRecord,
-    public_identities: &[PublicIdentity],
-) -> Value {
-    let metadata = &claim.metadata;
-    let mission_id = claim.mission_id.clone();
-    let task_id = claim.task_id.clone();
-    let agent_did = claim.agent_did.clone();
-    let status = claim
-        .status
-        .clone()
-        .or_else(|| metadata.task_status.clone())
-        .unwrap_or_else(|| "unknown".to_string());
-    let mission_tab = client_claim_mission_tab(&status);
-    let mut task = json!({
-        "id": mission_id,
-        "task_id": task_id,
-        "task_type": "wattetheria.mission",
-        "title": metadata.title.clone().unwrap_or_else(|| claim.mission_id.clone()),
-        "domain": metadata.domain.clone(),
-        "scope": metadata.scope.clone(),
-        "reward_watt": metadata.reward_watt,
-        "task_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),
-        "executor_bounty_watt": metadata.executor_bounty_watt.or(metadata.reward_watt),
-        "network_publish_reward_watt": 0,
-        "network_settle_publisher_reward_watt": 0,
-        "publisher_network_reward_watt": metadata.publisher_network_reward_watt,
-        "status": status,
-        "node_claim_status": "claimed",
-        "local_claim_status": "claimed",
-        "publisher_id": metadata.publisher_id.clone(),
-        "claimer_id": agent_did,
-        "created_at": timestamp_to_rfc3339(claim.claimed_at),
-        "claimed_at": timestamp_to_rfc3339(claim.claimed_at),
-        "execution_id": claim.execution_id,
-        "publisher_agent_did": metadata.publisher_agent_did.clone(),
-        "publisher_wattswarm_node_id": metadata.publisher_wattswarm_node_id.clone(),
-        "mission_feed_key": metadata.mission_feed_key.clone(),
-        "mission_scope_hint": metadata.mission_scope_hint.clone(),
-        "reward": metadata.reward.clone(),
-        "task_origin": "claimed",
-        "mission_tab": mission_tab,
-    });
-    if let Some(object) = task.as_object_mut() {
-        if let Some(display_name) = metadata.publisher_display_name.as_deref() {
-            object.insert(
-                "created_by_agent_identity".to_string(),
-                Value::String(display_name.to_string()),
-            );
-            object.insert(
-                "created_by_display_name".to_string(),
-                Value::String(display_name.to_string()),
-            );
-        }
-        if let Some(agent_did) = metadata.publisher_agent_did.as_deref() {
-            object.insert(
-                "created_by_agent_did".to_string(),
-                Value::String(agent_did.to_string()),
-            );
-        }
-        if let Some(identity) =
-            identity_for_participant(public_identities, metadata.publisher_id.as_deref())
-        {
-            insert_identity_projection(object, "created_by", identity);
-        }
-        if let Some(identity) =
-            identity_for_participant(public_identities, Some(agent_did.as_str()))
-        {
-            insert_identity_projection(object, "claimer", identity);
-        }
-    }
-    task
-}
-
-fn client_claim_mission_tab(status: &str) -> &'static str {
-    let normalized = status.trim().to_ascii_lowercase().replace([' ', '-'], "_");
-    if normalized.is_empty()
-        || normalized == "unknown"
-        || normalized.contains("submitted")
-        || normalized.contains("pending")
-        || normalized.contains("claiming")
-        || normalized.contains("reject")
-    {
-        "claim_submitted"
-    } else {
-        "claimed"
-    }
-}
-
-fn insert_client_task_contract_fields(object: &mut Map<String, Value>, contract: Value) {
-    if let Some(inputs) = contract.get("inputs") {
-        for key in [
-            "publisher_agent_did",
-            "publisher_wattswarm_node_id",
-            "swarm_scope",
-            "mission_feed_key",
-            "mission_scope_hint",
-            "reward",
-            "payload",
-        ] {
-            if let Some(value) = inputs.get(key) {
-                object.insert(key.to_string(), value.clone());
-            }
-        }
-    }
-    object.insert("task_contract".to_string(), contract);
-}
-
-fn identity_for_participant<'a>(
-    identities: &'a [PublicIdentity],
-    participant_id: Option<&str>,
-) -> Option<&'a PublicIdentity> {
-    let participant_id = participant_id?.trim();
-    if participant_id.is_empty() {
-        return None;
-    }
-    identities.iter().find(|identity| {
-        identity.public_id == participant_id
-            || identity.agent_did.as_deref() == Some(participant_id)
-    })
-}
-
-fn insert_identity_projection(
-    object: &mut Map<String, Value>,
-    prefix: &str,
-    identity: &PublicIdentity,
-) {
-    object
-        .entry(format!("{prefix}_agent_identity"))
-        .or_insert_with(|| Value::String(identity.display_name.clone()));
-    object
-        .entry(format!("{prefix}_display_name"))
-        .or_insert_with(|| Value::String(identity.display_name.clone()));
-    object
-        .entry(format!("{prefix}_public_id"))
-        .or_insert_with(|| Value::String(identity.public_id.clone()));
-    if let Some(agent_did) = identity.agent_did.as_deref() {
-        object
-            .entry(format!("{prefix}_agent_did"))
-            .or_insert_with(|| Value::String(agent_did.to_string()));
-    }
-}
-
-async fn build_client_task_contract_payload(
-    state: &ControlPlaneState,
-    mission: &CivilMission,
-    publisher_wattswarm_node_id: &str,
-) -> Option<Value> {
-    let contract = state
-        .swarm_bridge
-        .sample_task_contract(&mission.mission_id)
-        .await
-        .ok()?;
-    let publisher_display_name = state
-        .public_identity_registry
-        .lock()
-        .await
-        .list()
-        .into_iter()
-        .find(|identity| {
-            identity.active && identity.agent_did.as_deref() == Some(state.agent_did.as_str())
-        })
-        .map(|identity| identity.display_name);
-    let contract = mission_task_contract(
-        contract,
-        mission,
-        &state.agent_did,
-        publisher_display_name.as_deref(),
-        publisher_wattswarm_node_id,
-    );
-    serde_json::to_value(contract).ok()
-}
-
-async fn build_client_organizations_payload(state: &ControlPlaneState, limit: usize) -> Vec<Value> {
+    limit: usize,
+    missions: Option<&[CivilMission]>,
+) -> Vec<Value> {
     let organizations = state.organization_registry.lock().await;
-    let missions = state.mission_board.lock().await.list(None);
     let mut entries = organizations.list_organizations();
     entries.sort_by(|left, right| {
         right
@@ -720,23 +441,27 @@ async fn build_client_organizations_payload(state: &ControlPlaneState, limit: us
                 .into_iter()
                 .filter(|membership| membership.active)
                 .count();
-            let mission_count = missions
-                .iter()
-                .filter(|mission| {
-                    mission.publisher_kind == MissionPublisherKind::Organization
-                        && mission.publisher == organization.organization_id
-                        && mission.status != MissionStatus::Cancelled
-                })
-                .count();
-            json!({
+            let mut entry = json!({
                 "id": organization.organization_id,
                 "name": organization.name,
                 "member_count": active_member_count,
                 "treasury_watt": organization.treasury_watt,
-                "mission_count": mission_count,
                 "founded_at": timestamp_to_rfc3339(organization.created_at),
                 "status": organization_client_status(organization.active, active_member_count),
-            })
+            });
+            if let Some(missions) = missions {
+                entry["mission_count"] = json!(
+                    missions
+                        .iter()
+                        .filter(|mission| {
+                            mission.publisher_kind == MissionPublisherKind::Organization
+                                && mission.publisher == organization.organization_id
+                                && mission.status != MissionStatus::Cancelled
+                        })
+                        .count()
+                );
+            }
+            entry
         })
         .collect()
 }
@@ -909,35 +634,6 @@ pub(crate) async fn client_rpc_logs(
     Json(Value::Array(payload)).into_response()
 }
 
-pub(crate) async fn client_tasks(
-    State(state): State<ControlPlaneState>,
-    headers: HeaderMap,
-    Query(query): Query<ClientListQuery>,
-) -> Response {
-    let auth = match authorize(&state, &headers).await {
-        Ok(token) => token,
-        Err(response) => return response,
-    };
-    let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let payload = build_client_tasks_payload(&state, limit).await;
-
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "client".to_string(),
-        action: "client.tasks.query".to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: None,
-        capability: None,
-        reason: None,
-        duration_ms: None,
-        details: Some(json!({"count": payload.len()})),
-    });
-
-    Json(Value::Array(payload)).into_response()
-}
-
 pub(crate) async fn client_organizations(
     State(state): State<ControlPlaneState>,
     headers: HeaderMap,
@@ -948,7 +644,11 @@ pub(crate) async fn client_organizations(
         Err(response) => return response,
     };
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let payload = build_client_organizations_payload(&state, limit).await;
+    let missions = match board_view(&state).await {
+        Ok(missions) => missions.list(None),
+        Err(error) => return error.into_response(),
+    };
+    let payload = build_client_organizations_payload(&state, limit, Some(&missions)).await;
 
     let _ = state.audit_log.append(AuditEntry {
         id: String::new(),
@@ -989,9 +689,6 @@ pub(crate) async fn client_export(
         duration_ms: None,
         details: Some(json!({
             "peer_count": snapshot.peers.len(),
-            "task_count": snapshot.tasks.len(),
-            "swarm_task_count": snapshot.swarm_task_activity["tasks"].as_array().map_or(0, Vec::len),
-            "swarm_run_count": snapshot.swarm_task_activity["runs"].as_array().map_or(0, Vec::len),
             "organization_count": snapshot.organizations.len(),
             "public_blocks_count": snapshot.public_blocks.len(),
         })),
@@ -1096,28 +793,6 @@ fn attach_source_identity_to_values(
         .collect()
 }
 
-fn attach_source_identity_to_task_activity(
-    mut value: Value,
-    source_public_id: Option<&str>,
-    source_agent_identity: Option<&str>,
-) -> Value {
-    let Some(object) = value.as_object_mut() else {
-        return value;
-    };
-    insert_source_identity_fields(object, source_public_id, source_agent_identity);
-    for key in ["tasks", "runs"] {
-        let Some(Value::Array(items)) = object.get_mut(key) else {
-            continue;
-        };
-        for item in items {
-            if let Some(item_object) = item.as_object_mut() {
-                insert_source_identity_fields(item_object, source_public_id, source_agent_identity);
-            }
-        }
-    }
-    value
-}
-
 async fn build_public_blocks_payload(
     state: &ControlPlaneState,
     identity_query: &ClientIdentityQuery,
@@ -1165,16 +840,6 @@ async fn build_public_client_snapshot(
     let operator = build_client_self_payload(state, identity_query).await?;
     let (source_public_id, source_agent_identity) = source_identity_from_operator(&operator);
     let public_blocks = build_public_blocks_payload(state, identity_query).await?;
-    let swarm_task_activity =
-        build_task_activity_payload(state, query.task_limit.unwrap_or(50).clamp(1, 200))
-            .await
-            .unwrap_or_else(|_| {
-                json!({
-                    "generated_at": Utc::now().timestamp_millis().max(0),
-                    "tasks": Vec::<Value>::new(),
-                    "runs": Vec::<Value>::new(),
-                })
-            });
     let nodes = build_client_peers_payload(state, client_export_node_limit(query)).await?;
     let source_public_id_ref = source_public_id.as_deref();
     let source_agent_identity_ref = source_agent_identity.as_deref();
@@ -1231,23 +896,14 @@ async fn build_public_client_snapshot(
             source_agent_identity_ref,
         )
         .await,
-        swarm_task_activity: attach_source_identity_to_task_activity(
-            swarm_task_activity,
-            source_public_id_ref,
-            source_agent_identity_ref,
-        ),
         space_presences: space.space_presences,
         world_events: space.world_events,
         node_presence: space.node_presence,
-        tasks: attach_source_identity_to_values(
-            build_client_tasks_payload(state, query.task_limit.unwrap_or(50).clamp(1, 500)).await,
-            source_public_id_ref,
-            source_agent_identity_ref,
-        ),
         organizations: attach_source_identity_to_values(
             build_client_organizations_payload(
                 state,
                 query.organization_limit.unwrap_or(50).clamp(1, 500),
+                None,
             )
             .await,
             source_public_id_ref,
@@ -1261,25 +917,6 @@ fn timestamp_to_rfc3339(timestamp: i64) -> String {
     Utc.timestamp_opt(timestamp, 0)
         .single()
         .map_or_else(|| Utc::now().to_rfc3339(), |dt| dt.to_rfc3339())
-}
-
-fn mission_domain_label(domain: &MissionDomain) -> &'static str {
-    match domain {
-        MissionDomain::Wealth => "wealth",
-        MissionDomain::Power => "power",
-        MissionDomain::Security => "security",
-        MissionDomain::Trade => "trade",
-        MissionDomain::Culture => "culture",
-    }
-}
-
-fn client_task_status(status: &MissionStatus) -> &'static str {
-    match status {
-        MissionStatus::Open => "published",
-        MissionStatus::Claimed => "claimed",
-        MissionStatus::Completed => "completed",
-        MissionStatus::Settled | MissionStatus::Cancelled => "settled",
-    }
 }
 
 fn organization_client_status(active: bool, active_member_count: usize) -> &'static str {

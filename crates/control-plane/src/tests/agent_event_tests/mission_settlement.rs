@@ -186,6 +186,10 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
     let mission_id = mission["mission_id"].as_str().expect("mission_id");
     let claimer_identity = Identity::new_random();
     let claimer_agent_did = claimer_identity.agent_did.clone();
+    mission_gateway::mission_gateway(&state)
+        .lock()
+        .await
+        .ask(mission_id, &claimer_agent_did);
     let claimed = authed_post_json(
         app.clone(),
         &token,
@@ -202,7 +206,7 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
         }),
     )
     .await;
-    assert_eq!(claimed["status"].as_str(), Some("claimed"));
+    assert_eq!(claimed["status"].as_str(), Some("claimed"), "{claimed}");
     assert_eq!(
         claimed["claimed_by"].as_str(),
         Some(claimer_agent_did.as_str())
@@ -268,7 +272,7 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
         &token,
         "/v1/agent-actions/commit",
         json!({
-            "event": event,
+            "event": event.clone(),
             "decision": response["decision"].clone(),
         }),
     )
@@ -283,8 +287,7 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
         Some(claimer_agent_did.as_str())
     );
 
-    let board = state.mission_board.lock().await;
-    let settled_mission = board.get(mission_id).expect("settled mission");
+    let settled_mission = mission_gateway::gateway_mission(&state, mission_id).await;
     assert_eq!(
         settled_mission.status,
         wattetheria_kernel::civilization::missions::MissionStatus::Settled
@@ -296,6 +299,54 @@ async fn accepted_task_result_settles_using_approved_claimer_identity() {
     assert_eq!(
         settled_mission.completed_by.as_deref(),
         Some(claimer_agent_did.as_str())
+    );
+
+    // The result the claimer delivered is what the mission keeps.
+    assert_eq!(settled_mission.completion_result, Some(json!({"ok": true})));
+    assert_eq!(bridge.settled_tasks.lock().await.len(), 1);
+
+    // Another accepted result for the settled mission pays nothing again but sends the
+    // settle notice to the claimer once more.
+    let mut again = event.clone();
+    again["event_id"] = json!("evt-task-result-accepted-again");
+    again["dedupe_key"] = json!(format!("task_result:{mission_id}:cand-accepted-again"));
+    let replayed = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/agent-actions/commit",
+        json!({"event": again, "decision": response["decision"].clone()}),
+    )
+    .await;
+    assert_eq!(replayed["status"].as_str(), Some("settled"), "{replayed}");
+    assert_eq!(
+        replayed["mission_lifecycle_notice"]["kind"], "mission_settled",
+        "{replayed}"
+    );
+    assert_eq!(bridge.settled_tasks.lock().await.len(), 2);
+
+    // While the notice cannot go out the commit fails, so wattswarm delivers the event again.
+    bridge
+        .settle_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut undelivered = event.clone();
+    undelivered["event_id"] = json!("evt-task-result-accepted-undelivered");
+    undelivered["dedupe_key"] = json!(format!("task_result:{mission_id}:cand-undelivered"));
+    let failed = authed_post(
+        app.clone(),
+        &token,
+        "/v1/agent-actions/commit",
+        json!({"event": undelivered, "decision": response["decision"].clone()}),
+    )
+    .await;
+    assert_eq!(failed, StatusCode::BAD_GATEWAY);
+    assert_eq!(bridge.settled_tasks.lock().await.len(), 2);
+    assert_eq!(
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .commands("settle")
+            .len(),
+        1
     );
 
     server.abort();
@@ -334,6 +385,10 @@ async fn agent_action_commit_settles_mission_completed_topic_without_candidate_f
     )
     .await;
     let mission_id = mission["mission_id"].as_str().expect("mission_id");
+    mission_gateway::mission_gateway(&state)
+        .lock()
+        .await
+        .ask(mission_id, &worker_identity.agent_did);
     let _claimed = authed_post_json(
         app.clone(),
         &token,
@@ -408,7 +463,7 @@ async fn agent_action_commit_settles_mission_completed_topic_without_candidate_f
     )
     .await;
 
-    assert_eq!(committed["status"].as_str(), Some("settled"));
+    assert_eq!(committed["status"].as_str(), Some("settled"), "{committed}");
     assert_eq!(
         committed["completed_by"].as_str(),
         Some(worker_identity.agent_did.as_str())
@@ -702,6 +757,20 @@ async fn agent_events_route_reject_result_decision_to_wattetheria_commit() {
     let (_dir, _router, token, _policy_engine, state) = build_test_app(20);
     let base_url = format!("http://{addr}/v1");
     let remote_identity = Identity::new_random();
+    {
+        // This node's mission, claimed by the worker whose result arrives.
+        let gateway = mission_gateway::mission_gateway(&state);
+        let mut gateway = gateway.lock().await;
+        let mut record = mission_gateway::remote_record(
+            "mission-result-reject",
+            "Result to review",
+            &state.agent_did,
+            "claimed",
+            None,
+        );
+        record["claimer"] = json!("agent-worker");
+        gateway.seed(record);
+    }
     let task_result_envelope = signed_agent_event_envelope(
         &remote_identity,
         "claimer-node",
@@ -793,7 +862,11 @@ async fn agent_events_route_reject_result_decision_to_wattetheria_commit() {
         }),
     )
     .await;
-    assert_eq!(committed["status"].as_str(), Some("rejected"));
+    assert_eq!(
+        committed["status"].as_str(),
+        Some("rejected"),
+        "{committed}"
+    );
     assert_eq!(
         committed["mission_id"].as_str(),
         Some("mission-result-reject")

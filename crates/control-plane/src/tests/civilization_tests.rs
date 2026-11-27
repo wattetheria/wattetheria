@@ -40,6 +40,10 @@ async fn mission_lifecycle_settles_without_minting_treasury_watt() {
         serde_json::from_slice(&publish_resp.into_body().collect().await.unwrap().to_bytes())
             .unwrap();
     let mission_id = publish_json["mission_id"].as_str().unwrap().to_string();
+    mission_gateway::mission_gateway(&state)
+        .lock()
+        .await
+        .ask(&mission_id, "agent-enforcer");
 
     for (action, agent_did) in [("claim", "agent-enforcer"), ("complete", "agent-enforcer")] {
         let resp = app
@@ -486,34 +490,12 @@ async fn game_catalog_and_status_endpoints_work() {
     let state_json = authed_get_json(app.clone(), &token, "/v1/state").await;
     let agent_did = state_json["agent_did"].as_str().unwrap();
 
-    let (_, captain) = bootstrap_broker_game(app.clone(), &token, agent_did).await;
+    let captain = bootstrap_broker_identity(app.clone(), &token, agent_did).await;
     let _ = settle_trade_mission_for_agent(app.clone(), &token, agent_did).await;
 
     let catalog_json = authed_get_json(app.clone(), &token, "/v1/game/catalog").await;
     assert_eq!(catalog_json["roles"].as_array().unwrap().len(), 4);
     assert_eq!(catalog_json["stages"].as_array().unwrap().len(), 4);
-    let starter_list = authed_get_json(
-        app.clone(),
-        &token,
-        &format!("/v1/game/starter-missions?public_id={captain}"),
-    )
-    .await;
-    assert_starter_templates_with_anchor(&starter_list);
-    let pack_bootstrap = authed_post_json(
-        app.clone(),
-        &token,
-        "/v1/game/mission-pack/bootstrap",
-        json!({"public_id": captain}),
-    )
-    .await;
-    assert_eq!(pack_bootstrap["created"].as_array().unwrap().len(), 2);
-    let mission_pack_json = authed_get_json(
-        app.clone(),
-        &token,
-        &format!("/v1/game/mission-pack?public_id={captain}"),
-    )
-    .await;
-    assert_game_mission_pack_payload(&mission_pack_json, &captain);
     let bootstrap_json = authed_get_json(
         app.clone(),
         &token,
@@ -550,4 +532,38 @@ async fn game_catalog_and_status_endpoints_work() {
         supervision_status_json["supervision"],
         status_json["supervision"]
     );
+}
+
+#[tokio::test]
+async fn what_an_agent_completed_is_counted_past_the_newest_missions_a_view_lists() {
+    use wattetheria_kernel::civilization::missions::{MissionDomain, MissionStatus};
+
+    let (_dir, _app, _token, _, state) = build_test_app(20);
+    let agent_did = state.agent_did.clone();
+    {
+        let gateway = mission_gateway::mission_gateway(&state);
+        let mut gateway = gateway.lock().await;
+        for index in 0..501 {
+            let mut record = mission_gateway::remote_record(
+                &format!("done-{index}"),
+                "Old work",
+                "did:agent:publisher",
+                "settled",
+                None,
+            );
+            record["claimer"] = json!(agent_did);
+            record["reward"] = json!({"kind": "watt", "amount": 2, "reputation": 1, "capacity": 0});
+            gateway.seed(record);
+        }
+    }
+
+    let board = mission_gateway::gateway_board(&state).await;
+    // The view lists only the newest 500, yet nothing the agent completed is lost.
+    assert_eq!(board.list(Some(&MissionStatus::Settled)).len(), 500);
+    let completed = board.completed_by(&agent_did);
+    assert_eq!(completed.all().missions, 501);
+    assert_eq!(completed.domain(&MissionDomain::Trade).watt, 1002);
+    assert_eq!(completed.all().reputation, 501);
+    // Another agent's record is added up from the listed missions.
+    assert_eq!(board.completed_by("did:agent:other").all().missions, 0);
 }

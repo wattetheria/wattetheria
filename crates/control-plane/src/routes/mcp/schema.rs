@@ -513,6 +513,19 @@ fn invite_private_hive_participant_fields() -> Vec<(&'static str, Value)> {
     ]
 }
 
+/// The schema of a tool that names a mission and may say why.
+fn mission_with_reason_schema(tool: &AgentTool, reason: &str) -> Value {
+    tool_schema(
+        tool,
+        &[
+            string_field("mission_id", "Mission ID."),
+            string_field("reason", reason),
+        ],
+        &["mission_id"],
+        false,
+    )
+}
+
 fn mission_schema(tool: &AgentTool) -> Option<Value> {
     match tool.name {
         "list_missions" => Some(tool_schema(tool, &list_mission_fields(), &[], false)),
@@ -585,6 +598,26 @@ fn mission_schema(tool: &AgentTool) -> Option<Value> {
             &["mission_id", "kind", "item", "units"],
             false,
         )),
+        "reject_mission_claim" => Some(tool_schema(
+            tool,
+            &reject_mission_claim_fields(),
+            &["mission_id", "agent_did"],
+            false,
+        )),
+        "reject_mission_result" => Some(tool_schema(
+            tool,
+            &reject_mission_result_fields(),
+            &["mission_id"],
+            false,
+        )),
+        "withdraw_mission_claim" => Some(mission_with_reason_schema(
+            tool,
+            "Why the mission is given up.",
+        )),
+        "cancel_mission" => Some(mission_with_reason_schema(
+            tool,
+            "Why the mission is cancelled.",
+        )),
         "mission_guide" => Some(empty_tool_schema(tool)),
         _ => None,
     }
@@ -594,13 +627,13 @@ fn list_mission_fields() -> Vec<(&'static str, Value)> {
     vec![
         enum_field(
             "status",
-            "Network mission status filter.",
+            "Mission status filter.",
             &[
                 "published",
-                "open",
                 "claimed",
                 "completed",
                 "settled",
+                "rejected",
                 "cancelled",
             ],
         ),
@@ -676,6 +709,29 @@ fn publish_mission_fields() -> Vec<(&'static str, Value)> {
     ]
 }
 
+fn reject_mission_claim_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("mission_id", "Mission ID."),
+        string_field("agent_did", "Agent DID whose claim is turned down."),
+        string_field(
+            "claimer_node_id",
+            "Wattswarm node ID of that agent, from the claim event, when known.",
+        ),
+        string_field("reason", "Why the claim is turned down."),
+    ]
+}
+
+fn reject_mission_result_fields() -> Vec<(&'static str, Value)> {
+    vec![
+        string_field("mission_id", "Mission ID."),
+        string_field(
+            "claimer_node_id",
+            "Wattswarm node ID of the claimer, from the result event, when known.",
+        ),
+        string_field("reason", "Why what was handed in is rejected."),
+    ]
+}
+
 fn pledge_mission_items_fields() -> Vec<(&'static str, Value)> {
     let mut fields = vec![
         string_field("mission_id", "Mission ID."),
@@ -699,29 +755,28 @@ fn pledge_mission_items_fields() -> Vec<(&'static str, Value)> {
     fields
 }
 
-/// The Watt bounty a publisher offers. Omitted means no bounty; `agent_watt` is locked from
-/// the publisher's ledger balance when the mission is published.
+/// The Watt bounty a publisher offers. Omitted means no bounty.
 fn reward_field() -> (&'static str, Value) {
     (
         "reward",
         json!({
             "type": "object",
-            "description": "Optional bounty for the executor. agent_watt is locked from your own Watt balance in the gateway ledger when the mission is published, paid to the executor on settlement, and refunded if the mission is cancelled or expires. Publishing fails with insufficient_watt when your balance is too low, and with ledger_unavailable when this node has no gateway.",
+            "description": "Optional Watt reward for the executor, paid from your Watt balance.",
             "properties": {
                 "agent_watt": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Watt paid to the executor; 0 means no Watt bounty."
+                    "description": "Watt paid to the executor; 0 means no Watt reward."
                 },
                 "reputation": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Reputation granted to the executor on settlement. Defaults to 0."
+                    "description": "Reputation granted to the executor on settlement."
                 },
                 "capacity": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Capacity granted to the executor on settlement. Defaults to 0."
+                    "description": "Capacity granted to the executor on settlement."
                 }
             },
             "required": ["agent_watt"],

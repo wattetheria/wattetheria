@@ -1,9 +1,9 @@
 //! Node-side client of the gateway Watt ledger.
 //!
 //! The gateway ledger is the only writer of Watt. A node never computes balances; it reads
-//! them here and asks the ledger to send Watt to another account or to lock, release or
-//! refund mission bounties, signing each spend with its own `did:key` so the ledger can
-//! check the payer.
+//! them here and asks the ledger to send Watt to another account, signing each spend with its
+//! own `did:key` so the ledger can check the payer. Mission commands go to the gateway's
+//! mission API, which keeps every mission's status and holds Watt rewards itself.
 
 use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, StatusCode};
@@ -60,23 +60,6 @@ impl WattBalance {
     };
 }
 
-/// Display-name snapshots sent with an escrow so the ledger can show who paid whom and why.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EscrowLabels<'a> {
-    pub payer_label: Option<&'a str>,
-    pub payee_label: Option<&'a str>,
-    pub subject: Option<&'a str>,
-}
-
-/// Who may claim a bounty, sent with its lock: the mission's scope (`real_world` / `in_world`)
-/// and, when the publisher named one, the agent it is reserved for.
-#[derive(Debug, Clone, Copy)]
-pub struct EscrowTerms<'a> {
-    pub scope: &'a str,
-    pub assignee: Option<&'a str>,
-    pub assignee_label: Option<&'a str>,
-}
-
 /// Display-name snapshots sent with a transfer so the ledger can show who paid whom and why.
 /// The ledger-wide transfer id for one of this agent's transfers: the payer's DID
 /// fingerprint, then the caller's id. Entry ids are a global namespace on the ledger.
@@ -94,6 +77,71 @@ pub struct TransferLabels<'a> {
     pub from_label: Option<&'a str>,
     pub to_label: Option<&'a str>,
     pub subject: Option<&'a str>,
+}
+
+/// A mission command and the role its signer plays in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissionAction {
+    RequestClaim,
+    ApproveClaim,
+    RejectClaim,
+    WithdrawClaim,
+    Pledge,
+    Deliver,
+    Reject,
+    Settle,
+    Cancel,
+}
+
+impl MissionAction {
+    fn path(self, mission_id: &str) -> String {
+        let action = match self {
+            Self::RequestClaim => "claims",
+            Self::ApproveClaim => "claims/approve",
+            Self::RejectClaim => "claims/reject",
+            Self::WithdrawClaim => "claims/withdraw",
+            Self::Pledge => "pledge",
+            Self::Deliver => "deliver",
+            Self::Reject => "reject",
+            Self::Settle => "settle",
+            Self::Cancel => "cancel",
+        };
+        format!("/api/missions/{mission_id}/{action}")
+    }
+
+    /// The action the signature is given for; the gateway refuses it for any other command.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::RequestClaim => "claim",
+            Self::ApproveClaim => "approve_claim",
+            Self::RejectClaim => "reject_claim",
+            Self::WithdrawClaim => "withdraw_claim",
+            Self::Pledge => "pledge",
+            Self::Deliver => "deliver",
+            Self::Reject => "reject",
+            Self::Settle => "settle",
+            Self::Cancel => "cancel",
+        }
+    }
+
+    const fn signer_field(self) -> &'static str {
+        match self {
+            Self::RequestClaim | Self::WithdrawClaim | Self::Pledge => "claimer",
+            Self::Deliver => "signer",
+            Self::ApproveClaim | Self::RejectClaim | Self::Reject | Self::Settle | Self::Cancel => {
+                "publisher"
+            }
+        }
+    }
+}
+
+/// The fields of a mission command as an object the command's own fields are added to.
+fn command_fields(fields: Value) -> Result<Value> {
+    match fields {
+        Value::Object(fields) => Ok(Value::Object(fields)),
+        Value::Null => Ok(json!({})),
+        other => Err(anyhow!("mission command fields must be an object: {other}")),
+    }
 }
 
 #[derive(Clone)]
@@ -235,24 +283,6 @@ impl LedgerClient {
         Ok(body)
     }
 
-    /// Reads one escrow; `None` when the ledger holds no escrow under that id.
-    pub async fn escrow(&self, escrow_id: &str) -> std::result::Result<Option<Value>, LedgerError> {
-        let response = self
-            .client
-            .get(format!("{}/api/ledger/escrows/{escrow_id}", self.base_url))
-            .send()
-            .await
-            .map_err(|error| LedgerError::Unavailable(error.into()))?;
-        let (status, body) = read_reply(response, "/api/ledger/escrows")
-            .await
-            .map_err(LedgerError::Unavailable)?;
-        match status {
-            status if status.is_success() => Ok(Some(body)),
-            StatusCode::NOT_FOUND => Ok(None),
-            status => Err(LedgerError::Rejected(status, error_message(&body))),
-        }
-    }
-
     /// Moves `amount` Watt from this agent's account to `to` in one ledger entry. Idempotent
     /// on `transfer_id`, which the caller chooses: the ledger posts one entry per id and
     /// returns the same entry on a retry. The ledger's key is global, so the id is scoped to
@@ -282,196 +312,87 @@ impl LedgerClient {
             .await
     }
 
-    pub async fn lock_escrow(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-        amount: i64,
-        reference: &str,
-        labels: EscrowLabels<'_>,
-        terms: Option<EscrowTerms<'_>>,
-    ) -> std::result::Result<Value, LedgerError> {
-        let mut payload = json!({
-            "escrow_id": escrow_id,
-            "payer": state.identity.agent_did,
-            "amount": amount,
-            "reference": reference,
-            "payer_label": labels.payer_label,
-            "subject": labels.subject,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        if let Some(terms) = terms {
-            payload["terms"] = json!({
-                "scope": terms.scope,
-                "assignee": terms.assignee,
-                "assignee_label": terms.assignee_label,
-            });
-        }
-        self.post_signed(state, "/api/ledger/escrows", payload)
-            .await
-    }
-
-    /// Asks the ledger for the bounty on behalf of this agent, before the claim leaves the
-    /// node. The ledger's answer comes back as it is: a refusal says why this agent may not
-    /// claim, and `404` means the bounty carries no claim terms.
-    pub async fn request_claim(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-        claimer_label: Option<&str>,
-    ) -> Result<(StatusCode, Value)> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "claimer": state.identity.agent_did,
-            "claimer_label": claimer_label,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed_raw(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/claims"),
-            payload,
-        )
-        .await
-    }
-
-    /// Tells the ledger that this agent, the publisher, accepts `claimer` for the bounty.
-    pub async fn approve_claim(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-        claimer: &str,
-    ) -> Result<(StatusCode, Value)> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "payer": state.identity.agent_did,
-            "claimer": claimer,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed_raw(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/claims/approve"),
-            payload,
-        )
-        .await
-    }
-
-    /// Hands `units` of `item` from this agent's bag to the ledger for the bounty's publisher
-    /// to look at. `kind` names the bag (`crop`, `hunt`, `housing`).
-    pub async fn pledge_items(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-        kind: &str,
-        item: &str,
-        units: i64,
-    ) -> Result<(StatusCode, Value)> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "claimer": state.identity.agent_did,
-            "kind": kind,
-            "item": item,
-            "units": units,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed_raw(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/pledge"),
-            payload,
-        )
-        .await
-    }
-
-    /// Reports that the bounty's work was handed in without any item, as its publisher or its
-    /// claimer. `has_result` says whether the completion carries a result that shows the work.
-    pub async fn report_delivery(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-        has_result: bool,
-    ) -> Result<(StatusCode, Value)> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "signer": state.identity.agent_did,
-            "has_result": has_result,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed_raw(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/deliver"),
-            payload,
-        )
-        .await
-    }
-
-    /// Turns down the items pledged for this agent's bounty: every side gets its own back.
-    pub async fn reject_pledge(
-        &self,
-        state: &ControlPlaneState,
-        escrow_id: &str,
-    ) -> Result<(StatusCode, Value)> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "payer": state.identity.agent_did,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed_raw(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/reject"),
-            payload,
-        )
-        .await
-    }
-
-    /// The bounty's claim terms and what the ledger holds for it; `404` when it has none.
-    pub async fn trade(&self, escrow_id: &str) -> Result<(StatusCode, Value)> {
-        self.get_public(&format!("/api/ledger/escrows/{escrow_id}/trade"), &[])
-            .await
-    }
-
     /// Whether `agent_did` may claim missions now, as the ledger records it.
     pub async fn claim_standing(&self, agent_did: &str) -> Result<(StatusCode, Value)> {
         self.get_public(&format!("/api/missions/claimers/{agent_did}"), &[])
             .await
     }
 
-    pub async fn release_escrow(
+    /// Sends one command on a mission, signed by this agent in the role the command names, for
+    /// that action only, with a fresh nonce. The gateway keeps every mission's status: the reply
+    /// is the mission as it stands after the command, or the gateway's refusal, kept as it is so
+    /// its reason and `code` reach the agent.
+    pub async fn mission_command(
         &self,
         state: &ControlPlaneState,
-        escrow_id: &str,
-        payee: &str,
-        payee_label: Option<&str>,
-    ) -> std::result::Result<Value, LedgerError> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "payer": state.identity.agent_did,
-            "payee": payee,
-            "payee_label": payee_label,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed(
+        mission_id: &str,
+        action: MissionAction,
+        fields: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let mut payload = command_fields(fields)?;
+        payload["mission_id"] = json!(mission_id);
+        self.post_mission_command(
             state,
-            &format!("/api/ledger/escrows/{escrow_id}/release"),
+            &action.path(mission_id),
+            (action.name(), action.signer_field()),
             payload,
         )
         .await
     }
 
-    pub async fn refund_escrow(
+    /// Publishes a mission, signed by this agent as its publisher. The gateway makes the
+    /// mission's id and answers with the mission. `request_id` is this node's own name for the
+    /// request: sent again with the same one, the gateway answers with the mission it already
+    /// made instead of making a second.
+    pub async fn publish_mission(
         &self,
         state: &ControlPlaneState,
-        escrow_id: &str,
-    ) -> std::result::Result<Value, LedgerError> {
-        let payload = json!({
-            "escrow_id": escrow_id,
-            "payer": state.identity.agent_did,
-            "issued_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        self.post_signed(
-            state,
-            &format!("/api/ledger/escrows/{escrow_id}/refund"),
-            payload,
-        )
-        .await
+        request_id: &str,
+        fields: Value,
+    ) -> Result<(StatusCode, Value)> {
+        let mut payload = command_fields(fields)?;
+        payload["request_id"] = json!(request_id);
+        self.post_mission_command(state, "/api/missions", ("publish", "publisher"), payload)
+            .await
+    }
+
+    /// Signs `payload` for the action and the signer's role and posts it, with a fresh nonce.
+    async fn post_mission_command(
+        &self,
+        state: &ControlPlaneState,
+        path: &str,
+        (action, signer_field): (&str, &str),
+        mut payload: Value,
+    ) -> Result<(StatusCode, Value)> {
+        payload["action"] = json!(action);
+        payload[signer_field] = json!(state.identity.agent_did);
+        payload["issued_at"] = json!(chrono::Utc::now().to_rfc3339());
+        payload["nonce"] = json!(uuid::Uuid::new_v4().to_string());
+        self.post_signed_raw(state, path, payload).await
+    }
+
+    /// One mission as the gateway records it, with the agents that asked to take it.
+    pub async fn mission(&self, mission_id: &str) -> Result<(StatusCode, Value)> {
+        self.get_public(&format!("/api/missions/{mission_id}"), &[])
+            .await
+    }
+
+    /// Missions, newest first, narrowed by `query` (`status`, `scope`, `kind`, `publisher`,
+    /// `claimer`, `taker`, `involving`, `organization_id`, `limit`, `before`).
+    pub async fn missions(&self, query: &[(&str, &str)]) -> Result<(StatusCode, Value)> {
+        self.get_public("/api/missions", query).await
+    }
+
+    /// What the settled missions `agent_did` carried out add up to, per domain.
+    pub async fn missions_completed(&self, agent_did: &str) -> Result<(StatusCode, Value)> {
+        self.get_public(&format!("/api/missions/completed/{agent_did}"), &[])
+            .await
+    }
+
+    /// Every step the mission took, oldest first.
+    pub async fn mission_transitions(&self, mission_id: &str) -> Result<(StatusCode, Value)> {
+        self.get_public(&format!("/api/missions/{mission_id}/transitions"), &[])
+            .await
     }
 
     /// Publishes a custom skin on the gateway, paying the publication fee from this agent's

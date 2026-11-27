@@ -378,9 +378,18 @@ pub(crate) async fn galaxy_travel_arrive(
         Ok(position) => position,
         Err(response) => return response,
     };
-    let consequence =
-        build_arrival_consequence(&state, &context, &public_id, &position, &completed_session)
-            .await;
+    let consequence = match build_arrival_consequence(
+        &state,
+        &context,
+        &public_id,
+        &position,
+        &completed_session,
+    )
+    .await
+    {
+        Ok(consequence) => consequence,
+        Err(error) => return error.into_response(),
+    };
     let record = {
         let mut registry = state.travel_state_registry.lock().await;
         let record = match registry.arrive_with(
@@ -608,16 +617,19 @@ async fn build_arrival_consequence(
     public_id: &str,
     position: &wattetheria_kernel::map::TravelPosition,
     session: &wattetheria_kernel::map::TravelSession,
-) -> wattetheria_kernel::map::TravelConsequence {
+) -> Result<
+    wattetheria_kernel::map::TravelConsequence,
+    crate::routes::gateway_missions::GatewayMissionError,
+> {
+    let missions = crate::routes::gateway_missions::board_view(state).await?;
     let map = state
         .galaxy_map_registry
         .lock()
         .await
         .get(&session.map_id)
         .expect("arrival map should exist");
-    let missions = state.mission_board.lock().await;
     let governance = state.governance_engine.lock().await;
-    evaluate_arrival_consequence(
+    Ok(evaluate_arrival_consequence(
         public_id,
         &map,
         position,
@@ -625,7 +637,7 @@ async fn build_arrival_consequence(
         context.profile.as_ref(),
         &missions,
         &governance,
-    )
+    ))
 }
 
 fn travel_public_payload(

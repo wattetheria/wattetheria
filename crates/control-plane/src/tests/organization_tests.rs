@@ -163,30 +163,31 @@ async fn organization_endpoints_and_views_work() {
         Some(voss.as_str())
     );
 
+    let organization_mission = json!({
+        "organization_id": "aurora-consortium",
+        "actor_public_id": echo,
+        "title": "Staff the frontier exchange",
+        "description": "Coordinate organization members around the exchange lane.",
+        "domain": "trade",
+        "subnet_id": "planet-test",
+        "zone_id": "frontier-belt",
+        "required_role": "broker",
+        "required_faction": "freeport",
+        "treasury_commit_watt": 5,
+        "reward": {
+        "agent_watt": 0,
+        "reputation": 3,
+        "capacity": 2
+        },
+        "payload": {
+        "organization_id": "aurora-consortium"
+        }
+    });
     let published_mission = authed_post_json(
         app.clone(),
         &token,
         "/v1/civilization/organizations/missions",
-        json!({
-            "organization_id": "aurora-consortium",
-            "actor_public_id": echo,
-            "title": "Staff the frontier exchange",
-            "description": "Coordinate organization members around the exchange lane.",
-            "domain": "trade",
-            "subnet_id": "planet-test",
-            "zone_id": "frontier-belt",
-            "required_role": "broker",
-            "required_faction": "freeport",
-            "treasury_commit_watt": 5,
-            "reward": {
-                "agent_watt": 0,
-                "reputation": 3,
-                "capacity": 2
-            },
-            "payload": {
-                "organization_id": "aurora-consortium"
-            }
-        }),
+        organization_mission.clone(),
     )
     .await;
     assert_eq!(
@@ -195,6 +196,23 @@ async fn organization_endpoints_and_views_work() {
     );
     assert_eq!(
         published_mission["organization"]["treasury_watt"].as_i64(),
+        Some(40)
+    );
+    // The same mission asked for again is the one already there, and the treasury pays once.
+    let repeated_mission = authed_post_json(
+        app.clone(),
+        &token,
+        "/v1/civilization/organizations/missions",
+        organization_mission,
+    )
+    .await;
+    assert_eq!(repeated_mission["already_published"], true);
+    assert_eq!(
+        repeated_mission["mission"]["mission_id"],
+        published_mission["mission"]["mission_id"]
+    );
+    assert_eq!(
+        repeated_mission["organization"]["treasury_watt"].as_i64(),
         Some(40)
     );
     complete_and_settle_mission(

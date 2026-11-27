@@ -36,7 +36,6 @@ use wattetheria_kernel::civilization::galaxy::GalaxyState;
 use wattetheria_kernel::civilization::identities::{
     ControllerBindingRegistry, PublicIdentityRegistry, reconcile_local_runtime_identity,
 };
-use wattetheria_kernel::civilization::missions::MissionBoard;
 use wattetheria_kernel::civilization::organizations::OrganizationRegistry;
 use wattetheria_kernel::civilization::profiles::CitizenRegistry;
 use wattetheria_kernel::civilization::relationships::RelationshipRegistry;
@@ -71,7 +70,6 @@ struct RuntimeState {
 }
 
 struct CivilizationRuntimeState {
-    mission_board: MissionBoard,
     public_identity_registry: PublicIdentityRegistry,
     controller_binding_registry: ControllerBindingRegistry,
     citizen_registry: CitizenRegistry,
@@ -97,7 +95,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         spawn_network_permission_sync_task(runtime.control_state.clone());
     let registry_registration_task =
         spawn_registry_registration_task(runtime.control_state.clone());
-    let _mission_ledger_sweep_task = spawn_mission_ledger_sweep_task(runtime.control_state.clone());
     let autonomy_task = spawn_autonomy_task(&cli, runtime.control_state.clone());
     let wattswarm_sync_task = spawn_wattswarm_sync_bridge(
         runtime.control_state.clone(),
@@ -172,35 +169,6 @@ fn spawn_registry_registration_task(state: ControlPlaneState) -> tokio::task::Jo
                 Err(error) => {
                     warn!("network Agent registration attempt failed: {error:#}");
                 }
-            }
-        }
-    })
-}
-
-const MISSION_LEDGER_SWEEP_INTERVAL: Duration = Duration::from_mins(5);
-
-/// Expires overdue missions and retries pending bounty refunds against the gateway ledger, at
-/// start and then every few minutes, so no Watt stays stranded in escrow after a lost reply.
-fn spawn_mission_ledger_sweep_task(state: ControlPlaneState) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticker = interval(MISSION_LEDGER_SWEEP_INTERVAL);
-        loop {
-            ticker.tick().await;
-            let report = wattetheria_control_plane::reconcile_mission_escrows(
-                &state,
-                wattetheria_control_plane::MISSION_ESCROW_STALE_AFTER_SECS,
-            )
-            .await;
-            if report != wattetheria_control_plane::MissionEscrowSweepReport::default() {
-                info!(
-                    expired = report.expired,
-                    refunds_settled = report.refunds_settled,
-                    refunds_pending = report.refunds_pending,
-                    escrows_confirmed = report.escrows_confirmed,
-                    escrows_abandoned = report.escrows_abandoned,
-                    trades_ended = report.trades_ended,
-                    "mission ledger sweep finished"
-                );
             }
         }
     })
@@ -377,10 +345,8 @@ async fn setup_runtime(cli: &Cli) -> Result<RuntimeState> {
         &cli.data_dir.join("online_proof.json"),
     )?;
     online_proof.create_lease(&identity.agent_did, 300, 20);
-    let swarm_bridge: Arc<dyn SwarmBridge> = Arc::new(HybridSwarmBridge::new(
-        cli.data_dir.join("missions/state.json"),
-        cli.wattswarm_ui_base_url.as_deref(),
-    ));
+    let swarm_bridge: Arc<dyn SwarmBridge> =
+        Arc::new(HybridSwarmBridge::new(cli.wattswarm_ui_base_url.as_deref()));
     let agent_surface = AgentParticipationSurface {
         control_plane_endpoint: cli.agent_control_plane_endpoint.clone(),
         wattswarm_ui_base_url: cli
@@ -502,7 +468,6 @@ async fn build_control_state(
         governance_engine,
         policy_engine: Arc::new(Mutex::new(policy_engine)),
         mailbox: Arc::new(Mutex::new(mailbox)),
-        mission_board: Arc::new(Mutex::new(civilization_state.mission_board)),
         public_identity_registry: Arc::new(Mutex::new(civilization_state.public_identity_registry)),
         controller_binding_registry: Arc::new(Mutex::new(
             civilization_state.controller_binding_registry,
@@ -585,10 +550,6 @@ fn load_civilization_runtime_state(
     local_db: &LocalDb,
     space_maps: wattetheria_control_plane::SpaceMaps,
 ) -> Result<CivilizationRuntimeState> {
-    let mission_board: MissionBoard = local_db.load_or_migrate(
-        local_db::domain::MISSION_BOARD,
-        &cli.data_dir.join("missions/state.json"),
-    )?;
     let mut public_identity_registry: PublicIdentityRegistry = local_db.load_or_migrate(
         local_db::domain::PUBLIC_IDENTITY_REGISTRY,
         &cli.data_dir.join("civilization/public_identities.json"),
@@ -682,7 +643,6 @@ fn load_civilization_runtime_state(
     )?;
 
     Ok(CivilizationRuntimeState {
-        mission_board,
         public_identity_registry,
         controller_binding_registry,
         citizen_registry,

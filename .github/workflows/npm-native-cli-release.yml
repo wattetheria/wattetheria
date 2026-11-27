@@ -236,6 +236,9 @@ jobs:
       - native
       - release-artifacts
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -273,5 +276,5 @@ jobs:
               echo "${package_name}@${RELEASE_VERSION} is already published; skipping."
               continue
             fi
-            npm publish "$package" --access public --tag "$npm_tag"
+            npm publish "$package" --access public --provenance --tag "$npm_tag"
           done

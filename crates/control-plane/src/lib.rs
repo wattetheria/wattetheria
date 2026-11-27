@@ -8,10 +8,6 @@ mod diagnostics;
 mod gateway_dispatch;
 pub mod ledger_client;
 pub mod mcp_events;
-pub use routes::missions::{
-    ESCROW_STALE_AFTER_SECS as MISSION_ESCROW_STALE_AFTER_SECS, MissionEscrowSweepReport,
-    reconcile_mission_escrows,
-};
 mod reliability_maintenance;
 mod runtime_sessions;
 pub mod social_host;
@@ -33,6 +29,7 @@ pub mod routes {
     pub(crate) mod diagnostics;
     pub(crate) mod farm;
     pub(crate) mod game;
+    pub(crate) mod gateway_missions;
     pub(crate) mod governance;
     pub(crate) mod housing;
     pub(crate) mod hunt;
@@ -455,7 +452,6 @@ fn client_facing_router() -> Router<ControlPlaneState> {
             "/v1/client/wattswarm-diagnostics",
             get(routes::diagnostics::client_wattswarm_diagnostics),
         )
-        .route("/v1/client/tasks", get(routes::client_api::client_tasks))
         .route(
             "/v1/wattetheria/client/task-activity",
             get(routes::client_swarm::client_task_activity),
@@ -540,22 +536,6 @@ fn game_router() -> Router<ControlPlaneState> {
             get(routes::game::game_bootstrap),
         )
         .route("/v1/game/bootstrap", get(routes::game::game_bootstrap))
-        .route(
-            "/v1/game/mission-pack",
-            get(routes::game::game_mission_pack),
-        )
-        .route(
-            "/v1/game/starter-missions",
-            get(routes::game::game_starter_missions),
-        )
-        .route(
-            "/v1/game/starter-missions/bootstrap",
-            post(routes::game::bootstrap_starter_missions_route),
-        )
-        .route(
-            "/v1/game/mission-pack/bootstrap",
-            post(routes::game::bootstrap_mission_pack_route),
-        )
 }
 
 fn core_router() -> Router<ControlPlaneState> {
@@ -802,6 +782,18 @@ fn mission_lifecycle_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/wattetheria/missions/{mission_id}/pledge",
             post(routes::mission_trade::mission_pledge_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/claims/reject",
+            post(routes::mission_trade::mission_claim_reject_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/claims/withdraw",
+            post(routes::missions::mission_claim_withdraw_by_id),
+        )
+        .route(
+            "/v1/wattetheria/missions/{mission_id}/reject",
+            post(routes::mission_trade::mission_reject_by_id),
         )
 }
 

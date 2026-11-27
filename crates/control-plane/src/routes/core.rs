@@ -233,7 +233,7 @@ fn agent_action_execution_type(
         (_, "complete_mission") => Some("missions.complete"),
         (_, "settle_mission") => Some("missions.settle"),
         ("task_claim_received", "reject_claim" | "human_review") => Some("missions.claim_review"),
-        ("task_result_received", "reject_result" | "request_retry" | "human_review") => {
+        ("task_result_received", "reject_result" | "human_review") => {
             Some("missions.result_review")
         }
         _ => None,
@@ -251,9 +251,9 @@ fn agent_action_execution_domain(action_type: &str) -> &'static str {
     }
 }
 
-async fn task_lifecycle_envelope_for_commit(
+/// The signed envelope of a mission lifecycle answer this node's agent sends to another agent.
+async fn task_lifecycle_envelope(
     state: &ControlPlaneState,
-    body: &AgentActionCommitBody,
     capability: &str,
     message: Value,
     target_agent_id: Option<String>,
@@ -272,14 +272,9 @@ async fn task_lifecycle_envelope_for_commit(
             source_agent_id: state.agent_did.clone(),
             source_public_id,
             source_display_name: None,
-            target_agent_id: target_agent_id.or_else(|| {
-                body.event
-                    .agent_envelope
-                    .as_ref()
-                    .and_then(|envelope| envelope.source_agent_id.clone())
-            }),
+            target_agent_id,
             source_node_id,
-            target_node_id: target_node_id.or_else(|| body.event.source_node_id.clone()),
+            target_node_id,
             capability: capability.to_owned(),
             message,
             extensions: None,
@@ -615,6 +610,12 @@ fn mission_commit_result(body: &AgentActionCommitBody) -> Option<Value> {
         .or_else(|| body.event.payload.pointer("/content/result").cloned())
         .or_else(|| body.event.payload.pointer("/topic_content/result").cloned())
         .or_else(|| body.event.payload.pointer("/output/result").cloned())
+        .or_else(|| {
+            body.event
+                .payload
+                .pointer("/candidate_output/result")
+                .cloned()
+        })
 }
 
 fn mission_commit_value(body: &AgentActionCommitBody, field: &str) -> Option<Value> {
@@ -827,9 +828,7 @@ fn agent_action_commit_route_label(
         (_, "publish_mission") => "mission_publish",
         (_, "claim_mission" | "complete_mission" | "settle_mission") => "mission_transition",
         ("task_claim_received", "reject_claim" | "human_review") => "mission_claim_review",
-        ("task_result_received", "reject_result" | "request_retry" | "human_review") => {
-            "mission_result_review"
-        }
+        ("task_result_received", "reject_result" | "human_review") => "mission_result_review",
         _ => "unsupported",
     }
 }
@@ -1563,19 +1562,16 @@ async fn commit_transition_mission(
             if body.event.event_type == "task_result_received" {
                 let default_agent_did = state.agent_did.clone();
                 let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
-                let claim_route =
-                    mission_claim_body_for_commit(&body, mission_id.clone(), agent_did.clone())
-                        .claim_route;
+                // The claim body carries the result the event delivered, for the hand-in.
+                let claim = mission_claim_body_for_commit(&body, mission_id, agent_did);
                 let task_id = payload_string(&body.event.payload, "/task_id");
                 let candidate_id = payload_string(&body.event.payload, "/candidate_id");
                 return commit_task_result_settle_mission(
                     state,
                     commit_headers,
-                    mission_id,
-                    agent_did,
+                    claim,
                     task_id,
                     candidate_id,
-                    claim_route,
                 )
                 .await;
             }
@@ -1601,7 +1597,6 @@ async fn commit_transition_mission(
     }
 }
 
-#[allow(clippy::too_many_lines)]
 async fn commit_mission_claim_review(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
@@ -1616,22 +1611,6 @@ async fn commit_mission_claim_review(
     };
     let default_agent_did = state.agent_did.clone();
     let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
-    let action = body.decision.action.as_str();
-    let (status, stream_kind, signed_kind, audit_action) = match action {
-        "reject_claim" => (
-            "rejected",
-            "mission.claim_rejected",
-            "MISSION_CLAIM_REJECTED",
-            "mission.reject_claim",
-        ),
-        "human_review" => (
-            "human_review",
-            "mission.claim_human_review",
-            "MISSION_CLAIM_HUMAN_REVIEW",
-            "mission.human_review",
-        ),
-        _ => unreachable!("mission claim review action already matched"),
-    };
     let task_id = body
         .decision
         .payload
@@ -1643,54 +1622,79 @@ async fn commit_mission_claim_review(
     let claimer_node_id = payload_string(&body.decision.payload, "/claimer_node_id")
         .or_else(|| payload_string(&body.event.payload, "/claimer_node_id"))
         .or_else(|| body.event.source_node_id.clone());
-    let Some(claimer_node_id) = claimer_node_id.clone() else {
-        return bad_request("missing claimer_node_id");
-    };
     let execution_id = payload_string(&body.decision.payload, "/execution_id")
         .or_else(|| payload_string(&body.event.payload, "/execution_id"))
         .unwrap_or_else(|| format!("wattetheria:{mission_id}:{agent_did}"));
-    let payload = json!({
-        "mission_id": mission_id,
-        "task_id": task_id,
-        "agent_did": agent_did,
-        "claimer_node_id": claimer_node_id,
-        "execution_id": execution_id,
-        "status": status,
-        "reason": body.decision.reason.clone(),
-        "decision_payload": body.decision.payload.clone(),
-        "event_id": body.event.event_id.clone(),
-        "decision_id": body.decision.decision_id.clone(),
-    });
-    let agent_envelope = match task_lifecycle_envelope_for_commit(
+    review_mission_claim(
         &state,
-        &body,
-        "mission.claim.review",
-        payload.clone(),
-        body.event
-            .agent_envelope
-            .as_ref()
-            .and_then(|envelope| envelope.source_agent_id.clone()),
-        Some(claimer_node_id.clone()),
+        auth,
+        MissionReview {
+            action: body.decision.action.clone(),
+            mission_id,
+            agent_did,
+            task_id,
+            execution_id,
+            reason: body.decision.reason.clone(),
+            target_agent_id: body
+                .event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.source_agent_id.clone()),
+            target_node_id: claimer_node_id,
+            context: json!({
+                "decision_payload": body.decision.payload.clone(),
+                "event_id": body.event.event_id.clone(),
+                "decision_id": body.decision.decision_id.clone(),
+            }),
+        },
     )
     .await
-    {
-        Ok(envelope) => envelope,
-        Err(error) => return internal_error(&error),
-    };
-    if let Err(error) = state
-        .swarm_bridge
-        .decide_task_claim(SwarmTaskClaimDecisionCommand {
-            task_id: task_id.clone(),
-            execution_id,
-            claimer_node_id,
-            approved: false,
-            reason: body.decision.reason.clone(),
-            agent_envelope,
-        })
-        .await
-    {
-        return internal_error(&error);
+}
+
+/// A publisher's answer to a claim or to what was handed in: what the brain decided on an
+/// event, or what the agent asked for with a tool.
+pub(crate) struct MissionReview {
+    /// `reject_claim` or `reject_result`, or `human_review`.
+    pub(crate) action: String,
+    pub(crate) mission_id: String,
+    /// The claimer the answer is for.
+    pub(crate) agent_did: String,
+    pub(crate) task_id: String,
+    pub(crate) execution_id: String,
+    pub(crate) reason: Option<String>,
+    /// The claimer's agent and node, when known: the answer is addressed to them.
+    pub(crate) target_agent_id: Option<String>,
+    pub(crate) target_node_id: Option<String>,
+    /// What else the answer records, such as the event and the decision it came from.
+    pub(crate) context: Value,
+}
+
+impl MissionReview {
+    fn payload(&self, status: &str) -> Value {
+        let mut payload = json!({
+            "mission_id": self.mission_id,
+            "task_id": self.task_id,
+            "agent_did": self.agent_did,
+            "execution_id": self.execution_id,
+            "status": status,
+            "reason": self.reason,
+        });
+        if let (Some(payload), Some(context)) = (payload.as_object_mut(), self.context.as_object())
+        {
+            payload.extend(context.clone());
+        }
+        payload
     }
+}
+
+/// Records a review: on the stream, in the signed event log and in the audit log.
+fn record_mission_review(
+    state: &ControlPlaneState,
+    auth: String,
+    (stream_kind, signed_kind, audit_action): (&str, &str, &str),
+    mission_id: String,
+    payload: &Value,
+) {
     let _ = state.stream_tx.send(StreamEvent {
         kind: stream_kind.to_string(),
         timestamp: Utc::now().timestamp(),
@@ -1713,10 +1717,90 @@ async fn commit_mission_claim_review(
         duration_ms: None,
         details: Some(payload.clone()),
     });
+}
+
+/// The publisher turns a claim down (`reject_claim`) or leaves it to a human (`human_review`).
+/// Only a claim that is turned down is answered: left to a human, nothing is decided yet, so the
+/// claim stays as it is and the claimer is told nothing.
+pub(crate) async fn review_mission_claim(
+    state: &ControlPlaneState,
+    auth: String,
+    review: MissionReview,
+) -> Response {
+    let (status, kinds) = match review.action.as_str() {
+        "reject_claim" => (
+            "rejected",
+            (
+                "mission.claim_rejected",
+                "MISSION_CLAIM_REJECTED",
+                "mission.reject_claim",
+            ),
+        ),
+        "human_review" => (
+            "human_review",
+            (
+                "mission.claim_human_review",
+                "MISSION_CLAIM_HUMAN_REVIEW",
+                "mission.human_review",
+            ),
+        ),
+        _ => return bad_request("unsupported mission claim review"),
+    };
+    let mut payload = review.payload(status);
+    if let Some(claimer_node_id) = &review.target_node_id {
+        payload["claimer_node_id"] = json!(claimer_node_id);
+    }
+    if review.action == "reject_claim"
+        && let Err(response) = turn_mission_claim_down(state, &review, &payload).await
+    {
+        return response;
+    }
+    record_mission_review(state, auth, kinds, review.mission_id, &payload);
     Json(payload).into_response()
 }
 
-#[allow(clippy::too_many_lines)]
+/// Turning a claim down is the gateway's to record, and it refuses once the claim was approved.
+/// A refusal reaches the agent before the claimer is told anything.
+async fn turn_mission_claim_down(
+    state: &ControlPlaneState,
+    review: &MissionReview,
+    payload: &Value,
+) -> Result<(), Response> {
+    let Some(claimer_node_id) = review.target_node_id.clone() else {
+        return Err(bad_request("missing claimer_node_id"));
+    };
+    crate::routes::gateway_missions::command(
+        state,
+        &review.mission_id,
+        crate::ledger_client::MissionAction::RejectClaim,
+        json!({"claimer": review.agent_did, "reason": review.reason}),
+    )
+    .await
+    .map_err(IntoResponse::into_response)?;
+    let agent_envelope = task_lifecycle_envelope(
+        state,
+        "mission.claim.review",
+        payload.clone(),
+        review.target_agent_id.clone(),
+        Some(claimer_node_id.clone()),
+    )
+    .await
+    .map_err(|error| internal_error(&error))?;
+    state
+        .swarm_bridge
+        .decide_task_claim(SwarmTaskClaimDecisionCommand {
+            task_id: review.task_id.clone(),
+            execution_id: review.execution_id.clone(),
+            claimer_node_id,
+            approved: false,
+            reason: review.reason.clone(),
+            agent_envelope,
+        })
+        .await
+        .map_err(|error| internal_error(&error))?;
+    Ok(())
+}
+
 async fn commit_mission_result_review(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
@@ -1731,145 +1815,162 @@ async fn commit_mission_result_review(
     };
     let default_agent_did = state.agent_did.clone();
     let agent_did = mission_agent_did_for_commit(&body, &default_agent_did);
-    let action = body.decision.action.as_str();
-    let (status, stream_kind, signed_kind, audit_action) = match action {
-        "reject_result" => (
-            "rejected",
-            "mission.result_rejected",
-            "MISSION_RESULT_REJECTED",
-            "mission.reject_result",
-        ),
-        "request_retry" => (
-            "retry_requested",
-            "mission.result_retry_requested",
-            "MISSION_RESULT_RETRY_REQUESTED",
-            "mission.request_retry",
-        ),
-        "human_review" => (
-            "human_review",
-            "mission.result_human_review",
-            "MISSION_RESULT_HUMAN_REVIEW",
-            "mission.result_human_review",
-        ),
-        _ => unreachable!("mission result review action already matched"),
-    };
     let task_id = payload_string(&body.decision.payload, "/task_id")
         .or_else(|| payload_string(&body.event.payload, "/task_id"))
         .unwrap_or_else(|| mission_id.clone());
     let execution_id = payload_string(&body.decision.payload, "/execution_id")
         .or_else(|| payload_string(&body.event.payload, "/execution_id"))
         .unwrap_or_else(|| format!("wattetheria:{mission_id}:{agent_did}"));
-    // Sending back the hand-in of an `in_world` mission with a bounty returns held items to
-    // the claimer and lets it hand in again; the mission goes on. It comes first: if the ledger
-    // cannot be reached nothing has been decided yet and the agent can decide again. Missions
-    // of any other kind are not touched here.
-    let returned = if matches!(action, "reject_result" | "request_retry") {
-        match crate::routes::mission_trade::send_back_hand_in(&state, &mission_id).await {
-            Ok(returned) => returned,
-            Err(response) => return response,
-        }
-    } else {
-        None
-    };
-    let mut payload = json!({
-        "mission_id": mission_id,
-        "task_id": task_id,
-        "candidate_id": payload_string(&body.decision.payload, "/candidate_id")
-            .or_else(|| payload_string(&body.event.payload, "/candidate_id")),
-        "agent_did": agent_did,
-        "execution_id": execution_id,
-        "status": status,
-        "reason": body.decision.reason.clone(),
-        "decision_payload": body.decision.payload.clone(),
-        "event_id": body.event.event_id.clone(),
-        "decision_id": body.decision.decision_id.clone(),
-    });
-    if let Some(returned) = returned {
-        payload["returned"] = returned;
-    }
-    let target_node_id = payload_string(&body.event.payload, "/completed_by_node_id")
-        .or_else(|| body.event.source_node_id.clone());
-    let agent_envelope = match task_lifecycle_envelope_for_commit(
+    review_mission_result(
         &state,
-        &body,
-        "mission.result.review",
-        payload.clone(),
-        body.event
-            .agent_envelope
-            .as_ref()
-            .and_then(|envelope| envelope.source_agent_id.clone()),
-        target_node_id,
+        auth,
+        MissionReview {
+            action: body.decision.action.clone(),
+            mission_id,
+            agent_did,
+            task_id,
+            execution_id,
+            reason: body.decision.reason.clone(),
+            target_agent_id: body
+                .event
+                .agent_envelope
+                .as_ref()
+                .and_then(|envelope| envelope.source_agent_id.clone()),
+            target_node_id: payload_string(&body.event.payload, "/completed_by_node_id")
+                .or_else(|| body.event.source_node_id.clone()),
+            context: json!({
+                "candidate_id": payload_string(&body.decision.payload, "/candidate_id")
+                    .or_else(|| payload_string(&body.event.payload, "/candidate_id")),
+                "decision_payload": body.decision.payload.clone(),
+                "event_id": body.event.event_id.clone(),
+                "decision_id": body.decision.decision_id.clone(),
+            }),
+        },
     )
     .await
-    {
-        Ok(envelope) => envelope,
-        Err(error) => return internal_error(&error),
+}
+
+/// The publisher rejects what was handed in (`reject_result`) or leaves it to a human
+/// (`human_review`). Only a rejection is answered: left to a human, nothing is decided yet, so
+/// the mission stays handed in and the claimer is told nothing.
+pub(crate) async fn review_mission_result(
+    state: &ControlPlaneState,
+    auth: String,
+    review: MissionReview,
+) -> Response {
+    let (status, kinds) = match review.action.as_str() {
+        "reject_result" => (
+            "rejected",
+            (
+                "mission.result_rejected",
+                "MISSION_RESULT_REJECTED",
+                "mission.reject_result",
+            ),
+        ),
+        "human_review" => (
+            "human_review",
+            (
+                "mission.result_human_review",
+                "MISSION_RESULT_HUMAN_REVIEW",
+                "mission.result_human_review",
+            ),
+        ),
+        _ => return bad_request("unsupported mission result review"),
     };
-    if let Err(error) = state
+    let mut payload = review.payload(status);
+    if review.action == "reject_result"
+        && let Err(response) = reject_mission_result(state, &review, &mut payload).await
+    {
+        return response;
+    }
+    record_mission_review(state, auth, kinds, review.mission_id, &payload);
+    Json(payload).into_response()
+}
+
+/// Rejecting the hand-in ends the mission on the gateway as rejected: the Watt goes back to the
+/// publisher and held items to the claimer. It comes first: if the gateway cannot be reached
+/// nothing has been decided yet and the agent can decide again. When nothing was handed in on
+/// the gateway the decision is only the answer to the claimer.
+async fn reject_mission_result(
+    state: &ControlPlaneState,
+    review: &MissionReview,
+    payload: &mut Value,
+) -> Result<(), Response> {
+    if let Some(returned) = crate::routes::mission_trade::reject_hand_in(
+        state,
+        &review.mission_id,
+        review.reason.as_deref(),
+    )
+    .await?
+    {
+        payload["returned"] = returned;
+    }
+    let agent_envelope = task_lifecycle_envelope(
+        state,
+        "mission.result.review",
+        payload.clone(),
+        review.target_agent_id.clone(),
+        review.target_node_id.clone(),
+    )
+    .await
+    .map_err(|error| internal_error(&error))?;
+    state
         .swarm_bridge
         .decide_task_completion(SwarmTaskCompletionDecisionCommand {
-            task_id: task_id.clone(),
-            execution_id,
+            task_id: review.task_id.clone(),
+            execution_id: review.execution_id.clone(),
             approved: false,
-            retry_requested: action == "request_retry",
-            reason: body.decision.reason.clone(),
+            retry_requested: false,
+            reason: review.reason.clone(),
             agent_envelope,
         })
         .await
-    {
-        return internal_error(&error);
-    }
-    let _ = state.stream_tx.send(StreamEvent {
-        kind: stream_kind.to_string(),
-        timestamp: Utc::now().timestamp(),
-        payload: payload.clone(),
-    });
-    let _ = state.append_signed_event(signed_kind, payload.clone());
-    let _ = state.audit_log.append(AuditEntry {
-        id: String::new(),
-        timestamp: 0,
-        category: "mission".to_string(),
-        action: audit_action.to_string(),
-        status: "ok".to_string(),
-        actor: Some(auth),
-        subject: Some(mission_id),
-        capability: Some(audit_action.to_string()),
-        reason: payload
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        duration_ms: None,
-        details: Some(payload.clone()),
-    });
-    Json(payload).into_response()
+        .map_err(|error| internal_error(&error))?;
+    Ok(())
 }
 
 async fn commit_task_result_settle_mission(
     state: ControlPlaneState,
     commit_headers: HeaderMap,
-    mission_id: String,
-    agent_did: String,
+    claim: MissionClaimBody,
     task_id: Option<String>,
     candidate_id: Option<String>,
-    claim_route: Option<Value>,
 ) -> Response {
-    let mission_state = {
-        let board = state.mission_board.lock().await;
-        board
-            .get(&mission_id)
-            .map(|mission| (mission.status.clone(), mission.claimed_by.clone()))
+    let MissionClaimBody {
+        mission_id,
+        agent_did,
+        claim_route,
+        result,
+        ..
+    } = claim;
+    let mission = match crate::routes::gateway_missions::fetch(&state, &mission_id).await {
+        Ok(record) => record
+            .as_ref()
+            .and_then(crate::routes::gateway_missions::civil_mission),
+        Err(error) => return error.into_response(),
     };
-    let Some((status, claimed_by)) = mission_state else {
+    let Some((status, claimed_by)) = mission.map(|mission| (mission.status, mission.claimed_by))
+    else {
         return bad_request("mission not found");
     };
     if status == MissionStatus::Settled {
-        return Json(json!({
-            "ok": true,
-            "status": "settled",
-            "replay": true,
-            "mission_id": mission_id,
-        }))
-        .into_response();
+        // Settled already: nothing is paid again, but the settle notice to the claimer may not
+        // have gone out, so the settle runs again and sends it.
+        let claimer = claimed_by
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(agent_did);
+        return crate::routes::missions::mission_settle(
+            State(state),
+            commit_headers,
+            Json(MissionSettleBody {
+                mission_id,
+                task_id: None,
+                agent_did: Some(claimer),
+                candidate_id: None,
+                claim_route,
+            }),
+        )
+        .await;
     }
     // Finalize the underlying task first — this is all-or-nothing (HTTP call).
     // If it fails, no mission state has changed, so the caller can safely retry.
@@ -1907,6 +2008,7 @@ async fn commit_task_result_settle_mission(
         let mut complete_body =
             MissionClaimBody::local(mission_id.clone(), transition_agent_did.clone());
         complete_body.claim_route = claim_route.clone();
+        complete_body.result = result;
         let response = crate::routes::missions::mission_complete(
             State(state.clone()),
             commit_headers.clone(),
@@ -1980,7 +2082,7 @@ async fn dispatch_agent_action_commit(
         ("task_claim_received", "reject_claim" | "human_review") => {
             commit_mission_claim_review(state, commit_headers, body).await
         }
-        ("task_result_received", "reject_result" | "request_retry" | "human_review") => {
+        ("task_result_received", "reject_result" | "human_review") => {
             commit_mission_result_review(state, commit_headers, body).await
         }
         (_, "claim_mission" | "complete_mission" | "settle_mission") => {

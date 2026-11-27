@@ -1,6 +1,6 @@
 //! Bridge layer that keeps wattetheria app flows independent from wattswarm transport details.
 
-use crate::civilization::missions::{MissionBoard, MissionStatus};
+use crate::civilization::missions::MissionBoard;
 use crate::network_agent_registration::NetworkPermissionUpdate;
 use crate::swarm_sync::{
     SwarmKnowledgeExportSnapshot, SwarmRunEventsSnapshot, SwarmRunResultSnapshot,
@@ -12,7 +12,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 pub use wattswarm_protocol::types::EventAnnouncementPayload;
 use wattswarm_protocol::types::{ArtifactRef, ClaimRole, InlineEvidence, TaskContract};
 
@@ -715,15 +714,13 @@ pub trait SwarmBridge: Send + Sync {
 }
 
 pub struct HybridSwarmBridge {
-    mission_board_path: PathBuf,
     topic_api: Option<HttpWattswarmApi>,
 }
 
 impl HybridSwarmBridge {
     #[must_use]
-    pub fn new(mission_board_path: PathBuf, wattswarm_ui_base_url: Option<&str>) -> Self {
+    pub fn new(wattswarm_ui_base_url: Option<&str>) -> Self {
         Self {
-            mission_board_path,
             topic_api: wattswarm_ui_base_url.map(HttpWattswarmApi::new),
         }
     }
@@ -740,7 +737,9 @@ impl SwarmBridge for HybridSwarmBridge {
     async fn agent_view(&self, agent_did: &str) -> Result<SwarmAgentView> {
         Ok(SwarmAgentView {
             agent_did: agent_did.to_owned(),
-            stats: load_agent_stats_from_mission_board(&self.mission_board_path, agent_did)?,
+            // The node keeps no missions: stats from settled missions come from the gateway's
+            // records, through `agent_stats_from_missions`.
+            stats: AgentStats::default(),
         })
     }
 
@@ -2567,30 +2566,22 @@ struct PeerDmMessagesQuery {
     thread_id: String,
 }
 
-fn load_agent_stats_from_mission_board(
-    mission_board_path: impl AsRef<Path>,
-    agent_did: &str,
-) -> Result<AgentStats> {
-    let missions = MissionBoard::load_or_new(mission_board_path)?;
-    let settled = missions.list(Some(&MissionStatus::Settled));
-    let mut stats = AgentStats::default();
-
-    for mission in settled
-        .into_iter()
-        .filter(|mission| mission.completed_by.as_deref() == Some(agent_did))
-    {
-        // Watt lives in the gateway ledger; only reputation and capacity are local.
-        if let Some(reward) = mission.reward.as_ref() {
-            stats.reputation += reward.reputation;
-            stats.capacity += reward.capacity;
-        }
-    }
+/// What the missions `agent_did` did and had settled earned it.
+#[must_use]
+pub fn agent_stats_from_missions(missions: &MissionBoard, agent_did: &str) -> AgentStats {
+    // Watt lives in the gateway ledger; only reputation and capacity are local.
+    let completed = missions.completed_by(agent_did).all();
+    let mut stats = AgentStats {
+        reputation: completed.reputation,
+        capacity: completed.capacity,
+        ..AgentStats::default()
+    };
 
     if stats.reputation != 0 || stats.capacity != 0 {
         stats.power = (1 + (stats.capacity / 10)).max(1);
     }
 
-    Ok(stats)
+    stats
 }
 
 #[cfg(test)]
@@ -2599,12 +2590,9 @@ mod tests {
     use crate::civilization::missions::{
         MissionBoard, MissionDomain, MissionPublisherKind, MissionReward,
     };
-    use tempfile::tempdir;
 
     #[test]
     fn mission_board_agent_stats_roundtrip_matches_settled_rewards() {
-        let dir = tempdir().unwrap();
-        let mission_board_path = dir.path().join("missions/state.json");
         let mut board = MissionBoard::default();
         let mission = board.publish(
             "Stabilize relay",
@@ -2628,9 +2616,8 @@ mod tests {
             .complete(&mission.mission_id, "agent-a", None)
             .unwrap();
         board.settle(&mission.mission_id).unwrap();
-        board.persist(&mission_board_path).unwrap();
 
-        let stats = load_agent_stats_from_mission_board(&mission_board_path, "agent-a").unwrap();
+        let stats = agent_stats_from_missions(&board, "agent-a");
         assert_eq!(stats.watt, 0);
         assert_eq!(stats.reputation, 4);
         assert_eq!(stats.capacity, 11);

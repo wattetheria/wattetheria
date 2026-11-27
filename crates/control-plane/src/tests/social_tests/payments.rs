@@ -75,6 +75,13 @@ async fn agent_payment_propose_persists_and_dispatches_direct_message() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -177,6 +184,13 @@ async fn agent_payment_authorize_signs_with_active_payment_account() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -345,6 +359,13 @@ async fn agent_payment_settle_validates_x402_receipt_before_persisting() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -505,6 +526,13 @@ async fn agent_payments_list_reads_synced_inbound_payment_request() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -614,6 +642,13 @@ async fn agent_action_commit_routes_payment_authorize_to_ledger_update() {
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =
@@ -738,6 +773,13 @@ async fn agent_action_commit_payment_authorize_uses_ledger_remote_node_without_c
         dm_commands: Mutex::new(Vec::new()),
         private_hive_key_share_commands: Mutex::new(Vec::new()),
         payment_commands: Mutex::new(Vec::new()),
+        settled_tasks: Mutex::new(Vec::new()),
+        settle_down: std::sync::atomic::AtomicBool::new(false),
+        claim_down: std::sync::atomic::AtomicBool::new(false),
+        announce_down: std::sync::atomic::AtomicBool::new(false),
+        topic_down: std::sync::atomic::AtomicBool::new(false),
+        task_notices: Mutex::new(Vec::new()),
+        published_tasks: Mutex::new(Vec::new()),
     });
     let bridge_handle: Arc<dyn SwarmBridge> = bridge.clone();
     let (_dir, app, token, _, state) =

@@ -1,11 +1,9 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::civilization::identities::PublicIdentity;
-use crate::civilization::missions::{MissionBoard, MissionStatus};
 
 use super::progression::{GameStage, GameStatus};
-use super::{GameMissionPack, StarterMissionSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BootstrapStep {
@@ -62,15 +60,9 @@ struct ActionTargetSpec<'a> {
 
 #[must_use]
 pub fn compute_bootstrap_state(
-    controller_id: &str,
     public_identity: Option<&PublicIdentity>,
     status: &GameStatus,
-    missions: &MissionBoard,
 ) -> BootstrapState {
-    let open_starters = starter_count(missions, controller_id, Some(&MissionStatus::Open));
-    let claimed_starters = starter_count(missions, controller_id, Some(&MissionStatus::Claimed));
-    let settled_starters = starter_count(missions, controller_id, Some(&MissionStatus::Settled));
-
     let steps = vec![
         step(
             "create_identity",
@@ -83,27 +75,6 @@ pub fn compute_bootstrap_state(
             "Bind to a home anchor",
             status.home_anchor.is_some(),
             "Choose a home subnet or home zone so the rest of your progression can attach to a real place.",
-        ),
-        count_step(
-            "bootstrap_starters",
-            "Generate starter missions",
-            open_starters + claimed_starters + settled_starters,
-            2,
-            "Starter missions are the first role-specific contracts that teach your operating loop.",
-        ),
-        count_step(
-            "claim_starter",
-            "Claim your first starter mission",
-            claimed_starters + settled_starters,
-            1,
-            "Claiming a mission starts the real loop: identity, work, and public progress.",
-        ),
-        count_step(
-            "settle_starter",
-            "Settle your first starter mission",
-            settled_starters,
-            1,
-            "Settlement is the first proof that your role can convert work into durable influence.",
         ),
         step(
             "reach_foothold",
@@ -135,40 +106,14 @@ pub fn compute_bootstrap_state(
 }
 
 #[must_use]
-pub fn compute_bootstrap_flow(
-    public_identity: Option<&PublicIdentity>,
-    status: &GameStatus,
-    bootstrap: BootstrapState,
-    starter_missions: Option<&StarterMissionSet>,
-    mission_pack: Option<&GameMissionPack>,
-) -> BootstrapFlow {
-    let action_cards = bootstrap_action_cards(
-        public_identity,
-        status,
-        &bootstrap,
-        starter_missions,
-        mission_pack,
-    );
-    let first_hour_plan = starter_missions
-        .map(|starter_set| {
-            starter_set
-                .objective_chain
-                .steps
-                .iter()
-                .filter(|step| step.progress_pct < 100)
-                .take(2)
-                .map(|step| step.title.clone())
-                .collect::<Vec<_>>()
-        })
-        .filter(|steps| !steps.is_empty())
-        .unwrap_or_else(|| {
-            action_cards
-                .iter()
-                .filter(|card| card.ready)
-                .take(4)
-                .map(|card| card.title.clone())
-                .collect()
-        });
+pub fn compute_bootstrap_flow(status: &GameStatus, bootstrap: BootstrapState) -> BootstrapFlow {
+    let action_cards = bootstrap_action_cards(status);
+    let first_hour_plan: Vec<String> = action_cards
+        .iter()
+        .filter(|card| card.ready)
+        .take(4)
+        .map(|card| card.title.clone())
+        .collect();
 
     BootstrapFlow {
         first_hour_focus: bootstrap.current_focus.clone(),
@@ -183,28 +128,7 @@ pub fn compute_bootstrap_flow(
     }
 }
 
-fn bootstrap_action_cards(
-    public_identity: Option<&PublicIdentity>,
-    status: &GameStatus,
-    bootstrap: &BootstrapState,
-    starter_missions: Option<&StarterMissionSet>,
-    mission_pack: Option<&GameMissionPack>,
-) -> Vec<BootstrapActionCard> {
-    let first_open_starter = starter_missions.and_then(|starter_set| {
-        starter_set
-            .existing
-            .iter()
-            .find(|mission| mission.status == MissionStatus::Open)
-            .map(|mission| mission.mission_id.clone())
-    });
-    let starter_missing =
-        starter_missions.map_or(0, |starter_set| starter_set.missing_template_ids.len());
-    let pack_missing = mission_pack.map_or(0, |pack| pack.missing_template_ids.len());
-    let has_settled_starter = bootstrap
-        .steps
-        .iter()
-        .find(|step| step.key == "settle_starter")
-        .is_some_and(|step| step.complete);
+fn bootstrap_action_cards(status: &GameStatus) -> Vec<BootstrapActionCard> {
     vec![
         action_card(
             "open_briefing",
@@ -233,49 +157,6 @@ fn bootstrap_action_cards(
             },
         ),
         action_card(
-            "bootstrap_starter_missions",
-            "Bootstrap starter mission chain",
-            starter_chain_summary(starter_missions),
-            public_identity.is_some() && status.home_anchor.is_some(),
-            completion_progress(starter_missing == 0),
-            BootstrapActionKind::ApiCall,
-            ActionTargetSpec {
-                target: "/v1/game/starter-missions/bootstrap",
-                method: Some("POST"),
-                payload: Some(json!({
-                    "public_id": public_identity.map(|identity| identity.public_id.clone()),
-                })),
-            },
-        ),
-        action_card(
-            "claim_first_starter",
-            "Claim your first starter contract",
-            "Move from setup into action by claiming one starter mission tied to your home anchor.",
-            first_open_starter.is_some(),
-            completion_progress(has_settled_starter || status.active_missions > 0),
-            BootstrapActionKind::OpenScreen,
-            ActionTargetSpec {
-                target: "missions",
-                method: None,
-                payload: first_open_starter.map(|mission_id| json!({ "mission_id": mission_id })),
-            },
-        ),
-        action_card(
-            "bootstrap_stage_pack",
-            "Bootstrap your current stage mission pack",
-            "Once starter work is flowing, generate the next set of role and civic missions for your current stage.",
-            public_identity.is_some() && has_settled_starter,
-            completion_progress(pack_missing == 0),
-            BootstrapActionKind::ApiCall,
-            ActionTargetSpec {
-                target: "/v1/game/mission-pack/bootstrap",
-                method: Some("POST"),
-                payload: Some(json!({
-                    "public_id": public_identity.map(|identity| identity.public_id.clone()),
-                })),
-            },
-        ),
-        action_card(
             "review_governance_journey",
             "Review your governance journey",
             "See which civic gates still separate your current role from formal governance participation.",
@@ -291,51 +172,12 @@ fn bootstrap_action_cards(
     ]
 }
 
-fn starter_chain_summary(starter_missions: Option<&StarterMissionSet>) -> &str {
-    starter_missions.map_or(
-        "Generate the role-specific contracts that teach the first operating loop.",
-        |starter_set| starter_set.objective_chain.summary.as_str(),
-    )
-}
-
-fn starter_count(
-    missions: &MissionBoard,
-    controller_id: &str,
-    status: Option<&MissionStatus>,
-) -> usize {
-    missions
-        .list(status)
-        .into_iter()
-        .filter(|mission| {
-            mission.payload["starter_owner_agent_did"].as_str() == Some(controller_id)
-        })
-        .count()
-}
-
 fn step(key: &str, title: &str, complete: bool, summary: &str) -> BootstrapStep {
     BootstrapStep {
         key: key.to_string(),
         title: title.to_string(),
         complete,
         progress_pct: if complete { 100 } else { 0 },
-        summary: summary.to_string(),
-    }
-}
-
-fn count_step(
-    key: &str,
-    title: &str,
-    current: usize,
-    required: usize,
-    summary: &str,
-) -> BootstrapStep {
-    let required = required.max(1);
-    let progress_pct = u8::try_from((current.min(required) * 100) / required).unwrap_or(100);
-    BootstrapStep {
-        key: key.to_string(),
-        title: title.to_string(),
-        complete: current >= required,
-        progress_pct,
         summary: summary.to_string(),
     }
 }
@@ -369,113 +211,7 @@ fn action_card(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::civilization::galaxy::GalaxyState;
-    use crate::civilization::profiles::{CitizenProfile, Faction, RolePath, StrategyProfile};
-    use crate::game::mission_pack::mission_pack_set;
-    use crate::game::progression::GameStatus;
-    use crate::game::starter::bootstrap_starter_missions;
-    use crate::map::registry::GalaxyMapRegistry;
-
-    #[test]
-    fn bootstrap_progress_moves_with_identity_and_starter_missions() {
-        let mut board = MissionBoard::default();
-        let profile = CitizenProfile {
-            agent_did: "agent-a".to_string(),
-            faction: Faction::Freeport,
-            role: RolePath::Broker,
-            strategy: StrategyProfile::Balanced,
-            home_subnet_id: Some("planet-test".to_string()),
-            home_zone_id: Some("genesis-core".to_string()),
-            updated_at: 0,
-        };
-        let mut maps = GalaxyMapRegistry::default();
-        maps.ensure_default_genesis_map(&GalaxyState::default_with_core_zones().zones())
-            .unwrap();
-        let created = bootstrap_starter_missions("agent-a", &profile, &maps, &mut board);
-        let state = compute_bootstrap_state(
-            "agent-a",
-            Some(&PublicIdentity {
-                public_id: "captain-aurora".to_string(),
-                display_name: "Captain Aurora".to_string(),
-                agent_did: Some("agent-a".to_string()),
-                active: true,
-                created_at: 0,
-                updated_at: 0,
-            }),
-            &GameStatus {
-                stage: GameStage::Survival,
-                headline: String::new(),
-                summary: String::new(),
-                total_influence: 10,
-                settled_missions: 0,
-                active_missions: 0,
-                governed_planets: 0,
-                can_enter_governance: false,
-                home_anchor: None,
-                recommended_actions: Vec::new(),
-                objectives: Vec::new(),
-                qualifications: Vec::new(),
-                governance_journey: super::super::progression::GovernanceJourney {
-                    eligible_now: false,
-                    current_status: "starter".to_string(),
-                    next_gate: "license".to_string(),
-                    gates: Vec::new(),
-                },
-            },
-            &board,
-        );
-        assert_eq!(created.len(), 2);
-        assert!(state.progress_pct > 0);
-        assert_eq!(state.current_phase, "introduction");
-    }
-
-    #[test]
-    fn bootstrap_flow_surfaces_first_hour_actions() {
-        let mut board = MissionBoard::default();
-        let profile = CitizenProfile {
-            agent_did: "agent-a".to_string(),
-            faction: Faction::Freeport,
-            role: RolePath::Broker,
-            strategy: StrategyProfile::Balanced,
-            home_subnet_id: Some("planet-test".to_string()),
-            home_zone_id: Some("genesis-core".to_string()),
-            updated_at: 0,
-        };
-        let mut maps = GalaxyMapRegistry::default();
-        maps.ensure_default_genesis_map(&GalaxyState::default_with_core_zones().zones())
-            .unwrap();
-        let created = bootstrap_starter_missions("agent-a", &profile, &maps, &mut board);
-        assert_eq!(created.len(), 2);
-        let starter_set =
-            super::super::starter::starter_mission_set("agent-a", &profile, &maps, &board);
-        let galaxy = GalaxyState::default_with_core_zones();
-        let mission_pack = mission_pack_set(
-            "agent-a",
-            &profile,
-            GameStage::Foothold,
-            &maps,
-            &galaxy,
-            &board,
-        );
-        let public_identity = test_public_identity();
-        let status = test_foothold_status();
-        let bootstrap = compute_bootstrap_state("agent-a", Some(&public_identity), &status, &board);
-        let flow = compute_bootstrap_flow(
-            Some(&public_identity),
-            &status,
-            bootstrap,
-            Some(&starter_set),
-            Some(&mission_pack),
-        );
-        assert!(
-            flow.action_cards
-                .iter()
-                .any(|card| card.key == "bootstrap_stage_pack")
-        );
-        assert_ne!(flow.first_hour_plan, [] as [String; 0]);
-        assert_eq!(flow.first_cycle_plan, flow.first_hour_plan);
-        assert_eq!(flow.first_hour_plan[0], "Seed your first trade corridor");
-    }
+    use crate::game::progression::{GovernanceJourney, HomeAnchor};
 
     fn test_public_identity() -> PublicIdentity {
         PublicIdentity {
@@ -488,9 +224,9 @@ mod tests {
         }
     }
 
-    fn test_foothold_status() -> GameStatus {
+    fn test_status(stage: GameStage, home_anchor: Option<HomeAnchor>) -> GameStatus {
         GameStatus {
-            stage: GameStage::Foothold,
+            stage,
             headline: String::new(),
             summary: String::new(),
             total_influence: 240,
@@ -498,24 +234,57 @@ mod tests {
             active_missions: 0,
             governed_planets: 0,
             can_enter_governance: false,
-            home_anchor: Some(super::super::progression::HomeAnchor {
-                map_id: "genesis-base".to_string(),
-                map_name: "Genesis Base".to_string(),
-                system_id: "system-prime".to_string(),
-                system_name: "Genesis Prime".to_string(),
-                planet_id: "planet-test".to_string(),
-                planet_name: "Planet Test".to_string(),
-                zone_id: "genesis-core".to_string(),
-            }),
+            home_anchor,
             recommended_actions: Vec::new(),
             objectives: Vec::new(),
             qualifications: Vec::new(),
-            governance_journey: super::super::progression::GovernanceJourney {
+            governance_journey: GovernanceJourney {
                 eligible_now: false,
                 current_status: "approaching".to_string(),
                 next_gate: "civic_license".to_string(),
                 gates: Vec::new(),
             },
         }
+    }
+
+    fn home_anchor() -> HomeAnchor {
+        HomeAnchor {
+            map_id: "genesis-base".to_string(),
+            map_name: "Genesis Base".to_string(),
+            system_id: "system-prime".to_string(),
+            system_name: "Genesis Prime".to_string(),
+            planet_id: "planet-test".to_string(),
+            planet_name: "Planet Test".to_string(),
+            zone_id: "genesis-core".to_string(),
+        }
+    }
+
+    #[test]
+    fn bootstrap_progress_moves_with_identity_anchor_and_stage() {
+        let fresh = compute_bootstrap_state(None, &test_status(GameStage::Survival, None));
+        assert_eq!(fresh.progress_pct, 0);
+        assert_eq!(fresh.current_phase, "introduction");
+        let identity = test_public_identity();
+        let done = compute_bootstrap_state(
+            Some(&identity),
+            &test_status(GameStage::Foothold, Some(home_anchor())),
+        );
+        assert_eq!(done.progress_pct, 100);
+        assert_eq!(done.current_phase, "operational");
+    }
+
+    #[test]
+    fn bootstrap_flow_surfaces_first_hour_actions() {
+        let identity = test_public_identity();
+        let status = test_status(GameStage::Foothold, Some(home_anchor()));
+        let bootstrap = compute_bootstrap_state(Some(&identity), &status);
+        let flow = compute_bootstrap_flow(&status, bootstrap);
+        assert!(
+            flow.action_cards
+                .iter()
+                .all(|card| !card.key.contains("starter") && card.key != "bootstrap_stage_pack")
+        );
+        assert_eq!(flow.first_cycle_plan, flow.first_hour_plan);
+        assert_eq!(flow.first_hour_plan[0], "Read your operator briefing");
     }
 }

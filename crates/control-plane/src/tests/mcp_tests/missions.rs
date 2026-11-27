@@ -152,8 +152,10 @@ async fn mcp_publish_mission_uses_current_local_public_identity() {
 #[tokio::test]
 async fn mcp_publish_mission_with_a_watt_bounty_needs_a_gateway_ledger() {
     let (_dir, app, token, _policy, state) = build_test_app(100);
+    let mut offline = state.clone();
+    offline.gateway_urls.clear();
     let response = mcp_request(
-        app.clone(),
+        crate::app(offline),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -176,23 +178,18 @@ async fn mcp_publish_mission_with_a_watt_bounty_needs_a_gateway_ledger() {
     assert_eq!(response["result"]["_meta"]["httpStatus"], 503);
     assert_eq!(
         response["result"]["structuredContent"]["code"],
-        "ledger_unavailable"
+        "gateway_unavailable"
     );
-    {
-        let board = state.mission_board.lock().await;
-        assert!(
-            board
-                .list(Some(
-                    &wattetheria_kernel::civilization::missions::MissionStatus::Open
-                ))
-                .into_iter()
-                .all(|mission| mission.title != "Bounty without a ledger"),
-            "an unfunded bounty mission must not stay open"
-        );
-    }
+    assert!(
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .commands("publish")
+            .is_empty(),
+        "a mission the gateway never saw is not published"
+    );
 
-    // A reward with only agent_watt deserializes: reputation and capacity default to 0, and a
-    // zero bounty needs no ledger at all.
+    // A reward with only agent_watt deserializes: reputation and capacity default to 0.
     let response = mcp_request(
         app,
         &token,
@@ -354,8 +351,12 @@ async fn mcp_publish_tools_keep_watt_bounties_and_real_asset_delegation_apart() 
         assert!(error.contains(expected), "{tool}: {error}");
     }
     assert!(
-        state.mission_board.lock().await.list(None).is_empty(),
-        "no rejected call may leave a mission behind"
+        mission_gateway::mission_gateway(&state)
+            .lock()
+            .await
+            .commands("publish")
+            .is_empty(),
+        "no rejected call may publish a mission"
     );
 }
 
@@ -448,25 +449,17 @@ async fn mcp_publish_delegated_mission_surfaces_servicenet_settlement_details() 
 
 #[tokio::test]
 async fn mcp_list_missions_reads_configured_gateway_tasks() {
-    let gateway_app = axum::Router::new().route(
-        "/api/missions",
-        axum::routing::get(|| async { axum::Json(gateway_missions_fixture()) }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        axum::serve(listener, gateway_app).await.unwrap();
-    });
-
-    let (dir, app, token, _policy, _state) = build_test_app(100);
-    std::fs::write(
-        dir.path().join("config.json"),
-        json!({"gateway_urls": [gateway_url]}).to_string(),
-    )
-    .unwrap();
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    {
+        let gateway = mission_gateway::mission_gateway(&state);
+        let mut gateway = gateway.lock().await;
+        for record in gateway_missions_fixture(&state).await {
+            gateway.seed(record);
+        }
+    }
 
     let response = mcp_request(
-        app,
+        app.clone(),
         &token,
         json!({
             "jsonrpc": "2.0",
@@ -477,7 +470,7 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
                 "arguments": {
                     "limit": 1,
                     "offset": 1,
-                    "status": "open"
+                    "status": "published"
                 }
             }
         }),
@@ -502,58 +495,127 @@ async fn mcp_list_missions_reads_configured_gateway_tasks() {
     assert_eq!(content["has_more"].as_bool(), Some(false));
     let missions = content["missions"].as_array().unwrap();
     assert_eq!(missions.len(), 1);
+    // Newest first: the second open mission published is the first one listed.
+    assert_eq!(
+        missions[0]["mission_id"].as_str(),
+        Some("mission-gateway-1")
+    );
+    assert_eq!(missions[0]["task_id"].as_str(), Some("mission-gateway-1"));
+    assert_eq!(missions[0]["status"].as_str(), Some("published"));
+    assert_eq!(
+        missions[0]["publisher_agent_did"].as_str(),
+        Some("did:key:node-alpha")
+    );
+    assert_gateway_claim_route(&missions[0], "mission-gateway-1", "node-alpha");
+
+    // The first page knows a second one follows.
+    let first = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_missions",
+                "arguments": {"limit": 1, "offset": 0, "status": "published"}
+            }
+        }),
+    )
+    .await;
+    let first = &first["result"]["structuredContent"];
+    assert_eq!(first["missions"].as_array().unwrap().len(), 1, "{first}");
+    assert_eq!(first["has_more"].as_bool(), Some(true), "{first}");
+    assert_eq!(first["next_offset"].as_u64(), Some(1), "{first}");
+}
+
+#[tokio::test]
+async fn mcp_list_missions_summarizes_a_delegated_settlement() {
+    let (_dir, app, token, _policy, state) = build_test_app(100);
+    {
+        let gateway = mission_gateway::mission_gateway(&state);
+        let mut gateway = gateway.lock().await;
+        for record in gateway_missions_fixture(&state).await {
+            gateway.seed(record);
+        }
+    }
+    let response = mcp_request(
+        app,
+        &token,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "list_missions", "arguments": {"limit": 1, "status": "published"}}
+        }),
+    )
+    .await;
+    let missions = response["result"]["structuredContent"]["missions"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(missions.len(), 1);
     assert_eq!(
         missions[0]["mission_id"].as_str(),
         Some("mission-gateway-2")
     );
-    assert_eq!(missions[0]["task_id"].as_str(), Some("mission-gateway-2"));
-    assert_eq!(missions[0]["source_node_id"].as_str(), Some("node-beta"));
-    assert_eq!(missions[0]["status"].as_str(), Some("published"));
     assert_gateway_settlement_summary(&missions[0]);
     assert_gateway_claim_route(&missions[0], "mission-gateway-2", "node-beta");
 }
 
-fn gateway_missions_fixture() -> Value {
-    json!([
-        {
-            "id": "mission-gateway-1",
-            "title": "Gateway Mission One",
-            "status": "published",
-            "source_node_id": "node-alpha",
-            "mission_scope_hint": "group:mission-gateway-1",
-            "task_contract": {
-                "task_id": "mission-gateway-1",
-                "inputs": {
-                    "swarm_scope": {"kind": "group", "id": "mission-gateway-1"}
-                }
-            }
-        },
-        {
-            "task_id": "not-a-mission",
-            "task_type": "topic_consensus",
-            "terminal_state": "open"
-        },
-        {
-            "id": "mission-gateway-2",
-            "title": "Gateway Mission Two",
-            "status": "published",
-            "source_node_id": "node-beta",
-            "mission_scope_hint": "group:mission-gateway-2",
-            "task_contract": {
-                "task_id": "mission-gateway-2",
-                "inputs": {
-                    "swarm_scope": {"kind": "group", "id": "mission-gateway-2"},
-                    "settlement_delegation": gateway_servicenet_settlement_delegation()
-                }
-            }
-        },
-        {
-            "id": "mission-gateway-settled",
-            "title": "Settled Gateway Mission",
-            "status": "settled",
-            "source_node_id": "node-gamma"
+/// Three missions other nodes published, oldest first: one settled, then two open (the
+/// newer with a delegated settlement).
+async fn gateway_missions_fixture(state: &ControlPlaneState) -> Vec<Value> {
+    let contract = |mission_id: &'static str, node: &'static str, delegation: Option<Value>| async move {
+        let mut contract = state
+            .swarm_bridge
+            .sample_task_contract(mission_id)
+            .await
+            .unwrap();
+        contract.task_type = "wattetheria.mission".to_owned();
+        contract.inputs = json!({
+            "mission_id": mission_id,
+            "publisher_wattswarm_node_id": node,
+            "mission_feed_key": "wattetheria.missions",
+            "mission_scope_hint": format!("group:{mission_id}"),
+            "swarm_scope": {"kind": "group", "id": mission_id},
+            "domain": "trade",
+        });
+        if let Some(delegation) = delegation {
+            contract.inputs["settlement_delegation"] = delegation;
         }
-    ])
+        contract
+    };
+    let delegated = contract(
+        "mission-gateway-2",
+        "node-beta",
+        Some(gateway_servicenet_settlement_delegation()),
+    )
+    .await;
+    let plain = contract("mission-gateway-1", "node-alpha", None).await;
+    vec![
+        mission_gateway::remote_record(
+            "mission-gateway-settled",
+            "Settled Gateway Mission",
+            "did:key:node-gamma",
+            "settled",
+            None,
+        ),
+        mission_gateway::remote_record(
+            "mission-gateway-1",
+            "Gateway Mission One",
+            "did:key:node-alpha",
+            "published",
+            Some(&plain),
+        ),
+        mission_gateway::remote_record(
+            "mission-gateway-2",
+            "Gateway Mission Two",
+            "did:key:node-beta",
+            "published",
+            Some(&delegated),
+        ),
+    ]
 }
 
 fn gateway_servicenet_settlement_delegation() -> Value {
@@ -629,7 +691,7 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
     let (dir, app, token, _policy, state) = build_test_app(100);
     let mission_id = "mission-mcp-duplicate-claim";
     let agent_did = state.agent_did.clone();
-    seed_mcp_gateway_remote_mission(dir.path(), &state, mission_id).await;
+    seed_mcp_gateway_remote_mission(&state, mission_id).await;
     append_bad_audit_row(dir.path());
 
     let first = mcp_claim_mission(app.clone(), &token, mission_id, &agent_did).await;
@@ -656,7 +718,6 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
         saved_claim.metadata.publisher_id.as_deref(),
         Some("publisher-public")
     );
-    assert_eq!(saved_claim.status.as_deref(), Some("published"));
     assert_eq!(saved_claim.metadata.reward_watt, Some(0));
 
     let second = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
@@ -672,17 +733,20 @@ async fn mcp_claim_mission_reports_duplicate_network_claim() {
 
 #[tokio::test]
 async fn mcp_claim_mission_reports_gateway_claimed_status() {
-    let (dir, app, token, _policy, state) = build_test_app(100);
+    let (_dir, app, token, _policy, state) = build_test_app(100);
     let mission_id = "mission-mcp-gateway-claimed";
     let agent_did = state.agent_did.clone();
-    seed_mcp_gateway_remote_mission_with_status(dir.path(), &state, mission_id, "claimed").await;
+    seed_mcp_gateway_remote_mission_with_status(&state, mission_id, "claimed").await;
+    mission_gateway::mission_gateway(&state).lock().await.set(
+        mission_id,
+        "claimer",
+        json!("did:key:another-claimer"),
+    );
 
     let response = mcp_claim_mission(app, &token, mission_id, &agent_did).await;
     assert_eq!(response["result"]["isError"].as_bool(), Some(true));
     let content = &response["result"]["structuredContent"];
-    assert_eq!(content["code"].as_str(), Some("mission_already_claimed"));
-    assert_eq!(content["claim_status"].as_str(), Some("already_claimed"));
-    assert_eq!(content["mission_id"].as_str(), Some(mission_id));
+    assert_eq!(content["code"].as_str(), Some("already_claimed"));
     assert_eq!(
         response["result"]["_meta"]["httpStatus"].as_u64(),
         Some(409)
@@ -717,16 +781,11 @@ fn append_bad_audit_row(data_dir: &std::path::Path) {
     file.write_all(b"{not-valid-audit-json}\n").unwrap();
 }
 
-async fn seed_mcp_gateway_remote_mission(
-    data_dir: &std::path::Path,
-    state: &ControlPlaneState,
-    mission_id: &str,
-) {
-    seed_mcp_gateway_remote_mission_with_status(data_dir, state, mission_id, "published").await;
+async fn seed_mcp_gateway_remote_mission(state: &ControlPlaneState, mission_id: &str) {
+    seed_mcp_gateway_remote_mission_with_status(state, mission_id, "published").await;
 }
 
 async fn seed_mcp_gateway_remote_mission_with_status(
-    data_dir: &std::path::Path,
     state: &ControlPlaneState,
     mission_id: &str,
     status: &str,
@@ -751,35 +810,16 @@ async fn seed_mcp_gateway_remote_mission_with_status(
         "reward": {"agent_watt": 0},
         "payload": {"work": "deliver"}
     });
-    let gateway_task = json!({
-        "id": mission_id,
-        "task_id": mission_id,
-        "task_type": "wattetheria.mission",
-        "title": "Remote mission",
-        "status": status,
-        "source_node_id": "publisher-node",
-        "publisher_wattswarm_node_id": "publisher-node",
-        "mission_feed_key": "wattetheria.missions",
-        "mission_scope_hint": format!("group:{mission_id}"),
-        "task_contract": contract,
-    });
-    let gateway_app = Router::new().route(
-        "/api/missions",
-        get(move || {
-            let gateway_task = gateway_task.clone();
-            async move { Json(json!([gateway_task])) }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let gateway_url = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        axum::serve(listener, gateway_app).await.unwrap();
-    });
-    std::fs::write(
-        data_dir.join("config.json"),
-        json!({"gateway_urls": [gateway_url]}).to_string(),
-    )
-    .unwrap();
+    mission_gateway::mission_gateway(state)
+        .lock()
+        .await
+        .seed(mission_gateway::remote_record(
+            mission_id,
+            "Remote mission",
+            "did:agent:publisher",
+            status,
+            Some(&contract),
+        ));
 }
 
 fn assert_gateway_claim_route(mission: &Value, mission_id: &str, node_id: &str) {

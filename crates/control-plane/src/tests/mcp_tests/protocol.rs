@@ -35,6 +35,10 @@ const MCP_AGENT_TOOL_NAMES: &[&str] = &[
     "complete_mission",
     "settle_mission",
     "pledge_mission_items",
+    "reject_mission_claim",
+    "withdraw_mission_claim",
+    "reject_mission_result",
+    "cancel_mission",
     "mission_guide",
     "list_friends",
     "list_nearby",
@@ -347,7 +351,7 @@ async fn mcp_leave_space_is_discoverable_and_uses_the_authenticated_space_route(
 
 #[tokio::test]
 async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavailable() {
-    let (dir, _app, token, _policy, mut state) = build_test_app(100);
+    let (_dir, _app, token, _policy, mut state) = build_test_app(100);
     assert!(
         wattetheria_kernel::network_agent_registration::network_permission_is_active(
             &state.local_db,
@@ -357,7 +361,6 @@ async fn mcp_leave_without_entry_succeeds_when_the_network_is_temporarily_unavai
     );
     state.space_catalog = Arc::new(crate::SpaceMaps::pinned(None));
     state.swarm_bridge = Arc::new(wattetheria_kernel::swarm_bridge::HybridSwarmBridge::new(
-        dir.path().join("offline-mission-board.json"),
         None,
     ));
     assert!(state.swarm_bridge.current_network_id().await.is_err());
