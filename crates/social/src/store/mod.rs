@@ -2237,4 +2237,51 @@ mod tests {
             Some(message)
         );
     }
+
+    #[test]
+    fn due_reliability_tasks_lists_one_kind_that_is_due_soonest_first() {
+        use crate::ports::repositories::ReliabilityTaskRepository;
+
+        let store = SocialStore::open_in_memory().expect("open store");
+        store
+            .record_reliability_attempt("card_battle_notice", "late", 100, 900, None)
+            .expect("record late");
+        store
+            .record_reliability_attempt("card_battle_notice", "early", 100, 400, None)
+            .expect("record early");
+        store
+            .record_reliability_attempt("card_battle_notice", "not-yet", 100, 5000, None)
+            .expect("record not yet due");
+        store
+            .record_reliability_attempt("friend_request", "another-kind", 100, 400, None)
+            .expect("record another kind");
+
+        let due = store
+            .due_reliability_tasks("card_battle_notice", 1000, 10)
+            .expect("due tasks");
+        assert_eq!(
+            due.iter()
+                .map(|task| task.object_id.as_str())
+                .collect::<Vec<_>>(),
+            ["early", "late"]
+        );
+        assert_eq!(due[0].attempt_count, 1);
+        assert_eq!(
+            store
+                .due_reliability_tasks("card_battle_notice", 1000, 1)
+                .expect("limited")
+                .len(),
+            1
+        );
+        store
+            .clear_reliability_task("card_battle_notice", "early")
+            .expect("clear");
+        assert_eq!(
+            store
+                .due_reliability_tasks("card_battle_notice", 1000, 10)
+                .expect("after clear")
+                .len(),
+            1
+        );
+    }
 }

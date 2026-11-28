@@ -187,7 +187,10 @@ async fn build_network_board_page(
         .map_err(|error| internal_error(&error))?;
     let selected_category = match query.category.as_deref() {
         Some(category) => Some(normalized_category(category).ok_or_else(|| {
-            bad_request("category must be one of general, trade, search, request")
+            bad_request(format!(
+                "category must be one of {}",
+                super::category_names()
+            ))
         })?),
         None => None,
     };

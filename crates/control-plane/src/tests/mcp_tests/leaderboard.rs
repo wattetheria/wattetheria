@@ -6,7 +6,8 @@ use tokio::sync::Mutex;
 
 /// A gateway answering `/api/leaderboard` with `reply`, recording each `limit` it was asked for,
 /// `/api/farm/leaderboard` with a farm board for season 7, and any Agent's own standing with
-/// rank 61 on the Space board and none on the farm board.
+/// rank 61 on the Space board, none on the farm board and rank 9 on the cards board, and
+/// `/api/cards/leaderboard` with a cards board for season 7.
 async fn spawn_gateway(
     status: StatusCode,
     reply: Value,
@@ -28,11 +29,24 @@ async fn spawn_gateway(
         )
         .route(
             "/api/agents/{agent_did}/rank",
-            axum::routing::get(|| async { Json(json!({"space": own_row(), "farm": null})) }),
+            axum::routing::get(|| async {
+                Json(
+                    json!({"space": own_row(), "farm": null, "cards": own_cards_row(),
+                            "housing": null}),
+                )
+            }),
         )
         .route(
             "/api/farm/leaderboard",
             axum::routing::get(|| async { Json(farm_board()) }),
+        )
+        .route(
+            "/api/cards/leaderboard",
+            axum::routing::get(|| async { Json(cards_board()) }),
+        )
+        .route(
+            "/api/housing/leaderboard",
+            axum::routing::get(|| async { Json(housing_board()) }),
         )
         .with_state(limits.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -46,6 +60,27 @@ fn farm_board() -> Value {
         {"rank": 1, "agent_did": "did:key:top", "display_name": "Top", "watt": 40, "harvests": 3,
          "farmer_rank": 2, "level": 3, "titles": []},
     ]})
+}
+
+fn cards_board() -> Value {
+    json!({"season_no": 7, "ends_at": "2026-11-23T00:00:00Z", "rows": [
+        {"rank": 1, "agent_did": "did:key:top", "display_name": "Top", "rating": 1064, "wins": 4,
+         "losses": 0, "level": 3, "titles": []},
+    ]})
+}
+
+fn housing_board() -> Value {
+    json!({"season_no": 7, "ends_at": "2026-11-23T00:00:00Z", "rows": [
+        {"rank": 1, "agent_did": "did:key:top", "display_name": "Top",
+         "lots": [{"lot": 7, "name": "Seaside"}], "score": 420, "build": 300, "popularity": 12,
+         "guests": 5, "pieces": 40, "furniture": 14, "hides_cards": true,
+         "card_furniture_kinds": 3, "level": 3, "titles": []},
+    ]})
+}
+
+fn own_cards_row() -> Value {
+    json!({"rank": 9, "agent_did": "did:key:me", "display_name": "Me", "rating": 984, "wins": 0,
+        "losses": 1, "level": 1, "titles": []})
 }
 
 fn own_row() -> Value {
@@ -86,7 +121,7 @@ async fn leaderboard_tool_is_read_only_and_takes_a_board_and_a_limit() {
     assert_eq!(schema["properties"].as_object().unwrap().len(), 2);
     assert_eq!(
         schema["properties"]["board"]["enum"],
-        json!(["space", "farm"])
+        json!(["space", "farm", "cards", "housing"])
     );
     assert_eq!(schema["properties"]["limit"]["minimum"], 1);
     assert_eq!(schema["properties"]["limit"]["maximum"], 50);
@@ -123,6 +158,16 @@ async fn leaderboard_tool_relays_the_gateways_rows() {
     let mut expected = farm_board();
     expected["you"] = Value::Null;
     assert_eq!(farm["structuredContent"], expected);
+    let cards = call_leaderboard(state.clone(), &token, json!({"board": "cards"})).await;
+    assert_eq!(cards["isError"], false, "{cards}");
+    let mut expected = cards_board();
+    expected["you"] = own_cards_row();
+    assert_eq!(cards["structuredContent"], expected);
+    let housing = call_leaderboard(state.clone(), &token, json!({"board": "housing"})).await;
+    assert_eq!(housing["isError"], false, "{housing}");
+    let mut expected = housing_board();
+    expected["you"] = Value::Null;
+    assert_eq!(housing["structuredContent"], expected);
     let unknown = call_leaderboard(state.clone(), &token, json!({"board": "dice"})).await;
     assert_eq!(unknown["isError"], true, "{unknown}");
 

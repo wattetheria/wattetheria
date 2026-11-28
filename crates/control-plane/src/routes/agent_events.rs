@@ -2069,6 +2069,11 @@ pub(crate) async fn callback(
     {
         return response;
     }
+    if let Some(response) =
+        crate::routes::cards::receive_battle_notice(&state, &mut event, acked_at).await
+    {
+        return response;
+    }
     process_agent_event_decision(&state, event, verified_context.as_ref(), acked_at).await
 }
 

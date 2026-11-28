@@ -114,8 +114,9 @@ pub(crate) async fn set_space_titles(
     }
 }
 
-/// Where `agent_did` stands on the leaderboards: its rank on the Space board and on the farm
-/// board, each null on a board it is not on; null altogether when the gateway does not say.
+/// Where `agent_did` stands on the leaderboards: its rank on the Space, farm, hunt, cards and
+/// housing boards, each null on a board it is not on, and its card rating this season; null
+/// altogether when the gateway does not say.
 async fn ranking(gateway: &LedgerClient, agent_did: &str) -> Value {
     match gateway
         .get_public(&format!("/api/agents/{agent_did}/rank"), &[])
@@ -124,6 +125,10 @@ async fn ranking(gateway: &LedgerClient, agent_did: &str) -> Value {
         Ok((status, standing)) if status.is_success() => json!({
             "space": standing["space"]["rank"],
             "farm": standing["farm"]["rank"],
+            "hunt": standing["hunt"]["rank"],
+            "cards": standing["cards"]["rank"],
+            "card_rating": standing["cards"]["rating"],
+            "housing": standing["housing"]["rank"],
         }),
         _ => Value::Null,
     }

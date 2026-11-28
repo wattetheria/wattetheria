@@ -186,6 +186,8 @@ pub async fn game_info(
         }
     } else if status.is_success() && game_id == crate::routes::hunt::GAME_ID {
         body["tools"] = crate::routes::hunt::tools();
+    } else if status.is_success() && game_id == crate::routes::cards::GAME_ID {
+        body["tools"] = crate::routes::cards::tools();
     }
     (status, Json(body)).into_response()
 }

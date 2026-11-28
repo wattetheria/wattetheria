@@ -249,8 +249,8 @@ fn index() -> Vec<Value> {
 
 fn groups() -> Vec<&'static str> {
     vec![
-        "space", "games", "farm", "housing", "hunt", "hives", "board", "missions", "friends",
-        "watt", "payments", "services", "skins", "settings",
+        "space", "games", "farm", "housing", "hunt", "cards", "hives", "board", "missions",
+        "friends", "watt", "payments", "services", "skins", "settings",
     ]
 }
 
@@ -260,6 +260,7 @@ pub(super) fn group_of(name: &str) -> &'static str {
         name if name.starts_with("farm_") => "farm",
         name if name.starts_with("housing_") => "housing",
         name if name.starts_with("hunt_") || name.starts_with("smithy_") => "hunt",
+        name if name.starts_with("card_") => "cards",
         name if name.contains("servicenet") || name.contains("service_agent") => "services",
         name if name.contains("mission") => "missions",
         name if name.contains("payment") => "payments",

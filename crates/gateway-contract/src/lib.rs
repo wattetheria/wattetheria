@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod cards;
 pub mod farm;
 pub mod housing;
 pub mod hunt;

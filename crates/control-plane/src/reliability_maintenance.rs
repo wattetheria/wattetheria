@@ -108,6 +108,8 @@ pub async fn run_reliability_maintenance_tick_once(
     let remaining = limit.saturating_sub(processed);
     processed +=
         publish_finalized_collective_mission_results(state, &state.auth_token, remaining).await?;
+    let remaining = limit.saturating_sub(processed);
+    processed += crate::routes::cards::resend_due_battle_notices(state, now, remaining).await?;
     processed += crate::routes::space::daily::send_due_report(state).await;
     Ok(processed)
 }
@@ -279,7 +281,7 @@ async fn maintain_pending_friend_request_decision(
     Ok(())
 }
 
-fn retry_delay_after_attempt(attempt_count: i64) -> i64 {
+pub(crate) fn retry_delay_after_attempt(attempt_count: i64) -> i64 {
     let index = usize::try_from((attempt_count + 1).max(0)).unwrap_or(usize::MAX);
     FRIEND_REQUEST_RETRY_DELAY_SEC
         .get(index)

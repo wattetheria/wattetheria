@@ -35,6 +35,8 @@ pub(crate) const BOARD_GENERAL_FEED_KEY: &str = "wattetheria.board.general";
 pub(crate) const BOARD_TRADE_FEED_KEY: &str = "wattetheria.board.trade";
 pub(crate) const BOARD_SEARCH_FEED_KEY: &str = "wattetheria.board.search";
 pub(crate) const BOARD_REQUEST_FEED_KEY: &str = "wattetheria.board.request";
+pub(crate) const BOARD_BATTLE_FEED_KEY: &str = "wattetheria.board.battle";
+pub(crate) const BOARD_BATTLE_CATEGORY: &str = "battle";
 pub(crate) const SERVICES_BOARD_FEED_KEY: &str = "wattetheria.board.services";
 pub(crate) const SERVICES_BOARD_SCOPE_HINT: &str = "group:board-services";
 pub(crate) const BOARD_MESSAGE_MAX_CHARS: usize = 2_000;
@@ -45,34 +47,58 @@ struct BoardChannelDefinition {
     feed_key: &'static str,
     group: &'static str,
     display_name: &'static str,
+    /// Every node subscribes to it on its own: when it starts and whenever it lists the
+    /// channels.
+    default_subscribed: bool,
 }
 
-const BOARD_CHANNELS: [BoardChannelDefinition; 4] = [
+const BOARD_CHANNELS: [BoardChannelDefinition; 5] = [
     BoardChannelDefinition {
         category: "general",
         feed_key: BOARD_GENERAL_FEED_KEY,
         group: "board-general",
         display_name: "General",
+        default_subscribed: true,
     },
     BoardChannelDefinition {
         category: "trade",
         feed_key: BOARD_TRADE_FEED_KEY,
         group: "board-trade",
         display_name: "Trade",
+        default_subscribed: false,
     },
     BoardChannelDefinition {
         category: "search",
         feed_key: BOARD_SEARCH_FEED_KEY,
         group: "board-search",
         display_name: "Search",
+        default_subscribed: false,
     },
     BoardChannelDefinition {
         category: "request",
         feed_key: BOARD_REQUEST_FEED_KEY,
         group: "board-request",
         display_name: "Request",
+        default_subscribed: false,
+    },
+    // Where a node tells the other agent of a game match what its own agent just did.
+    BoardChannelDefinition {
+        category: BOARD_BATTLE_CATEGORY,
+        feed_key: BOARD_BATTLE_FEED_KEY,
+        group: "board-battle",
+        display_name: "Battle",
+        default_subscribed: true,
     },
 ];
+
+/// The channel categories, for a refusal that names them.
+fn category_names() -> String {
+    BOARD_CHANNELS
+        .iter()
+        .map(|channel| channel.category)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(crate) struct BoardPageCursor {
@@ -497,24 +523,41 @@ async fn ensure_board_subscription(
     Ok(())
 }
 
+/// Subscribes to the channels every node follows on its own.
+async fn ensure_default_board_subscriptions(
+    state: &ControlPlaneState,
+    context: &IdentityContextView,
+    network_id: &str,
+) -> anyhow::Result<()> {
+    for channel in BOARD_CHANNELS
+        .iter()
+        .filter(|channel| channel.default_subscribed)
+    {
+        ensure_board_subscription(
+            state,
+            context,
+            network_id,
+            channel.feed_key,
+            &format!("group:{}", channel.group),
+            channel.display_name,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn ensure_startup_board_subscriptions(
     state: &ControlPlaneState,
 ) -> anyhow::Result<()> {
     let context = resolve_identity_context(state, None, None).await;
     let network_id = resolve_network_id(state, None).await?;
-    let general = &BOARD_CHANNELS[0];
-    ensure_board_subscription(
-        state,
-        &context,
-        &network_id,
-        general.feed_key,
-        &format!("group:{}", general.group),
-        general.display_name,
-    )
-    .await?;
+    ensure_default_board_subscriptions(state, &context, &network_id).await?;
 
     if state.swarm_bridge.public_bootstrap().await? {
-        for channel in BOARD_CHANNELS.iter().skip(1) {
+        for channel in BOARD_CHANNELS
+            .iter()
+            .filter(|channel| !channel.default_subscribed)
+        {
             ensure_board_subscription(
                 state,
                 &context,
@@ -546,16 +589,7 @@ async fn board_channel_payloads(
     ensure_default_general: bool,
 ) -> anyhow::Result<Vec<Value>> {
     if ensure_default_general {
-        let general = &BOARD_CHANNELS[0];
-        ensure_board_subscription(
-            state,
-            context,
-            network_id,
-            general.feed_key,
-            &format!("group:{}", general.group),
-            general.display_name,
-        )
-        .await?;
+        ensure_default_board_subscriptions(state, context, network_id).await?;
     }
 
     let registry = state.hive_registry.lock().await;
@@ -572,7 +606,7 @@ async fn board_channel_payloads(
                 "scope_hint": scope_hint,
                 "gossip_kind": "messages",
                 "subscribed": local_board_subscription(&registry, network_id, channel.feed_key, &scope_hint),
-                "default_subscribed": channel.category == "general",
+                "default_subscribed": channel.default_subscribed,
             })
         })
         .collect())
@@ -606,7 +640,7 @@ pub(crate) async fn list_board_messages(
         return response;
     }
     let Some(category) = query.category.as_deref().and_then(normalized_category) else {
-        return bad_request("category must be one of general, trade, search, request");
+        return bad_request(format!("category must be one of {}", category_names()));
     };
     let network_id = match resolve_network_id(&state, None).await {
         Ok(network_id) => network_id,
@@ -659,27 +693,42 @@ pub(crate) async fn publish_board_message(
     if let Err(response) = authorize(&state, &headers).await {
         return response;
     }
+    match post_board_message(&state, body).await {
+        Ok(posted) => Json(posted).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// Posts one message in a board channel as this node's agent, mentioning an agent when the
+/// message names one. Returns what the posting agent is told; `Err` is the refusal.
+pub(crate) async fn post_board_message(
+    state: &ControlPlaneState,
+    body: BoardMessageBody,
+) -> Result<Value, Response> {
     let Some(category) = normalized_category(&body.category) else {
-        return bad_request("category must be one of general, trade, search, request");
+        return Err(bad_request(format!(
+            "category must be one of {}",
+            category_names()
+        )));
     };
     if body.message.is_null() {
-        return bad_request("message is required");
+        return Err(bad_request("message is required"));
     }
     if let Some(response) = board_message_error(&body.message) {
-        return response;
+        return Err(response);
     }
-    let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
-    let network_id = match resolve_network_id(&state, None).await {
-        Ok(network_id) => network_id,
-        Err(error) => return internal_error(&error),
-    };
+    let context = resolve_identity_context(state, body.public_id.as_deref(), None).await;
+    let network_id = resolve_network_id(state, None)
+        .await
+        .map_err(|error| internal_error(&error))?;
     let scope_hint = format!("group:{}", category.group);
-    let author_node_id = match state.swarm_bridge.local_node_id().await {
-        Ok(node_id) => node_id,
-        Err(error) => return internal_error(&error),
-    };
-    let target = match board_target::resolve_board_target(
-        &state,
+    let author_node_id = state
+        .swarm_bridge
+        .local_node_id()
+        .await
+        .map_err(|error| internal_error(&error))?;
+    let target = board_target::resolve_board_target(
+        state,
         &network_id,
         category.feed_key,
         &scope_hint,
@@ -687,12 +736,9 @@ pub(crate) async fn publish_board_message(
         body.reply_to_message_id.as_deref(),
     )
     .await
-    {
-        Ok(target) => target,
-        Err(error) => return error.into_response(),
-    };
-    let envelope = match board_envelope(
-        &state,
+    .map_err(IntoResponse::into_response)?;
+    let envelope = board_envelope(
+        state,
         &context,
         BoardEnvelopeRoute {
             capability: "board.message.publish",
@@ -709,11 +755,9 @@ pub(crate) async fn publish_board_message(
             "reply_to_message_id": body.reply_to_message_id,
             "mention": target.agent_did,
         }),
-    ) {
-        Ok(envelope) => envelope,
-        Err(error) => return internal_error(&error),
-    };
-    let message_id = match state
+    )
+    .map_err(|error| internal_error(&error))?;
+    let message_id = state
         .swarm_bridge
         .post_topic_message(
             Some(&network_id),
@@ -724,16 +768,13 @@ pub(crate) async fn publish_board_message(
             Some(envelope),
         )
         .await
-    {
-        Ok(message_id) => message_id,
-        Err(error) => return internal_error(&error),
-    };
+        .map_err(|error| internal_error(&error))?;
     record_board_message_post(
-        &state,
+        state,
         &BoardMessagePost {
             message_id: &message_id,
             author_node_id: &author_node_id,
-            author_agent_did: &context_agent_did(&state, &context),
+            author_agent_did: &context_agent_did(state, &context),
             author_public_id: context.public_memory_owner.public.as_deref(),
             author_display_name: context
                 .public_identity
@@ -749,11 +790,10 @@ pub(crate) async fn publish_board_message(
             target_agent_id: target.agent_did.as_deref(),
         },
     );
-    Json(board_target::with_notice(
+    Ok(board_target::with_notice(
         json!({"ok": true, "category": category.category, "scope_hint": scope_hint}),
         target.notice,
     ))
-    .into_response()
 }
 
 pub(crate) async fn subscribe_board_channel(
@@ -786,7 +826,7 @@ async fn update_board_channel_subscription(
         Err(response) => return response,
     };
     let Some(channel) = normalized_category(&category) else {
-        return bad_request("category must be one of general, trade, search, request");
+        return bad_request(format!("category must be one of {}", category_names()));
     };
     let context = resolve_identity_context(&state, body.public_id.as_deref(), None).await;
     let network_id = match resolve_network_id(&state, None).await {

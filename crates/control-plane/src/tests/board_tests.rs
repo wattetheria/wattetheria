@@ -1,19 +1,19 @@
 use super::*;
 use crate::routes::board::{
-    BOARD_GENERAL_FEED_KEY, BOARD_MESSAGE_MAX_CHARS, BOARD_REQUEST_FEED_KEY, BOARD_SEARCH_FEED_KEY,
-    BOARD_TRADE_FEED_KEY, SERVICES_BOARD_FEED_KEY, SERVICES_BOARD_SCOPE_HINT,
-    ensure_startup_board_subscriptions,
+    BOARD_BATTLE_FEED_KEY, BOARD_GENERAL_FEED_KEY, BOARD_MESSAGE_MAX_CHARS, BOARD_REQUEST_FEED_KEY,
+    BOARD_SEARCH_FEED_KEY, BOARD_TRADE_FEED_KEY, SERVICES_BOARD_FEED_KEY,
+    SERVICES_BOARD_SCOPE_HINT, ensure_startup_board_subscriptions,
 };
 use serde_json::json;
 
 #[tokio::test]
-async fn board_lists_fixed_channels_and_defaults_general_subscription() {
+async fn board_lists_fixed_channels_and_defaults_general_and_battle_subscriptions() {
     let (_dir, app, token, _policy, _state) = build_test_app(100);
 
     let payload = authed_get_json(app, &token, "/v1/wattetheria/board/channels").await;
     let channels = payload["channels"].as_array().expect("channels array");
 
-    assert_eq!(channels.len(), 4);
+    assert_eq!(channels.len(), 5);
     assert_eq!(
         channels
             .iter()
@@ -23,7 +23,8 @@ async fn board_lists_fixed_channels_and_defaults_general_subscription() {
             "board-general",
             "board-trade",
             "board-search",
-            "board-request"
+            "board-request",
+            "board-battle"
         ]
     );
     assert_eq!(
@@ -36,10 +37,26 @@ async fn board_lists_fixed_channels_and_defaults_general_subscription() {
             BOARD_TRADE_FEED_KEY,
             BOARD_SEARCH_FEED_KEY,
             BOARD_REQUEST_FEED_KEY,
+            BOARD_BATTLE_FEED_KEY,
         ]
     );
-    assert_eq!(channels[0]["subscribed"], true);
-    assert_eq!(channels[1]["subscribed"], false);
+    // Subscribed without asking: general, and battle, where card match notices arrive.
+    assert_eq!(
+        channels
+            .iter()
+            .map(|channel| (
+                channel["subscribed"].as_bool().unwrap(),
+                channel["default_subscribed"].as_bool().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (true, true),
+            (false, false),
+            (false, false),
+            (false, false),
+            (true, true)
+        ]
+    );
 }
 
 #[tokio::test]
@@ -80,7 +97,8 @@ async fn public_bootstrap_board_subscription_covers_all_board_channels() {
         .filter(|subscription| subscription.4)
         .map(|subscription| subscription.3.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(active_scopes.len(), 5);
+    assert_eq!(active_scopes.len(), 6);
+    assert!(active_scopes.contains(&"group:board-battle"));
     assert!(active_scopes.contains(&"group:board-general"));
     assert!(active_scopes.contains(&"group:board-trade"));
     assert!(active_scopes.contains(&"group:board-search"));
@@ -91,7 +109,8 @@ async fn public_bootstrap_board_subscription_covers_all_board_channels() {
         .filter(|subscription| subscription.4)
         .map(|subscription| subscription.2.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(active_feed_keys.len(), 5);
+    assert_eq!(active_feed_keys.len(), 6);
+    assert!(active_feed_keys.contains(&BOARD_BATTLE_FEED_KEY));
     assert!(active_feed_keys.contains(&BOARD_GENERAL_FEED_KEY));
     assert!(active_feed_keys.contains(&BOARD_TRADE_FEED_KEY));
     assert!(active_feed_keys.contains(&BOARD_SEARCH_FEED_KEY));

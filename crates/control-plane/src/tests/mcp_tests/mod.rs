@@ -116,6 +116,7 @@ fn assert_public_geo_projection(value: &Value) {
     assert_eq!(value["coordinate_source"].as_str(), Some("derived"));
 }
 
+mod cards;
 mod collective;
 mod direct_messages;
 mod discovery;

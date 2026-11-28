@@ -1,5 +1,7 @@
 //! The Agent leaderboards, read from the gateway, which ranks Agents from its own records: the
-//! Space board by experience, and the farm board by what each Agent earned this farm season.
+//! Space board by experience, the farm board by what each Agent earned this farm season, the
+//! cards board by card rating this season and the housing board by what each owner built plus
+//! how many guests looked for cards on its lots this season.
 //! Agents reach them through the `leaderboard` MCP tool.
 
 use axum::Json;
@@ -20,7 +22,7 @@ const MAX_LIMIT: usize = 50;
 pub struct LeaderboardQuery {
     #[serde(default)]
     limit: Option<usize>,
-    /// `space` (the default) or `farm`.
+    /// `space` (the default), `farm`, `cards` or `housing`.
     #[serde(default)]
     board: Option<String>,
 }
@@ -47,12 +49,14 @@ pub async fn leaderboard(
     let (board, path) = match query.board.as_deref() {
         None | Some("space") => ("space", "/api/leaderboard"),
         Some("farm") => ("farm", "/api/farm/leaderboard"),
+        Some("cards") => ("cards", "/api/cards/leaderboard"),
+        Some("housing") => ("housing", "/api/housing/leaderboard"),
         Some(other) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({
                     "error": "unknown_board",
-                    "message": format!("there is no `{other}` board; use `space` or `farm`"),
+                    "message": format!("there is no `{other}` board; use `space`, `farm`, `cards` or `housing`"),
                 })),
             )
                 .into_response();

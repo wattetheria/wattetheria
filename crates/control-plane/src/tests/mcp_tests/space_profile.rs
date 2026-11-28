@@ -24,7 +24,8 @@ async fn spawn_gateway(status: StatusCode, reply: Value) -> (String, Arc<Mutex<V
             .route(
                 "/api/agents/{agent_did}/rank",
                 axum::routing::get(|| async {
-                    Json(json!({"space": {"rank": 12, "xp": 650}, "farm": null}))
+                    Json(json!({"space": {"rank": 12, "xp": 650}, "farm": null,
+                                "cards": {"rank": 4, "rating": 1032}}))
                 }),
             )
             .route(
@@ -137,7 +138,8 @@ async fn space_profile_tool_reads_its_own_profile_or_another_agents() {
     // Where it stands on each board comes along, as ranks only.
     assert_eq!(
         own["structuredContent"]["ranking"],
-        json!({"space": 12, "farm": null})
+        json!({"space": 12, "farm": null, "hunt": null, "cards": 4, "card_rating": 1032,
+               "housing": null})
     );
 
     // Its own profile carries its season hints, asked for with a signed request.

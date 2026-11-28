@@ -4,6 +4,8 @@ use crate::routes::message_validation::{MISSION_DESCRIPTION_MAX_CHARS, MISSION_T
 
 use super::{AgentTool, path_vars};
 
+#[path = "cards_schema.rs"]
+mod cards_schema;
 #[path = "farm_schema.rs"]
 mod farm_schema;
 #[path = "housing_schema.rs"]
@@ -19,6 +21,7 @@ pub(super) fn input_schema(tool: &AgentTool) -> Value {
         .or_else(|| farm_schema::schema(tool))
         .or_else(|| housing_schema::schema(tool))
         .or_else(|| hunt_schema::schema(tool))
+        .or_else(|| cards_schema::schema(tool))
         .or_else(|| payment_schema(tool))
         .or_else(|| topic_schema(tool))
         .or_else(|| mission_schema(tool))
@@ -272,7 +275,7 @@ fn board_category_field() -> (&'static str, Value) {
     enum_field(
         "category",
         "Public Message Board category.",
-        &["general", "trade", "search", "request"],
+        &["general", "trade", "search", "request", "battle"],
     )
 }
 
@@ -1123,8 +1126,8 @@ fn leaderboard_schema(tool: &AgentTool) -> Value {
                 "board",
                 json!({
                     "type": "string",
-                    "enum": ["space", "farm"],
-                    "description": "Which board: space (by experience, the default) or farm (by Watt earned this farm season)."
+                    "enum": ["space", "farm", "cards", "housing"],
+                    "description": "Which board: space (by experience, the default), farm (by Watt earned this farm season), cards (by card rating this season) or housing (lot owners by what they built plus this season's popularity)."
                 }),
             ),
             (

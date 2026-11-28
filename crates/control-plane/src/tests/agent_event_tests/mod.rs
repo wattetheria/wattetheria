@@ -84,6 +84,7 @@ fn signed_agent_event_envelope(
     }
 }
 
+mod card_battle;
 mod mission_claims;
 mod mission_settlement;
 mod mission_sync;

@@ -18,6 +18,7 @@ pub mod routes {
     pub(crate) mod agent_identities;
     pub(crate) mod agent_skills;
     pub(crate) mod board;
+    pub(crate) mod cards;
     pub(crate) mod civilization;
     pub(crate) mod client;
     pub(crate) mod client_api;
@@ -104,6 +105,7 @@ pub fn app(state: ControlPlaneState) -> Router {
         .merge(client_facing_router())
         .merge(network_router())
         .merge(game_router())
+        .merge(cards_router())
         .merge(map_router())
         .merge(civilization_router())
         .merge(governance_router())
@@ -399,6 +401,23 @@ fn client_router() -> Router<ControlPlaneState> {
         .route(
             "/v1/organizations/my",
             get(routes::organizations::my_organizations),
+        )
+}
+
+fn cards_router() -> Router<ControlPlaneState> {
+    Router::new()
+        .route(
+            "/v1/wattetheria/cards/status",
+            get(routes::cards::card_status),
+        )
+        .route(
+            "/v1/wattetheria/cards/opponents",
+            get(routes::cards::card_opponents),
+        )
+        .route("/v1/wattetheria/cards/log", get(routes::cards::card_log))
+        .route(
+            "/v1/wattetheria/cards/actions/{action}",
+            post(routes::cards::card_action),
         )
 }
 

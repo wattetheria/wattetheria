@@ -176,6 +176,39 @@ impl SocialStore {
         .map_err(|error| SocialError::Storage(format!("get reliability task: {error}")))
     }
 
+    /// The pending tasks of `object_kind` whose next attempt is due at `now`, oldest first.
+    pub fn due_reliability_tasks(
+        &self,
+        object_kind: &str,
+        now: i64,
+        limit: usize,
+    ) -> SocialResult<Vec<ReliabilityTask>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT object_kind, object_id, status, attempt_count, last_attempt_at,
+                        next_attempt_at, last_error, created_at, updated_at
+                 FROM reliability_tasks
+                 WHERE object_kind = ?1 AND status = 'pending' AND next_attempt_at <= ?2
+                 ORDER BY next_attempt_at ASC, object_id ASC
+                 LIMIT ?3",
+            )
+            .map_err(|error| {
+                SocialError::Storage(format!("prepare due reliability tasks query: {error}"))
+            })?;
+        let rows = stmt
+            .query_map(
+                params![object_kind, now, limit as i64],
+                row_to_reliability_task,
+            )
+            .map_err(|error| {
+                SocialError::Storage(format!("query due reliability tasks: {error}"))
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            SocialError::Storage(format!("collect due reliability tasks: {error}"))
+        })
+    }
+
     pub fn defer_reliability_task(
         &self,
         object_kind: &str,
